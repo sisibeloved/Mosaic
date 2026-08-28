@@ -4,11 +4,13 @@ package room
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/agent"
 	"github.com/sisibeloved/Mosaic/internal/agent/echo"
+	"github.com/sisibeloved/Mosaic/internal/attention"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 )
@@ -33,8 +35,10 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 
 	eng := NewEngine(EngineConfig{
 		Store:  store,
+		Reader: store,
 		Agents: sup,
 		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "prof_echo", Adapter: "echo"}}},
+		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
 		Clock:  testClock,
 		Now:    func() time.Time { return time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC) },
 		NewID:  newID,
@@ -138,7 +142,8 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 	if err := json.Unmarshal(intent.Payload, &ir); err != nil {
 		t.Fatalf("intent payload: %v", err)
 	}
-	if ir.ScoreBand != "medium" || !ir.Selected || ir.Action != "speak" || ir.Type != "extend" {
+	// echo 确定性：全 0.5 分 + 中性特征 → 记分卡 0.375 → band "low"（band 来自记分卡分而非自报 relevance）
+	if ir.ScoreBand != "low" || !ir.Selected || ir.Action != "speak" || ir.Type != "extend" {
 		t.Fatalf("intent 投影不符：%+v", ir)
 	}
 	// round.closed 结果
@@ -155,9 +160,10 @@ func TestEngineIgnoresNonHumanAndOtherRooms(t *testing.T) {
 	_ = sup.Register(echo.Adapter{})
 	defer sup.Shutdown()
 	eng := NewEngine(EngineConfig{
-		Store: store, Agents: sup,
-		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
-		Clock: testClock, Now: time.Now, NewID: func(p string) string { return p + "_x" },
+		Store: store, Reader: store, Agents: sup,
+		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
+		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
+		Clock:  testClock, Now: time.Now, NewID: func(p string) string { return p + "_x" },
 		Tenant: "ten_local", RoomID: "room_eng",
 	})
 
@@ -194,4 +200,127 @@ func typesOf(events []protocol.Envelope) []string {
 func jsonNumber(n int64) string {
 	raw, _ := json.Marshal(n)
 	return string(raw)
+}
+
+// 多座选择：两 echo 座同分 → 平分决胜 participant_id 字典序 → rank 1/2；
+// 同轮 grant 共享 epoch；round.closed selected_count=2。
+func TestEngineMultiSeatSelection(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(echo.Adapter{})
+	defer sup.Shutdown()
+
+	var mu sync.Mutex
+	var n int64
+	newID := func(prefix string) string {
+		mu.Lock()
+		defer mu.Unlock()
+		n++
+		return prefix + "_m_" + jsonNumber(n)
+	}
+	eng := NewEngine(EngineConfig{
+		Store:  store,
+		Reader: store,
+		Agents: sup,
+		Seats: []AgentSeat{
+			{ParticipantID: "par_echo_b", Profile: agent.Profile{ProfileID: "prof_b", Adapter: "echo"}},
+			{ParticipantID: "par_echo_a", Profile: agent.Profile{ProfileID: "prof_a", Adapter: "echo"}},
+		},
+		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
+		Clock:  testClock,
+		Now:    func() time.Time { return time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC) },
+		NewID:  newID,
+		Tenant: "ten_local",
+		RoomID: "room_multi",
+	})
+
+	store.AppendEvents(context.Background(), []protocol.Envelope{{
+		EventID: "evt_m_create", TenantID: "ten_local", RoomID: "room_multi",
+		Type: protocol.EventRoomCreated, SchemaVersion: 1, OccurredAt: testClock(),
+		Actor:      protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Visibility: protocol.Visibility{Kind: "public"}, Payload: []byte(`{}`), Metadata: map[string]any{},
+	}})
+	store.AppendEvents(context.Background(), []protocol.Envelope{{
+		EventID: "evt_m_human", TenantID: "ten_local", RoomID: "room_multi",
+		Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
+		Actor:      protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Visibility: protocol.Visibility{Kind: "public"}, Payload: []byte(`{"body":"多座"}`), Metadata: map[string]any{},
+	}})
+	raw, _ := json.Marshal(protocol.Envelope{
+		EventID: "evt_m_human", TenantID: "ten_local", RoomID: "room_multi",
+		Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
+		Actor:      protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Visibility: protocol.Visibility{Kind: "public"}, Payload: []byte(`{"body":"多座"}`), Metadata: map[string]any{},
+	})
+	eng.Deliver(context.Background(), outbox.Entry{RoomID: "room_multi", Envelope: raw})
+
+	deadline := time.Now().Add(3 * time.Second)
+	var events []protocol.Envelope
+	for time.Now().Before(deadline) {
+		events = store.RoomEvents("room_multi")
+		if len(events) > 0 && events[len(events)-1].Type == protocol.EventRoundClosed {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(events) == 0 || events[len(events)-1].Type != protocol.EventRoundClosed {
+		t.Fatalf("轮未完成，事件数=%d", len(events))
+	}
+	// 期望：created, human, round.opened, intent×2, grant×2, agent msg×2, round.closed = 10
+	if len(events) != 10 {
+		t.Fatalf("事件数 = %d（期望 10）：%v", len(events), typesOf(events))
+	}
+	want := []string{
+		protocol.EventRoomCreated, protocol.EventMessagePosted, protocol.EventRoundOpened,
+		protocol.EventIntentRecorded, protocol.EventIntentRecorded,
+		protocol.EventFloorGranted, protocol.EventMessagePosted,
+		protocol.EventFloorGranted, protocol.EventMessagePosted,
+		protocol.EventRoundClosed,
+	}
+	for i, w := range want {
+		if events[i].Type != w {
+			t.Fatalf("第 %d 事件 = %s（期望 %s）：%v", i, events[i].Type, w, typesOf(events))
+		}
+	}
+	// grant rank 与共享 epoch
+	var grants []protocol.FloorGrantedPayload
+	for _, ev := range events {
+		if ev.Type == protocol.EventFloorGranted {
+			var g protocol.FloorGrantedPayload
+			_ = json.Unmarshal(ev.Payload, &g)
+			grants = append(grants, g)
+		}
+	}
+	if grants[0].ParticipantID != "par_echo_a" || grants[0].Rank != 1 {
+		t.Fatalf("rank1 应为字典序 par_echo_a：%+v", grants[0])
+	}
+	if grants[1].ParticipantID != "par_echo_b" || grants[1].Rank != 2 {
+		t.Fatalf("rank2 应为 par_echo_b：%+v", grants[1])
+	}
+	if grants[0].Epoch != grants[1].Epoch || grants[0].Epoch != 1 {
+		t.Fatalf("同轮 grant 应共享 epoch=1：%+v %+v", grants[0], grants[1])
+	}
+	// 两条 intent 均 selected 且 band 一致（同分同特征）
+	selected := 0
+	for _, ev := range events {
+		if ev.Type == protocol.EventIntentRecorded {
+			var ir protocol.IntentRecordedPayload
+			_ = json.Unmarshal(ev.Payload, &ir)
+			if ir.Selected {
+				selected++
+			}
+			if ir.ScoreBand != "low" {
+				t.Fatalf("band = %s（期望 low，来自记分卡 0.375）", ir.ScoreBand)
+			}
+		}
+	}
+	if selected != 2 {
+		t.Fatalf("selected intents = %d（期望 2）", selected)
+	}
+	// round.closed 汇总
+	var rc protocol.RoundClosedPayload
+	_ = json.Unmarshal(events[9].Payload, &rc)
+	if rc.Outcome != "published" || rc.SelectedCount != 2 {
+		t.Fatalf("round.closed 不符：%+v", rc)
+	}
 }

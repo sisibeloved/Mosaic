@@ -1,0 +1,61 @@
+{
+  "description": "确定性选择回归 v1：手算基线（RFC-0003 §3.1.5/§3.1.6）。改本文件须附推导与 RFC 页引用。",
+  "policy": {
+    "mode": "open_floor",
+    "max_speakers": 3,
+    "lambda": 0.3,
+    "weights": {
+      "relevance": 0.30,
+      "novelty": 0.20,
+      "diversity": 0.15,
+      "urgency": 0.10,
+      "direct_address": 0.15,
+      "floor_share": 0.05,
+      "repetition": 0.05
+    }
+  },
+  "candidates": [
+    {
+      "intent": {"intent_id": "int_a", "participant_id": "par_alpha", "action": "speak", "type": "challenge",
+        "scores": {"relevance": 0.9, "novelty": 0.8, "urgency": 0.7, "confidence": 0.9},
+        "addressed_to": ["par_beta"]},
+      "context": {"viewpoint_diversity": 0.8, "recent_floor_share": 0.0, "repetition_risk": 0.0, "direct_address": 1.0},
+      "eligibility": {"enabled": true, "cooldown_ok": true, "thread_writable": true, "budget_ok": true}
+    },
+    {
+      "intent": {"intent_id": "int_b", "participant_id": "par_beta", "action": "speak", "type": "extend",
+        "scores": {"relevance": 0.85, "novelty": 0.5, "urgency": 0.3, "confidence": 0.6},
+        "addressed_to": ["par_beta"]},
+      "context": {"viewpoint_diversity": 0.4, "recent_floor_share": 0.3, "repetition_risk": 0.2, "direct_address": 0.0},
+      "eligibility": {"enabled": true, "cooldown_ok": true, "thread_writable": true, "budget_ok": true}
+    },
+    {
+      "intent": {"intent_id": "int_c", "participant_id": "par_gamma", "action": "speak", "type": "question",
+        "scores": {"relevance": 0.7, "novelty": 0.9, "urgency": 0.5, "confidence": 0.7},
+        "addressed_to": []},
+      "context": {"viewpoint_diversity": 0.9, "recent_floor_share": 0.0, "repetition_risk": 0.0, "direct_address": 0.0},
+      "eligibility": {"enabled": true, "cooldown_ok": true, "thread_writable": true, "budget_ok": true}
+    },
+    {
+      "intent": {"intent_id": "int_d", "participant_id": "par_delta", "action": "speak", "type": "support",
+        "scores": {"relevance": 0.3, "novelty": 0.2, "urgency": 0.1, "confidence": 0.4},
+        "addressed_to": []},
+      "context": {"viewpoint_diversity": 0.1, "recent_floor_share": 0.8, "repetition_risk": 0.5, "direct_address": 0.0},
+      "eligibility": {"enabled": true, "cooldown_ok": true, "thread_writable": true, "budget_ok": true}
+    },
+    {
+      "intent": {"intent_id": "int_e", "participant_id": "par_eps", "action": "speak", "type": "extend",
+        "scores": {"relevance": 0.9, "novelty": 0.9, "urgency": 0.9, "confidence": 0.9},
+        "addressed_to": []},
+      "context": {"viewpoint_diversity": 0.5, "recent_floor_share": 0.0, "repetition_risk": 0.0, "direct_address": 0.0},
+      "eligibility": {"enabled": true, "cooldown_ok": false, "thread_writable": true, "budget_ok": true}
+    }
+  ],
+  "expected": {
+    "selected": ["int_a", "int_c", "int_b"],
+    "selected_bands": ["high", "medium", "medium"],
+    "rejected": {"int_d": "quota_exhausted", "int_e": "cooldown"},
+    "quiescent": false,
+    "silent_count": 0
+  }
+}

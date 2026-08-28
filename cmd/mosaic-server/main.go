@@ -19,6 +19,7 @@ import (
 
 	"github.com/sisibeloved/Mosaic/internal/agent"
 	"github.com/sisibeloved/Mosaic/internal/agent/echo"
+	"github.com/sisibeloved/Mosaic/internal/attention"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/room"
 	"github.com/sisibeloved/Mosaic/internal/storage/sqlite"
@@ -87,14 +88,21 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// 房间引擎：M1 服务全部已创建房间（房间级 seats/策略随 M2 房间生命周期完善）
+	// 房间引擎：M1 服务全部已创建房间；open_floor 默认参数（RFC-0003 §3.1.7）
 	engine := room.NewEngine(room.EngineConfig{
 		Store:  store,
+		Reader: store,
 		Agents: supervisor,
 		Seats: []room.AgentSeat{{
 			ParticipantID: "par_echo",
 			Profile:       agent.Profile{ProfileID: "prof_echo", Adapter: "echo", DisplayName: "Echo"},
 		}},
+		Policy: attention.Policy{
+			Mode:        "open_floor",
+			MaxSpeakers: 3,
+			Lambda:      0.30, // M1 默认；OQ-04 校准前可配（RFC-0003 §3.1.5）
+			Weights:     attention.DefaultWeights,
+		},
 		Clock:  clock,
 		Now:    time.Now,
 		NewID:  newID,

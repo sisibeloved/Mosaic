@@ -19,7 +19,7 @@
 | v1.0 | 2026-08-25 | Mosaic 项目组 / ZCode | 初版：交付目标与 DoD、四个形态决策（含建议）、范围裁定、里程碑 M0–M5、双平台工程要求、风险、治理 |
 | v1.1 | 2026-08-25 | Mosaic 项目组 / ZCode | M0 执行更新：形态决策确认（ADR-0008~0010）；新增测试分层约定（§5.5，UT/IT/ST + TDD backlog 机制）；M0 勾选同步（脚手架/端口与 echo/测试分层完成；协议生成链与严格校验、SQLite/Wails spike、Apple 账号待办） |
 | v1.2 | 2026-08-28 | Mosaic 项目组 / ZCode | 负责人裁定：**个人使用，不购买 Apple 开发者账号**——删除公证硬性项，macOS 改为 ad-hoc 签名 + 首次打开指引（DoD 1、M4、风险表同步）；sqlite-vec 冒烟移至 M3 记忆层入口（M0 三用例不含向量检索）；M0 出口判据的"命令→事件→游标续传"往返明确为进程内 IT（HTTP/SSE 形态属 M1） |
-| v1.3 | 2026-08-28 | Mosaic 项目组 / ZCode | M1 执行更新（TDD 切片 A/B）：命令处理域（幂等 receipt/乐观并发/严格校验，UT+IT 含并发竞态）+ 存储端口化（room.AtomicStore/EventReader，MemStore/SQLite 双实现）+ HTTP 命令 API 与 SSE 游标订阅（对外无 seq/tenant，RFC-0001 P0 落地）+ outbox 分发器 + 房间引擎（echo 全轮事件链）；**TestDiscussionLoop_ST 北极星转绿**（建房→发消息→引擎轮→agent 发言→断线重连续传→HTTP 幂等重放）；TDD 红灯驱动修复 commit 竞态分支 (nil,nil) 缺陷。待做：native-codex 适配器、Attention 正式实现、Context 七层、draft 流、进程管理 |
+| v1.3 | 2026-08-28 | Mosaic 项目组 / ZCode | M1 执行更新（TDD 切片 A/B）：命令处理域（幂等 receipt/乐观并发/严格校验，UT+IT 含并发竞态）+ 存储端口化（room.AtomicStore/EventReader，MemStore/SQLite 双实现）+ HTTP 命令 API 与 SSE 游标订阅（对外无 seq/tenant，RFC-0001 P0 落地）+ outbox 分发器 + 房间引擎（echo 全轮事件链）；**TestDiscussionLoop_ST 北极星转绿**（建房→发消息→引擎轮→agent 发言→断线重连续传→HTTP 幂等重放）；TDD 红灯驱动修复 commit 竞态分支 (nil,nil) 缺陷。切片 C：internal/attention 确定性选择引擎（记分卡/band/MMR/λ 衰减/严格校验 + 手算 fixture 门禁）接入引擎（全量 intent 投影、grant causation 纪律、同轮共享 epoch、多座 rank）。待做：native-codex 适配器、预算 admission 与公平机制、Context 七层、draft 流、进程管理 |
 
 # 1. 交付目标与"完全可用"定义
 
@@ -106,7 +106,7 @@
 
 - [ ] Room/Thread 最小生命周期 + `message.posted` 全链路（命令→事件→SSE 游标订阅→UI Timeline）**（2026-08-28：Room 创建 + message.posted + SSE 游标订阅/断线重连已落地（ST 北极星绿）；Thread 生命周期与 UI 待做）**
 - [ ] native-codex 适配器（headless 模式对接 + 结构化块解析 + 会话恢复）通过 conformance 三件套
-- [ ] Attention 最小实现：硬资格 + 记分卡（默认权重）+ MMR + FloorGrant（epoch）；Open Floor 单模式先行
+- [ ] Attention 最小实现：硬资格 + 记分卡（默认权重）+ MMR + FloorGrant（epoch）；Open Floor 单模式先行 **（2026-08-28 切片 C 落地：internal/attention 纯函数选择引擎——记分卡公式/五档 band/硬资格序/duplicate_intent/score 越界严格拒/silent 计数/MMR 贪心含"无正边际即停"与 Roundtable·Review 的 challenge·question λ 减半/确定性平分决胜；fixtures/deterministic-selection-v1.json 手算基线进 CI（RFC-0003 §3.4 门禁）。引擎已接入：全量 intent.recorded（未获选 band+理由可查 R-08）、grant causation 指向 intent.recorded、同轮 grant 共享 epoch（round.opened 计数）、多座 rank 揭示。待做：预算 admission、公平机制（floor share 窗口/半衰期、frontier slot）、迟到拒绝执行面（epoch 已落 payload）**
 - [ ] Context 组装七层最小版 + Context Receipt 落库
 - [ ] draft 流（DraftUpdate 安全子集）+ 暂停/取消 + 迟到拒绝（epoch）
 - [ ] 双平台进程管理：spawn/健康检查/退避重启/优雅退出（含 Windows 信号语义）；CLI 检测（codex/kimi/zcode 是否安装）
