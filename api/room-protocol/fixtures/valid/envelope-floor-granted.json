@@ -1,0 +1,28 @@
+{
+  "event_id": "evt_01H8TESTFLOORGRANTED00000",
+  "tenant_id": "ten_local",
+  "room_id": "room_01H8TESTROOM00000000000000",
+  "thread_id": "thr_01H8TESTTHREAD00000000000",
+  "discussion_epoch_id": "epoch_01H8TESTEPOCH0000000000",
+  "seq": 152,
+  "type": "floor.granted",
+  "schema_version": 1,
+  "occurred_at": "2026-08-25T10:00:03.000Z",
+  "actor": { "participant_id": "par_system", "kind": "system" },
+  "causation_id": "evt_01H8TESTINTENTENDORSED0000",
+  "correlation_id": "rnd_01H8TESTROUND00000000000",
+  "visibility": { "kind": "participants" },
+  "payload": {
+    "grant_id": "grant_01H8TESTGRANT000000000",
+    "round_id": "rnd_01H8TESTROUND00000000000",
+    "participant_id": "par_codex",
+    "rank": 1,
+    "reveal_strategy": "simultaneous",
+    "context_watermark": 151,
+    "epoch": 7,
+    "expires_at": "2026-08-25T10:00:33.000Z",
+    "response_cap": 600,
+    "directed": false
+  },
+  "metadata": {}
+}

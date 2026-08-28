@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/intent.recorded.schema.json",
+  "title": "IntentRecordedPayload",
+  "description": "TurnIntent 的用户可见投影：公开五档 band，不公开精确分（反 Goodhart）；私有原始 Intent 不经本事件暴露。",
+  "type": "object",
+  "required": [
+    "intent_id", "participant_id", "action", "type",
+    "public_rationale", "score_band", "selected", "endorsed"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "intent_id": { "type": "string", "pattern": "^int_[0-9A-Za-z_-]+$" },
+    "participant_id": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" },
+    "action": {
+      "type": "string",
+      "enum": ["speak", "react", "fork", "summarize", "silent"]
+    },
+    "type": {
+      "type": "string",
+      "enum": ["answer", "extend", "challenge", "support", "question", "redirect", "synthesize"]
+    },
+    "reply_to": { "type": ["string", "null"], "pattern": "^evt_[0-9A-Za-z_-]+$" },
+    "addressed_to": {
+      "type": "array",
+      "maxItems": 3,
+      "items": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" }
+    },
+    "public_rationale": { "type": "string", "minLength": 1, "maxLength": 280 },
+    "score_band": {
+      "type": "string",
+      "enum": ["very_low", "low", "medium", "high", "very_high"],
+      "description": "五档：&lt;0.2 / 0.2–0.4 / 0.4–0.6 / 0.6–0.8 / ≥0.8；精确分仅入内部评测（RFC-0011）"
+    },
+    "selected": { "type": "boolean" },
+    "endorsed": { "type": "boolean" }
+  }
+}

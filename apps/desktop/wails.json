@@ -1,0 +1,18 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "mosaic-desktop",
+  "outputfilename": "mosaic",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": {
+    "name": "Mosaic"
+  },
+  "info": {
+    "productName": "Mosaic",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright © 2026",
+    "comments": "Mosaic 桌面壳（Wails v2，ADR-0010）"
+  }
+}

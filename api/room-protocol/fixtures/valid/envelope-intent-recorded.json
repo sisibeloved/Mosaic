@@ -1,0 +1,28 @@
+{
+  "event_id": "evt_01H8TESTINTENTRECORDED00000",
+  "tenant_id": "ten_local",
+  "room_id": "room_01H8TESTROOM00000000000000",
+  "thread_id": "thr_01H8TESTTHREAD00000000000",
+  "discussion_epoch_id": "epoch_01H8TESTEPOCH0000000000",
+  "seq": 150,
+  "type": "intent.recorded",
+  "schema_version": 1,
+  "occurred_at": "2026-08-25T10:00:01.500Z",
+  "actor": { "participant_id": "par_codex", "kind": "agent" },
+  "causation_id": "evt_01H8TESTTASKRESULT0000000",
+  "correlation_id": "rnd_01H8TESTROUND00000000000",
+  "visibility": { "kind": "participants" },
+  "payload": {
+    "intent_id": "int_01H8TESTINTENT0000000000",
+    "participant_id": "par_codex",
+    "action": "speak",
+    "type": "challenge",
+    "reply_to": "evt_01H8TESTMESSAGE0000000000",
+    "addressed_to": ["par_kimi"],
+    "public_rationale": "fixture: 成本假设尚未验证，需要证据支撑",
+    "score_band": "high",
+    "selected": false,
+    "endorsed": false
+  },
+  "metadata": {}
+}

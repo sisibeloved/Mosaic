@@ -1,5 +1,5 @@
-// Package protocol 守护 api/room-protocol 的 Schema 与 fixture 一致性（M0 结构冒烟）。
-// 严格 JSON Schema 校验门禁随生成链（ADR-0007）落地；当前先保证必填字段与命名规则。
+// Package protocol 守护 api/room-protocol 的 Schema 与 fixture 一致性。
+// 本文件为结构冒烟（命名/必填/UUIDv7）；严格校验门禁见 schema_gate_test.go（ADR-0007）。
 package protocol
 
 import (
@@ -61,12 +61,6 @@ func TestValidFixtures(t *testing.T) {
 			t.Errorf("%s: fixture 命名必须以 envelope 或 command 开头", name)
 		}
 	}
-}
-
-// TDD backlog：严格 JSON Schema 校验门禁（ADR-0007 生成链落地时转绿）。
-// 转绿后的断言集：valid/ 全量对 Schema 校验通过 + invalid/ 反例必须失败。
-func TestStrictSchemaValidationGate_TDD(t *testing.T) {
-	t.Skip("TDD backlog：santhosh-tekuri/jsonschema 引入后，以 invalid/ 反例 fixture 驱动红→绿（ADR-0007）")
 }
 
 func TestSchemasAreValidJSON(t *testing.T) {

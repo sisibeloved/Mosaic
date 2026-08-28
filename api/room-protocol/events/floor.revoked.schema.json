@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/floor.revoked.schema.json",
+  "title": "FloorRevokedPayload",
+  "description": "FloorGrant 撤销：正确性由 epoch 迟到拒绝保证，在途生成取消尽力而为（AR-004）。",
+  "type": "object",
+  "required": ["grant_id", "reason"],
+  "additionalProperties": false,
+  "properties": {
+    "grant_id": { "type": "string", "pattern": "^grant_[0-9A-Za-z_-]+$" },
+    "reason": {
+      "type": "string",
+      "enum": ["human_preemption", "room_paused", "budget", "thread_closed"]
+    }
+  }
+}

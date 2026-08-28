@@ -5,8 +5,8 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.0 |
-| 日期 | 2026-08-25 |
+| 版本 | v1.2 |
+| 日期 | 2026-08-28 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
 | 交付目标 | **个人完全可用的 App**：单用户本地运行，一等公民支持 Windows 与 macOS；不是验证性半成品 |
@@ -18,6 +18,7 @@
 |---|---|---|---|
 | v1.0 | 2026-08-25 | Mosaic 项目组 / ZCode | 初版：交付目标与 DoD、四个形态决策（含建议）、范围裁定、里程碑 M0–M5、双平台工程要求、风险、治理 |
 | v1.1 | 2026-08-25 | Mosaic 项目组 / ZCode | M0 执行更新：形态决策确认（ADR-0008~0010）；新增测试分层约定（§5.5，UT/IT/ST + TDD backlog 机制）；M0 勾选同步（脚手架/端口与 echo/测试分层完成；协议生成链与严格校验、SQLite/Wails spike、Apple 账号待办） |
+| v1.2 | 2026-08-28 | Mosaic 项目组 / ZCode | 负责人裁定：**个人使用，不购买 Apple 开发者账号**——删除公证硬性项，macOS 改为 ad-hoc 签名 + 首次打开指引（DoD 1、M4、风险表同步）；sqlite-vec 冒烟移至 M3 记忆层入口（M0 三用例不含向量检索）；M0 出口判据的"命令→事件→游标续传"往返明确为进程内 IT（HTTP/SSE 形态属 M1） |
 
 # 1. 交付目标与"完全可用"定义
 
@@ -27,7 +28,7 @@
 
 | # | 类别 | 验收项 |
 |---|---|---|
-| 1 | 安装 | Windows 10/11 提供安装器（或免安装绿色版）；macOS 13+（Intel/Apple Silicon）提供 dmg 并完成公证；双平台首次启动向导 ≤ 5 分钟进入第一个房间 |
+| 1 | 安装 | Windows 10/11 提供安装器（或免安装绿色版）；macOS 13+（Intel/Apple Silicon）提供 dmg（个人分发：ad-hoc 签名，不做公证，随附首次打开指引）；双平台首次启动向导 ≤ 5 分钟进入第一个房间 |
 | 2 | Agent 接入 | 向导检测本机已安装的 CLI（Codex/Kimi Code/ZCode），引导安装与登录态检查；v1.0 至少 **2 个真实适配器 + echo** 通过 conformance |
 | 3 | 讨论闭环 | 创建房间、加入人类与 ≥2 个真实 agent；Open Floor / Roundtable（含 rebuttals）/ Deep Dive 三模式；消息、点名与定向交锋、暂停/打断、人类保送、draft 流、记分卡查询 |
 | 4 | 结构 | Thread fork / pause / resume / close / reopen / merge；Timeline + 最小 Graph 视图（显式关系与系统推断视觉区分） |
@@ -90,11 +91,13 @@
 - [x] D-1/D-2/D-3 裁决并落 ADR（2026-08-25 负责人确认：ADR-0008 存储、ADR-0009 身份、ADR-0010 应用壳；ADR-0003/0004 已追加个人版形态注记）
 - [x] RFC-0001/0002 推进 Approved（2026-08-25 负责人确认；首轮审校修订 v0.4/v0.5 后批准）
 - [x] monorepo 脚手架：Go module + apps/web + api/room-protocol + CI（vet/test/race/build，windows+macos+ubuntu 三矩阵）
-- [ ] 协议工程：envelope/command/Attention 事件族 Schema + TS/Go 边界模型生成 + 兼容性 fixture 门禁（已落：envelope/command Schema + 结构化 fixture 冒烟测试；待：生成链与严格 Schema 校验门禁、Attention 事件族）
+- [x] 协议工程：envelope/command/Attention 事件族 Schema + TS/Go 边界模型生成 + 兼容性 fixture 门禁（2026-08-28 落地：Attention 六事件 payload Schema（严格写 additionalProperties=false）+ valid/invalid fixture 双侧 + santhosh-tekuri 严格校验门禁（变异验证过）+ Go 边界 struct round-trip 门禁 + `gen-ts.sh`→`gen/ts` TS 产物；OpenAPI/oapi-codegen 随 M1 命令 API）
 - [x] HarnessPort + supervisor 最小实现 + echo 适配器（conformance 起步：确定性/取消/Stale/注册链路测试）
 - [x] 测试分层体系（TDD）：UT/IT/ST 三层（构建标签 it/st + CI 分步执行）+ supervisor UT 全覆盖（含并发首启唯一性红灯用例）+ 真二进制 ST（healthz/优雅退出/非法参数）+ TDD backlog 占位（严格 Schema 校验门禁、M1 端到端闭环）
-- [ ] 存储 spike：SQLite WAL + sqlite-vec 冒烟（事件 append / 游标续传 / outbox 重放各一条用例）；不通过则触发 D-1 回退评审
-- **出口判据**：三个 ADR 落档；CI 在 Windows 与 macOS runner 双绿；echo 适配器完成一次"命令→事件→订阅游标续传"往返。
+- [x] 存储 spike：SQLite WAL 冒烟（事件 append / 游标续传 / outbox 重放各一条 IT 用例，驱动 modernc.org/sqlite 纯 Go 免 CGO）；sqlite-vec 向量冒烟移至 M3 记忆层入口（M0 主流程不含向量检索）；不通过则触发 D-1 回退评审（**2026-08-28 通过**：三用例 + 8×5 并发追加串行化证明全绿（-race）；发现并修复 per-connection pragma 须走 DSN 的坑，已记 ADR-0008；D-1 维持，不触发回退评审）
+- [x] Wails 最小壳 spike（2026-08-28：apps/desktop 独立 module，wails v2.15；Windows amd64 与 macOS arm64 双目标在 headless Linux 纯 Go 交叉编译通过；真机运行时验证随 M2 SPA 接入）
+- [x] 进程内"命令→事件→游标续传"往返 IT（echo 适配器参与，post_message fixture → message.posted → echo 三段任务 → agent 消息 → 续传只收新事件 → outbox 排空）
+- **出口判据**：三个 ADR 落档；CI 在 Windows 与 macOS runner 双绿；存储 spike 三用例 + 进程内"命令→事件→游标续传"往返 IT（echo 适配器参与）通过；严格 Schema 校验门禁（valid 全过 / invalid 全拒）进 CI。HTTP/SSE 形态的同名闭环属 M1 出口判据。
 
 ## M1 核心闭环（4 周）
 
@@ -137,7 +140,7 @@
 目标：把工程闭环变成任何人可安装可日常使用的产品。验收对照第 1 节 DoD 全表。
 
 - [ ] Wails 壳：安装器（Windows NSIS/绿色版 + macOS dmg）、应用图标、托盘常驻、首次启动向导（存储初始化 → CLI 检测/安装引导 → agent 登录态检查 → 建房演示）
-- [ ] macOS 公证与签名（依赖：Apple 开发者账号，M0 即申请）；Windows 代码签名（可选，无则 SmartScreen 提示文案）
+- [ ] macOS ad-hoc 签名 + 首次打开指引（个人分发不做公证：未购 Apple 开发者账号，指引右键→打开或 `xattr -cr`；若未来公开分发再评估购号公证）；Windows 代码签名（可选，无则 SmartScreen 提示文案）
 - [ ] 升级与迁移：版本检查 + 一键下载替换 + 启动时自动迁移 + 迁移失败回滚保护
 - [ ] 备份/恢复一键化（副本即拷贝 + 校验）；自诊断报告（版本/环境/日志尾/指标快照打包）
 - [ ] 72h 无人值守稳定性专项：内存/句柄监控、泄漏修复、崩溃自恢复演练（双平台各一轮）
@@ -178,7 +181,7 @@
 | 依赖/风险 | 影响 | 缓解 |
 |---|---|---|
 | ZCode headless 缺口（issue #29） | ZCode 适配器无法进入 v1.0 | 分级晋级（已定）：v1.0 至少 2 个真实适配器（Codex + Kimi）；内部推动需求，解除后按 M5 晋级 |
-| Apple 开发者账号 + 公证流程 | macOS 交付被阻 | M0 立即申请；未到位前 dmg 不公证发布（内部测试），DoD 9 完成前不算 v1.0.0 |
+| macOS Gatekeeper 拦截未公证 app | 个人机器首次打开多一步确认 | 已裁定不购 Apple 开发者账号：ad-hoc 签名 + 首次打开指引（右键→打开 / `xattr -cr`）写入 README 与 FAQ；个人使用可接受，公开分发需求出现时再购号公证 |
 | Codex/Kimi 输出 schema 漂移 | 适配器解析失败率上升 | 版本固定（RFC-0002 修订 #14）+ fixture 阈值告警 + 适配器更新通道 |
 | D-1 SQLite 回退风险 | 存储层返工 | M0 内 spike 冒烟三用例前置排雷；回退预案（内嵌 PG）已评估 |
 | 单人带宽 | 排期滑移 | 范围刚性顺序：M4 产品化不可裁（"不是半成品"是硬要求）；可裁项仅 M5 与 M2 的非主流程模式增强 |
@@ -193,7 +196,7 @@
 
 # 8. 附录：M0/M1 任务级分解（示例粒度）
 
-**M0**：ADR 三篇 / RFC-0001-0002 Approved 流程 / 脚手架与 CI 双平台 / envelope+command Schema 与生成链 / fixture 门禁 / HarnessPort+supervisor 骨架 / echo 适配器 / SQLite spike（append、cursor、outbox 重放）/ Wails 最小壳 spike / Apple 账号申请。
+**M0**：ADR 三篇 / RFC-0001-0002 Approved 流程 / 脚手架与 CI 双平台 / envelope+command+Attention 事件族 Schema 与生成链 / fixture 门禁（含 invalid 反例与严格校验）/ HarnessPort+supervisor 骨架 / echo 适配器 / SQLite spike（append、cursor、outbox 重放）/ 进程内命令→事件→游标续传往返 IT / Wails 最小壳 spike。
 
 **M1**：迁移框架（goose→SQLite 方言评估）/ room_events+outbox 表 / 命令 API+幂等 receipt / SSE 订阅+opaque cursor / 快照四元组 / Timeline 最小 UI / codex 适配器（spawn、--json 解析、会话句柄、取消升级）/ 结构化块校验 / Attention 硬资格+评分+MMR+grant / Context 七层最小 / Receipt / DraftUpdate 流 / pause 命令链 / 崩溃注入测试。
 

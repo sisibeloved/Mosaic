@@ -1,0 +1,15 @@
+{
+  "event_id": "evt_01H8BAD_REVOKE_REASON_0000000",
+  "tenant_id": "ten_local",
+  "room_id": "room_01H8TESTROOM00000000000000",
+  "seq": 1,
+  "type": "floor.revoked",
+  "schema_version": 1,
+  "occurred_at": "2026-08-25T10:00:00.000Z",
+  "actor": { "participant_id": "par_owner", "kind": "human" },
+  "visibility": { "kind": "public" },
+  "payload": {
+    "grant_id": "grant_01H8TESTGRANT000000000",
+    "reason": "because_i_say_so"
+  }
+}

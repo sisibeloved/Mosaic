@@ -1,0 +1,21 @@
+{
+  "event_id": "evt_01H8BAD_INTENT_BAND_00000000",
+  "tenant_id": "ten_local",
+  "room_id": "room_01H8TESTROOM00000000000000",
+  "seq": 1,
+  "type": "intent.recorded",
+  "schema_version": 1,
+  "occurred_at": "2026-08-25T10:00:00.000Z",
+  "actor": { "participant_id": "par_codex", "kind": "agent" },
+  "visibility": { "kind": "participants" },
+  "payload": {
+    "intent_id": "int_01H8TESTINTENT0000000000",
+    "participant_id": "par_codex",
+    "action": "speak",
+    "type": "challenge",
+    "public_rationale": "fixture: 精确分不得进入公开投影",
+    "score_band": "0.75",
+    "selected": false,
+    "endorsed": false
+  }
+}

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://mosaic.local/room-protocol/envelope.schema.json",
-  "title": "Room Event Envelope（权威/内部形态，RFC-0001 v0.4）",
+  "title": "RoomEventEnvelope",
   "description": "对外视图信封不含 seq（以 opaque position 替代）且水位按主体视图重写；本 Schema 定义存储与内部消费的权威形态。",
   "type": "object",
   "required": [

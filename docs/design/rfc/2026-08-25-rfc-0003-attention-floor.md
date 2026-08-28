@@ -256,7 +256,7 @@ score =
  "selected_count": 2, "silent_count": 1, "cross_subrounds": 1}
 ```
 
-`intent.endorsed`（OQ-17）：`{intent_id, endorsed_by（具名人类 actor）, effect: "grant | boost"}`；由 `intent.endorsed` 产生的 FloorGrant 必须可追溯到该具名人类 actor，Agent 不能保送 Agent（11.3）。`agent.message.posted` 的 `causation_id` 必须指向有效 FloorGrant。
+`intent.endorsed`（OQ-17）：`{intent_id, endorsed_by（具名人类 actor）, effect: "grant | boost"}`；由 `intent.endorsed` 产生的 FloorGrant 必须可追溯到该具名人类 actor，Agent 不能保送 Agent（11.3）。`message.posted`（actor.kind=agent）的 `causation_id` 必须指向有效 FloorGrant。
 
 ### 3.1.12 与 RFC-0002 / RFC-0006 的边界与降级
 

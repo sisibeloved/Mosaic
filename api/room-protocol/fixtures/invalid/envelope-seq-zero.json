@@ -1,0 +1,12 @@
+{
+  "event_id": "evt_01H8BAD_SEQ_ZERO_0000000000",
+  "tenant_id": "ten_local",
+  "room_id": "room_01H8TESTROOM00000000000000",
+  "seq": 0,
+  "type": "message.posted",
+  "schema_version": 1,
+  "occurred_at": "2026-08-25T10:00:00.000Z",
+  "actor": { "participant_id": "par_owner", "kind": "human" },
+  "visibility": { "kind": "public" },
+  "payload": {}
+}

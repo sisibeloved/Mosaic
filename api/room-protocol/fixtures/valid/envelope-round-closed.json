@@ -1,0 +1,23 @@
+{
+  "event_id": "evt_01H8TESTROUNDCLOSED00000",
+  "tenant_id": "ten_local",
+  "room_id": "room_01H8TESTROOM00000000000000",
+  "thread_id": "thr_01H8TESTTHREAD00000000000",
+  "discussion_epoch_id": "epoch_01H8TESTEPOCH0000000000",
+  "seq": 160,
+  "type": "round.closed",
+  "schema_version": 1,
+  "occurred_at": "2026-08-25T10:01:00.000Z",
+  "actor": { "participant_id": "par_system", "kind": "system" },
+  "causation_id": null,
+  "correlation_id": "rnd_01H8TESTROUND00000000000",
+  "visibility": { "kind": "public" },
+  "payload": {
+    "round_id": "rnd_01H8TESTROUND00000000000",
+    "outcome": "published",
+    "selected_count": 2,
+    "silent_count": 1,
+    "cross_subrounds": 1
+  },
+  "metadata": {}
+}

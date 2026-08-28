@@ -25,11 +25,11 @@ const (
 
 // Grant 发言许可绑定（RFC-0003 floor.granted 的任务侧投影）。
 type Grant struct {
-	GrantID         string `json:"grant_id"`
-	Rank            int    `json:"rank"`
-	RevealStrategy  string `json:"reveal_strategy"`
-	ViewCursor      string `json:"view_cursor"` // opaque 视图游标（RFC-0001 v0.4：全局 seq 仅内部）
-	Epoch           int64  `json:"epoch"`
+	GrantID        string `json:"grant_id"`
+	Rank           int    `json:"rank"`
+	RevealStrategy string `json:"reveal_strategy"`
+	ViewCursor     string `json:"view_cursor"` // opaque 视图游标（RFC-0001 v0.4：全局 seq 仅内部）
+	Epoch          int64  `json:"epoch"`
 }
 
 // Context 统一讨论输入（RFC-0007 组装产物；M0 为最小占位结构）。
@@ -91,7 +91,7 @@ type Session interface {
 // Capabilities 适配器能力声明（RFC-0002 §3.1.2）。
 type Capabilities struct {
 	Streaming      bool   `json:"streaming"`
-	CancelMode     string `json:"cancel_mode"`      // notify | interrupt | none
+	CancelMode     string `json:"cancel_mode"`     // notify | interrupt | none
 	HistoryChannel string `json:"history_channel"` // mcp | structured_request（生产适配器禁止 none）
 	Continuity     bool   `json:"continuity"`
 	UsageReporting bool   `json:"usage_reporting"`

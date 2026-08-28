@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/intent.endorsed.schema.json",
+  "title": "IntentEndorsedPayload",
+  "description": "具名人类 actor 对已记录 Intent 的保送：grant 直接授予 Floor（默认），boost 加权；不绕过预算/硬资格/安全；Agent 不能保送 Agent。",
+  "type": "object",
+  "required": ["intent_id", "endorsed_by", "effect"],
+  "additionalProperties": false,
+  "properties": {
+    "intent_id": { "type": "string", "pattern": "^int_[0-9A-Za-z_-]+$" },
+    "endorsed_by": {
+      "type": "string",
+      "pattern": "^par_[0-9A-Za-z_-]+$",
+      "description": "具名人类 Participant；由此产生的 FloorGrant 必须可追溯到该 actor"
+    },
+    "effect": { "type": "string", "enum": ["grant", "boost"] }
+  }
+}

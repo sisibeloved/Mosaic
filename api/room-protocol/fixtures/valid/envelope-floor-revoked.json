@@ -1,0 +1,20 @@
+{
+  "event_id": "evt_01H8TESTFLOORREVOKED0000",
+  "tenant_id": "ten_local",
+  "room_id": "room_01H8TESTROOM00000000000000",
+  "thread_id": "thr_01H8TESTTHREAD00000000000",
+  "discussion_epoch_id": "epoch_01H8TESTEPOCH0000000000",
+  "seq": 153,
+  "type": "floor.revoked",
+  "schema_version": 1,
+  "occurred_at": "2026-08-25T10:00:04.000Z",
+  "actor": { "participant_id": "par_owner", "kind": "human" },
+  "causation_id": "evt_01H8TESTHUMANPAUSE00000000",
+  "correlation_id": "rnd_01H8TESTROUND00000000000",
+  "visibility": { "kind": "public" },
+  "payload": {
+    "grant_id": "grant_01H8TESTGRANT000000000",
+    "reason": "human_preemption"
+  },
+  "metadata": {}
+}

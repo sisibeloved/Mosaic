@@ -12,6 +12,7 @@
 ## 决策
 
 - 个人版（v1.0 桌面形态）存储用 **SQLite（WAL 模式）**，向量检索用 **sqlite-vec**；
+- 驱动采用 **modernc.org/sqlite**（纯 Go、免 CGO）：Windows/macOS 交叉编译与三平台 CI 无工具链负担；spike 实测 per-connection pragma 必须走 DSN（连接池下 `db.Exec` 只命中单连接，并发写会立刻 SQLITE_BUSY）；
 - 机制映射（设计不变，实现换形）：advisory lock / 房间串行 → `BEGIN IMMEDIATE` 互斥写事务；outbox `FOR UPDATE SKIP LOCKED` → 进程内提交后分发（outbox 表仍持久化，崩溃后按水位重放）；RLS/租户隔离 → 本地单用户天然满足（tenant 保留为常量列）；uuidv7 应用生成不变；迁移用 goose 的 SQLite 方言；
 - 检索起步用精确/遍历检索，sqlite-vec 索引按数据量证据启用（与 ADR-0003 的渐进口径一致）。
 

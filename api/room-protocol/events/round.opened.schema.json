@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/round.opened.schema.json",
+  "title": "RoundOpenedPayload",
+  "description": "Round 生命周期开启：刺激提交或唤醒检查触发；策略变更只在 round 边界生效（R-10）。",
+  "type": "object",
+  "required": [
+    "round_id", "stimulus_event_id", "mode", "reveal_strategy", "intent_window", "policy_version"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "round_id": { "type": "string", "pattern": "^rnd_[0-9A-Za-z_-]+$" },
+    "stimulus_event_id": { "type": "string", "pattern": "^evt_[0-9A-Za-z_-]+$" },
+    "mode": {
+      "type": "string",
+      "enum": ["roundtable", "open_floor", "deep_dive", "review", "decision"]
+    },
+    "reveal_strategy": {
+      "type": "string",
+      "enum": ["sequential", "simultaneous", "independent_then_cross"]
+    },
+    "intent_window": { "type": "string", "pattern": "^[0-9]+(s|m|h)$" },
+    "policy_version": { "type": "string", "pattern": "^pol_[0-9A-Za-z_-]+$" }
+  }
+}

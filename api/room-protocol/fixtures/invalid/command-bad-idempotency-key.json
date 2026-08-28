@@ -1,0 +1,7 @@
+{
+  "command_kind": "post_message",
+  "expected_room_version": 42,
+  "idempotency_key": "not-a-uuid",
+  "issued_at": "2026-08-25T10:00:00.000Z",
+  "payload": { "body": "fixture: 幂等键必须是 UUIDv7" }
+}

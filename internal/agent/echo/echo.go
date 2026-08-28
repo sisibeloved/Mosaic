@@ -83,8 +83,8 @@ func deterministicResult(task agent.Task) agent.Result {
 		return agent.Result{
 			Block: "turn_intent",
 			Data: map[string]any{
-				"action":          "speak",
-				"type":            "extend",
+				"action":           "speak",
+				"type":             "extend",
 				"public_rationale": "echo adapter: deterministic intent",
 				"scores": map[string]any{
 					"relevance": 0.5, "novelty": 0.5, "urgency": 0.5, "confidence": 0.5,

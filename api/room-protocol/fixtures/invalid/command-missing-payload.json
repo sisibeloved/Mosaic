@@ -1,0 +1,6 @@
+{
+  "command_kind": "post_message",
+  "expected_room_version": 42,
+  "idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e6f",
+  "issued_at": "2026-08-25T10:00:00.000Z"
+}
