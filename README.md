@@ -8,7 +8,9 @@ Mosaic 是一个面向人类与异构 AI Agent 的共享认知空间。它不是
 
 项目处于架构设计阶段（pre-alpha），尚无可运行实现。
 
-架构基线为[架构设计说明书](docs/design/2026-08-13-mosaic-architecture-design.md) v0.6（Draft）：以 Room Event Log 为唯一权威事实源，Conversation / Epistemic / Control 三平面分离；Agent 由外部 Harness（如 Codex、Claude Code 等）经 Agent Protocol 接入并自带模型访问，Mosaic 不代理发言流量、不核算费用，资源限额仅按轮次 / token / 时长熔断。
+交付目标（2026-08-25 确定）：**个人完全可用的双平台（Windows / macOS）桌面 App**，路线图见[交付与进度规划](docs/plan/2026-08-25-delivery-plan.md)；云端 / 多租户 / 协作形态为后续服务端演进，不在 v1.0 排期。
+
+架构基线为[架构设计说明书](docs/design/2026-08-13-mosaic-architecture-design.md) v0.7（Draft）：以 Room Event Log 为唯一权威事实源，Conversation / Epistemic / Control 三平面分离；Agent 由外部 Harness（如 Codex、ZCode、Kimi Code 等）经 Agent Protocol 接入并自带模型访问，Mosaic 不代理发言流量、不核算费用，资源限额仅按轮次 / token / 时长熔断。
 
 首个 MVP 将验证以下核心闭环：
 
@@ -22,7 +24,11 @@ Mosaic 是一个面向人类与异构 AI Agent 的共享认知空间。它不是
 ## 文档
 
 - [架构设计说明书](docs/design/2026-08-13-mosaic-architecture-design.md)
-- [设计文档索引](docs/design/README.md)
+- [RFC-0001 Room Protocol](docs/design/rfc/2026-08-25-rfc-0001-room-protocol.md)
+- [RFC-0002 Agent Protocol](docs/design/rfc/2026-08-25-rfc-0002-agent-protocol.md)
+- [Harness 调研报告](docs/design/research/2026-08-25-harness-survey.md)
+- [交付与进度规划（个人版 v1.0）](docs/plan/2026-08-25-delivery-plan.md)
+- [设计文档索引](docs/design/README.md)（含 ADR 决策记录）
 
 ## 计划中的仓库结构
 

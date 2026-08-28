@@ -31,6 +31,9 @@
 | v0.4 | 2026-08-24 | Mosaic 项目组 / Kimi Code | 圆桌默认形态修订：Roundtable 默认 rebuttals=1、同构回声运行时检测与提示、定向交锋快速通道；OQ-16 已决：讨论上下文窗口管理划归 Agent Harness，Mosaic 统一交付讨论输入并新增权威历史查询接口；OQ-17 已决：人类保送（`intent.endorsed`）+ 记分卡透明；OQ-19 已决：房间不压节奏，仅保留宽松期限，超时/重试/fallback 归 Harness；OQ-16~OQ-19 全部已决；统筹校对：新增架构原则 15（Harness 承担 Agent 侧执行职责），同步 MVP 切片、适应度函数与接口表；OQ-20 已决：外部 Harness 自带模型访问为主，Model Gateway 收缩为 Mosaic 自用模型通道，资源限额与合规语义相应调整；系统不核算费用，限额与熔断仅按轮次/token/时长（9.7 改写） |
 | v0.5 | 2026-08-24 | Mosaic 项目组 / ZCode | 勘误与补全：状态恢复 Draft；OQ-20 传导补全——8.2.5 增补 IF-AGENT-PROTOCOL、8.7 部署模型纳入外部 Harness、9.1.4/9.1.5/9.2.2/9.3 信任边界与 egress 同步；统一 cross 子轮原语（rebuttals 与 independent_then_cross 为同一机制）；6.2.6 定向 slot 上限明确；UC-002 与 OQ-03 措辞对齐 OQ-20 决策；修正第 10 章标题笔误 |
 | v0.6 | 2026-08-24 | Mosaic 项目组 / Codex | 文档评审确认修正：逻辑/行为视图统一为外部 Harness + Agent Protocol Adapter；补齐 Harness 回调 SSRF 防护；建立投影查询跨可见性非干扰契约及测试门禁 |
+| v0.7 | 2026-08-25 | Mosaic 项目组 / ZCode | 对齐修订：协议契约移交 RFC 系列、实现选型移交 ADR；Web 基线改为 React/Vite SPA（ADR-0002）；实时传输改为 SSE 下行 + HTTP 命令（ADR-0001）；IF-AGENT-PROTOCOL 形态定为本地 agent 进程 + 逐家适配器（ACP 可选，首批 Codex/ZCode/Kimi Code，见 RFC-0002 与 Harness 调研报告）；SSRF/egress 约束限定于远端演进形态；OQ-03/08/09 挂接 RFC 裁决建议 |
+| v0.8 | 2026-08-25 | Mosaic 项目组 / ZCode | RFC 系列全量草案（0001–0011）登记；OQ-04/05/06/07/10/11/12/13/14/15 挂接对应 RFC 裁决建议；技术类开放问题自此全部由 RFC 系列承接，仅余 OQ-01/02 项目治理项 |
+| v0.9 | 2026-08-25 | Mosaic 项目组 / ZCode | RFC-0001/0002 首轮审校对齐：消息事件统一为 message.posted（actor.kind 区分）；对外续传/快照改 opaque 视图游标（全局 seq 仅内部，随 RFC-0001 v0.4，落地细节回填待 RFC Approved）；Agent 接入改分级晋级表述（RFC-0002 v0.5）；ADR-0006/0007 状态随 RFC 评审改为 Proposed |
 
 ### 0.4 Keywords 关键词
 
@@ -40,7 +43,7 @@ Mosaic、Multi-Agent Social Runtime、Shared Cognitive Space、Room Protocol、R
 
 Mosaic 是一个原生的多智能体社交运行时，使人类与异构 AI Agent 以平等的 Participant 身份，在同一共享认知空间中进行透明、可分支、可打断、可优雅收束的讨论。系统不以固定 Conductor、任务分解或最终交付为中心，而以 Room 及其权威事件流为中心；通过“观察—注意—意图—发言权仲裁—生成—发布—收束”协议，在保持观点自主性的同时控制噪声、重复、循环与资源消耗。不可变 Conversation 事实与版本化 Epistemic Projection 分离，使系统能够追踪 claim/evidence、证据债务和动态立场，并用保留异议与反证条件的 Closure Capsule 收尾，而不把结构收敛伪装成事实共识。
 
-本文定义 Mosaic v0.1 的系统边界、概念模型、逻辑架构、关键行为、数据所有权、实现模型、部署模型以及安全、隐私、可靠性和可观测性策略。MVP 采用模块化单体，以 Go Room Runtime、Next.js Web Client、PostgreSQL/pgvector 和对象存储为基础；事件总线与工作流引擎是后续按负载演进的实现选项，不是首版前置条件。
+本文定义 Mosaic v0.1 的系统边界、概念模型、逻辑架构、关键行为、数据所有权、实现模型、部署模型以及安全、隐私、可靠性和可观测性策略。MVP 采用模块化单体，以 Go Room Runtime、React/Vite Web Client、PostgreSQL/pgvector 和对象存储为基础；事件总线与工作流引擎是后续按负载演进的实现选项，不是首版前置条件。协议与行为契约由 RFC 系列承载（Room Protocol、Agent Protocol 已立项），实现与工具选型由 ADR 记录。
 
 ### 0.6 List of abbreviations 缩略语清单
 
@@ -398,8 +401,8 @@ graph TB
 |---|---|---|---|
 | IF-UI-HUMAN | Human ↔ Client | 展示 Timeline/Graph/状态并接受输入 | 浏览器 UI |
 | IF-ROOM-API | Client ↔ Runtime | Room、Participant、Thread、消息、Policy 与控制命令 | HTTPS JSON API |
-| IF-ROOM-STREAM | Runtime → Client，Client → Runtime 控制 | 事件投影、流式草稿、状态、取消与心跳 | WebSocket；SSE 为降级候选 |
-| IF-AGENT-PROTOCOL | Runtime ↔ 外部 Agent Harness | Observe/EvaluateIntent/Generate/Summarize 下发，历史查询与结果回传（OQ-20） | HTTPS 回调 + 长连接，具体形态待定 |
+| IF-ROOM-STREAM | Runtime → Client 下行，Client → Runtime 经 HTTP 命令 | 事件投影、流式草稿、状态与心跳 | SSE 下行 + HTTP 幂等命令（ADR-0001）；WebSocket 为演进项 |
+| IF-AGENT-PROTOCOL | Runtime ↔ 外部 Agent Harness | Observe/EvaluateIntent/Generate/Summarize 下发，历史查询与结果回传（OQ-20） | 本地 agent 进程 + 逐家适配器（ACP 为可选适配器）；远端网络形态为演进项（RFC-0002） |
 | IF-AUTH-OIDC | Runtime ↔ IdP | 登录、身份声明、会话建立 | OIDC Authorization Code + PKCE |
 | IF-MODEL-GATEWAY | Runtime ↔ Providers | 仅限 Mosaic 自用模型：Embedding 与内部 utility；Agent 发言流量由外部 Harness 直连（OQ-20） | Provider Adapter + HTTPS streaming |
 | IF-TOOL-GATEWAY | Runtime ↔ Tools | 工具发现、调用、审批与结果回传 | MCP/HTTP；按能力隔离 |
@@ -492,7 +495,7 @@ sequenceDiagram
         Harness-->>AgentProtocol: PublicDraft + declared usage
         AgentProtocol-->>Attention: Validated PublicDraft + metadata
         Attention->>Kernel: PublishValidatedDraft(draft, grant)
-        Kernel->>Store: Append agent.message.posted or generation.failed
+        Kernel->>Store: Append message.posted or generation.failed
         Store-->>Gateway: committed event
         Gateway-->>Web: event projection
     end
@@ -849,7 +852,7 @@ Embed(content) -> Vector（由 Mosaic 自用模型通道实现，不要求 Harne
 Cancel(runId)
 ```
 
-讨论历史的按需回查由 Mosaic 提供权威只读结构化接口（经 Tool Gateway 的审批与审计通道），由 Harness 自行决定何时查询以及如何纳入自身上下文；窗口管理与压缩是 Harness 的内部职责，Mosaic 不感知也不校验（见 6.3）。同理，请求级超时、重试与 provider fallback 均由 Harness 按 Profile 声明的策略自行处理；Mosaic 只保留两类时限——维持协议推进的宽松 round/grant 期限，以及服务人类抢占与预算熔断的取消通道（UC-004）。
+讨论历史的按需回查由 Mosaic 提供权威只读结构化接口（经 Tool Gateway 的审批与审计通道；通道形态为本地 MCP server 或结构化工具请求，由适配器选择，见 RFC-0002），由 Harness 自行决定何时查询以及如何纳入自身上下文；窗口管理与压缩是 Harness 的内部职责，Mosaic 不感知也不校验（见 6.3）。同理，请求级超时、重试与 provider fallback 均由 Harness 按 Profile 声明的策略自行处理；Mosaic 只保留两类时限——维持协议推进的宽松 round/grant 期限，以及服务人类抢占与预算熔断的取消通道（UC-004）。
 
 Agent 发言的模型调用由外部 Harness 直连其 Provider 完成（OQ-20）：Mosaic 不持有 Provider 凭据、不做请求级代理；Model Gateway 收缩为 Mosaic 自用模型通道（embedding 与投影/检索等内部用途），与 Agent 发言流量隔离。供应商切换不改变 Agent Profile 身份；实际模型以 Profile 声明与 Harness 自报的 run 级元数据记录（`model.binding.changed`），保持可追踪性。
 
@@ -930,7 +933,7 @@ Roundtable 与 Review 模式下第 1 步退化为纯硬资格过滤（见 6.2.4�
 - `addressed_to[]`：希望获得回应的 Participant 集合，不触发 Agent 直调；
 - `relations[]`：一条发言对零到多个历史事件的类型化长程关系，每条边包含 `target_event_id`、`kind` 与 `provenance`。初始 `kind` 为 `supports | challenges | extends | questions | evidence_for | supersedes | analogy | relates`。
 
-一条消息可能支持 A、质疑 B，因此无类型的 `relates_to[]` 不足以表达关系。Participant 显式声明的关系随 `message.posted` / `agent.message.posted` 固化；系统推断关系只进入带算法版本的 Epistemic Projection，不得回写消息 payload。跨 Thread/可见性域的关系必须校验目标可见性，禁止通过边泄露私有事件的存在。所有关系与投影响应遵守 6.10.1 的主体非干扰契约。
+一条消息可能支持 A、质疑 B，因此无类型的 `relates_to[]` 不足以表达关系。Participant 显式声明的关系随 `message.posted`（actor.kind 区分 human/agent）固化；系统推断关系只进入带算法版本的 Epistemic Projection，不得回写消息 payload。跨 Thread/可见性域的关系必须校验目标可见性，禁止通过边泄露私有事件的存在。所有关系与投影响应遵守 6.10.1 的主体非干扰契约。
 
 ```json
 {
@@ -1302,7 +1305,7 @@ Room Event Envelope：
   "thread_id": "thr_01...",
   "discussion_epoch_id": "epoch_01...",
   "seq": 149,
-  "type": "agent.message.posted",
+  "type": "message.posted",
   "schema_version": 1,
   "occurred_at": "2026-08-13T18:42:10.123Z",
   "actor": {"participant_id": "par_01...", "kind": "agent"},
@@ -1349,7 +1352,7 @@ Room Event Envelope：
 | LE-07 | Interaction | Attention & Floor Engine | Candidate、Intent、评分、多样性与 Grant |
 | LE-08 | Interaction | Context & Memory Manager | 上下文组装、摘要、检索和记忆治理 |
 | LE-09 | Interaction | Output/Loop/Safety Guard | Schema、重复、注入、循环和发布校验 |
-| LE-10 | Agent Platform | Agent Protocol Adapter | 外部 Harness 注册与连接、任务下发、结果校验、取消、幂等与 grant epoch 隔离 |
+| LE-10 | Agent Platform | Agent Protocol Adapter | 外部 Harness 进程托管与逐家适配器（含 supervisor）、任务下发、结果校验、取消、幂等与 grant epoch 隔离 |
 | LE-11 | Agent Platform | Model Gateway | Mosaic 自用模型（embedding/utility）的供应商抽象；不承担 Agent 发言流量 |
 | LE-12 | Agent Platform | Tool & Approval Gateway | capability、审批、调用、Artifact |
 | LE-13 | Persistence | Event Store & Outbox | 权威日志、幂等、事务分发 |
@@ -1371,7 +1374,7 @@ v0.1 使用 monorepo。Go 后端保持领域模块边界；TypeScript Web Client
 
 | 逻辑元素 | 计划目录/包 | 说明 |
 |---|---|---|
-| LE-01 | `apps/web` | Next.js/React Web Client |
+| LE-01 | `apps/web` | React/Vite Web Client（ADR-0002） |
 | LE-02 | `internal/gateway` | HTTP/WS、命令 DTO、查询、恢复协议 |
 | LE-03 | `internal/room` | Room aggregate、command handler、event definitions |
 | LE-04 | `internal/participant` | Profile/Session 领域模块 |
@@ -1380,7 +1383,7 @@ v0.1 使用 monorepo。Go 后端保持领域模块边界；TypeScript Web Client
 | LE-07 | `internal/attention` | round、intent、scoring、MMR、floor |
 | LE-08 | `internal/context`、`internal/memory` | Context Builder、summary、retrieval |
 | LE-09 | `internal/guard` | output schema、dedupe、loop/safety guard |
-| LE-10 | `internal/agent` | Agent Protocol adapter、Harness connection、task/result/cancel lifecycle |
+| LE-10 | `internal/agent` | Harness 端口、进程 supervisor、逐家适配器（adapters/）、task/result/cancel lifecycle |
 | LE-11 | `internal/model` | 自用模型 provider adapter（embedding/utility） |
 | LE-12 | `internal/tool` | MCP/tool port、approval、result normalization |
 | LE-13 | `internal/eventstore`、`internal/outbox` | PostgreSQL repository 与 dispatcher |
@@ -1401,14 +1404,14 @@ v0.1 使用 monorepo。Go 后端保持领域模块边界；TypeScript Web Client
 #### 8.2.1 运行框架
 
 - Backend：Go 1.25+，标准 `net/http` 或轻量路由器，显式 goroutine/errgroup 管理；不引入隐藏控制流的重型 Agent Framework。
-- Frontend：Next.js + React + TypeScript；服务端渲染用于壳与登录，Room 实时交互主要在客户端。
-- Database：PostgreSQL 17+，启用 pgvector；迁移工具待详细设计确定。
+- Frontend：React + TypeScript + Vite 静态 SPA；认证走 OIDC + PKCE 页面内处理，Room 实时交互在客户端（ADR-0002）。
+- Database：PostgreSQL 17+（参考栈 18.x），启用 pgvector ≥ 0.8；迁移工具 goose（ADR-0003/0004）。
 - Object Storage：S3-compatible，本地开发用 MinIO 或兼容替代。
 
 #### 8.2.2 通信框架
 
 - 外部命令/查询：HTTPS JSON；OpenAPI 描述。
-- 实时：WebSocket，消息使用 Room Event Envelope；断线按 `last_seen_seq` 恢复。
+- 实时：SSE 下行事件流（Room Event Envelope）+ HTTP 幂等命令；断线按 `last_seen_seq` 恢复；WebSocket 为演进项（ADR-0001）。
 - 进程内：类型化 Go 接口 + 提交后 dispatcher。
 - 跨进程演进：transactional outbox → NATS JetStream（达到拆分阈值后）；领域代码不依赖 NATS 类型。
 - 自用模型：Provider Adapter 统一 HTTP streaming（embedding/utility）；超时与取消传播。
@@ -1434,12 +1437,12 @@ OM（Operations & Maintenance）采用 OTel 统一埋点：
 | 接口组 | v0.1 实现 | 演进点 |
 |---|---|---|
 | IF-ROOM-API | OpenAPI + HTTPS JSON | 公共 SDK |
-| IF-ROOM-STREAM | WebSocket + seq resume | 多区域 fan-out |
+| IF-ROOM-STREAM | SSE + HTTP 命令 + seq resume（ADR-0001） | WebSocket / 多区域 fan-out |
 | IF-ROOM-EVENT | Go interfaces + PostgreSQL outbox | NATS JetStream |
-| IF-AGENT-PROTOCOL | HTTPS 回调 + 长连接（形态待 Agent Runtime 详细设计）：任务下发经受控 egress proxy 回调，推送与取消经 Gateway 终止的入站长连接；两条路径绑定 tenant/participant、幂等键与 grant epoch；回调目标执行 HTTPS-only 与 SSRF 双阶段校验 | 标准 Agent 协议 SDK、多 Harness 生态 |
+| IF-AGENT-PROTOCOL | 本地 agent 进程 + 逐家适配器（闭环梯队：echo + 首个真实适配器 + 参考 OS，其余分级晋级；ACP 为可选适配器），任务下发/结果回传/取消绑定 tenant/participant、幂等键与 grant epoch（RFC-0002） | 远端网络形态（回调/长连接/egress proxy + SSRF 校验）为演进项 |
 | IF-MODEL | 自用模型 Provider adapters（embedding/utility），不承担 Agent 发言流量 | 独立 Model Gateway 服务 |
 | IF-TOOL | MCP client + approval gate | 沙箱/远程执行集群 |
-| IF-PERSIST | pgx/sql repositories | 读写分离/分区 |
+| IF-PERSIST | pgx/v5 + sqlc repositories（ADR-0004） | 读写分离/分区 |
 | IF-AUTHZ | OIDC + scoped authorization | 企业 SCIM/细粒度 policy engine |
 | IF-OBS | OTel | 独立审计仓库和 SIEM |
 
@@ -1449,11 +1452,11 @@ OM（Operations & Maintenance）采用 OTel 统一埋点：
 |---|---|---|---|
 | 架构形态 | 模块化单体 | 低运维成本，保持事务一致性与可测试边界 | 微服务：v0.1 缺少吞吐和团队规模依据 |
 | Backend | Go | 长连接、并发取消、部署简单，契合单 Room actor-like 串行化 | Python：Agent 生态强但核心实时/并发边界更难收敛；Rust：首版开发成本高 |
-| Web | Next.js/React | 成熟实时 UI 生态，可借鉴 LobeHub 前端经验 | 原生桌面/移动：不在 MVP 范围 |
+| Web | React + Vite SPA | 无 SSR/BFF 需求，静态产物随 Go 分发，依赖面小（ADR-0002） | Next.js：多一个 Node 运行时与依赖漂移成本，出现公开分享页/SEO 需求再引入 |
 | 主存储 | PostgreSQL | 事务、JSONB、RLS、全文、pgvector 与运维成熟 | 多数据库组合：过早复杂化 |
-| 实时协议 | WebSocket | 双向控制、取消、presence 与流式体验 | 纯 SSE：客户端控制需另一路径 |
+| 实时协议 | SSE 下行 + HTTP 命令 | 控制命令本就走幂等 HTTP，SSE 覆盖全部下行；代理友好、自动重连（ADR-0001） | WebSocket：无上行低延迟需求前不引入；presence/typing 上行延迟成为瓶颈时升级 |
 | 事件分发 | Transactional outbox | 与权威日志原子提交，故障恢复简单 | Kafka/NATS：首版不需要独立集群 |
-| 向量检索 | pgvector | 与 scope/权限过滤同库事务管理 | 独立 Vector DB：尚无规模证据 |
+| 向量检索 | pgvector ≥ 0.8 | 与 scope/权限过滤同库事务管理；起步精确/iterative scan，HNSW 按证据启用（ADR-0003） | 独立 Vector DB：尚无规模证据 |
 | 长工作流 | PostgreSQL job/worker | v0.1 自动轮次短且有硬上限 | Temporal：在持久长任务出现后再引入 |
 
 #### 8.2.7 开源策略
@@ -1531,7 +1534,7 @@ Mosaic/
 
 | 构建元素 | 来源代码元素 | 产物 |
 |---|---|---|
-| BE-01 `mosaic-web` | `apps/web` + `packages/protocol-ts` | 静态/Node Web 镜像 |
+| BE-01 `mosaic-web` | `apps/web` + `packages/protocol-ts` | 静态 Web 产物（随 Go 分发或独立静态服务） |
 | BE-02 `mosaic-server` | `cmd` + `internal/*` | Linux Go 二进制/OCI 镜像 |
 | BE-03 `room-protocol` | `api/room-protocol` | Schema bundle、OpenAPI/AsyncAPI、TS SDK |
 | BE-04 `mosaic-migrations` | `db/migrations` | 迁移 bundle/迁移镜像 |
@@ -1581,7 +1584,7 @@ mosaic-deploy-<semver>.tgz
 | PostgreSQL | DE-03 数据结构 | 主库 + 备份 | 权威持久状态 |
 | Object Storage | Artifact | 托管/集群 | 大对象 |
 | IdP | 外部 | 外部 | 身份权威 |
-| 外部 Agent Harness | IF-AGENT-PROTOCOL 端点 | 外部 | Agent 侧执行、模型访问与上下文窗口管理（OQ-20） |
+| 外部 Agent Harness | IF-AGENT-PROTOCOL（本地进程，随 Worker 部署） | 外部 | Agent 侧执行、模型访问与上下文窗口管理（OQ-20） |
 | Telemetry Backend | 指标/日志/Trace | 外部/托管 | 运维数据 |
 
 #### 8.7.2 模型设计
@@ -1623,16 +1626,15 @@ graph TB
     API2 --> IdP
     Worker --> Models
     Worker --> Tools
-    Worker --> Harness
-    Harness -.-> Edge
+    Worker -->|"spawn / 适配器（本地进程）"| Harness
     API1 --> OTel
     API2 --> OTel
     Worker --> OTel
 ```
 
-多实例不依赖 sticky session 才能保证正确性。若 WebSocket 使用本地连接表，提交事件通过 PostgreSQL outbox/notification 或后续 NATS fan-out 到持有连接的实例；断线客户端始终可按 seq 补齐。
+多实例不依赖 sticky session 才能保证正确性。若下行连接（SSE）使用本地连接表，提交事件通过 PostgreSQL outbox/notification 或后续 NATS fan-out 到持有连接的实例；断线客户端始终可按 seq 补齐。
 
-外部 Agent Harness 经 IF-AGENT-PROTOCOL 双向接入：Worker 出站回调下发 Observe/Intent/Generate 任务，Harness 亦可通过 Edge 建立经鉴权的长连接接收事件推送与取消指令；两条路径均绑定 tenant/participant 并携带幂等键，迟到结果按 grant epoch 拒绝。外部 Harness 不在 Mosaic 信任域内，其接入按 9.1.4/9.3 的信任边界与 egress 策略治理。
+外部 Agent Harness 经 IF-AGENT-PROTOCOL 接入：v0.1 形态为本地 agent 进程——Worker 按 Agent Profile 以子进程启动 agent（分级晋级：闭环梯队 = echo 适配器 + 首个真实适配器（建议 Codex）+ 参考 OS，其余逐家以 spike + conformance 晋级），任务下发、结果回传与取消绑定 tenant/participant、幂等键与 grant epoch，迟到结果按 grant epoch 拒绝。agent 进程不在 Mosaic 信任域内：按 9.1.4 信任边界、进程最小权限、Profile 权限模式与强制 egress 边界治理。远端网络形态（出站回调、入站长连接与 egress proxy）为演进项，届时启用 9.1.5/9.3 的 SSRF 与 egress 约束（RFC-0002）。
 
 ### 8.8 运行模型
 
@@ -1689,10 +1691,10 @@ graph TB
 
 #### 9.1.2 暴露面清单
 
-- 登录、回调、REST/WS API 与文件上传；
+- 登录、OIDC 回调、REST/SSE API 与文件上传；
 - Prompt、消息、URL、Artifact、Memory 导入；
 - LLM/Embedding Provider 出站调用（自用模型）；
-- 外部 Agent Harness 接入与回调（OQ-20）；
+- 外部 Agent Harness 接入（v0.1 本地进程；远端演进形态含回调，OQ-20）；
 - MCP/工具调用与审批回调；
 - 管理后台、导出和删除接口；
 - 数据库、对象存储、日志/Trace 和备份；
@@ -1726,7 +1728,7 @@ graph TB
 
 | 类别 | 元素 |
 |---|---|
-| 信任边界入口 | Web UI、API/Realtime Gateway、OIDC Callback、外部 Agent Harness 接入与回调（IF-AGENT-PROTOCOL） |
+| 信任边界入口 | Web UI、API/Realtime Gateway、OIDC Callback、外部 Agent Harness 接入（IF-AGENT-PROTOCOL：v0.1 本地进程，远端演进形态含回调） |
 | 核心受信领域 | Room Kernel、Policy & Budget、Event Store |
 | 受控 AI 区 | Attention、Context/Memory、Structure & Epistemic Projection、Agent Harness 接入层、Safety Guard |
 | 高风险外部区 | 外部 Agent Harness 及其 Provider、自用模型 Providers、MCP/Tools、上传内容 |
@@ -1739,7 +1741,7 @@ graph TB
 |---|---|
 | 自用模型 Provider 超时/限流 | deadline、circuit breaker、per-provider queue、可见降级 |
 | 外部 Harness 失联/无响应 | 宽松 round/grant 期限到期转 `unavailable` 状态、取消与 grant 撤销通道、本轮用剩余候选继续 |
-| 外部 Harness 回调 SSRF/DNS 重绑定 | HTTPS-only、URL 规范化、注册与连接前双阶段 DNS/IP 校验、私网/保留地址与非批准端口拒绝、禁重定向、受控 egress proxy |
+| 外部 Harness 网络接入 SSRF/DNS 重绑定（仅远端演进形态） | 本地进程形态无出站回调面，以进程边界与最小权限治理；远端形态启用时：HTTPS-only、URL 规范化、注册与连接前双阶段 DNS/IP 校验、私网/保留地址与非批准端口拒绝、禁重定向、受控 egress proxy |
 | 实例崩溃 | outbox、lease、幂等、grant epoch、重建投影 |
 | 数据损坏 | PITR、校验和、event append-only 权限、恢复演练 |
 | 慢客户端 | bounded queue、断线、seq resume |
@@ -1791,7 +1793,7 @@ Untrusted Input
 - UI 禁用不是安全边界，所有命令在 Gateway 与领域层重复检查权限；
 - Agent/Tool 不能直接写 Event Store；只能提交受验证命令/结果；
 - signed URL 不授予 Room 成员权限，生成前必须校验，TTL 短且绑定对象；
-- 外部 Harness 回调 URL 必须经受控 egress proxy；注册及每次连接前重新解析并拒绝 loopback、private、link-local、保留地址、云元数据地址、非批准端口和重定向；
+- 外部 Harness 网络接入（仅远端演进形态适用）：回调 URL 必须经受控 egress proxy；注册及每次连接前重新解析并拒绝 loopback、private、link-local、保留地址、云元数据地址、非批准端口和重定向；本地进程形态以进程信任边界替代网络认证；
 - projection 查询必须满足主体非干扰契约：响应等价于只使用调用者可见来源重建的结果；tenant/visibility 过滤与 RLS 为双重兜底；
 - Mosaic 自用模型的 fallback 不允许自动扩大数据地域或合规范围；外部 Harness 的模型地域与合规边界由接入方在 Profile 中声明并承诺，Mosaic 按声明审计（OQ-20）。
 
@@ -1810,7 +1812,7 @@ Untrusted Input
 | Experience | CSP、CSRF、防 XSS、安全 Markdown/链接渲染 |
 | Room Runtime | command authorization、idempotency、expected version、budget hard limits |
 | Interaction | untrusted-content labels、context minimization、memory/projection provenance、typed relation visibility、feedback overlay、anti-Goodhart metric policy、no hidden-CoT storage |
-| Agent Platform | 自用模型 provider allowlist、外部 Harness 接入认证与回调校验、宽松协议期限（请求级超时归 Harness）、tool capability、human approval、sandbox |
+| Agent Platform | 自用模型 provider allowlist、外部 Harness 接入治理（v0.1 本地进程权限模式与沙箱参数；远端形态认证与回调校验）、宽松协议期限（请求级超时归 Harness）、tool capability、human approval、sandbox |
 | Persistence | encryption、RLS、append-only role、PITR、retention/delete job |
 | Operations | OTel redaction、audit integrity、RBAC、break-glass review |
 
@@ -1818,7 +1820,7 @@ Untrusted Input
 
 - Ingress、应用、数据、工具执行与运维面使用独立网络策略；
 - PostgreSQL/Object Storage 不直接暴露公网；
-- Worker 的自用模型 Provider 与 Tool egress 按域名或网关 allowlist；所有外部 Harness 回调强制经受控 egress proxy，执行 URL 规范化、DNS/IP 双阶段校验、私网/保留地址和端口拒绝、禁重定向，并记录 tenant、注册目标与最终解析目标；外部 Harness 的入站长连接经 Edge 终止、鉴权并按租户限速；
+- Worker 的自用模型 Provider 与 Tool egress 按域名或网关 allowlist；外部 Harness 为本地进程形态（无出站回调面），远端演进形态启用时强制经受控 egress proxy，执行 URL 规范化、DNS/IP 双阶段校验、私网/保留地址和端口拒绝、禁重定向，并记录 tenant、注册目标与最终解析目标；
 - Runtime API 无权读取生产 Secret 明文，只从 Secret Manager 获得短期凭据；
 - 备份跨故障域、加密并定期恢复演练；
 - 生产至少两个 Runtime API 副本，worker 可水平扩展；数据库为首个单区域关键依赖，需托管 HA 或明确 RTO/RPO。
@@ -1967,7 +1969,7 @@ CI/运行时持续检查：
 - 迟到模型结果不能在 pause/revoke 后发布；
 - Tenant A 的 token 无法查询 Tenant B 的任何资源；
 - 对任一主体 P，projection/history API 响应必须与仅使用 P 可见来源重建的 fixture 完全一致，隐藏来源不得改变计数、标签、水位、错误或 timing 分类；
-- 外部 Harness 回调必须通过 SSRF fixture：拒绝 loopback/private/link-local/metadata/保留地址、非批准端口、重定向和 DNS 重绑定；
+- 外部 Harness 接入安全 fixture：本地进程形态验证进程边界与最小权限（无 Mosaic 凭据注入）；远端演进形态启用时必须通过 SSRF fixture——拒绝 loopback/private/link-local/metadata/保留地址、非批准端口、重定向和 DNS 重绑定；
 - 日志 fixture 不包含 prompt、secret、PII 正文。
 
 ### 11.4 主要风险与缓解
@@ -1986,7 +1988,7 @@ CI/运行时持续检查：
 | Conversation Graph UI 过于复杂 | 用户无法理解走向 | Timeline 为主、Graph 渐进披露、默认自动折叠/摘要 |
 | Event Sourcing 实现复杂 | 研发速度下降 | 只对 Room 核心使用；投影工具化；严格 Schema/fixture |
 | 外部模型不稳定/政策变化 | 可用性和合规风险 | Adapter、fallback、显式实际模型、地区/租户约束 |
-| 外部 Harness 回调被用于 SSRF | Worker 访问内部服务、云元数据或管理面 | 强制 egress proxy、双阶段解析校验、私网/保留地址与端口拒绝、禁重定向和 DNS 重绑定测试 |
+| 外部 Harness 网络接入被用于 SSRF（远端演进形态） | Worker 访问内部服务、云元数据或管理面 | 本地进程形态先行：进程边界 + 最小权限 + 不注入 Mosaic 凭据；远端形态启用时强制 egress proxy、双阶段解析校验、私网/保留地址与端口拒绝、禁重定向和 DNS 重绑定测试 |
 | 混合可见性投影泄露隐藏来源 | 无权成员从 cluster/claim 计数、标签或错误推断私有内容 | 主体非干扰契约、按可见来源重建、缓存键隔离与跨 visibility fixture |
 | Prompt injection / Memory poisoning | 泄漏与长期错误行为 | provenance、最小上下文、tool gate、人工编辑、TTL |
 | “AI 平等成员”误读为权限平等 | 安全越权 | 明确语义对称与控制权限非对称 |
@@ -1998,19 +2000,19 @@ CI/运行时持续检查：
 |---|---|---|
 | OQ-01 | Mosaic 名称、域名、GitHub organization 与商标是否可用？ | 对外发布前 |
 | OQ-02 | 项目采用 Apache-2.0、AGPL-3.0 还是其他许可证？ | 接受外部贡献/引入代码前 |
-| OQ-03 | OQ-20 已决后：v0.1 首批支持哪些外部 Agent Harness 接入形态与认证方式？自用模型（embedding/utility）选择哪些 Provider，数据地域如何配置？ | Agent Runtime 详细设计前 |
-| OQ-04 | Floor score 的初始权重和公开粒度如何通过用户研究确定？ | Attention 功能设计前 |
-| OQ-05 | 支线 merge 是否默认需人类确认？ | Conversation Graph 功能设计前 |
-| OQ-06 | 多人类协作中谁拥有 pause/policy/删除权限？ | Authorization 详细设计前 |
-| OQ-07 | Room Event 的默认 retention 和审计墓碑内容？ | 数据/隐私评审前 |
-| OQ-08 | 是否在 v0.1 接入 MCP，还是完全延后工具能力？ | MVP 排期前 |
-| OQ-09 | 对外 Room Protocol 的稳定范围：仅 Event，还是含 Agent Harness API？ | v0.2 SDK 规划前 |
-| OQ-10 | 如何用人工标注校准 bridge yield、dissent survival、closure stability 与人类结果信号，建立噪声下限？ | 评测平台设计前 |
-| OQ-11 | v0.1 的 cluster 基图采用何种时间窗口/语义分段，projection feedback 如何影响下一版本？ | Epistemic Projection 详细设计前 |
-| OQ-12 | 各 closure_type 的接受权、纯 Agent 房间 quorum 与人类确认默认值是什么？ | Closure 功能设计前 |
-| OQ-13 | Claim/Evidence 投影在 v0.1 仅用于离线评测，还是进入 Context/Closure 的在线路径？ | MVP 排期前 |
-| OQ-14 | Context Receipt 的默认 retention、导出范围与删除后 tombstone 策略是什么？ | 数据/隐私评审前 |
-| OQ-15 | frontier slot 与 dyad share 的默认阈值如何按模式校准，避免保护探索变成强制反对？ | Attention 功能设计前 |
+| OQ-03 | OQ-20 已决后：v0.1 首批支持哪些外部 Agent Harness 接入形态与认证方式？自用模型（embedding/utility）选择哪些 Provider，数据地域如何配置？ | RFC-0002 v0.5 已提裁决建议：本地进程 + 适配器分级晋级（闭环梯队 = echo + 首个真实适配器 + 参考 OS）；自用模型 Provider 归 Model Gateway ADR；评审中 |
+| OQ-04 | Floor score 的初始权重和公开粒度如何通过用户研究确定？ | RFC-0003 已提裁决建议（默认权重 + 五档 band 公开，不公开精确分），需用户研究确认；评审中 |
+| OQ-05 | 支线 merge 是否默认需人类确认？ | RFC-0004 已提裁决建议：默认人类确认（moderator+），纯 Agent 房间可按 Policy 自动（收束型除外）；评审中 |
+| OQ-06 | 多人类协作中谁拥有 pause/policy/删除权限？ | RFC-0008 已提权限矩阵裁决建议（pause 全员、policy moderator+、删除/导出 admin+）；评审中 |
+| OQ-07 | Room Event 的默认 retention 和审计墓碑内容？ | RFC-0010 已提裁决建议（archived 后 90 天默认；墓碑三字段最小化）；评审中 |
+| OQ-08 | 是否在 v0.1 接入 MCP，还是完全延后工具能力？ | RFC-0002 建议：MCP 以自用历史回查通道身份进入（本地 MCP server），外部 MCP 工具仍延后；评审中 |
+| OQ-09 | 对外 Room Protocol 的稳定范围：仅 Event，还是含 Agent Harness API？ | RFC-0001 建议按内部闭环消解：协议不对外发布、无对外 SDK，Harness 不直接消费 Room Protocol；评审中 |
+| OQ-10 | 如何用人工标注校准 bridge yield、dissent survival、closure stability 与人类结果信号，建立噪声下限？ | RFC-0011 已提裁决建议（标注者 ≥2、kappa ≥ 0.6 噪声下限、校准门流程）；评审中 |
+| OQ-11 | v0.1 的 cluster 基图采用何种时间窗口/语义分段，projection feedback 如何影响下一版本？ | RFC-0006 已提裁决建议（滑窗 48h/200 事件取先到；feedback 经事件重放）；评审中 |
+| OQ-12 | 各 closure_type 的接受权、纯 Agent 房间 quorum 与人类确认默认值是什么？ | RFC-0005 已提裁决建议（consensus/decision 人类确认；纯 Agent quorum ≥ 2/3 且同构折算）；评审中 |
+| OQ-13 | Claim/Evidence 投影在 v0.1 仅用于离线评测，还是进入 Context/Closure 的在线路径？ | RFC-0006 已提裁决建议：默认 feature-flag、离线评测 + Context 谱系只读，不进 Closure 在线判定；评审中 |
+| OQ-14 | Context Receipt 的默认 retention、导出范围与删除后 tombstone 策略是什么？ | RFC-0010 已提裁决建议（Receipt 90 天；条目墓碑化保留计数骨架）；评审中 |
+| OQ-15 | frontier slot 与 dyad share 的默认阈值如何按模式校准，避免保护探索变成强制反对？ | RFC-0003 已提默认值与校准门建议（收紧阈值须以离线回放 + 人工基线为前提）；评审中 |
 | OQ-16 | 各 Agent 按 Model Binding 差异化组装上下文导致“同桌不同视角”，是否及如何向用户暴露这一差异？ | 已决（v0.4）：上下文窗口管理划归 Agent Harness，Mosaic 统一交付讨论输入 + 权威历史查询接口，见 6.3/6.4 |
 | OQ-17 | Floor 评分权重是否会系统性压制意外或离题插话，frontier slot 名额与评分公开粒度如何校准，避免仲裁成为隐性主导者？ | 已决（v0.4）：人类保送（`intent.endorsed`）+ 记分卡透明（权重可见可配、落选 Intent 可查），见 6.2.2/6.2.3 |
 | OQ-18 | 纯 Agent 房间检测到话题漂移后，由谁、以何种机制把讨论拉回目标？ | 已决（v0.4）：redirect 重聚焦窗口 + 按模式漂移阈值，无人自愿则静默，见 6.9.4 |
