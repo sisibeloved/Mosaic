@@ -6,7 +6,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/sisobeloved/Mosaic/internal/agent"
+	"github.com/sisibeloved/Mosaic/internal/agent"
 )
 
 // Adapter 实现 agent.Adapter。

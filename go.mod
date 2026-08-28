@@ -1,3 +1,3 @@
-module github.com/sisobeloved/Mosaic
+module github.com/sisibeloved/Mosaic
 
 go 1.25
