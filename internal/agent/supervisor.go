@@ -33,26 +33,26 @@ func (s *Supervisor) Register(a Adapter) error {
 }
 
 // Submit 按需 Boot 会话并下发任务。
+//
+// Boot 在锁内完成（M0 取舍）：保证"每 Profile 恰好 Boot 一次"的 ownership 语义
+// （见 TestSupervisorBootsSessionOnceConcurrent）。真实适配器引入后如 Boot 变慢，
+// 演进为 per-profile once + 租约（RFC-0002 v0.5 fencing 演进项）。
 func (s *Supervisor) Submit(ctx context.Context, profile Profile, task Task) (Handle, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	adapter, ok := s.adapters[profile.Adapter]
 	if !ok {
-		s.mu.Unlock()
 		return nil, fmt.Errorf("agent: adapter %q not registered", profile.Adapter)
 	}
-	session, ok := s.sessions[profile.ProfileID]
-	s.mu.Unlock()
-
-	if !ok {
-		var err error
-		session, err = adapter.Boot(ctx, profile)
-		if err != nil {
-			return nil, fmt.Errorf("agent: boot %s: %w", profile.Adapter, err)
-		}
-		s.mu.Lock()
-		s.sessions[profile.ProfileID] = session
-		s.mu.Unlock()
+	if session, ok := s.sessions[profile.ProfileID]; ok {
+		return session.Run(ctx, task)
 	}
+	session, err := adapter.Boot(ctx, profile)
+	if err != nil {
+		return nil, fmt.Errorf("agent: boot %s: %w", profile.Adapter, err)
+	}
+	s.sessions[profile.ProfileID] = session
 	return session.Run(ctx, task)
 }
 

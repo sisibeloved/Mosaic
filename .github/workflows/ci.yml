@@ -19,9 +19,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
-      - name: Vet
-        run: go vet ./...
-      - name: Test (race)
+      - name: Vet (UT+IT+ST 全部标签)
+        run: go vet -tags "it st" ./...
+      - name: Unit tests
         run: go test -race ./...
+      - name: Integration tests
+        run: go test -race -tags it ./...
+      - name: System tests
+        run: go test -race -tags st ./...
       - name: Build mosaic-server
         run: go build ./cmd/mosaic-server

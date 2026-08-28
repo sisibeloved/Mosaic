@@ -82,38 +82,3 @@ func TestCancelBeforeResult(t *testing.T) {
 		t.Errorf("after cancel: err = %v, want ErrStale", err)
 	}
 }
-
-// TestAdapterViaSupervisor：经 supervisor 注册、提交、关闭的最小链路。
-func TestAdapterViaSupervisor(t *testing.T) {
-	sup := agent.NewSupervisor()
-	if err := sup.Register(Adapter{}); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	if err := sup.Register(Adapter{}); err == nil {
-		t.Error("duplicate register should fail")
-	}
-
-	profile := agent.Profile{ProfileID: "par_echo", Adapter: "echo"}
-	h, err := sup.Submit(context.Background(), profile, sampleTask(agent.KindEvaluateIntent))
-	if err != nil {
-		t.Fatalf("submit: %v", err)
-	}
-	res, err := h.Result()
-	if err != nil {
-		t.Fatalf("result: %v", err)
-	}
-	if res.Block != "turn_intent" {
-		t.Errorf("block = %q, want turn_intent", res.Block)
-	}
-
-	// 会话复用：同一 Profile 第二次提交走缓存会话。
-	h2, err := sup.Submit(context.Background(), profile, sampleTask(agent.KindObserve))
-	if err != nil {
-		t.Fatalf("submit 2: %v", err)
-	}
-	if _, err := h2.Result(); err != nil {
-		t.Fatalf("result 2: %v", err)
-	}
-
-	sup.Shutdown()
-}

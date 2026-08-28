@@ -63,6 +63,12 @@ func TestValidFixtures(t *testing.T) {
 	}
 }
 
+// TDD backlog：严格 JSON Schema 校验门禁（ADR-0007 生成链落地时转绿）。
+// 转绿后的断言集：valid/ 全量对 Schema 校验通过 + invalid/ 反例必须失败。
+func TestStrictSchemaValidationGate_TDD(t *testing.T) {
+	t.Skip("TDD backlog：santhosh-tekuri/jsonschema 引入后，以 invalid/ 反例 fixture 驱动红→绿（ADR-0007）")
+}
+
 func TestSchemasAreValidJSON(t *testing.T) {
 	dir := filepath.Join("..", "..", "api", "room-protocol")
 	for _, name := range []string{"envelope.schema.json", "command.schema.json"} {

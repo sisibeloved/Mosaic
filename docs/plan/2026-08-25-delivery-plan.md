@@ -17,6 +17,7 @@
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
 | v1.0 | 2026-08-25 | Mosaic 项目组 / ZCode | 初版：交付目标与 DoD、四个形态决策（含建议）、范围裁定、里程碑 M0–M5、双平台工程要求、风险、治理 |
+| v1.1 | 2026-08-25 | Mosaic 项目组 / ZCode | M0 执行更新：形态决策确认（ADR-0008~0010）；新增测试分层约定（§5.5，UT/IT/ST + TDD backlog 机制）；M0 勾选同步（脚手架/端口与 echo/测试分层完成；协议生成链与严格校验、SQLite/Wails spike、Apple 账号待办） |
 
 # 1. 交付目标与"完全可用"定义
 
@@ -91,6 +92,7 @@
 - [x] monorepo 脚手架：Go module + apps/web + api/room-protocol + CI（vet/test/race/build，windows+macos+ubuntu 三矩阵）
 - [ ] 协议工程：envelope/command/Attention 事件族 Schema + TS/Go 边界模型生成 + 兼容性 fixture 门禁（已落：envelope/command Schema + 结构化 fixture 冒烟测试；待：生成链与严格 Schema 校验门禁、Attention 事件族）
 - [x] HarnessPort + supervisor 最小实现 + echo 适配器（conformance 起步：确定性/取消/Stale/注册链路测试）
+- [x] 测试分层体系（TDD）：UT/IT/ST 三层（构建标签 it/st + CI 分步执行）+ supervisor UT 全覆盖（含并发首启唯一性红灯用例）+ 真二进制 ST（healthz/优雅退出/非法参数）+ TDD backlog 占位（严格 Schema 校验门禁、M1 端到端闭环）
 - [ ] 存储 spike：SQLite WAL + sqlite-vec 冒烟（事件 append / 游标续传 / outbox 重放各一条用例）；不通过则触发 D-1 回退评审
 - **出口判据**：三个 ADR 落档；CI 在 Windows 与 macOS runner 双绿；echo 适配器完成一次"命令→事件→订阅游标续传"往返。
 
@@ -168,7 +170,8 @@
 1. **CI 矩阵**：Windows（latest）+ macOS（arm64 + amd64）双 runner，从 M0 起即为合入门禁；conformance fixture 双平台各跑一遍；
 2. **平台差异登记**：进程信号语义（Windows 控制台事件 vs POSIX）、路径/编码、agent CLI 的 per-OS 启动参数（adapter_options per-OS 覆盖，RFC-0002）、WebView 差异（WebView2 运行时检测）——统一登记在 `docs/plan/platform-notes.md`（M1 建立）；
 3. **不做 WSL 依赖**：Windows 上一等公民为原生；WSL 仅作为用户自选的 agent 运行环境，不做要求；
-4. **发布物**：每里程碑出双平台构建产物；v1.0.0 起附带 checksum 与（如签署）签名。
+4. **发布物**：每里程碑出双平台构建产物；v1.0.0 起附带 checksum 与（如签署）签名；
+5. **测试分层（TDD）**：**UT**——无构建标签、进程内纯内存、随包存放，`go test ./...` 常跑；**IT**——构建标签 `it`，跨模块真实组件装配（如 supervisor × echo），`go test -tags it`；**ST**——构建标签 `st`，真实二进制 + 真实 HTTP（现场 `go build` 后拉起进程），`go test -tags st`。CI 依次执行 vet（含全部标签）→ UT → IT → ST。新行为先写测试：未实现的以 `t.Skip` 标注 **TDD backlog**（转绿即销账），禁止无测试的实现合入。
 
 # 6. 依赖与风险
 
