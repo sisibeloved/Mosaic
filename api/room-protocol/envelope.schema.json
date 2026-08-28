@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/envelope.schema.json",
+  "title": "Room Event Envelope（权威/内部形态，RFC-0001 v0.4）",
+  "description": "对外视图信封不含 seq（以 opaque position 替代）且水位按主体视图重写；本 Schema 定义存储与内部消费的权威形态。",
+  "type": "object",
+  "required": [
+    "event_id", "tenant_id", "room_id", "seq", "type", "schema_version",
+    "occurred_at", "actor", "visibility", "payload"
+  ],
+  "properties": {
+    "event_id": { "type": "string", "pattern": "^evt_[0-9A-Za-z_-]+$" },
+    "tenant_id": { "type": "string", "minLength": 1 },
+    "room_id": { "type": "string", "pattern": "^room_[0-9A-Za-z_-]+$" },
+    "thread_id": { "type": ["string", "null"] },
+    "discussion_epoch_id": { "type": ["string", "null"] },
+    "seq": { "type": "integer", "minimum": 1 },
+    "type": { "type": "string", "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)+$" },
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "actor": {
+      "type": "object",
+      "required": ["participant_id", "kind"],
+      "properties": {
+        "participant_id": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["human", "agent", "system"] }
+      }
+    },
+    "causation_id": { "type": ["string", "null"] },
+    "correlation_id": { "type": ["string", "null"] },
+    "visibility": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["public", "participants", "moderators", "system"] },
+        "participants": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "payload": { "type": "object" },
+    "metadata": { "type": "object" }
+  }
+}

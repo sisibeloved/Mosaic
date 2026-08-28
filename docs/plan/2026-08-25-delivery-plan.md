@@ -88,9 +88,9 @@
 
 - [x] D-1/D-2/D-3 裁决并落 ADR（2026-08-25 负责人确认：ADR-0008 存储、ADR-0009 身份、ADR-0010 应用壳；ADR-0003/0004 已追加个人版形态注记）
 - [x] RFC-0001/0002 推进 Approved（2026-08-25 负责人确认；首轮审校修订 v0.4/v0.5 后批准）
-- [ ] monorepo 脚手架：Go module + apps/web + api/room-protocol + CI（lint/test/race/双平台构建）
-- [ ] 协议工程：envelope/command/Attention 事件族 Schema + TS/Go 边界模型生成 + 兼容性 fixture 门禁
-- [ ] HarnessPort + supervisor 最小实现 + echo 适配器（conformance 起步）
+- [x] monorepo 脚手架：Go module + apps/web + api/room-protocol + CI（vet/test/race/build，windows+macos+ubuntu 三矩阵）
+- [ ] 协议工程：envelope/command/Attention 事件族 Schema + TS/Go 边界模型生成 + 兼容性 fixture 门禁（已落：envelope/command Schema + 结构化 fixture 冒烟测试；待：生成链与严格 Schema 校验门禁、Attention 事件族）
+- [x] HarnessPort + supervisor 最小实现 + echo 适配器（conformance 起步：确定性/取消/Stale/注册链路测试）
 - [ ] 存储 spike：SQLite WAL + sqlite-vec 冒烟（事件 append / 游标续传 / outbox 重放各一条用例）；不通过则触发 D-1 回退评审
 - **出口判据**：三个 ADR 落档；CI 在 Windows 与 macOS runner 双绿；echo 适配器完成一次"命令→事件→订阅游标续传"往返。
 

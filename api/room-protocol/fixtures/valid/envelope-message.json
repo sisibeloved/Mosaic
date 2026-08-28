@@ -1,0 +1,22 @@
+{
+  "event_id": "evt_01H8TESTMESSAGE0000000000000",
+  "tenant_id": "ten_local",
+  "room_id": "room_01H8TESTROOM00000000000000",
+  "thread_id": "thr_01H8TESTTHREAD00000000000",
+  "discussion_epoch_id": "epoch_01H8TESTEPOCH0000000000",
+  "seq": 149,
+  "type": "message.posted",
+  "schema_version": 1,
+  "occurred_at": "2026-08-25T10:00:00.123Z",
+  "actor": { "participant_id": "par_01H8TESTAGENT0000000000", "kind": "agent" },
+  "causation_id": "grant_01H8TESTGRANT00000000000",
+  "correlation_id": "rnd_01H8TESTROUND00000000000",
+  "visibility": { "kind": "public" },
+  "payload": {
+    "body": "fixture: 一条公开发言",
+    "reply_to": "evt_01H8TESTSTIMULUS000000000",
+    "addressed_to": [],
+    "relations": []
+  },
+  "metadata": { "policy_version": "pol_7", "profile_version": 3 }
+}
