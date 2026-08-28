@@ -145,7 +145,7 @@ func TestCommandEventCursorRoundtrip_IT(t *testing.T) {
 	}
 
 	// 6) outbox 排空：两条消息按提交序分发完毕
-	pending, err := store.PendingOutbox(ctx, 100)
+	pending, err := store.Pending(ctx, 100)
 	if err != nil {
 		t.Fatalf("pending: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestCommandEventCursorRoundtrip_IT(t *testing.T) {
 	if err := store.MarkDispatched(ctx, ids); err != nil {
 		t.Fatalf("mark dispatched: %v", err)
 	}
-	if pending, err = store.PendingOutbox(ctx, 100); err != nil || len(pending) != 0 {
+	if pending, err = store.Pending(ctx, 100); err != nil || len(pending) != 0 {
 		t.Fatalf("排空后 pending = %d, err = %v", len(pending), err)
 	}
 }

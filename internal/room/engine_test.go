@@ -1,0 +1,197 @@
+// UT 层：房间引擎——人类消息驱动完整轮事件链（echo 适配器）。
+package room
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/sisibeloved/Mosaic/internal/agent"
+	"github.com/sisibeloved/Mosaic/internal/agent/echo"
+	"github.com/sisibeloved/Mosaic/internal/outbox"
+	"github.com/sisibeloved/Mosaic/internal/protocol"
+)
+
+func TestEngineRoundProducesEventChain(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	if err := sup.Register(echo.Adapter{}); err != nil {
+		t.Fatalf("register echo: %v", err)
+	}
+	defer sup.Shutdown()
+
+	var idMu chan struct{} = make(chan struct{}, 1)
+	idMu <- struct{}{}
+	var n int64
+	newID := func(prefix string) string {
+		<-idMu
+		n++
+		idMu <- struct{}{}
+		return prefix + "_eng_" + jsonNumber(n)
+	}
+
+	eng := NewEngine(EngineConfig{
+		Store:  store,
+		Agents: sup,
+		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "prof_echo", Adapter: "echo"}}},
+		Clock:  testClock,
+		Now:    func() time.Time { return time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC) },
+		NewID:  newID,
+		Tenant: "ten_local",
+		RoomID: "room_eng",
+	})
+
+	// 种子：room.created + 人类消息（经真实 append 路径）
+	seedHuman := protocol.Envelope{
+		EventID:       "evt_eng_seed",
+		TenantID:      "ten_local",
+		RoomID:        "room_eng",
+		Type:          protocol.EventRoomCreated,
+		SchemaVersion: 1,
+		OccurredAt:    testClock(),
+		Actor:         protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Visibility:    protocol.Visibility{Kind: "public"},
+		Payload:       []byte(`{"display_name":"eng"}`),
+		Metadata:      map[string]any{},
+	}
+	if _, err := store.AppendEvents(context.Background(), []protocol.Envelope{seedHuman}); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+	human := protocol.Envelope{
+		EventID:       "evt_eng_human",
+		TenantID:      "ten_local",
+		RoomID:        "room_eng",
+		Type:          protocol.EventMessagePosted,
+		SchemaVersion: 1,
+		OccurredAt:    testClock(),
+		Actor:         protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Visibility:    protocol.Visibility{Kind: "public"},
+		Payload:       []byte(`{"body":"讨论开始"}`),
+		Metadata:      map[string]any{},
+	}
+	if _, err := store.AppendEvents(context.Background(), []protocol.Envelope{human}); err != nil {
+		t.Fatalf("seed human msg: %v", err)
+	}
+
+	raw, _ := json.Marshal(human)
+	eng.Deliver(context.Background(), outbox.Entry{RoomID: "room_eng", Envelope: raw})
+
+	// 轮异步：轮询直到 round.closed（超时 3s）
+	deadline := time.Now().Add(3 * time.Second)
+	var events []protocol.Envelope
+	for time.Now().Before(deadline) {
+		events = store.RoomEvents("room_eng")
+		if len(events) > 0 && events[len(events)-1].Type == protocol.EventRoundClosed {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(events) == 0 || events[len(events)-1].Type != protocol.EventRoundClosed {
+		t.Fatalf("轮未完成，事件数=%d", len(events))
+	}
+
+	// 事件链与顺序
+	wantTypes := []string{
+		protocol.EventRoomCreated,
+		protocol.EventMessagePosted, // human
+		protocol.EventRoundOpened,
+		protocol.EventIntentRecorded,
+		protocol.EventFloorGranted,
+		protocol.EventMessagePosted, // agent
+		protocol.EventRoundClosed,
+	}
+	if len(events) != len(wantTypes) {
+		t.Fatalf("事件数 = %d（期望 %d）：%v", len(events), len(wantTypes), typesOf(events))
+	}
+	for i, want := range wantTypes {
+		if events[i].Type != want {
+			t.Fatalf("第 %d 个事件 = %s（期望 %s）：%v", i, events[i].Type, want, typesOf(events))
+		}
+		if events[i].Seq != int64(i+1) {
+			t.Fatalf("%s seq = %d（期望 %d）", events[i].Type, events[i].Seq, i+1)
+		}
+	}
+
+	// causation 纪律（RFC-0003）：agent 发言 causation 指向 floor.granted；grant 指向 intent.recorded
+	agentMsg := events[5]
+	grant := events[4]
+	intent := events[3]
+	if agentMsg.CausationID == nil || *agentMsg.CausationID != grant.EventID {
+		t.Fatalf("agent 消息 causation 应指向 floor.granted：%v", agentMsg.CausationID)
+	}
+	if grant.CausationID == nil || *grant.CausationID != intent.EventID {
+		t.Fatalf("grant causation 应指向 intent.recorded：%v", grant.CausationID)
+	}
+	if agentMsg.Actor.Kind != "agent" || agentMsg.Actor.ParticipantID != "par_echo" {
+		t.Fatalf("agent 消息 actor 不符：%+v", agentMsg.Actor)
+	}
+	// 同轮 correlation
+	roundID := events[2].CorrelationID
+	for _, ev := range events[2:] {
+		if ev.CorrelationID == nil || *ev.CorrelationID != *roundID {
+			t.Fatalf("%s correlation 应为 round id", ev.Type)
+		}
+	}
+	// intent.recorded 投影字段（echo 确定性：relevance 0.5 → medium；selected）
+	var ir protocol.IntentRecordedPayload
+	if err := json.Unmarshal(intent.Payload, &ir); err != nil {
+		t.Fatalf("intent payload: %v", err)
+	}
+	if ir.ScoreBand != "medium" || !ir.Selected || ir.Action != "speak" || ir.Type != "extend" {
+		t.Fatalf("intent 投影不符：%+v", ir)
+	}
+	// round.closed 结果
+	var rc protocol.RoundClosedPayload
+	if err := json.Unmarshal(events[6].Payload, &rc); err != nil || rc.Outcome != "published" || rc.SelectedCount != 1 {
+		t.Fatalf("round.closed 不符：%+v err=%v", rc, err)
+	}
+}
+
+// 其他房间/agent 事件不得触发开轮（无反馈环）
+func TestEngineIgnoresNonHumanAndOtherRooms(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(echo.Adapter{})
+	defer sup.Shutdown()
+	eng := NewEngine(EngineConfig{
+		Store: store, Agents: sup,
+		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
+		Clock: testClock, Now: time.Now, NewID: func(p string) string { return p + "_x" },
+		Tenant: "ten_local", RoomID: "room_eng",
+	})
+
+	agentMsg := protocol.Envelope{
+		EventID: "evt_x", TenantID: "ten_local", RoomID: "room_eng",
+		Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
+		Actor:      protocol.Actor{ParticipantID: "par_echo", Kind: "agent"},
+		Visibility: protocol.Visibility{Kind: "public"}, Payload: []byte(`{}`), Metadata: map[string]any{},
+	}
+	raw, _ := json.Marshal(agentMsg)
+	eng.Deliver(context.Background(), outbox.Entry{RoomID: "room_eng", Envelope: raw})
+
+	humanOther := agentMsg
+	humanOther.EventID = "evt_y"
+	humanOther.RoomID = "room_other"
+	humanOther.Actor = protocol.Actor{ParticipantID: "par_owner", Kind: "human"}
+	raw2, _ := json.Marshal(humanOther)
+	eng.Deliver(context.Background(), outbox.Entry{RoomID: "room_other", Envelope: raw2})
+
+	time.Sleep(100 * time.Millisecond)
+	if got := len(store.RoomEvents("room_eng")) + len(store.RoomEvents("room_other")); got != 0 {
+		t.Fatalf("不应产生任何事件，got %d", got)
+	}
+}
+
+func typesOf(events []protocol.Envelope) []string {
+	out := make([]string, len(events))
+	for i, e := range events {
+		out[i] = e.Type
+	}
+	return out
+}
+
+func jsonNumber(n int64) string {
+	raw, _ := json.Marshal(n)
+	return string(raw)
+}

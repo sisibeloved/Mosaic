@@ -1,0 +1,238 @@
+// Package httpapi：HTTP 传输边界（ADR-0001：幂等命令上行 + SSE 游标订阅下行）。
+// 对外只出现 EventView（无 seq/tenant，RFC-0001 P0）；错误以稳定 code 映射状态码。
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/sisibeloved/Mosaic/internal/outbox"
+	"github.com/sisibeloved/Mosaic/internal/protocol"
+	"github.com/sisibeloved/Mosaic/internal/room"
+	"github.com/sisibeloved/Mosaic/internal/transport/sse"
+)
+
+// Deps 传输层依赖。
+type Deps struct {
+	SVC    *room.Service
+	Reader room.EventReader
+	Hub    *sse.Hub
+	Actor  room.Actor // 个人版：本地 owner（ADR-0009）
+	Logger *slog.Logger
+}
+
+// New 构造路由（含 healthz）。
+func New(deps Deps) http.Handler {
+	s := &server{deps: deps}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
+	})
+	mux.HandleFunc("POST /v1/rooms", s.handleCreateRoom)
+	mux.HandleFunc("POST /v1/rooms/{room_id}/commands", s.handleCommand)
+	mux.HandleFunc("GET /v1/rooms/{room_id}/events", s.handleEvents)
+	return mux
+}
+
+type server struct {
+	deps Deps
+}
+
+// commandRequest 对外命令 DTO（command.schema.json 契约）。
+type commandRequest struct {
+	CommandKind         string          `json:"command_kind"`
+	ExpectedRoomVersion int64           `json:"expected_room_version"`
+	IdempotencyKey      string          `json:"idempotency_key"`
+	IssuedAt            string          `json:"issued_at"`
+	Payload             json.RawMessage `json:"payload"`
+}
+
+type commandResponse struct {
+	RoomID      string `json:"room_id"`
+	EventID     string `json:"event_id"`
+	RoomVersion int64  `json:"room_version"`
+	Replayed    bool   `json:"replayed"`
+}
+
+type errorResponse struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func (s *server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
+	s.execute(w, r, "")
+}
+
+func (s *server) handleCommand(w http.ResponseWriter, r *http.Request) {
+	s.execute(w, r, r.PathValue("room_id"))
+}
+
+func (s *server) execute(w http.ResponseWriter, r *http.Request, roomID string) {
+	var req commandRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "命令体 JSON 不合法："+err.Error())
+		return
+	}
+	res, err := s.deps.SVC.ExecuteCommand(r.Context(), s.deps.Actor, room.Command{
+		RoomID:              roomID,
+		CommandKind:         req.CommandKind,
+		ExpectedRoomVersion: req.ExpectedRoomVersion,
+		IdempotencyKey:      req.IdempotencyKey,
+		IssuedAt:            req.IssuedAt,
+		Payload:             req.Payload,
+	})
+	if err != nil {
+		s.writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, commandResponse{
+		RoomID:      res.RoomID,
+		EventID:     res.EventID,
+		RoomVersion: res.RoomVersion,
+		Replayed:    res.Replayed,
+	})
+}
+
+func (s *server) writeDomainError(w http.ResponseWriter, err error) {
+	code, status := "internal", http.StatusInternalServerError
+	switch {
+	case errors.Is(err, room.ErrInvalidCommand):
+		code, status = "invalid_command", http.StatusBadRequest
+	case errors.Is(err, room.ErrVersionConflict):
+		code, status = "version_conflict", http.StatusConflict
+	case errors.Is(err, room.ErrIdempotencyConflict):
+		code, status = "idempotency_conflict", http.StatusConflict
+	case errors.Is(err, room.ErrRoomNotFound):
+		code, status = "room_not_found", http.StatusNotFound
+	}
+	if status == http.StatusInternalServerError && s.deps.Logger != nil {
+		s.deps.Logger.Error("httpapi: command failed", "err", err)
+	}
+	writeError(w, status, code, err.Error())
+}
+
+// handleEvents：SSE 订阅。cursor 空串 = 从头；先订阅后追平（间隙事件由 position 去重）。
+// 慢消费者被断流时以注释行提示并结束响应，客户端携最后 id 重连追平。
+func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	roomID := r.PathValue("room_id")
+	cursor := r.URL.Query().Get("cursor")
+	if _, err := protocol.DecodeCursor(cursor); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_cursor", err.Error())
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "no_streaming", "响应不支持流式")
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	lastPos, _ := protocol.DecodeCursor(cursor)
+	writeStored := func(ev room.StoredEvent) {
+		pos, err := protocol.DecodeCursor(ev.Cursor)
+		if err != nil || pos <= lastPos {
+			return
+		}
+		lastPos = pos
+		writeSSE(w, ev.Envelope.Type, ev.Cursor, mustMarshalView(ev))
+	}
+
+	// 订阅先于追平：追平查询与订阅之间的事件会在两个通道各出现一次，position 去重兜底
+	sub := s.deps.Hub.Subscribe(roomID, 256)
+	defer sub.Close()
+
+	events, _, err := s.deps.Reader.EventsAfter(r.Context(), roomID, cursor, 1000)
+	if err != nil {
+		fmt.Fprint(w, ": server: catch-up failed\n\n")
+		flusher.Flush()
+		return
+	}
+	for _, ev := range events {
+		writeStored(ev)
+	}
+	fmt.Fprint(w, ": stream: open\n\n")
+	flusher.Flush()
+
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-heartbeat.C:
+			fmt.Fprint(w, ": ping\n\n")
+			flusher.Flush()
+		case ev, ok := <-sub.C:
+			if !ok {
+				fmt.Fprint(w, ": server: slow-consumer\n\n")
+				flusher.Flush()
+				return
+			}
+			pos, err := protocol.DecodeCursor(ev.Cursor)
+			if err != nil || pos <= lastPos {
+				continue
+			}
+			lastPos = pos
+			fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", ev.Cursor, ev.Type, ev.Data)
+			flusher.Flush()
+		}
+	}
+}
+
+// HubConsumer 把 outbox 条目转成外部视图投递给 Hub（main 接线用）。
+func HubConsumer(hub *sse.Hub) outbox.Consumer {
+	return outbox.ConsumerFunc(func(_ context.Context, entry outbox.Entry) {
+		var env protocol.Envelope
+		if err := json.Unmarshal(entry.Envelope, &env); err != nil {
+			return
+		}
+		cursor := protocol.EncodeCursor(entry.GlobalPos)
+		view := protocol.ToEventView(env, cursor)
+		data, err := json.Marshal(view)
+		if err != nil {
+			return
+		}
+		hub.Publish(entry.RoomID, sse.ViewEvent{Cursor: cursor, Type: env.Type, Data: data})
+	})
+}
+
+func writeSSE(w http.ResponseWriter, event, id string, data []byte) {
+	fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", id, event, data)
+}
+
+func mustMarshalView(ev room.StoredEvent) []byte {
+	view := protocol.ToEventView(ev.Envelope, ev.Cursor)
+	raw, err := json.Marshal(view)
+	if err != nil {
+		return []byte(`{}`)
+	}
+	return raw
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	var body errorResponse
+	body.Error.Code = code
+	body.Error.Message = message
+	writeJSON(w, status, body)
+}

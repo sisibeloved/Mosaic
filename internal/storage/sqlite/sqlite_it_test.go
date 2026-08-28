@@ -89,7 +89,7 @@ func TestSQLiteAppendAtomicityAndSeq_IT(t *testing.T) {
 	if len(events) != 2 || events[len(events)-1].Envelope.EventID != "evt_a2" {
 		t.Fatalf("整批回滚失败：残留 %d 条，末尾 %s", len(events), events[len(events)-1].Envelope.EventID)
 	}
-	pending, err := store.PendingOutbox(ctx, 100)
+	pending, err := store.Pending(ctx, 100)
 	if err != nil {
 		t.Fatalf("pending outbox: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestSQLiteOutboxReplayAfterCrash_IT(t *testing.T) {
 	}
 
 	// 模拟：前 3 条分发成功，随后崩溃（2 条滞留）
-	pending, err := store.PendingOutbox(ctx, 100)
+	pending, err := store.Pending(ctx, 100)
 	if err != nil {
 		t.Fatalf("pending: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestSQLiteOutboxReplayAfterCrash_IT(t *testing.T) {
 	}
 
 	// 崩溃恢复：按提交序只重放未分发条目
-	pending, err = store.PendingOutbox(ctx, 100)
+	pending, err = store.Pending(ctx, 100)
 	if err != nil {
 		t.Fatalf("pending after mark: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestSQLiteOutboxReplayAfterCrash_IT(t *testing.T) {
 	if err := store.MarkDispatched(ctx, []int64{pending[0].ID}); err != nil {
 		t.Fatalf("重复标记应幂等: %v", err)
 	}
-	pending, err = store.PendingOutbox(ctx, 100)
+	pending, err = store.Pending(ctx, 100)
 	if err != nil {
 		t.Fatalf("final pending: %v", err)
 	}

@@ -7,14 +7,18 @@ package main_test
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -152,7 +156,175 @@ func TestInvalidFlagExitsNonZero_ST(t *testing.T) {
 	}
 }
 
-// TestDiscussionLoop_ST：北极星规格——命令 → 事件 → 游标订阅 → 回放的端到端闭环。
+// TestDiscussionLoop_ST：北极星规格——命令 → 事件 → SSE 游标订阅 → 引擎轮 → 断线重连。
+// 覆盖 M1 出口判据的 HTTP 形态（真实二进制 + SQLite + outbox 分发 + echo 引擎）。
 func TestDiscussionLoop_ST(t *testing.T) {
-	t.Skip("TDD backlog（M1）：随命令 API + 事件存储 + SSE 订阅落地转绿；此用例固定验收口径")
+	bin := buildServer(t)
+	dataDir := t.TempDir()
+	cmd := exec.Command(bin, "-addr", "127.0.0.1:0", "-data", dataDir)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+	base := "http://" + waitListening(t, stdout)
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	postCommand := func(url string, body map[string]any) (int, map[string]any) {
+		raw, _ := json.Marshal(body)
+		resp, err := client.Post(url, "application/json", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatalf("POST %s: %v", url, err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+
+	// 1) 创建房间（幂等命令契约）
+	status, created := postCommand(base+"/v1/rooms", map[string]any{
+		"command_kind": "create_room", "expected_room_version": 0,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7001", "issued_at": "2026-08-28T12:00:00Z",
+		"payload": map[string]any{"display_name": "st 房"},
+	})
+	if status != 200 {
+		t.Fatalf("create_room status=%d body=%v", status, created)
+	}
+	roomID, _ := created["room_id"].(string)
+	if !strings.HasPrefix(roomID, "room_") {
+		t.Fatalf("create_room 未返回房间 ID：%v", created)
+	}
+
+	// 2) 先开 SSE 订阅（从头），再发人类消息
+	framesCh := make(chan sseFrame, 64)
+	sseCtx, stopSSE := context.WithCancel(context.Background())
+	defer stopSSE()
+	req, _ := http.NewRequestWithContext(sseCtx, http.MethodGet,
+		base+"/v1/rooms/"+roomID+"/events?cursor=", nil)
+	sseResp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("open SSE: %v", err)
+	}
+	go func() {
+		defer sseResp.Body.Close()
+		sc := bufio.NewScanner(sseResp.Body)
+		var f sseFrame
+		for sc.Scan() {
+			line := sc.Text()
+			switch {
+			case strings.HasPrefix(line, "id: "):
+				f.ID = strings.TrimPrefix(line, "id: ")
+			case strings.HasPrefix(line, "event: "):
+				f.Name = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				_ = json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &f.Data)
+			case line == "":
+				if f.ID != "" {
+					framesCh <- f
+				}
+				f = sseFrame{}
+			}
+		}
+	}()
+
+	nextFrame := func(want string) sseFrame {
+		t.Helper()
+		for {
+			select {
+			case f := <-framesCh:
+				if f.Name == want {
+					return f
+				}
+				// 中间帧（round 等）按序放行校验
+			case <-time.After(15 * time.Second):
+				t.Fatalf("等待 %s 帧超时", want)
+				return sseFrame{}
+			}
+		}
+	}
+
+	status, posted := postCommand(base+"/v1/rooms/"+roomID+"/commands", map[string]any{
+		"command_kind": "post_message", "expected_room_version": 1,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7002", "issued_at": "2026-08-28T12:00:01Z",
+		"payload": map[string]any{"body": "ST 环回：人类第一条消息"},
+	})
+	if status != 200 {
+		t.Fatalf("post_message status=%d body=%v", status, posted)
+	}
+
+	// 3) SSE 依次收到：room.created → 人类 message.posted → 轮事件 → agent message.posted
+	createdFrame := nextFrame("room.created")
+	if createdFrame.Data["seq"] != nil || createdFrame.Data["tenant_id"] != nil {
+		t.Fatal("对外 SSE 帧不得含 seq/tenant_id（RFC-0001 P0）")
+	}
+	humanFrame := nextFrame("message.posted")
+	if actor := nestedMap(humanFrame.Data, "actor"); actor["kind"] != "human" {
+		t.Fatalf("首条 message.posted 应为人类：%v", actor)
+	}
+	agentFrame := nextFrame("message.posted") // 第二条 = 引擎产出的 agent 发言
+	actor := nestedMap(agentFrame.Data, "actor")
+	if actor["kind"] != "agent" || actor["participant_id"] != "par_echo" {
+		t.Fatalf("引擎应产出 agent 发言：%v", actor)
+	}
+	if nestedMap(agentFrame.Data, "payload")["body"] == nil {
+		t.Fatal("agent 发言缺 body")
+	}
+	agentID := agentFrame.ID
+
+	// 4) 断线重连：携最后游标续传——旧事件不重投
+	stopSSE()
+	req2, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		base+"/v1/rooms/"+roomID+"/events?cursor="+url.QueryEscape(agentID), nil)
+	resp2, err := client.Do(req2)
+	if err != nil {
+		t.Fatalf("reconnect SSE: %v", err)
+	}
+	sc := bufio.NewScanner(resp2.Body)
+	var replayed []string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !sc.Scan() {
+			break
+		}
+		line := sc.Text()
+		if strings.HasPrefix(line, "id: ") {
+			id := strings.TrimPrefix(line, "id: ")
+			if id == agentID {
+				t.Fatal("续传重投了已消费事件")
+			}
+			replayed = append(replayed, id)
+		}
+		if len(replayed) > 0 && strings.Contains(line, ": stream: open") {
+			break
+		}
+	}
+	resp2.Body.Close()
+
+	// 5) HTTP 幂等：同命令同键重发 → replayed=true 同事件
+	status, replay := postCommand(base+"/v1/rooms/"+roomID+"/commands", map[string]any{
+		"command_kind": "post_message", "expected_room_version": 1,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7002", "issued_at": "2026-08-28T12:00:01Z",
+		"payload": map[string]any{"body": "ST 环回：人类第一条消息"},
+	})
+	if status != 200 || replay["replayed"] != true || replay["event_id"] != posted["event_id"] {
+		t.Fatalf("幂等重放不符：status=%d body=%v", status, replay)
+	}
+}
+
+type sseFrame struct {
+	ID   string
+	Name string
+	Data map[string]any
+}
+
+func nestedMap(m map[string]any, key string) map[string]any {
+	v, _ := m[key].(map[string]any)
+	return v
 }

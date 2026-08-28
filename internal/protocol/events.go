@@ -6,7 +6,7 @@ package protocol
 
 import "encoding/json"
 
-// 事件类型名（Attention 事件族，RFC-0003 §3.1.11）。
+// 事件类型名（Attention 事件族 RFC-0003 §3.1.11；房间生命周期 RFC-0001）。
 const (
 	EventRoundOpened    = "round.opened"
 	EventIntentRecorded = "intent.recorded"
@@ -15,6 +15,7 @@ const (
 	EventFloorRevoked   = "floor.revoked"
 	EventRoundClosed    = "round.closed"
 	EventMessagePosted  = "message.posted"
+	EventRoomCreated    = "room.created"
 )
 
 // Envelope 是 room_events 的权威/内部形态（RFC-0001 v0.4）。

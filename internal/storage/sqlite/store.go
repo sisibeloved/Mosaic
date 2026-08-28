@@ -6,15 +6,15 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
-	"strconv"
 	"strings"
 
+	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
+	"github.com/sisibeloved/Mosaic/internal/room"
 
 	_ "modernc.org/sqlite"
 )
@@ -45,6 +45,17 @@ CREATE TABLE IF NOT EXISTS outbox (
 	envelope     TEXT NOT NULL,
 	dispatched_at TEXT,
 	created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE TABLE IF NOT EXISTS command_receipts (
+	tenant_id           TEXT NOT NULL,
+	idempotency_key     TEXT NOT NULL,
+	command_kind        TEXT NOT NULL,
+	room_id             TEXT NOT NULL,
+	request_fingerprint TEXT NOT NULL,
+	event_id            TEXT NOT NULL,
+	room_version        INTEGER NOT NULL,
+	executed_at         TEXT NOT NULL,
+	PRIMARY KEY (tenant_id, idempotency_key, command_kind)
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox(id) WHERE dispatched_at IS NULL;
 `
@@ -90,13 +101,27 @@ func (s *Store) JournalMode(ctx context.Context) (string, error) {
 // seq 由存储按房间分配（调用方不指定）；任一 event_id 重复则整批回滚。
 // 返回落库后的信封（含分配的 seq），顺序与入参一致。
 func (s *Store) AppendEvents(ctx context.Context, envelopes []protocol.Envelope) ([]protocol.Envelope, error) {
-	if len(envelopes) == 0 {
+	return s.appendTx(ctx, envelopes, nil)
+}
+
+// AppendWithReceipt 实现 room.AtomicStore：事件 + 幂等回执同事务原子落库；
+// 事件 ID 或回执键冲突（并发同命令竞态的后到者）返回 room.ErrDuplicateReceipt，整批回滚。
+func (s *Store) AppendWithReceipt(ctx context.Context, envelopes []protocol.Envelope, receipt room.CommandReceipt) ([]protocol.Envelope, error) {
+	return s.appendTx(ctx, envelopes, &receipt)
+}
+
+// appendTx 共享事务体：BEGIN IMMEDIATE → 分配 seq → 写 room_events + outbox（+ 可选回执）→ COMMIT。
+func (s *Store) appendTx(ctx context.Context, envelopes []protocol.Envelope, receipt *room.CommandReceipt) ([]protocol.Envelope, error) {
+	if len(envelopes) == 0 && receipt == nil {
 		return nil, nil
 	}
-	roomID := envelopes[0].RoomID
-	for i := range envelopes {
-		if envelopes[i].RoomID != roomID {
-			return nil, fmt.Errorf("sqlite: 一批事件必须同 room（%s vs %s）", roomID, envelopes[i].RoomID)
+	roomID := ""
+	if len(envelopes) > 0 {
+		roomID = envelopes[0].RoomID
+		for i := range envelopes {
+			if envelopes[i].RoomID != roomID {
+				return nil, fmt.Errorf("sqlite: 一批事件必须同 room（%s vs %s）", roomID, envelopes[i].RoomID)
+			}
 		}
 	}
 
@@ -117,10 +142,12 @@ func (s *Store) AppendEvents(ctx context.Context, envelopes []protocol.Envelope)
 	}()
 
 	var maxSeq int64
-	if err := conn.QueryRowContext(ctx,
-		"SELECT COALESCE(MAX(seq), 0) FROM room_events WHERE room_id = ?", roomID,
-	).Scan(&maxSeq); err != nil {
-		return nil, fmt.Errorf("sqlite: read max seq: %w", err)
+	if roomID != "" {
+		if err := conn.QueryRowContext(ctx,
+			"SELECT COALESCE(MAX(seq), 0) FROM room_events WHERE room_id = ?", roomID,
+		).Scan(&maxSeq); err != nil {
+			return nil, fmt.Errorf("sqlite: read max seq: %w", err)
+		}
 	}
 
 	appended := make([]protocol.Envelope, len(envelopes))
@@ -139,6 +166,10 @@ func (s *Store) AppendEvents(ctx context.Context, envelopes []protocol.Envelope)
 		)
 		if err != nil {
 			if isUniqueViolation(err) {
+				if receipt != nil {
+					// 回执式追加中事件撞车 = 并发同命令竞态后到者
+					return nil, fmt.Errorf("%w: %s", room.ErrDuplicateReceipt, env.EventID)
+				}
 				return nil, fmt.Errorf("%w: %s", ErrDuplicateEvent, env.EventID)
 			}
 			return nil, fmt.Errorf("sqlite: insert event: %w", err)
@@ -156,6 +187,21 @@ func (s *Store) AppendEvents(ctx context.Context, envelopes []protocol.Envelope)
 		appended[i] = env
 	}
 
+	if receipt != nil {
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO command_receipts
+			(tenant_id, idempotency_key, command_kind, room_id, request_fingerprint, event_id, room_version, executed_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			receipt.TenantID, receipt.IdempotencyKey, receipt.CommandKind, receipt.RoomID,
+			receipt.RequestFingerprint, receipt.EventID, receipt.RoomVersion, receipt.ExecutedAt,
+		); err != nil {
+			if isUniqueViolation(err) {
+				return nil, fmt.Errorf("%w: %s", room.ErrDuplicateReceipt, receipt.IdempotencyKey)
+			}
+			return nil, fmt.Errorf("sqlite: insert receipt: %w", err)
+		}
+	}
+
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return nil, fmt.Errorf("sqlite: commit: %w", err)
 	}
@@ -163,41 +209,52 @@ func (s *Store) AppendEvents(ctx context.Context, envelopes []protocol.Envelope)
 	return appended, nil
 }
 
-// StoredEvent 是读路径的返回形态：权威信封 + opaque cursor（对外不暴露 global_pos）。
-type StoredEvent struct {
-	Envelope protocol.Envelope
-	Cursor   string
-}
-
-// EncodeCursor 把全局位编码为对外不透明游标（v1 前缀留作格式演进）。
-func EncodeCursor(globalPos int64) string {
-	return base64.URLEncoding.EncodeToString([]byte("v1:" + strconv.FormatInt(globalPos, 10)))
-}
-
-// DecodeCursor 解析不透明游标；空串返回 0（从头开始）。非法格式报错。
-func DecodeCursor(cursor string) (int64, error) {
-	if cursor == "" {
-		return 0, nil
+// LookupReceipt 实现 room.AtomicStore：未命中返回 (nil, nil)。
+func (s *Store) LookupReceipt(ctx context.Context, tenantID, idempotencyKey, commandKind string) (*room.CommandReceipt, error) {
+	rc := &room.CommandReceipt{}
+	err := s.db.QueryRowContext(ctx, `
+		SELECT room_id, request_fingerprint, event_id, room_version, executed_at
+		FROM command_receipts
+		WHERE tenant_id = ? AND idempotency_key = ? AND command_kind = ?`,
+		tenantID, idempotencyKey, commandKind,
+	).Scan(&rc.RoomID, &rc.RequestFingerprint, &rc.EventID, &rc.RoomVersion, &rc.ExecutedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
 	}
-	raw, err := base64.URLEncoding.DecodeString(cursor)
 	if err != nil {
-		return 0, fmt.Errorf("sqlite: 非法游标: %w", err)
+		return nil, fmt.Errorf("sqlite: lookup receipt: %w", err)
 	}
-	parts := strings.SplitN(string(raw), ":", 2)
-	if len(parts) != 2 || parts[0] != "v1" {
-		return 0, fmt.Errorf("sqlite: 无法识别的游标版本: %q", cursor)
-	}
-	pos, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil || pos < 0 {
-		return 0, fmt.Errorf("sqlite: 游标位非法: %q", cursor)
-	}
-	return pos, nil
+	rc.TenantID, rc.IdempotencyKey, rc.CommandKind = tenantID, idempotencyKey, commandKind
+	return rc, nil
 }
 
-// EventsAfter 从 cursor 之后按全局位续读某房间的事件（订阅续传与历史读共用）。
-// limit ≤0 时取 100。返回下一游标；无更多事件时 next 为空串（已追平）。
-func (s *Store) EventsAfter(ctx context.Context, roomID, cursor string, limit int) (events []StoredEvent, next string, err error) {
-	pos, err := DecodeCursor(cursor)
+// RoomVersion 实现 room.AtomicStore：房间当前版本（最新 seq；空房 0）。
+func (s *Store) RoomVersion(ctx context.Context, roomID string) (int64, error) {
+	var v int64
+	err := s.db.QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(seq), 0) FROM room_events WHERE room_id = ?", roomID).Scan(&v)
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: room version: %w", err)
+	}
+	return v, nil
+}
+
+// RoomExists 实现 room.AtomicStore：是否已见 room.created。
+func (s *Store) RoomExists(ctx context.Context, roomID string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRowContext(ctx,
+		"SELECT EXISTS(SELECT 1 FROM room_events WHERE room_id = ? AND type = ?)",
+		roomID, protocol.EventRoomCreated).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("sqlite: room exists: %w", err)
+	}
+	return exists, nil
+}
+
+// EventsAfter 实现 room.EventReader：从 cursor 之后按全局位续读某房间的事件
+// （订阅续传与历史读共用）。limit ≤0 时取 100。返回下一游标；无更多事件时 next 为空串。
+func (s *Store) EventsAfter(ctx context.Context, roomID, cursor string, limit int) (events []room.StoredEvent, next string, err error) {
+	pos, err := protocol.DecodeCursor(cursor)
 	if err != nil {
 		return nil, "", err
 	}
@@ -222,7 +279,7 @@ func (s *Store) EventsAfter(ctx context.Context, roomID, cursor string, limit in
 		if err := json.Unmarshal([]byte(raw), &env); err != nil {
 			return nil, "", fmt.Errorf("sqlite: unmarshal envelope %d: %w", globalPos, err)
 		}
-		events = append(events, StoredEvent{Envelope: env, Cursor: EncodeCursor(globalPos)})
+		events = append(events, room.StoredEvent{Envelope: env, Cursor: protocol.EncodeCursor(globalPos)})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, "", fmt.Errorf("sqlite: rows: %w", err)
@@ -233,34 +290,29 @@ func (s *Store) EventsAfter(ctx context.Context, roomID, cursor string, limit in
 	return events, next, nil
 }
 
-// OutboxEntry 待分发事件（进程内提交后分发；崩溃后由 PendingOutbox 重放）。
-type OutboxEntry struct {
-	ID      int64
-	RoomID  string
-	EventID string
-	Raw     []byte
-}
+// OutboxEntry 待分发事件（outbox.Entry 的本地别名；进程内提交后分发，崩溃后重放）。
+type OutboxEntry = outbox.Entry
 
-// PendingOutbox 按提交序取未分发条目（崩溃恢复重放入口）。
-func (s *Store) PendingOutbox(ctx context.Context, limit int) ([]OutboxEntry, error) {
+// Pending 实现 outbox.Store：按提交序取未分发条目（崩溃恢复重放入口）。
+func (s *Store) Pending(ctx context.Context, limit int) ([]outbox.Entry, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, room_id, event_id, envelope FROM outbox
+		SELECT id, room_id, event_id, global_pos, envelope FROM outbox
 		WHERE dispatched_at IS NULL ORDER BY id LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: query outbox: %w", err)
 	}
 	defer rows.Close()
-	var entries []OutboxEntry
+	var entries []outbox.Entry
 	for rows.Next() {
-		var e OutboxEntry
+		var e outbox.Entry
 		var raw string
-		if err := rows.Scan(&e.ID, &e.RoomID, &e.EventID, &raw); err != nil {
+		if err := rows.Scan(&e.ID, &e.RoomID, &e.EventID, &e.GlobalPos, &raw); err != nil {
 			return nil, fmt.Errorf("sqlite: scan outbox: %w", err)
 		}
-		e.Raw = []byte(raw)
+		e.Envelope = []byte(raw)
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()

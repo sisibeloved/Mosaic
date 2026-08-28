@@ -1,5 +1,5 @@
-// UT 层：opaque cursor 编解码纯函数（无数据库依赖）。
-package sqlite
+// UT 层：opaque cursor 编解码纯函数。
+package protocol
 
 import (
 	"strings"
@@ -24,7 +24,7 @@ func TestCursorCodecRoundTrip(t *testing.T) {
 
 func TestCursorDecodeRejectsMalformed(t *testing.T) {
 	for _, bad := range []string{"v1:148", "!!!not-base64!!!", "djE6eHg", "v2:148"} {
-		// v1:148 是未编码明文；djE6eHg 是 "v1:xx" 的合法 base64 但位非数字；v2 前缀未知版本
+		// v1:148 未编码明文；djE6eHg 是 "v1:xx" 的合法 base64 但位非数字；v2 前缀未知版本
 		if _, err := DecodeCursor(bad); err == nil {
 			t.Errorf("非法游标 %q 必须报错", bad)
 		}
