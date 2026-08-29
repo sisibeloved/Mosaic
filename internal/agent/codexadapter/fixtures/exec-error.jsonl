@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a04b2c-c035-72f1-8bc9-1b8183f04483"}
+{"type":"turn.started"}
+{"type":"error","message":"{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"code\":null,\"message\":\"[ObjectParam] empty_property_name\"}}"}
+{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"code\":null,\"message\":\"[ObjectParam] empty_property_name\"}}"}}

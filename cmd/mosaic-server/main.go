@@ -15,10 +15,12 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/agent"
+	"github.com/sisibeloved/Mosaic/internal/agent/codexadapter"
 	"github.com/sisibeloved/Mosaic/internal/agent/echo"
 	"github.com/sisibeloved/Mosaic/internal/attention"
 	"github.com/sisibeloved/Mosaic/internal/harness"
@@ -117,33 +119,58 @@ func main() {
 	}
 	logger.Info("mosaic-server listening", "addr", ln.Addr().String())
 
-	// 房间引擎：M1 服务全部已创建房间；open_floor 默认参数（RFC-0003 §3.1.7）
-	engine := room.NewEngine(room.EngineConfig{
-		Store:  store,
-		Reader: store,
-		Agents: supervisor,
-		Seats: []room.AgentSeat{{
+	// 房间引擎 + 提交后分发：echo 恒在（conformance 基线）；宿主扫描完成后，
+	// 已启用的真实适配器（如 codex）动态注册并加入座位。分发循环晚于扫描启动——
+	// 扫描期间的命令照常受理，事件在分发启动后依序投递（outbox 不丢）。
+	go func() {
+		<-scanDone
+		seats := []room.AgentSeat{{
 			ParticipantID: "par_echo",
 			Profile:       agent.Profile{ProfileID: "prof_echo", Adapter: "echo", DisplayName: "Echo"},
-		}},
-		Policy: attention.Policy{
-			Mode:        "open_floor",
-			MaxSpeakers: 3,
-			Lambda:      0.30, // M1 默认；OQ-04 校准前可配（RFC-0003 §3.1.5）
-			Weights:     attention.DefaultWeights,
-		},
-		Clock:  clock,
-		Now:    time.Now,
-		NewID:  newID,
-		Tenant: "ten_local",
-	})
-
-	// 提交后分发：outbox → SSE Hub + 房间引擎
-	dispatcher := outbox.NewDispatcher(store, []outbox.Consumer{
-		httpapi.HubConsumer(hub),
-		engine,
-	}, 20*time.Millisecond)
-	go dispatcher.Run(ctx)
+		}}
+		for _, exe := range harnessRegistry.EnabledList() {
+			switch exe.Adapter {
+			case "codex":
+				if err := supervisor.Register(codexadapter.New(codexadapter.Config{
+					CodexPath: exe.Path,
+					Timeout:   180 * time.Second,
+				})); err != nil {
+					logger.Warn("codex adapter register failed", "path", exe.Path, "err", err)
+					continue
+				}
+				profileID := "prof_codex_" + exe.Runtime
+				if exe.Distro != "" {
+					profileID += "_" + strings.ReplaceAll(exe.Distro, ".", "_")
+				}
+				seats = append(seats, room.AgentSeat{
+					ParticipantID: "par_codex",
+					Profile:       agent.Profile{ProfileID: profileID, Adapter: "codex", DisplayName: "Codex"},
+				})
+				logger.Info("agent seat ready", "adapter", "codex", "runtime", exe.Runtime, "path", exe.Path)
+			}
+		}
+		engine := room.NewEngine(room.EngineConfig{
+			Store:  store,
+			Reader: store,
+			Agents: supervisor,
+			Seats:  seats,
+			Policy: attention.Policy{
+				Mode:        "open_floor",
+				MaxSpeakers: 3,
+				Lambda:      0.30, // M1 默认；OQ-04 校准前可配（RFC-0003 §3.1.5）
+				Weights:     attention.DefaultWeights,
+			},
+			Clock:  clock,
+			Now:    time.Now,
+			NewID:  newID,
+			Tenant: "ten_local",
+		})
+		dispatcher := outbox.NewDispatcher(store, []outbox.Consumer{
+			httpapi.HubConsumer(hub),
+			engine,
+		}, 20*time.Millisecond)
+		dispatcher.Run(ctx)
+	}()
 
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {

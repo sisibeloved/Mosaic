@@ -105,7 +105,7 @@
 目标：在双平台上，人与 1 个真实 agent 完成完整、可回放的一轮讨论。
 
 - [ ] Room/Thread 最小生命周期 + `message.posted` 全链路（命令→事件→SSE 游标订阅→UI Timeline）**（2026-08-28：Room 创建 + message.posted + SSE 游标订阅/断线重连已落地（ST 北极星绿）；Thread 生命周期与 UI 待做）**
-- [ ] native-codex 适配器（headless 模式对接 + 结构化块解析 + 会话恢复）通过 conformance 三件套
+- [ ] native-codex 适配器（headless 模式对接 + 结构化块解析 + 会话恢复）通过 conformance 三件套 **（2026-08-28 切片 E 落地：codexadapter 对接 codex exec --json【实证 codex-cli 0.149.1 事件流：thread.started/item.completed/turn.completed.usage/error/turn.failed，fixtures 钉版本】；结构化输出走提示词约束 + 本地提取校验【--output-schema 在当前 provider 上游 400，实证记录为已知缺口】；会话连续性 exec resume <thread_id>【真机 IT：codeword 回忆验证】；取消/超时 → ErrStale；进程组击杀 + WaitDelay 防孙进程握管道永挂【实证】；环境白名单含代理/CA 透传【实证：本机经 127.0.0.1:7890 出网】。真机 IT 三件：intent 结构 conformance / resume 连续 / generate 可发布，全绿；supervisor 注册 + 引擎座位随宿主扫描动态组装。待做：conformance fixture 阈值化、崩溃恢复演练）**
 - [ ] Attention 最小实现：硬资格 + 记分卡（默认权重）+ MMR + FloorGrant（epoch）；Open Floor 单模式先行 **（2026-08-28 切片 C 落地：internal/attention 纯函数选择引擎——记分卡公式/五档 band/硬资格序/duplicate_intent/score 越界严格拒/silent 计数/MMR 贪心含"无正边际即停"与 Roundtable·Review 的 challenge·question λ 减半/确定性平分决胜；fixtures/deterministic-selection-v1.json 手算基线进 CI（RFC-0003 §3.4 门禁）。引擎已接入：全量 intent.recorded（未获选 band+理由可查 R-08）、grant causation 指向 intent.recorded、同轮 grant 共享 epoch（round.opened 计数）、多座 rank 揭示。待做：预算 admission、公平机制（floor share 窗口/半衰期、frontier slot）、迟到拒绝执行面（epoch 已落 payload）**
 - [ ] Context 组装七层最小版 + Context Receipt 落库
 - [ ] draft 流（DraftUpdate 安全子集）+ 暂停/取消 + 迟到拒绝（epoch）

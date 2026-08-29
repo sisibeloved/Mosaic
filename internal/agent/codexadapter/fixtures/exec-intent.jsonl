@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a04b2d-602f-71c0-927a-02667f3c8de7"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"action\":\"speak\",\"type\":\"answer\",\"public_rationale\":\"Yes—SQLite is usually an excellent default for a single-user desktop app: embedded, transactional, portable, and low-maintenance. Reconsider if you need heavy concurrent writes, multi-device sync, shared network access, or server-side authorization.\",\"scores\":{\"relevance\":1.0,\"novelty\":0.72,\"urgency\":0.55,\"confidence\":0.96}}"}}
+{"type":"turn.completed","usage":{"input_tokens":21293,"cached_input_tokens":6912,"cache_write_input_tokens":0,"output_tokens":113,"reasoning_output_tokens":15}}
