@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"syscall"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/agent"
 	"github.com/sisibeloved/Mosaic/internal/agent/echo"
 	"github.com/sisibeloved/Mosaic/internal/attention"
+	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/room"
 	"github.com/sisibeloved/Mosaic/internal/storage/sqlite"
@@ -69,12 +71,37 @@ func main() {
 
 	hub := sse.NewHub()
 
+	// 宿主层：启动自动扫描（负责人要求：Windows 必须覆盖 WSL 内安装的 CLI）。
+	// 扫描超时独立于服务可用性——探测失败不阻塞启动，注册表持久化合并。
+	harnessRegistry, err := harness.LoadOrCreate(filepath.Join(*dataDir, "harness-registry.json"))
+	if err != nil {
+		logger.Error("harness registry failed", "err", err)
+		os.Exit(1)
+	}
+	scanDone := make(chan struct{})
+	go func() {
+		defer close(scanDone)
+		scanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		opts := harness.ScanOptions{IncludeWSL: goruntime.GOOS == "windows"}
+		if err := harnessRegistry.Scan(scanCtx, harness.NewHostRunner(), harness.BuiltinProbes, opts); err != nil {
+			logger.Warn("harness scan partial failure", "err", err)
+		}
+		for _, exe := range harnessRegistry.List() {
+			logger.Info("harness discovered",
+				"adapter", exe.Adapter, "runtime", exe.Runtime, "distro", exe.Distro,
+				"path", exe.Path, "version", exe.Version, "login", exe.Login)
+		}
+	}()
+
 	mux := httpapi.New(httpapi.Deps{
-		SVC:    svc,
-		Reader: store,
-		Hub:    hub,
-		Actor:  room.Actor{ParticipantID: "par_owner", Kind: "human"}, // 本地 owner（ADR-0009）
-		Logger: logger,
+		SVC:         svc,
+		Reader:      store,
+		Hub:         hub,
+		Actor:       room.Actor{ParticipantID: "par_owner", Kind: "human"}, // 本地 owner（ADR-0009）
+		Harness:     harnessRegistry,
+		ProbeRunner: harness.NewHostRunner(),
+		Logger:      logger,
 	})
 
 	// 先 Listen 再 Serve：暴露实际绑定地址（支持 -addr :0），ST 据此发现端口。

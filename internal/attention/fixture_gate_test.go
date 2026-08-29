@@ -17,12 +17,12 @@ type fixtureScores struct {
 }
 
 type fixtureIntent struct {
-	IntentID      string         `json:"intent_id"`
-	ParticipantID string         `json:"participant_id"`
-	Action        string         `json:"action"`
-	Type          string         `json:"type"`
-	Scores        fixtureScores  `json:"scores"`
-	AddressedTo   []string       `json:"addressed_to"`
+	IntentID      string        `json:"intent_id"`
+	ParticipantID string        `json:"participant_id"`
+	Action        string        `json:"action"`
+	Type          string        `json:"type"`
+	Scores        fixtureScores `json:"scores"`
+	AddressedTo   []string      `json:"addressed_to"`
 }
 
 type fixtureFile struct {
@@ -41,7 +41,7 @@ type fixtureFile struct {
 		} `json:"weights"`
 	} `json:"policy"`
 	Candidates []struct {
-		Intent      fixtureIntent `json:"intent"`
+		Intent      fixtureIntent   `json:"intent"`
 		Context     ContextFeatures `json:"context"`
 		Eligibility struct {
 			Enabled        bool `json:"enabled"`

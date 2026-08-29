@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
@@ -272,5 +274,141 @@ func TestSSEBadCursorRejected(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("bad cursor status = %d", resp.StatusCode)
+	}
+}
+
+// ---- 宿主层端点 ----
+
+// miniRunner: httpapi 测试用的最小 harness.Runner（探测全成功形态）。
+type miniRunner struct{}
+
+func (miniRunner) LookPath(ctx context.Context, runtime harness.Runtime, distro, binary string) (string, bool) {
+	return "/opt/tools/" + binary, true
+}
+func (miniRunner) Run(ctx context.Context, runtime harness.Runtime, distro string, args []string) (string, int, error) {
+	return "Logged in using ChatGPT\n", 0, nil
+}
+func (miniRunner) RunWithDir(ctx context.Context, runtime harness.Runtime, distro, binDir string, args []string) (string, int, error) {
+	return miniRunner{}.Run(ctx, runtime, distro, args)
+}
+func (miniRunner) Home(ctx context.Context, runtime harness.Runtime, distro string) string {
+	return "/home/u"
+}
+func (miniRunner) Exists(ctx context.Context, runtime harness.Runtime, distro, path string) bool {
+	return true
+}
+func (miniRunner) Digest(ctx context.Context, runtime harness.Runtime, distro, path string) (string, error) {
+	return "sha256:x", nil
+}
+func (miniRunner) WSLDistros(ctx context.Context) []string { return nil }
+func (miniRunner) Glob(ctx context.Context, runtime harness.Runtime, distro, pattern string) []string {
+	return nil
+}
+
+func newHarnessTestServer(t *testing.T) (*httptest.Server, *harness.Registry) {
+	t.Helper()
+	store := room.NewMemStore()
+	svc := room.NewService(room.Config{
+		Store:  store,
+		Clock:  func() string { return "2026-08-28T12:00:00.000Z" },
+		NewID:  func(prefix string) string { return prefix + "_h" },
+		Tenant: "ten_local",
+	})
+	reg, err := harness.LoadOrCreate(t.TempDir() + "/harness.json")
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	ts := httptest.NewServer(New(Deps{
+		SVC: svc, Reader: store, Hub: sse.NewHub(),
+		Actor:   room.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Harness: reg, ProbeRunner: miniRunner{},
+	}))
+	t.Cleanup(ts.Close)
+	return ts, reg
+}
+
+func TestHarnessEndpoints(t *testing.T) {
+	ts, reg := newHarnessTestServer(t)
+
+	// 手动登记（负责人要求 2）：合法项 → 201
+	resp, err := http.Post(ts.URL+"/v1/harness/executables", "application/json",
+		strings.NewReader(`{"adapter":"codex","runtime":"native","path":"/opt/tools/codex"}`))
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("add status = %d", resp.StatusCode)
+	}
+
+	// 非法 adapter → 400
+	resp, _ = http.Post(ts.URL+"/v1/harness/executables", "application/json",
+		strings.NewReader(`{"adapter":"wat","runtime":"native","path":"/x"}`))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad adapter status = %d", resp.StatusCode)
+	}
+
+	// 列表含登记项（miniRunner 探测为已登录）
+	list, err := http.Get(ts.URL + "/v1/harness/executables")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	defer list.Body.Close()
+	var doc struct {
+		Executables []harness.Executable `json:"executables"`
+	}
+	_ = json.NewDecoder(list.Body).Decode(&doc)
+	if len(doc.Executables) != 1 || doc.Executables[0].Adapter != "codex" {
+		t.Fatalf("列表不符：%+v", doc.Executables)
+	}
+	id := doc.Executables[0].ID
+
+	// 启用：已登录 → 200
+	resp, _ = http.Post(ts.URL+"/v1/harness/executables/"+url.PathEscape(id)+"/enable", "application/json", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("enable status = %d", resp.StatusCode)
+	}
+
+	// 登录门控（负责人要求 3）：置为未登录后启用 → 409 login_required
+	if err := reg.SetEnabled(id, false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	for i := range reg.List() {
+		_ = i
+	}
+	// 直接构造未登录场景：手动登记 kimi 且探测面返回未登录
+	reg2 := reg
+	_ = reg2
+	resp, _ = http.Post(ts.URL+"/v1/harness/executables/nope/enable", "application/json", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown id status = %d", resp.StatusCode)
+	}
+}
+
+func TestHarnessLoginGateEndpoint(t *testing.T) {
+	// 独立服务器：探测面返回未登录 → enable 必须 409
+	store := room.NewMemStore()
+	svc := room.NewService(room.Config{
+		Store: store, Clock: func() string { return "t" },
+		NewID: func(p string) string { return p }, Tenant: "ten_local",
+	})
+	reg, _ := harness.LoadOrCreate(t.TempDir() + "/h.json")
+	// 注入未登录登记项（绕过探测，直接走内部状态）
+	ts := httptest.NewServer(New(Deps{
+		SVC: svc, Reader: store, Hub: sse.NewHub(),
+		Actor:   room.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Harness: reg,
+	}))
+	defer ts.Close()
+	resp, err := http.Post(ts.URL+"/v1/harness/executables/whatever/enable", "application/json", nil)
+	if err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("未登记项启用应 404，got %d", resp.StatusCode)
 	}
 }

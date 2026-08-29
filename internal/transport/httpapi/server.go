@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
@@ -23,7 +24,10 @@ type Deps struct {
 	Reader room.EventReader
 	Hub    *sse.Hub
 	Actor  room.Actor // 个人版：本地 owner（ADR-0009）
-	Logger *slog.Logger
+	// Harness 宿主层可执行程序注册表（nil 时相关端点返回 503）。
+	Harness     *harness.Registry
+	ProbeRunner harness.Runner // 手动登记时的探测执行面（nil 时禁止手动登记）
+	Logger      *slog.Logger
 }
 
 // New 构造路由（含 healthz）。
@@ -37,6 +41,10 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("POST /v1/rooms", s.handleCreateRoom)
 	mux.HandleFunc("POST /v1/rooms/{room_id}/commands", s.handleCommand)
 	mux.HandleFunc("GET /v1/rooms/{room_id}/events", s.handleEvents)
+	mux.HandleFunc("GET /v1/harness/executables", s.handleListExecutables)
+	mux.HandleFunc("POST /v1/harness/executables", s.handleAddExecutable)
+	mux.HandleFunc("POST /v1/harness/executables/{id}/enable", s.handleEnableExecutable(true))
+	mux.HandleFunc("POST /v1/harness/executables/{id}/disable", s.handleEnableExecutable(false))
 	return mux
 }
 
@@ -235,4 +243,69 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	body.Error.Code = code
 	body.Error.Message = message
 	writeJSON(w, status, body)
+}
+
+// ---- 宿主层可执行程序端点（RFC-0002 双层管理的宿主面）----
+
+func (s *server) handleListExecutables(w http.ResponseWriter, _ *http.Request) {
+	if s.deps.Harness == nil {
+		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"executables": s.deps.Harness.List()})
+}
+
+type manualExecutableRequest struct {
+	Adapter string `json:"adapter"`
+	Runtime string `json:"runtime"`
+	Distro  string `json:"distro"`
+	Path    string `json:"path"`
+	Version string `json:"version"`
+}
+
+func (s *server) handleAddExecutable(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Harness == nil || s.deps.ProbeRunner == nil {
+		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表/探测面未配置")
+		return
+	}
+	var req manualExecutableRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "登记体不合法："+err.Error())
+		return
+	}
+	if err := s.deps.Harness.AddManual(r.Context(), s.deps.ProbeRunner, harness.Executable{
+		Adapter: req.Adapter, Runtime: req.Runtime, Distro: req.Distro,
+		Path: req.Path, Version: req.Version,
+	}); err != nil {
+		if errors.Is(err, harness.ErrInvalidEntry) {
+			writeError(w, http.StatusBadRequest, "invalid_entry", err.Error())
+			return
+		}
+		s.writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"status": "registered"})
+}
+
+func (s *server) handleEnableExecutable(enabled bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.deps.Harness == nil {
+			writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")
+			return
+		}
+		if err := s.deps.Harness.SetEnabled(r.PathValue("id"), enabled); err != nil {
+			switch {
+			case errors.Is(err, harness.ErrLoginRequired):
+				writeError(w, http.StatusConflict, "login_required", err.Error())
+			case errors.Is(err, harness.ErrNotFound):
+				writeError(w, http.StatusNotFound, "not_found", err.Error())
+			default:
+				s.writeDomainError(w, err)
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "enabled": enabled})
+	}
 }

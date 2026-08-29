@@ -109,7 +109,7 @@
 - [ ] Attention 最小实现：硬资格 + 记分卡（默认权重）+ MMR + FloorGrant（epoch）；Open Floor 单模式先行 **（2026-08-28 切片 C 落地：internal/attention 纯函数选择引擎——记分卡公式/五档 band/硬资格序/duplicate_intent/score 越界严格拒/silent 计数/MMR 贪心含"无正边际即停"与 Roundtable·Review 的 challenge·question λ 减半/确定性平分决胜；fixtures/deterministic-selection-v1.json 手算基线进 CI（RFC-0003 §3.4 门禁）。引擎已接入：全量 intent.recorded（未获选 band+理由可查 R-08）、grant causation 指向 intent.recorded、同轮 grant 共享 epoch（round.opened 计数）、多座 rank 揭示。待做：预算 admission、公平机制（floor share 窗口/半衰期、frontier slot）、迟到拒绝执行面（epoch 已落 payload）**
 - [ ] Context 组装七层最小版 + Context Receipt 落库
 - [ ] draft 流（DraftUpdate 安全子集）+ 暂停/取消 + 迟到拒绝（epoch）
-- [ ] 双平台进程管理：spawn/健康检查/退避重启/优雅退出（含 Windows 信号语义）；CLI 检测（codex/kimi/zcode 是否安装）
+- [ ] 双平台进程管理：spawn/健康检查/退避重启/优雅退出（含 Windows 信号语义）；CLI 检测（codex/kimi/zcode 是否安装）**（2026-08-28 切片 D：宿主层注册表落地——internal/harness：启动自动扫描【PATH + 已知安装位置 glob（nvm/fnm/volta 版本目录，文件系统事实驱动，不依赖 shell 初始化）+ Windows 宿主扫描 WSL 发行版（wsl.exe，UTF-16 输出解码）】、登录态探测【codex 命令式 / kimi 凭证文件，实证】、手动配置共存、启用登录门控（未登录不可启用）、持久化注册表 + /v1/harness/executables 端点；本机 IT 实证 codex（nvm 目录、logged_in）与 kimi 双双发现。待做：spawn/健康检查/退避重启）**
 - **出口判据**：Windows 与 macOS 各完成一次"创建房间 → 人发消息 → Codex agent 评估→获选→生成→发布 → 断线重连续传 → 回放重建一致"；崩溃注入后无迟到污染（fixture 断言）。
 
 ## M2 可用的讨论体验（4 周）

@@ -328,3 +328,45 @@ func nestedMap(m map[string]any, key string) map[string]any {
 	v, _ := m[key].(map[string]any)
 	return v
 }
+
+// TestHarnessEndpoint_ST：真实进程的宿主注册表面——列表可用且结构合法
+// （扫描异步于启动；CI 无 CLI 时列表为空，本机应含真实发现项）。
+func TestHarnessEndpoint_ST(t *testing.T) {
+	bin := buildServer(t)
+	dataDir := t.TempDir()
+	cmd := exec.Command(bin, "-addr", "127.0.0.1:0", "-data", dataDir)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+	base := "http://" + waitListening(t, stdout)
+
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Get(base + "/v1/harness/executables")
+	if err != nil {
+		t.Fatalf("GET harness: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var doc struct {
+		Executables []map[string]any `json:"executables"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, exe := range doc.Executables {
+		for _, required := range []string{"id", "adapter", "runtime", "path", "login_state"} {
+			if _, ok := exe[required]; !ok {
+				t.Fatalf("登记项缺 %q：%v", required, exe)
+			}
+		}
+	}
+}

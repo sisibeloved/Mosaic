@@ -18,13 +18,13 @@ type Scores struct {
 
 // Intent 一个已评估的发言意图（RFC-0002 turn_intent 的域内投影）。
 type Intent struct {
-	IntentID       string
-	ParticipantID  string
-	Action         string // speak | react | fork | summarize | silent
-	Type           string // answer | extend | challenge | support | question | redirect | synthesize
-	AddressedTo    []string
+	IntentID        string
+	ParticipantID   string
+	Action          string // speak | react | fork | summarize | silent
+	Type            string // answer | extend | challenge | support | question | redirect | synthesize
+	AddressedTo     []string
 	PublicRationale string
-	Scores         Scores
+	Scores          Scores
 }
 
 // ContextFeatures 确定性上下文特征。

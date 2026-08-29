@@ -11,14 +11,14 @@ import (
 func cand(id, par, action, typ string, rel, nov, urg, conf float64, addressed []string) Candidate {
 	return Candidate{
 		Intent: Intent{
-			IntentID:     id,
+			IntentID:      id,
 			ParticipantID: par,
-			Action:       action,
-			Type:         typ,
-			AddressedTo:  addressed,
-			Scores:       Scores{Relevance: rel, Novelty: nov, Urgency: urg, Confidence: conf},
+			Action:        action,
+			Type:          typ,
+			AddressedTo:   addressed,
+			Scores:        Scores{Relevance: rel, Novelty: nov, Urgency: urg, Confidence: conf},
 		},
-		Ctx:       ContextFeatures{ViewpointDiversity: 0.5},
+		Ctx:         ContextFeatures{ViewpointDiversity: 0.5},
 		Eligibility: Eligibility{Enabled: true, CooldownOK: true, ThreadWritable: true, BudgetOK: true},
 	}
 }
@@ -121,9 +121,10 @@ func TestSilentExcludedButCounted(t *testing.T) {
 }
 
 // MMR 手工推导：λ=0.3、quota=3、open_floor
-//   A(challenge,[beta]) score=.77；C(question) .575；B(extend,[beta]) .42；D .09
-//   rank1=A；C mmr=.575−.3×.1=.545；B mmr=.42−.3×.4=.30；D mmr=.06>0 但 quota 满
-//   期望选择序 [A, C, B]，D 以 quota 拒绝且 band 可查（R-08）
+//
+//	A(challenge,[beta]) score=.77；C(question) .575；B(extend,[beta]) .42；D .09
+//	rank1=A；C mmr=.575−.3×.1=.545；B mmr=.42−.3×.4=.30；D mmr=.06>0 但 quota 满
+//	期望选择序 [A, C, B]，D 以 quota 拒绝且 band 可查（R-08）
 func TestMMRSelectionHandComputed(t *testing.T) {
 	A := cand("int_a", "par_alpha", "speak", "challenge", 0.9, 0.8, 0.7, 0.9, []string{"par_beta"})
 	A.Ctx = ContextFeatures{ViewpointDiversity: 0.8, DirectAddress: 1.0} // .27+.16+.12+.07+.15=.77
@@ -172,9 +173,10 @@ func TestMMRSelectionHandComputed(t *testing.T) {
 // Roundtable/Review 下 challenge/question 的 λ 减半（RFC-0003 §3.1.5）：
 // Z(challenge) 高分先选；Y(extend,[beta]) 与 Z 相似度 0.4（异类型+共同点名）；
 // W(challenge,[beta]) 与 Z 相似度 1.0（同类型+共同点名）。λ=.5
-//   Y score=.14；W score=.40
-//   open_floor：Y 边际 .14−.5×.4=−.06；W 边际 .40−.5×1.0=−.10 → 仅 [Z]
-//   roundtable：W λ_eff=.25 → 边际 .40−.25=.15>0（λ 减半翻转）→ [Z, W]
+//
+//	Y score=.14；W score=.40
+//	open_floor：Y 边际 .14−.5×.4=−.06；W 边际 .40−.5×1.0=−.10 → 仅 [Z]
+//	roundtable：W λ_eff=.25 → 边际 .40−.25=.15>0（λ 减半翻转）→ [Z, W]
 func TestLambdaReductionForChallengeInRoundtable(t *testing.T) {
 	Z := cand("z", "par_z", "speak", "challenge", 0.9, 0.9, 0.9, 0.9, []string{"par_beta"})
 	Z.Ctx = ContextFeatures{ViewpointDiversity: 0.9, DirectAddress: 1.0} // .825
