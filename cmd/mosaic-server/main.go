@@ -136,7 +136,8 @@ func main() {
 		Logger:      logger,
 	})
 
-	// 先 Listen 再 Serve：暴露实际绑定地址（支持 -addr :0），ST 据此发现端口。
+	// 先 Listen 再 Serve：暴露实际绑定地址（支持 -addr 127.0.0.1:0；裸 ":port"
+	// 是全接口监听，须经 -allow-remote 豁免——复审 #4）。
 	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
 		logger.Error("listen failed", "addr", *addr, "err", err)

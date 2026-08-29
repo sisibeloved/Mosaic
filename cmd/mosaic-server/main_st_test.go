@@ -158,11 +158,13 @@ func TestInvalidFlagExitsNonZero_ST(t *testing.T) {
 
 // TestNonLoopbackGuard_ST（二轮审校 #17）：owner/harness API 无认证，
 // 非回环监听未显式豁免（-allow-remote）必须拒绝启动；豁免后放行进入监听。
+// 复审 #4：空 host（":port"）= 全接口监听，同样必须拒绝。
 func TestNonLoopbackGuard_ST(t *testing.T) {
 	bin := buildServer(t)
-	err := exec.Command(bin, "-addr", "0.0.0.0:0", "-data", t.TempDir()).Run()
-	if err == nil {
-		t.Fatal("非回环监听未豁免必须拒绝启动")
+	for _, addr := range []string{"0.0.0.0:0", ":0", "[::]:0"} {
+		if err := exec.Command(bin, "-addr", addr, "-data", t.TempDir()).Run(); err == nil {
+			t.Fatalf("非回环监听 %q 未豁免必须拒绝启动", addr)
+		}
 	}
 	cmd := exec.Command(bin, "-addr", "0.0.0.0:0", "-data", t.TempDir(), "-allow-remote")
 	stdout, _ := cmd.StdoutPipe()
