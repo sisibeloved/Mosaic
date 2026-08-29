@@ -167,14 +167,26 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	sub := s.deps.Hub.Subscribe(roomID, 256)
 	defer sub.Close()
 
-	events, _, err := s.deps.Reader.EventsAfter(r.Context(), roomID, cursor, 1000)
-	if err != nil {
-		fmt.Fprint(w, ": server: catch-up failed\n\n")
+	writeResync := func(reason string) {
+		fmt.Fprintf(w, "event: resync_required\ndata: %s\n\n", mustMarshalJSON(map[string]any{"reason": reason}))
 		flusher.Flush()
-		return
 	}
-	for _, ev := range events {
-		writeStored(ev)
+
+	// 追平分页：积压超一批（1000）也必须补齐——next 游标循环续读直至追平
+	cur := cursor
+	for {
+		events, next, err := s.deps.Reader.EventsAfter(r.Context(), roomID, cur, 1000)
+		if err != nil {
+			writeResync("catch_up_failed") // RFC-0001 §订阅：缺口/失败 → 具名信号，客户端走快照恢复
+			return
+		}
+		for _, ev := range events {
+			writeStored(ev)
+		}
+		if next == "" || len(events) == 0 {
+			break
+		}
+		cur = next
 	}
 	fmt.Fprint(w, ": stream: open\n\n")
 	flusher.Flush()
@@ -190,6 +202,7 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		case ev, ok := <-sub.C:
 			if !ok {
+				writeResync("slow_consumer") // 断流必须可见：客户端携最后 id 重连或走快照
 				fmt.Fprint(w, ": server: slow-consumer\n\n")
 				flusher.Flush()
 				return
@@ -230,6 +243,14 @@ func HubConsumer(hub *sse.Hub) outbox.Consumer {
 
 func writeSSE(w http.ResponseWriter, event, id string, data []byte) {
 	fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", id, event, data)
+}
+
+func mustMarshalJSON(v any) []byte {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return []byte(`{}`)
+	}
+	return raw
 }
 
 func mustMarshalView(ev room.StoredEvent) []byte {

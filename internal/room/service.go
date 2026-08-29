@@ -87,6 +87,10 @@ func (s *Service) ExecuteCommand(ctx context.Context, actor Actor, cmd Command) 
 }
 
 func (s *Service) createRoom(ctx context.Context, actor Actor, cmd Command) (*CommandResult, error) {
+	// 幂等回放最先（与 post_message 一致：同键异载荷是冲突，同载荷返回原房间）
+	if res, err := s.replayIfReceived(ctx, cmd, actor); res != nil || err != nil {
+		return res, err
+	}
 	if cmd.RoomID != "" {
 		return nil, fmt.Errorf("%w: create_room 不接受 room_id", ErrInvalidCommand)
 	}
@@ -123,6 +127,7 @@ func (s *Service) createRoom(ctx context.Context, actor Actor, cmd Command) (*Co
 		CommandKind:        cmd.CommandKind,
 		RequestFingerprint: fingerprint(cmd, actor),
 		EventID:            env.EventID,
+		ExpectedRoomVersion: cmd.ExpectedRoomVersion,
 		ExecutedAt:         s.cfg.Clock(),
 	}
 	return s.commit(ctx, env, receipt)
@@ -180,13 +185,14 @@ func (s *Service) postMessage(ctx context.Context, actor Actor, cmd Command) (*C
 		Metadata:      map[string]any{},
 	}
 	receipt := CommandReceipt{
-		TenantID:           s.cfg.Tenant,
-		RoomID:             cmd.RoomID,
-		IdempotencyKey:     cmd.IdempotencyKey,
-		CommandKind:        cmd.CommandKind,
-		RequestFingerprint: fingerprint(cmd, actor),
-		EventID:            env.EventID,
-		ExecutedAt:         s.cfg.Clock(),
+		TenantID:            s.cfg.Tenant,
+		RoomID:              cmd.RoomID,
+		IdempotencyKey:      cmd.IdempotencyKey,
+		CommandKind:         cmd.CommandKind,
+		RequestFingerprint:  fingerprint(cmd, actor),
+		EventID:             env.EventID,
+		ExpectedRoomVersion: cmd.ExpectedRoomVersion,
+		ExecutedAt:          s.cfg.Clock(),
 	}
 	return s.commit(ctx, env, receipt)
 }
@@ -203,16 +209,13 @@ type postMessagePayload struct {
 var threadIDPattern = regexp.MustCompile(`^thr_[0-9A-Za-z_-]+$`)
 
 // commit 原子落库 + 回执；回执竞态时重查回放（并发同键后到者）。
+// 存储在事务内强制乐观并发（ExpectedRoomVersion）——本函数之上只做快速失败预检。
 func (s *Service) commit(ctx context.Context, env protocol.Envelope, receipt CommandReceipt) (*CommandResult, error) {
 	appended, err := s.cfg.Store.AppendWithReceipt(ctx, []protocol.Envelope{env}, receipt)
 	if err != nil {
 		if errors.Is(err, ErrDuplicateReceipt) { // 并发同键竞态：后到者按回放处理
-			if res, rerr := s.replayIfReceived(ctx, Command{
-				RoomID:         receipt.RoomID,
-				CommandKind:    receipt.CommandKind,
-				IdempotencyKey: receipt.IdempotencyKey,
-				Payload:        nil,
-			}, Actor{ParticipantID: "", Kind: "human"}); res != nil || rerr != nil { // actor 置空：跳过指纹比对（上游已比对过）
+			// 指纹比对不可跳过：同键异载荷是幂等冲突，静默回放等于吞掉冲突（RFC-0001）
+			if res, rerr := s.replayByReceipt(ctx, receipt); res != nil || rerr != nil {
 				return res, rerr
 			}
 			// 回放未果（非回执撞车而是其他唯一约束）：按原错误上抛，绝不 (nil,nil)
@@ -229,14 +232,23 @@ func (s *Service) commit(ctx context.Context, env protocol.Envelope, receipt Com
 
 // replayIfReceived 已受理则回放；同键不同指纹报冲突；未受理返回 (nil, nil)。
 func (s *Service) replayIfReceived(ctx context.Context, cmd Command, actor Actor) (*CommandResult, error) {
-	rc, err := s.cfg.Store.LookupReceipt(ctx, s.cfg.Tenant, cmd.IdempotencyKey, cmd.CommandKind)
+	return s.replayCore(ctx, cmd.IdempotencyKey, cmd.CommandKind, fingerprint(cmd, actor))
+}
+
+// replayByReceipt 竞态路径回放：以本方回执携带的指纹比对（commit 内唯一调用点）。
+func (s *Service) replayByReceipt(ctx context.Context, receipt CommandReceipt) (*CommandResult, error) {
+	return s.replayCore(ctx, receipt.IdempotencyKey, receipt.CommandKind, receipt.RequestFingerprint)
+}
+
+func (s *Service) replayCore(ctx context.Context, idemKey, kind, wantFingerprint string) (*CommandResult, error) {
+	rc, err := s.cfg.Store.LookupReceipt(ctx, s.cfg.Tenant, idemKey, kind)
 	if err != nil {
 		return nil, fmt.Errorf("room: lookup receipt: %w", err)
 	}
 	if rc == nil {
 		return nil, nil
 	}
-	if actor.ParticipantID != "" && rc.RequestFingerprint != fingerprint(cmd, actor) {
+	if rc.RequestFingerprint != wantFingerprint {
 		return nil, fmt.Errorf("%w: 同幂等键不同请求指纹", ErrIdempotencyConflict)
 	}
 	return &CommandResult{
@@ -308,13 +320,14 @@ func (s *Service) roomLifecycle(ctx context.Context, actor Actor, cmd Command, e
 		Metadata:      map[string]any{},
 	}
 	receipt := CommandReceipt{
-		TenantID:           s.cfg.Tenant,
-		RoomID:             cmd.RoomID,
-		IdempotencyKey:     cmd.IdempotencyKey,
-		CommandKind:        cmd.CommandKind,
-		RequestFingerprint: fingerprint(cmd, actor),
-		EventID:            env.EventID,
-		ExecutedAt:         s.cfg.Clock(),
+		TenantID:            s.cfg.Tenant,
+		RoomID:              cmd.RoomID,
+		IdempotencyKey:      cmd.IdempotencyKey,
+		CommandKind:         cmd.CommandKind,
+		RequestFingerprint:  fingerprint(cmd, actor),
+		EventID:             env.EventID,
+		ExpectedRoomVersion: cmd.ExpectedRoomVersion,
+		ExecutedAt:          s.cfg.Clock(),
 	}
 	return s.commit(ctx, env, receipt)
 }

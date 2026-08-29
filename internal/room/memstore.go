@@ -4,6 +4,7 @@ package room
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/sisibeloved/Mosaic/internal/protocol"
@@ -49,6 +50,12 @@ func (m *MemStore) appendLocked(envs []protocol.Envelope, rc *CommandReceipt) ([
 		key := receiptKey(rc.TenantID, rc.IdempotencyKey, rc.CommandKind)
 		if _, exists := m.receipts[key]; exists {
 			return nil, ErrDuplicateReceipt
+		}
+		// 乐观并发在追加临界区内强制（与 SQLite 事务内校验同语义）：
+		// 先查回执（竞态重放优先于版本冲突），再校验期望版本，最后才落事件。
+		if len(envs) > 0 && rc.ExpectedRoomVersion != m.nextSeq[envs[0].RoomID] {
+			return nil, fmt.Errorf("%w: expected=%d current=%d",
+				ErrVersionConflict, rc.ExpectedRoomVersion, m.nextSeq[envs[0].RoomID])
 		}
 	}
 	out := make([]protocol.Envelope, len(envs))

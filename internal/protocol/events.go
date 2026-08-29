@@ -63,15 +63,16 @@ type RoundOpenedPayload struct {
 }
 
 // IntentRecordedPayload intent.recorded：TurnIntent 的用户可见投影（公开 band，不公开精确分）。
+// R-01 全记录：失格/越界/silent 意图也落事件（ScoreBand="unranked"，Type 可空，理由进 metadata）。
 type IntentRecordedPayload struct {
 	IntentID        string   `json:"intent_id"`
 	ParticipantID   string   `json:"participant_id"`
 	Action          string   `json:"action"` // speak | react | fork | summarize | silent
-	Type            string   `json:"type"`   // answer | extend | challenge | support | question | redirect | synthesize
+	Type            string   `json:"type"`   // answer | extend | challenge | support | question | redirect | synthesize | ""（silent 可省）
 	ReplyTo         *string  `json:"reply_to"`
 	AddressedTo     []string `json:"addressed_to,omitempty"`
 	PublicRationale string   `json:"public_rationale"`
-	ScoreBand       string   `json:"score_band"` // very_low | low | medium | high | very_high
+	ScoreBand       string   `json:"score_band"` // very_low | low | medium | high | very_high | unranked（未进入记分）
 	Selected        bool     `json:"selected"`
 	Endorsed        bool     `json:"endorsed"`
 }
@@ -100,7 +101,7 @@ type FloorGrantedPayload struct {
 // FloorRevokedPayload floor.revoked（AR-004：撤销生效 < 500ms，正确性由 epoch 保证）。
 type FloorRevokedPayload struct {
 	GrantID string `json:"grant_id"`
-	Reason  string `json:"reason"` // human_preemption | room_paused | budget | thread_closed
+	Reason  string `json:"reason"` // human_preemption | room_paused | budget | thread_closed | generation_failed
 }
 
 // RoundClosedPayload round.closed：零公开发言是合法结果（AR-002）。

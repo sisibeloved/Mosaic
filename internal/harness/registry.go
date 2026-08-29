@@ -251,6 +251,8 @@ func LoadOrCreate(path string) (*Registry, error) {
 	return reg, nil
 }
 
+// saveLocked 原子落盘（tmp + rename）：半截写的注册表会让下次启动直接失败——
+// 崩溃窗口内要么旧表要么新表，绝不留截断 JSON。
 func (r *Registry) saveLocked() error {
 	raw, err := jsonMarshalIndent(struct {
 		Executables []Executable `json:"executables"`
@@ -258,7 +260,11 @@ func (r *Registry) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	return osWriteFile(r.path, raw, 0o600)
+	tmp := r.path + ".tmp"
+	if err := osWriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	return osRename(tmp, r.path)
 }
 
 // List 返回登记快照（副本）。

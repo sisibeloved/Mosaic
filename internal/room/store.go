@@ -33,15 +33,21 @@ type CommandReceipt struct {
 	CommandKind        string
 	RequestFingerprint string
 	EventID            string
-	RoomVersion        int64
-	ExecutedAt         string
+	// ExpectedRoomVersion 乐观并发期望：存储必须在追加事务内校验
+	// 当前房间版本与之相等（P-03：冲突判定在提交事务内，封死 check-then-append 竞态）。
+	ExpectedRoomVersion int64
+	// RoomVersion 由存储在追加成功后权威回填（调用方传入值被忽略），重放/查询据此返回真实版本。
+	RoomVersion int64
+	ExecutedAt  string
 }
 
 // AtomicStore 是命令处理域的存储端口：事件追加与回执写入必须同事务原子完成。
 type AtomicStore interface {
 	// AppendEvents 追加事件（seq 由存储按房间分配），并同事务写 outbox。
 	AppendEvents(ctx context.Context, envelopes []protocol.Envelope) ([]protocol.Envelope, error)
-	// AppendWithReceipt 事件 + 幂等回执同事务落库；回执冲突返回 ErrDuplicateReceipt。
+	// AppendWithReceipt 事件 + 幂等回执同事务落库。事务内依次：回执键已存在 →
+	// ErrDuplicateReceipt（竞态后到者按回放处理）；ExpectedRoomVersion 与当前版本
+	// 不符 → ErrVersionConflict；成功则回执 RoomVersion 权威回填为追加后的版本。
 	AppendWithReceipt(ctx context.Context, envelopes []protocol.Envelope, receipt CommandReceipt) ([]protocol.Envelope, error)
 	// LookupReceipt 查幂等回执；不存在返回 (nil, nil)。
 	LookupReceipt(ctx context.Context, tenantID, idempotencyKey, commandKind string) (*CommandReceipt, error)

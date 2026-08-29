@@ -1,5 +1,5 @@
 // POSIX 进程组：codex（node）会派生孙进程，超时击杀必须整组，
-// 否则孙进程握着管道导致 Wait 永挂（2026-08-29 IT 实证）。
+// 否则孙进程握着管道导致 Wait 永挂（2026-08-28 IT 实证）。
 //go:build !windows
 
 package codexadapter

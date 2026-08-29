@@ -1,7 +1,7 @@
 // UT 层：native-codex 适配器（切片 E 本体）——
 // 事件流解析（真实 fixtures）、JSON 提取、任务→提示词→结果映射、
 // 会话 resume 连续性、取消语义、PATH 注入。
-// TDD：本文件先行于实现（红→绿）。fixtures 为 2026-08-29 真机 codex 0.149.1 捕获。
+// TDD：本文件先行于实现（红→绿）。fixtures 为 2026-08-28 真机 codex 0.149.1 捕获。
 package codexadapter
 
 import (
@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -112,6 +113,29 @@ func TestExtractJSONVariants(t *testing.T) {
 	}
 	if _, err := ExtractJSON("no json here at all"); err == nil {
 		t.Fatal("无 JSON 必须报错")
+	}
+}
+
+// WSL 运行面（M1 收口补课）：wsl.exe 参数构造与发行版内 HOME 环境。
+func TestWSLArgsConstruction(t *testing.T) {
+	got := wslArgs("Ubuntu-22.04", []string{"HOME=/home/u", "PATH=/x"}, []string{"/home/u/.nvm/versions/node/v22/bin/codex", "exec", "-"})
+	want := []string{
+		"-d", "Ubuntu-22.04", "--", "env",
+		"HOME=/home/u", "PATH=/x",
+		"/home/u/.nvm/versions/node/v22/bin/codex", "exec", "-",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("wslArgs = %v（期望 %v）", got, want)
+	}
+}
+
+func TestWSLEnvUsesDistroHome(t *testing.T) {
+	env := codexEnvWithHome("/home/u/bin/codex", "/home/u")
+	joined := strings.Join(env, "\x00")
+	for _, want := range []string{"HOME=/home/u\x00", "CODEX_HOME=/home/u/.codex", "PATH=/home/u/bin:"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("env 缺 %q：%v", want, env)
+		}
 	}
 }
 

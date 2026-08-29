@@ -4,6 +4,7 @@ package room
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -341,14 +342,15 @@ func (gatedAdapter) Boot(context.Context, agent.Profile) (agent.Session, error) 
 
 type gatedSession struct{}
 
-func (*gatedSession) Run(_ context.Context, task agent.Task) (agent.Handle, error) {
-	return &gatedHandle{task: task}, nil
+func (*gatedSession) Run(ctx context.Context, task agent.Task) (agent.Handle, error) {
+	return &gatedHandle{task: task, ctx: ctx}, nil
 }
 func (*gatedSession) Cancel(string) {}
 func (*gatedSession) Close()        {}
 
 type gatedHandle struct {
 	task agent.Task
+	ctx  context.Context
 	mu   sync.Mutex
 	done bool
 }
@@ -356,20 +358,30 @@ type gatedHandle struct {
 func (h *gatedHandle) Updates() <-chan agent.DraftUpdate { return nil }
 
 func (h *gatedHandle) Result() (agent.Result, error) {
-	if h.task.Kind == agent.KindGenerate && gate != nil {
-		<-gate // 阻塞直到测试放行（期间可注入 pause）
-	}
 	if h.task.Kind == agent.KindEvaluateIntent {
 		return agent.Result{Block: "turn_intent", Data: map[string]any{
 			"action": "speak", "type": "extend", "public_rationale": "g",
 			"scores": map[string]any{"relevance": .5, "novelty": .5, "urgency": .5, "confidence": .5},
 		}}, nil
 	}
+	if h.task.Kind == agent.KindGenerate {
+		if genFail {
+			return agent.Result{}, fmt.Errorf("gated: generate boom")
+		}
+		if gate != nil {
+			select {
+			case <-gate: // 阻塞直到测试放行（期间可注入 pause/Close）
+			case <-h.ctx.Done():
+				return agent.Result{}, agent.ErrStale
+			}
+		}
+	}
 	return agent.Result{Block: "public_draft", Data: map[string]any{"body": "gated draft"}}, nil
 }
 func (h *gatedHandle) Cancel() {}
 
 var gate chan struct{}
+var genFail bool
 
 // 预算硬停：轮次耗尽后人类消息不再触发自动轮。
 func TestEngineBudgetHardStop(t *testing.T) {
@@ -482,6 +494,352 @@ func hasType(events []protocol.Envelope, typ string) bool {
 		}
 	}
 	return false
+}
+
+// ---- M1 收口补课（审校 2026-08-28）----
+
+// R-01：失格候选（预算预留不足）也必须落 intent.recorded——零痕迹违反 RFC-0003 R-01 全记录。
+func TestEngineRecordsRejectedIntents(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(echo.Adapter{})
+	defer sup.Shutdown()
+	// MaxTokens=1：admission 过（用量 0），但对称预留 1×600>1 → BudgetOK=false → 失格
+	eng := newEchoEngine(store, sup, contextx.Limits{MaxTokens: 1}, "echo")
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "r1", TenantID: "ten_local", RoomID: "room_r", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	deliverHuman(t, store, eng, "room_r")
+	waitRoundClosed(t, store, "room_r")
+	events := store.RoomEvents("room_r")
+	var ir protocol.IntentRecordedPayload
+	found := false
+	for _, ev := range events {
+		if ev.Type != protocol.EventIntentRecorded {
+			continue
+		}
+		found = true
+		_ = json.Unmarshal(ev.Payload, &ir)
+		if ir.Selected || ir.ScoreBand != "unranked" {
+			t.Fatalf("失格意图应 selected=false + score_band=unranked：%+v", ir)
+		}
+		if ev.Metadata["unselected_reason"] != "budget" {
+			t.Fatalf("unselected_reason 应为 budget：%v", ev.Metadata["unselected_reason"])
+		}
+	}
+	if !found {
+		t.Fatalf("失格候选零痕迹（R-01 违约）：%v", typesOf(events))
+	}
+	if hasType(events, protocol.EventFloorGranted) {
+		t.Fatalf("失格轮不得有 grant：%v", typesOf(events))
+	}
+	var rc protocol.RoundClosedPayload
+	_ = json.Unmarshal(events[len(events)-1].Payload, &rc)
+	if rc.Outcome != "quiescent" {
+		t.Fatalf("outcome = %s（期望 quiescent）", rc.Outcome)
+	}
+}
+
+// 预算 token 三维：评估 usage 必须入 intent.recorded metadata 并计入账本重建。
+func TestEngineRecordsEvalUsage(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(usageAdapter{})
+	defer sup.Shutdown()
+	eng := newEchoEngine(store, sup, contextx.Limits{}, "usage")
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "u1", TenantID: "ten_local", RoomID: "room_u", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	deliverHuman(t, store, eng, "room_u")
+	waitRoundClosed(t, store, "room_u")
+	var sawUsage bool
+	for _, ev := range store.RoomEvents("room_u") {
+		if ev.Type != protocol.EventIntentRecorded {
+			continue
+		}
+		usage, ok := ev.Metadata["usage"].(map[string]any)
+		if !ok {
+			t.Fatalf("intent.recorded 缺评估 usage：%v", ev.Metadata)
+		}
+		if num(usage["input_tokens"]) != 11 || num(usage["output_tokens"]) != 7 {
+			t.Fatalf("评估 usage 不符：%v", usage)
+		}
+		sawUsage = true
+	}
+	if !sawUsage {
+		t.Fatal("未找到 intent.recorded")
+	}
+	// 账本重建把评估 usage 计入 token 维度（三维账本不得缺评估侧）
+	envs := store.RoomEvents("room_u")
+	if led := contextx.RebuildBudget(envs); led.Tokens != 18 { // eval 18（agent 消息 usage 0 自报缺失记 0）
+		t.Fatalf("RebuildBudget tokens = %d（期望 18，含评估 usage）", led.Tokens)
+	}
+}
+
+// generate 失败撤销的 reason 必须是 generation_failed（张冠李戴 human_preemption 是缺陷）。
+func TestEngineGenerateFailureRevokesWithReason(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(gatedAdapter{})
+	defer sup.Shutdown()
+	genFail = true
+	defer func() { genFail = false }()
+	eng := newEchoEngine(store, sup, contextx.Limits{}, "gated")
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "g1", TenantID: "ten_local", RoomID: "room_g", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	deliverHuman(t, store, eng, "room_g")
+	waitRoundClosed(t, store, "room_g")
+	events := store.RoomEvents("room_g")
+	for _, ev := range events {
+		if ev.Type != protocol.EventFloorRevoked {
+			continue
+		}
+		var fr protocol.FloorRevokedPayload
+		_ = json.Unmarshal(ev.Payload, &fr)
+		if fr.Reason != "generation_failed" {
+			t.Fatalf("revoked reason = %s（期望 generation_failed）", fr.Reason)
+		}
+	}
+	if !hasType(events, protocol.EventFloorRevoked) {
+		t.Fatalf("应产生 floor.revoked：%v", typesOf(events))
+	}
+	for _, ev := range events {
+		if ev.Type == protocol.EventMessagePosted && ev.Actor.Kind == "agent" {
+			t.Fatalf("失败生成不得发布正文：%v", typesOf(events))
+		}
+	}
+}
+
+// 同房间轮串行：第二条刺激不得与在途轮并发开轮（同 epoch 双轮是竞态缺陷）。
+func TestEngineRoundsSerializedPerRoom(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(gatedAdapter{})
+	defer sup.Shutdown()
+	gate = make(chan struct{})
+	defer func() { gate = nil }()
+	eng := newEchoEngine(store, sup, contextx.Limits{}, "gated")
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "s0", TenantID: "ten_local", RoomID: "room_s", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	for _, id := range []string{"evt_s1", "evt_s2"} {
+		env := protocol.Envelope{
+			EventID: id, TenantID: "ten_local", RoomID: "room_s",
+			Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
+			Actor:      protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+			Visibility: protocol.Visibility{Kind: "public"}, Payload: []byte(`{"body":"s"}`), Metadata: map[string]any{},
+		}
+		if _, err := store.AppendEvents(context.Background(), []protocol.Envelope{env}); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+		raw, _ := json.Marshal(env)
+		eng.Deliver(context.Background(), outbox.Entry{RoomID: "room_s", Envelope: raw})
+	}
+	// 等第一轮 grant（generate 阻塞中），第二轮不得开轮
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !hasType(store.RoomEvents("room_s"), protocol.EventFloorGranted) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if n := countType(store.RoomEvents("room_s"), protocol.EventRoundOpened); n != 1 {
+		t.Fatalf("在途轮未完成时 round.opened = %d（期望 1，串行）", n)
+	}
+	close(gate)
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && countType(store.RoomEvents("room_s"), protocol.EventRoundClosed) != 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	events := store.RoomEvents("room_s")
+	if n := countType(events, protocol.EventRoundClosed); n != 2 {
+		t.Fatalf("两轮未全部完成：%v", typesOf(events))
+	}
+	// 串行序：第一个 round.closed 必须先于第二个 round.opened
+	closedIdx, openedIdx := -1, -1
+	seenOpened := 0
+	for i, ev := range events {
+		switch ev.Type {
+		case protocol.EventRoundOpened:
+			seenOpened++
+			if seenOpened == 2 {
+				openedIdx = i
+			}
+		case protocol.EventRoundClosed:
+			if closedIdx < 0 {
+				closedIdx = i
+			}
+		}
+	}
+	if closedIdx < 0 || openedIdx < 0 || closedIdx > openedIdx {
+		t.Fatalf("轮未串行（closed@%d 应早于 opened#2@%d）：%v", closedIdx, openedIdx, typesOf(events))
+	}
+}
+
+// Close 生命周期：关停在途轮，agent 正文零发布（进程退出不孤儿化在途任务）。
+func TestEngineCloseAbortsInflight(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(gatedAdapter{})
+	defer sup.Shutdown()
+	gate = make(chan struct{})
+	defer func() { gate = nil }()
+	eng := newEchoEngine(store, sup, contextx.Limits{}, "gated")
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "c1", TenantID: "ten_local", RoomID: "room_c2", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	deliverHuman(t, store, eng, "room_c2")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !hasType(store.RoomEvents("room_c2"), protocol.EventFloorGranted) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	eng.Close() // 关停：在途 generate 取消
+	eng.Close() // 幂等
+	time.Sleep(200 * time.Millisecond)
+	for _, ev := range store.RoomEvents("room_c2") {
+		if ev.Type == protocol.EventMessagePosted && ev.Actor.Kind == "agent" {
+			t.Fatal("Close 后不得发布 agent 正文")
+		}
+	}
+	// Close 后新刺激不再开轮
+	deliverHuman2(t, store, eng, "room_c2", "evt_c2_after")
+	time.Sleep(150 * time.Millisecond)
+	if n := countType(store.RoomEvents("room_c2"), protocol.EventRoundOpened); n != 1 {
+		t.Fatalf("Close 后不得开新轮：round.opened = %d", n)
+	}
+}
+
+// Context Receipt 落库必须带 CreatedAt（恒空串是缺陷）。
+func TestEngineReceiptCreatedAt(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(echo.Adapter{})
+	defer sup.Shutdown()
+	var captured []contextx.Receipt
+	eng := NewEngine(EngineConfig{
+		Store: store, Reader: store, Agents: sup,
+		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
+		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
+		Receipts: receiptSink(func(ctx context.Context, r contextx.Receipt) error {
+			captured = append(captured, r)
+			return nil
+		}),
+		Clock: testClock, Now: time.Now,
+		NewID: func() func(string) string {
+			var mu sync.Mutex
+			var n int64
+			return func(p string) string {
+				mu.Lock()
+				defer mu.Unlock()
+				n++
+				return p + "_ts_" + jsonNumber(n)
+			}
+		}(),
+		Tenant: "ten_local",
+	})
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "t1", TenantID: "ten_local", RoomID: "room_t", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	deliverHuman(t, store, eng, "room_t")
+	waitRoundClosed(t, store, "room_t")
+	if len(captured) == 0 {
+		t.Fatal("应捕获 Context Receipt")
+	}
+	if captured[0].CreatedAt != testClock() {
+		t.Fatalf("Receipt.CreatedAt = %q（期望引擎时钟赋值）", captured[0].CreatedAt)
+	}
+}
+
+type receiptSink func(ctx context.Context, r contextx.Receipt) error
+
+func (f receiptSink) InsertReceipt(ctx context.Context, r contextx.Receipt) error { return f(ctx, r) }
+
+// usageAdapter：评估返回固定 usage（11/7），generate 返回零值 usage（自报缺失记 0）。
+type usageAdapter struct{}
+
+func (usageAdapter) Name() string                     { return "usage" }
+func (usageAdapter) Capabilities() agent.Capabilities { return agent.Capabilities{} }
+func (usageAdapter) Boot(context.Context, agent.Profile) (agent.Session, error) {
+	return usageSession{}, nil
+}
+
+type usageSession struct{}
+
+func (usageSession) Run(_ context.Context, task agent.Task) (agent.Handle, error) {
+	return usageHandle{task: task}, nil
+}
+func (usageSession) Cancel(string) {}
+func (usageSession) Close()        {}
+
+type usageHandle struct {
+	task agent.Task
+}
+
+func (usageHandle) Updates() <-chan agent.DraftUpdate { return nil }
+func (usageHandle) Cancel()                           {}
+func (h usageHandle) Result() (agent.Result, error) {
+	if h.task.Kind == agent.KindEvaluateIntent {
+		return agent.Result{
+			Block: "turn_intent",
+			Data: map[string]any{
+				"action": "speak", "type": "extend", "public_rationale": "u",
+				"scores": map[string]any{"relevance": .5, "novelty": .5, "urgency": .5, "confidence": .5},
+			},
+			Usage: &agent.Usage{InputTokens: 11, OutputTokens: 7, Model: "usage"},
+		}, nil
+	}
+	return agent.Result{Block: "public_draft", Data: map[string]any{"body": "u"}, Usage: nil}, nil
+}
+
+func waitRoundClosed(t *testing.T, store *MemStore, roomID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		events := store.RoomEvents(roomID)
+		if len(events) > 0 && events[len(events)-1].Type == protocol.EventRoundClosed {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("轮未完成：%v", typesOf(store.RoomEvents(roomID)))
+}
+
+func countType(events []protocol.Envelope, typ string) int {
+	n := 0
+	for _, e := range events {
+		if e.Type == typ {
+			n++
+		}
+	}
+	return n
+}
+
+// num 容忍 int64/float64（metadata 是否经 JSON 往返取决于存储实现）。
+func num(v any) int {
+	switch n := v.(type) {
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case int:
+		return n
+	default:
+		return -1
+	}
+}
+
+func deliverHuman2(t *testing.T, store *MemStore, eng *Engine, roomID, eventID string) {
+	t.Helper()
+	env := protocol.Envelope{
+		EventID: eventID, TenantID: "ten_local", RoomID: roomID,
+		Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
+		Actor:      protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Visibility: protocol.Visibility{Kind: "public"}, Payload: []byte(`{"body":"after"}`), Metadata: map[string]any{},
+	}
+	if _, err := store.AppendEvents(context.Background(), []protocol.Envelope{env}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	raw, _ := json.Marshal(env)
+	eng.Deliver(context.Background(), outbox.Entry{RoomID: roomID, Envelope: raw})
 }
 
 func deliverHuman(t *testing.T, store *MemStore, eng *Engine, roomID string) {

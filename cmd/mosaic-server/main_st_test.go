@@ -437,6 +437,13 @@ func TestIndexUI_ST(t *testing.T) {
 	if resp.StatusCode != 200 || !bytes.Contains(body, []byte("Mosaic")) {
 		t.Fatalf("UI 不可达：status=%d", resp.StatusCode)
 	}
+	// M1 收口补课（审校 2026-08-28）：UI 幂等键必须是合法 UUIDv7（uuidv7() + crypto.getRandomValues），
+	// 且发命令前必须经快照端点校准版本（syncVersion）——旧实现 40 字符键全量 400、版本必 409。
+	for _, marker := range []string{"function uuidv7()", "crypto.getRandomValues", "syncVersion", "/snapshot"} {
+		if !bytes.Contains(body, []byte(marker)) {
+			t.Fatalf("UI 缺少契约标记 %q（幂等键/版本同步回归）", marker)
+		}
+	}
 }
 
 // TestCrashRecovery_ST：崩溃注入——SIGKILL 后重启同数据目录：

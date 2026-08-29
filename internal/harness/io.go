@@ -10,7 +10,8 @@ func osReadFile(path string) ([]byte, error) { return os.ReadFile(path) }
 func osWriteFile(path string, data []byte, mode os.FileMode) error {
 	return os.WriteFile(path, data, mode)
 }
-func osIsNotExist(err error) bool { return os.IsNotExist(err) }
+func osRename(oldpath, newpath string) error { return os.Rename(oldpath, newpath) }
+func osIsNotExist(err error) bool            { return os.IsNotExist(err) }
 
 func jsonUnmarshal(raw []byte, v any) error { return json.Unmarshal(raw, v) }
 

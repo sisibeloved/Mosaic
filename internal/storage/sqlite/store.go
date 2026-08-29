@@ -164,6 +164,26 @@ func (s *Store) appendTx(ctx context.Context, envelopes []protocol.Envelope, rec
 		}
 	}
 
+	if receipt != nil && roomID != "" {
+		// 回执键先查（先于版本校验）：预检与提交之间的竞态重放优先于版本冲突
+		var receiptExists bool
+		if err := conn.QueryRowContext(ctx, `
+			SELECT EXISTS(SELECT 1 FROM command_receipts
+			WHERE tenant_id = ? AND idempotency_key = ? AND command_kind = ?)`,
+			receipt.TenantID, receipt.IdempotencyKey, receipt.CommandKind,
+		).Scan(&receiptExists); err != nil {
+			return nil, fmt.Errorf("sqlite: check receipt: %w", err)
+		}
+		if receiptExists {
+			return nil, fmt.Errorf("%w: %s", room.ErrDuplicateReceipt, receipt.IdempotencyKey)
+		}
+		// 乐观并发在 BEGIN IMMEDIATE 临界区内强制（P-03：冲突判定在提交事务内）
+		if receipt.ExpectedRoomVersion != maxSeq {
+			return nil, fmt.Errorf("%w: expected=%d current=%d",
+				room.ErrVersionConflict, receipt.ExpectedRoomVersion, maxSeq)
+		}
+	}
+
 	appended := make([]protocol.Envelope, len(envelopes))
 	for i := range envelopes {
 		env := envelopes[i]
@@ -202,12 +222,13 @@ func (s *Store) appendTx(ctx context.Context, envelopes []protocol.Envelope, rec
 	}
 
 	if receipt != nil {
+		// RoomVersion 权威回填：追加后的最新 seq（调用方传入值不信任，D3 修复）
 		if _, err := conn.ExecContext(ctx, `
 			INSERT INTO command_receipts
 			(tenant_id, idempotency_key, command_kind, room_id, request_fingerprint, event_id, room_version, executed_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			receipt.TenantID, receipt.IdempotencyKey, receipt.CommandKind, receipt.RoomID,
-			receipt.RequestFingerprint, receipt.EventID, receipt.RoomVersion, receipt.ExecutedAt,
+			receipt.RequestFingerprint, receipt.EventID, maxSeq, receipt.ExecutedAt,
 		); err != nil {
 			if isUniqueViolation(err) {
 				return nil, fmt.Errorf("%w: %s", room.ErrDuplicateReceipt, receipt.IdempotencyKey)

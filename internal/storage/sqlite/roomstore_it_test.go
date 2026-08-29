@@ -87,6 +87,48 @@ func TestAppendWithReceiptAtomic_IT(t *testing.T) {
 	}
 }
 
+// D2/D3（M1 收口补课）：回执式追加在事务内强制乐观并发；RoomVersion 权威回填。
+func TestAppendWithReceiptVersionEnforcement_IT(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openTempStore(t)
+
+	if _, err := store.AppendEvents(ctx, []protocol.Envelope{
+		roomEnvelope("evt_ve1", "room_ve", protocol.EventRoomCreated),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// 过期 expected（0 ≠ 当前 1）→ 事务内拒绝，零写入
+	rc := sampleReceipt("evt_ve2", "room_ve", "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5f10", 0)
+	rc.ExpectedRoomVersion = 0
+	_, err := store.AppendWithReceipt(ctx, []protocol.Envelope{
+		roomEnvelope("evt_ve2", "room_ve", protocol.EventMessagePosted),
+	}, rc)
+	if !errors.Is(err, room.ErrVersionConflict) {
+		t.Fatalf("过期 expected 应报 room.ErrVersionConflict，got %v", err)
+	}
+	events, _, _ := store.EventsAfter(ctx, "room_ve", "", 100)
+	if len(events) != 1 {
+		t.Fatalf("版本冲突不得留事件，got %d", len(events))
+	}
+
+	// 正确 expected=1；调用方 RoomVersion=999 必须被权威回填为 2
+	rc2 := sampleReceipt("evt_ve3", "room_ve", "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5f11", 999)
+	rc2.ExpectedRoomVersion = 1
+	if _, err := store.AppendWithReceipt(ctx, []protocol.Envelope{
+		roomEnvelope("evt_ve3", "room_ve", protocol.EventMessagePosted),
+	}, rc2); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	got, err := store.LookupReceipt(ctx, "ten_local", "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5f11", "post_message")
+	if err != nil || got == nil {
+		t.Fatalf("lookup: %v %v", got, err)
+	}
+	if got.RoomVersion != 2 {
+		t.Fatalf("回执 RoomVersion 应权威回填为 2，got %d", got.RoomVersion)
+	}
+}
+
 func TestRoomVersionAndExists_IT(t *testing.T) {
 	ctx := context.Background()
 	store, _ := openTempStore(t)
@@ -136,9 +178,11 @@ func TestConcurrentSameCommandRace_IT(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+			rc := sampleReceipt("evt_cr_dup", "room_cr", "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5f03", 2)
+			rc.ExpectedRoomVersion = 1 // 当前版本（回执契约：事务内强制乐观并发）
 			_, err := store.AppendWithReceipt(ctx,
 				[]protocol.Envelope{roomEnvelope("evt_cr_dup", "room_cr", protocol.EventMessagePosted)}, // 同 event id：只有一个能进
-				sampleReceipt("evt_cr_dup", "room_cr", "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5f03", 2))
+				rc)
 			switch {
 			case err == nil:
 				atomic.AddInt64(&okCount, 1)

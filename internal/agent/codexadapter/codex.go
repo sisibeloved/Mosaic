@@ -1,7 +1,7 @@
 // Package codexadapter：native-codex 适配器（RFC-0002 原生适配首批）。
 // 对接 codex exec --json（JSONL 事件流；实证 codex-cli 0.149.1，事件 schema 无稳定性
 // 承诺——fixtures 钉版本，漂移由 conformance 测试暴露）。
-// 已知缺口（实证 2026-08-29）：--output-schema 在当前 provider 组合下上游 400
+// 已知缺口（实证 2026-08-28）：--output-schema 在当前 provider 组合下上游 400
 // （text.format.schema 序列化 bug），结构化输出走提示词约束 + 本地提取校验。
 package codexadapter
 
@@ -26,6 +26,10 @@ type Config struct {
 	ExtraArgs []string      // 预留（-c model=... 等 per-Profile 覆盖）
 	Timeout   time.Duration // 单任务超时（默认 120s）
 	Execer    Execer        // 测试注入；nil 用真实进程执行
+	// WSL 运行面（Windows 宿主）：非空 = CodexPath 是发行版内 Linux 路径，
+	// 经 wsl.exe -d <WSLDistro> 包装执行（native exec 会启用即坏）。
+	WSLDistro string
+	WSLHome   string // 发行版内 HOME（宿主 HOME 不适用；由 harness.HostRunner.Home 解析）
 }
 
 // Execer 进程执行抽象（UT 捕获/阻塞；生产为真实 codex 子进程）。
@@ -113,7 +117,7 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 	}
 	argv = append(argv, "-") // 提示词走 stdin：避免 argv 转义与长度问题
 
-	stdout, _, err := s.execer().Exec(taskCtx, argv, codexEnv(s.adapter.cfg.CodexPath), prompt)
+	stdout, _, err := s.execer().Exec(taskCtx, argv, s.envFor(), prompt)
 	if err != nil {
 		if taskCtx.Err() != nil {
 			h.stale = true // 取消/超时：不发布正文，语义同迟到拒绝
@@ -147,7 +151,18 @@ func (s *session) execer() Execer {
 	if s.adapter.cfg.Execer != nil {
 		return s.adapter.cfg.Execer
 	}
+	if s.adapter.cfg.WSLDistro != "" {
+		return &wslExecer{distro: s.adapter.cfg.WSLDistro}
+	}
 	return &processExecer{}
+}
+
+// envFor 按运行面构造子进程环境（native 用宿主 HOME；wsl 用发行版内 HOME）。
+func (s *session) envFor() []string {
+	if s.adapter.cfg.WSLDistro != "" {
+		return codexEnvWithHome(s.adapter.cfg.CodexPath, s.adapter.cfg.WSLHome)
+	}
+	return codexEnv(s.adapter.cfg.CodexPath)
 }
 
 // handle 单任务句柄：同步等待结果；Cancel 置位后 Result 报 ErrStale。
@@ -383,13 +398,21 @@ func mapResult(kind agent.TaskKind, parsed Parsed) (agent.Result, error) {
 // 这些是网络配置而非凭据——OQ-20 禁的是持有凭证与代理流量）；其余不透传（不携带
 // Mosaic 自身密钥）。
 func codexEnv(codexPath string) []string {
-	dir := codexPath
-	if i := strings.LastIndex(codexPath, "/"); i > 0 {
-		dir = codexPath[:i]
-	}
 	home := os.Getenv("HOME")
 	if home == "" {
 		home = "/root"
+	}
+	return codexEnvWithHome(codexPath, home)
+}
+
+// codexEnvWithHome 环境构造核心（native 与 WSL 共用，仅 HOME 来源不同）。
+func codexEnvWithHome(codexPath, home string) []string {
+	if home == "" {
+		home = "/root"
+	}
+	dir := codexPath
+	if i := strings.LastIndex(codexPath, "/"); i > 0 {
+		dir = codexPath[:i]
 	}
 	env := []string{
 		"PATH=" + dir + ":/usr/local/bin:/usr/bin:/bin",
@@ -423,6 +446,43 @@ func (p *processExecer) Exec(ctx context.Context, argv []string, env []string, s
 	// WaitDelay 在进程退出后放弃残留 IO；POSIX 整组击杀见 sysproc_posix.go
 	cmd.WaitDelay = 10 * time.Second
 	applySysProc(cmd)
+	if err := cmd.Start(); err != nil {
+		return "", -1, err
+	}
+	if err := cmd.Wait(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return combined.String(), ee.ExitCode(), nil
+		}
+		return combined.String(), -1, err
+	}
+	return combined.String(), 0, nil
+}
+
+// wslExecer 把任务交给发行版内执行：wsl.exe -d <distro> -- env K=V... <argv...>。
+// env(1) 前缀语法避免 shell 引号问题；命令 stdout 原样字节流传回（UTF-16 只出现在
+// wsl.exe 自身诊断输出，如 -l 列表——ParseStream 忽略非 JSON 行兜底）。
+type wslExecer struct {
+	distro string
+}
+
+// wslArgs 构造 wsl.exe 参数（纯函数，UT 覆盖）。
+func wslArgs(distro string, env []string, argv []string) []string {
+	args := make([]string, 0, 4+len(env)+len(argv))
+	args = append(args, "-d", distro, "--", "env")
+	args = append(args, env...)
+	args = append(args, argv...)
+	return args
+}
+
+func (w *wslExecer) Exec(ctx context.Context, argv []string, env []string, stdin string) (string, int, error) {
+	cmd := exec.CommandContext(ctx, "wsl.exe", wslArgs(w.distro, env, argv)...)
+	cmd.Stdin = bytes.NewReader([]byte(stdin))
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+	cmd.WaitDelay = 10 * time.Second
+	// 已知缺口（实证后补）：击杀 wsl.exe 不必然终止发行版内进程——Windows 侧
+	// Job Object 归属 M2 进程管理项；超时值内任务自行退出为主路径。
 	if err := cmd.Start(); err != nil {
 		return "", -1, err
 	}

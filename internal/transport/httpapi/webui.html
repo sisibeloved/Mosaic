@@ -41,10 +41,26 @@
 		</form>
 	</div>
 <script>
-let roomID = null, version = 0, es = null, idem = 0;
+let roomID = null, version = 0, es = null;
 const timeline = document.getElementById('timeline');
-function newIdem() { idem++; const h = (n)=>n.toString(16).padStart(4,'0');
-  return '018f6b2e-7c1a-7' + h(idem%0x1000).slice(0,3) + '-9e4f-1a2b3c4d' + h(idem%0x10000) + h(idem%0xfff+1); }
+// UUIDv7（服务端契约 ^[0-9a-f]{8}-...-7...-[89ab]...-...{12}$）：
+// 48bit 毫秒时间戳 + 版本/变体位 + 随机尾。旧实现末组 16 hex/全长 40 → 服务端 400（审校实证）。
+function uuidv7() {
+  const rnd = new Uint8Array(9);
+  crypto.getRandomValues(rnd);
+  const hex = Array.from(rnd, b => b.toString(16).padStart(2,'0')).join('');
+  const t = Date.now().toString(16).padStart(12,'0');
+  return t.slice(0,8) + '-' + t.slice(8,12) + '-7' + hex.slice(0,3) + '-9' + hex.slice(3,6) + '-' + hex.slice(6,18);
+}
+// 版本同步：引擎一轮会推高版本 4~5，SSE 帧不含 room_version——发命令前以快照端点校准。
+async function syncVersion() {
+  if (!roomID) return;
+  try {
+    const r = await fetch('/v1/rooms/' + roomID + '/snapshot');
+    if (!r.ok) return;
+    version = (await r.json()).room_version;
+  } catch (e) { /* 校准失败则沿用本地版本，由 409 兜底 */ }
+}
 async function api(path, body) {
   const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   const d = await r.json();
@@ -54,7 +70,7 @@ async function api(path, body) {
 async function createRoom() {
   try {
     const d = await api('/v1/rooms', {command_kind:'create_room', expected_room_version:0,
-      idempotency_key:newIdem(), issued_at:new Date().toISOString(), payload:{display_name:'Web 房间'}});
+      idempotency_key:uuidv7(), issued_at:new Date().toISOString(), payload:{display_name:'Web 房间'}});
     roomID = d.room_id; version = d.room_version;
     document.getElementById('roomInfo').textContent = roomID + ' @v' + version;
     timeline.innerHTML = '';
@@ -72,7 +88,6 @@ async function createRoom() {
   } catch (e) { alert(e.message); }
 }
 async function onEvent(type, d) {
-  if (d.room_version) version = d.room_version;
   const draft = document.getElementById('draft-par_echo'); if (draft && type==='message.posted') draft.remove();
   if (type === 'message.posted') {
     const el = document.createElement('div');
@@ -92,16 +107,17 @@ async function postMessage(ev) {
   const body = document.getElementById('body').value.trim();
   if (!body || !roomID) return false;
   try {
+    await syncVersion(); // 引擎轮已推进版本：以快照为准，否则必 409
     const d = await api('/v1/rooms/' + roomID + '/commands', {command_kind:'post_message',
-      expected_room_version: version, idempotency_key:newIdem(), issued_at:new Date().toISOString(),
+      expected_room_version: version, idempotency_key:uuidv7(), issued_at:new Date().toISOString(),
       payload:{body, reply_to:null, addressed_to:[], relations:[]}});
     version = d.room_version;
     document.getElementById('body').value = '';
   } catch (e) { alert(e.message); }
   return false;
 }
-async function pauseRoom() { if (!roomID) return; try { const d = await api('/v1/rooms/'+roomID+'/commands', {command_kind:'pause_room', expected_room_version:version, idempotency_key:newIdem(), issued_at:new Date().toISOString(), payload:{reason:'web'}}); version = d.room_version; } catch(e){ alert(e.message);} }
-async function resumeRoom() { if (!roomID) return; try { const d = await api('/v1/rooms/'+roomID+'/commands', {command_kind:'resume_room', expected_room_version:version, idempotency_key:newIdem(), issued_at:new Date().toISOString(), payload:{}}); version = d.room_version; } catch(e){ alert(e.message);} }
+async function pauseRoom() { if (!roomID) return; try { await syncVersion(); const d = await api('/v1/rooms/'+roomID+'/commands', {command_kind:'pause_room', expected_room_version:version, idempotency_key:uuidv7(), issued_at:new Date().toISOString(), payload:{reason:'web'}}); version = d.room_version; } catch(e){ alert(e.message);} }
+async function resumeRoom() { if (!roomID) return; try { await syncVersion(); const d = await api('/v1/rooms/'+roomID+'/commands', {command_kind:'resume_room', expected_room_version:version, idempotency_key:uuidv7(), issued_at:new Date().toISOString(), payload:{}}); version = d.room_version; } catch(e){ alert(e.message);} }
 </script>
 </body>
 </html>

@@ -11,6 +11,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/agent"
@@ -44,6 +46,7 @@ type EngineConfig struct {
 	Budget      contextx.Limits  // 预算上限（0 = 不限；M1 默认宽裕，防失控而非精确计费）
 	Receipts    ReceiptStore     // 可选
 	OnDraft     DraftSink        // 可选：草稿流出口
+	Logger      *slog.Logger     // 可选：缺省 slog.Default()（轮中止/门控不再静默）
 	ResponseCap int64            // 对称预留的单发言 token 上限（默认 600）
 	Clock       func() string    // occurred_at（RFC3339）
 	Now         func() time.Time // 过期时刻计算
@@ -55,6 +58,13 @@ type EngineConfig struct {
 // Engine 消费 outbox 条目，对人类消息驱动一轮讨论。
 type Engine struct {
 	cfg EngineConfig
+	// lifecycle 是引擎自有的生命周期 ctx（不随分发器 ctx 结束——分发停止不等于轮取消；
+	// 但 Close() 会取消它，驱动在途任务取消，进程退出不孤儿化 agent 子进程）。
+	lifecycle context.Context
+	stop      context.CancelFunc
+	// roomLocks 同房间轮串行（roomID → *sync.Mutex）：两条人类消息并发到达时
+	// 不产生同 epoch 双轮——epoch 机制只兜底跨进程竞态，进程内先串行。
+	roomLocks sync.Map
 }
 
 // NewEngine 构造。
@@ -62,12 +72,20 @@ func NewEngine(cfg EngineConfig) *Engine {
 	if cfg.ResponseCap <= 0 {
 		cfg.ResponseCap = 600
 	}
-	return &Engine{cfg: cfg}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Engine{cfg: cfg, lifecycle: ctx, stop: cancel}
 }
+
+// Close 关停引擎：取消在途轮与 agent 任务（适配器经 ctx 击杀子进程组），
+// 拒绝新轮。已提交事件构成可恢复状态（RFC-0003 3.4）。幂等。
+func (e *Engine) Close() { e.stop() }
 
 // Deliver 实现 outbox.Consumer：仅对 message.posted 且 actor=human 的条目异步开轮。
 // 引擎自产事件（actor=agent/system）不再触发，无反馈环。
-func (e *Engine) Deliver(ctx context.Context, entry outbox.Entry) {
+func (e *Engine) Deliver(_ context.Context, entry outbox.Entry) {
 	var env protocol.Envelope
 	if err := json.Unmarshal(entry.Envelope, &env); err != nil {
 		return
@@ -78,7 +96,17 @@ func (e *Engine) Deliver(ctx context.Context, entry outbox.Entry) {
 	if e.cfg.RoomID != "" && env.RoomID != e.cfg.RoomID {
 		return
 	}
-	go e.runRound(context.WithoutCancel(ctx), env)
+	go e.runRound(e.lifecycle, env)
+}
+
+// lockRoom 取（或建）房间互斥锁。
+func (e *Engine) lockRoom(roomID string) *sync.Mutex {
+	mu, _ := e.roomLocks.LoadOrStore(roomID, &sync.Mutex{})
+	return mu.(*sync.Mutex)
+}
+
+func (e *Engine) warn(roomID, msg string, args ...any) {
+	e.cfg.Logger.Warn("engine: "+msg, append([]any{"room", roomID}, args...)...)
 }
 
 // roomHistory 拉全量房间事件（M1 房间规模小；增量缓存随 M2 性能项）。
@@ -124,11 +152,19 @@ func countRounds(events []StoredEvent) int64 {
 
 // runRound 一轮：预算/暂停门控 → 评估全部 seat → 确定性选择 → 按 rank 揭示。
 func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
+	if ctx.Err() != nil { // 已 Close：不再开轮
+		return
+	}
 	roomID := stimulus.RoomID
 	roundID := e.cfg.NewID("rnd")
 
+	mu := e.lockRoom(roomID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	history, err := e.roomHistory(ctx, roomID)
 	if err != nil {
+		e.warn(roomID, "history 读取失败，轮中止", "err", err)
 		return
 	}
 
@@ -165,6 +201,7 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 			PolicyVersion:   "pol_m1",
 		})
 	if _, err := e.append(ctx, opened); err != nil {
+		e.warn(roomID, "round.opened 落库失败，轮中止", "err", err)
 		return
 	}
 
@@ -182,9 +219,10 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 		},
 	}, envs, stimulus)
 	if e.cfg.Receipts != nil {
+		assembled.Receipt.CreatedAt = e.cfg.Clock() // 引擎时钟赋值（恒空串是审计缺口）
 		if err := e.cfg.Receipts.InsertReceipt(ctx, assembled.Receipt); err != nil {
 			// 回执落库失败不阻塞讨论（Receipt 可由层摘要复算重建）
-			_ = err
+			e.warn(roomID, "context receipt 落库失败", "err", err)
 		}
 	}
 	taskContext := agent.Context{
@@ -194,6 +232,7 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 
 	// 3) 各 seat 意图评估 → 选择输入（预算 admission：对称预留不足者失格）
 	var candidates []attention.Candidate
+	evalUsage := map[string]*agent.Usage{} // 评估 token 入账（三维账本的评估侧）
 	for _, seat := range e.cfg.Seats {
 		intentResult, err := e.runTask(ctx, seat.Profile, seat.ParticipantID, agent.Task{
 			TaskID:        e.cfg.NewID("tsk"),
@@ -204,8 +243,13 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 			Context:       taskContext,
 		})
 		if err != nil {
+			if ctx.Err() != nil {
+				return // Close/取消：整轮中止，不留半截事件链
+			}
+			e.warn(roomID, "意图评估失败，跳过该座", "seat", seat.ParticipantID, "err", err)
 			continue // agent 失败：跳过该座（M2 补 generation.failed/unavailable 事件语义）
 		}
+		evalUsage[seat.ParticipantID] = intentResult.Usage
 		intent, ok := intentFromData(seat.ParticipantID, intentResult.Data)
 		if !ok {
 			continue
@@ -238,7 +282,8 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 		rejectionByIntent[r.IntentID] = r
 	}
 
-	// 5) 全量 intent.recorded（公开 band；未获选理由与 usage 进 metadata，记分卡可查 R-08）
+	// 5) 全量 intent.recorded（R-01：失格/越界也记录——band=unranked，理由进 metadata；
+	// 公开 band；未获选理由与 usage 进 metadata，记分卡可查 R-08）
 	recordedEventByIntent := map[string]string{}
 	for _, c := range candidates {
 		band, selected := "", false
@@ -248,7 +293,7 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 			band = r.Band
 		}
 		if band == "" {
-			continue // 无 band（失格/越界）：M1 不落公开投影
+			band = "unranked" // 未进入记分（硬失格/silent/越界）：零痕迹违反 R-01 全记录
 		}
 		recorded := e.newEnv(roomID, protocol.EventIntentRecorded,
 			protocol.Actor{ParticipantID: c.Intent.ParticipantID, Kind: "agent"}, stimulus.EventID, roundID,
@@ -262,7 +307,7 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 				Selected:        selected,
 				Endorsed:        false,
 			})
-		recorded.Metadata = intentMetadata(rejectionByIntent[c.Intent.IntentID], selected, e.seatUsage(candidates, c.Intent.ParticipantID))
+		recorded.Metadata = intentMetadata(rejectionByIntent[c.Intent.IntentID], selected, evalUsage[c.Intent.ParticipantID])
 		appendedIntent, err := e.append(ctx, recorded)
 		if err != nil {
 			return
@@ -314,10 +359,7 @@ const (
 	revealRevoked
 )
 
-// seatUsage 找回该座评估任务的 usage（入 intent.recorded metadata）。
-func (e *Engine) seatUsage(candidates []attention.Candidate, _ string) *agent.Usage { return nil }
-
-// intentMetadata 汇总未选原因与 usage。
+// intentMetadata 汇总未选原因与 usage（评估 usage 来自适配器自报，入账供 RebuildBudget 汇总）。
 func intentMetadata(rejection attention.Rejection, selected bool, usage *agent.Usage) map[string]any {
 	md := map[string]any{}
 	if !selected && rejection.Reason != "" {
@@ -375,8 +417,12 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 		Context: taskContext,
 	})
 	if err != nil {
+		if ctx.Err() != nil {
+			return revealAbort // 引擎关停：不写撤销收尾（事件链由恢复语义接手）
+		}
 		// grant 未消费：撤销收尾（本轮其余获选者继续——AR-008 语义）
-		e.revoke(ctx, roomID, grant.EventID, grantID, roundID, stimulus, "human_preemption")
+		e.revoke(ctx, roomID, grant.EventID, grantID, roundID, stimulus, "generation_failed")
+		e.warn(roomID, "generate 失败，撤销 grant", "seat", sel.ParticipantID, "err", err)
 		return revealRevoked
 	}
 

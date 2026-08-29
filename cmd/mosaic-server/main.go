@@ -16,6 +16,7 @@ import (
 	goruntime "runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -123,19 +124,25 @@ func main() {
 	// 房间引擎 + 提交后分发：echo 恒在（conformance 基线）；宿主扫描完成后，
 	// 已启用的真实适配器（如 codex）动态注册并加入座位。分发循环晚于扫描启动——
 	// 扫描期间的命令照常受理，事件在分发启动后依序投递（outbox 不丢）。
+	var enginePtr atomic.Pointer[room.Engine]
 	go func() {
 		<-scanDone
 		seats := []room.AgentSeat{{
 			ParticipantID: "par_echo",
 			Profile:       agent.Profile{ProfileID: "prof_echo", Adapter: "echo", DisplayName: "Echo"},
 		}}
+		hostRunner := harness.NewHostRunner()
 		for _, exe := range harnessRegistry.EnabledList() {
 			switch exe.Adapter {
 			case "codex":
-				if err := supervisor.Register(codexadapter.New(codexadapter.Config{
-					CodexPath: exe.Path,
-					Timeout:   180 * time.Second,
-				})); err != nil {
+				cfg := codexadapter.Config{CodexPath: exe.Path, Timeout: 180 * time.Second}
+				if harness.Runtime(exe.Runtime) == harness.RuntimeWSL {
+					// WSL 运行面：Linux 路径不能交给 native exec（启用即坏）——
+					// 适配器经 wsl.exe -d <distro> 包装执行，HOME 在发行版内解析。
+					cfg.WSLDistro = exe.Distro
+					cfg.WSLHome = hostRunner.Home(ctx, harness.RuntimeWSL, exe.Distro)
+				}
+				if err := supervisor.Register(codexadapter.New(cfg)); err != nil {
 					logger.Warn("codex adapter register failed", "path", exe.Path, "err", err)
 					continue
 				}
@@ -166,11 +173,13 @@ func main() {
 			},
 			Receipts: store,                      // Context Receipt 落库（RFC-0007）
 			OnDraft:  httpapi.DraftConsumer(hub), // DraftUpdate 安全子集 → SSE 瞬态帧
+			Logger:   logger,
 			Clock:    clock,
 			Now:      time.Now,
 			NewID:    newID,
 			Tenant:   "ten_local",
 		})
+		enginePtr.Store(engine)
 		dispatcher := outbox.NewDispatcher(store, []outbox.Consumer{
 			httpapi.HubConsumer(hub),
 			engine,
@@ -190,6 +199,12 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+	// 引擎先于 supervisor 关停：取消在途轮 → 适配器经 ctx 击杀子进程组（防孤儿）。
+	// 已提交事件构成可恢复状态（RFC-0003 3.4）；短暂宽限让击杀信号送达。
+	if engine := enginePtr.Load(); engine != nil {
+		engine.Close()
+		time.Sleep(200 * time.Millisecond)
+	}
 	supervisor.Shutdown()
 	logger.Info("mosaic-server stopped")
 }

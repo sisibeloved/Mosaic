@@ -11,8 +11,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 双平台一等公民（交付规划 §5）+ linux 供服务端形态基线
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # 双平台一等公民（交付规划 §5：macOS arm64+amd64 双架构）+ linux 供服务端形态基线
+        # macos-latest = arm64；macos-13 = Intel（amd64）
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-13]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

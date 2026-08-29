@@ -11,7 +11,7 @@ import (
 func ev(typ string, seq int64, actorKind, body string, md map[string]any) protocol.Envelope {
 	e := protocol.Envelope{
 		EventID: typ, TenantID: "t", RoomID: "room_c", Seq: seq, Type: typ,
-		SchemaVersion: 1, OccurredAt: "2026-08-29T00:00:00Z",
+		SchemaVersion: 1, OccurredAt: "2026-08-28T00:00:00Z",
 		Actor:      protocol.Actor{ParticipantID: "par_x", Kind: actorKind},
 		Visibility: protocol.Visibility{Kind: "public"},
 		Payload:    []byte(`{"body":"` + body + `"}`),

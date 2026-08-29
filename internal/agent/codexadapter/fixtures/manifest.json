@@ -1,0 +1,10 @@
+{
+  "cli_version": "0.149.1",
+  "captured_at": "2026-08-28",
+  "note": "codex exec --json 事件流 schema 无上游稳定性承诺：conformance 以本 manifest 钉住捕获版本与文件哈希，重捕获必须更新本文件（fixture_gate 测试机器可检，漂移即红）",
+  "files": {
+    "exec-simple.jsonl": "sha256:c5a3d08d3d0874d7a6ca0cb629d27c954a44edd559d0f3f10040eb815b35f84b",
+    "exec-intent.jsonl": "sha256:08b49f42e90be62fa46fbc61613f4eccd57a6413743a90ad62056c30bf98d04e",
+    "exec-error.jsonl": "sha256:aee0219769524699020fbd70ee91de252d63ee21c61105df342c5fe421560644"
+  }
+}

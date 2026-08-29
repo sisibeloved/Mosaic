@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+
+	"github.com/sisibeloved/Mosaic/internal/protocol"
 )
 
 // ---- 测试装置 ----
@@ -44,6 +47,118 @@ func createCmd(kind, idem string, version int64, payload any) Command {
 }
 
 const validUUIDv7 = "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e6f"
+
+// ---- M1 收口补课（审校 2026-08-28）：幂等/并发/回执三件套 ----
+
+// D1：create_room 同键异载荷 → 幂等冲突（不得静默回放原房间）。
+func TestCreateRoomIdempotencyConflict(t *testing.T) {
+	store := NewMemStore()
+	svc := newTestService(store)
+	ctx := context.Background()
+	actor := Actor{ParticipantID: "par_owner", Kind: "human"}
+
+	first, err := svc.ExecuteCommand(ctx, actor, createCmd("create_room", validUUIDv7, 0, map[string]any{"display_name": "A"}))
+	if err != nil {
+		t.Fatalf("首次 create_room: %v", err)
+	}
+	_, err = svc.ExecuteCommand(ctx, actor, createCmd("create_room", validUUIDv7, 0, map[string]any{"display_name": "B"}))
+	if !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("同键异载荷应报 ErrIdempotencyConflict，got %v", err)
+	}
+	// 同载荷重放：返回原房间
+	res, err := svc.ExecuteCommand(ctx, actor, createCmd("create_room", validUUIDv7, 0, map[string]any{"display_name": "A"}))
+	if err != nil || !res.Replayed || res.RoomID != first.RoomID {
+		t.Fatalf("同载荷重放不符：%+v %v", res, err)
+	}
+}
+
+// D2：并发同版本命令只有一个成功——check-then-append 竞态由存储事务内校验封死。
+func TestConcurrentSameVersionOnlyOneWins(t *testing.T) {
+	store := NewMemStore()
+	svc := newTestService(store)
+	ctx := context.Background()
+	actor := Actor{ParticipantID: "par_owner", Kind: "human"}
+
+	created, err := svc.ExecuteCommand(ctx, actor, createCmd("create_room", validUUIDv7, 0, map[string]any{"display_name": "race"}))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	const n = 8
+	var wg sync.WaitGroup
+	var okCount, conflictCount int64
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			cmd := Command{
+				RoomID:              created.RoomID,
+				CommandKind:         "post_message",
+				ExpectedRoomVersion: 1, // 全部基于同一版本
+				IdempotencyKey:      fmt.Sprintf("018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e%02x", i),
+				IssuedAt:            "t",
+				Payload:             []byte(fmt.Sprintf(`{"body":"msg %d"}`, i)),
+			}
+			_, err := svc.ExecuteCommand(ctx, actor, cmd)
+			switch {
+			case err == nil:
+				atomic.AddInt64(&okCount, 1)
+			case errors.Is(err, ErrVersionConflict):
+				atomic.AddInt64(&conflictCount, 1)
+			default:
+				t.Errorf("并发命令出现意外错误：%v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if okCount != 1 || conflictCount != n-1 {
+		t.Fatalf("ok=%d conflict=%d（期望 1/%d）", okCount, conflictCount, n-1)
+	}
+}
+
+// D2/D3：存储端口契约——回执式追加在事务内强制乐观并发，并权威回填 RoomVersion。
+func TestStoreReceiptAppendContract(t *testing.T) {
+	store := NewMemStore()
+	ctx := context.Background()
+	if _, err := store.AppendEvents(ctx, []protocol.Envelope{
+		{EventID: "evt_c1", TenantID: "ten_local", RoomID: "room_c", Type: protocol.EventRoomCreated,
+			Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// 过期 expected（0 ≠ 当前 1）→ 事务内拒绝
+	_, err := store.AppendWithReceipt(ctx, []protocol.Envelope{
+		{EventID: "evt_c2", TenantID: "ten_local", RoomID: "room_c", Type: protocol.EventMessagePosted,
+			Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	}, CommandReceipt{
+		TenantID: "ten_local", RoomID: "room_c",
+		IdempotencyKey: validUUIDv7, CommandKind: "post_message",
+		RequestFingerprint: "fp", EventID: "evt_c2",
+		ExpectedRoomVersion: 0, // 过期
+	})
+	if !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("过期 expected 版本应报 ErrVersionConflict，got %v", err)
+	}
+	// 正确 expected（=1）→ 落库且回执 RoomVersion 由存储权威回填（调用方传 999 也不信）
+	rc := CommandReceipt{
+		TenantID: "ten_local", RoomID: "room_c",
+		IdempotencyKey: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e71", CommandKind: "post_message",
+		RequestFingerprint: "fp", EventID: "evt_c3",
+		ExpectedRoomVersion: 1, RoomVersion: 999, // 999 应被忽略
+	}
+	if _, err := store.AppendWithReceipt(ctx, []protocol.Envelope{
+		{EventID: "evt_c3", TenantID: "ten_local", RoomID: "room_c", Type: protocol.EventMessagePosted,
+			Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	}, rc); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	got, err := store.LookupReceipt(ctx, "ten_local", "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e71", "post_message")
+	if err != nil || got == nil {
+		t.Fatalf("lookup: %v %v", got, err)
+	}
+	if got.RoomVersion != 2 {
+		t.Fatalf("回执 RoomVersion 应权威回填为 2，got %d", got.RoomVersion)
+	}
+}
 
 // ---- 用例 ----
 

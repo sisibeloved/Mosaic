@@ -18,7 +18,8 @@
     },
     "type": {
       "type": "string",
-      "enum": ["answer", "extend", "challenge", "support", "question", "redirect", "synthesize"]
+      "enum": ["answer", "extend", "challenge", "support", "question", "redirect", "synthesize", ""],
+      "description": "silent 意图可省略 type（空串）；R-01 全记录后 silent 也落 intent.recorded"
     },
     "reply_to": { "type": ["string", "null"], "pattern": "^evt_[0-9A-Za-z_-]+$" },
     "addressed_to": {
@@ -26,11 +27,11 @@
       "maxItems": 3,
       "items": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" }
     },
-    "public_rationale": { "type": "string", "minLength": 1, "maxLength": 280 },
+    "public_rationale": { "type": "string", "minLength": 0, "maxLength": 280 },
     "score_band": {
       "type": "string",
-      "enum": ["very_low", "low", "medium", "high", "very_high"],
-      "description": "五档：&lt;0.2 / 0.2–0.4 / 0.4–0.6 / 0.6–0.8 / ≥0.8；精确分仅入内部评测（RFC-0011）"
+      "enum": ["very_low", "low", "medium", "high", "very_high", "unranked"],
+      "description": "五档：&lt;0.2 / 0.2–0.4 / 0.4–0.6 / 0.6–0.8 / ≥0.8；unranked = 未进入记分（硬失格/silent/越界，R-01 全记录仍落事件）；精确分仅入内部评测（RFC-0011）"
     },
     "selected": { "type": "boolean" },
     "endorsed": { "type": "boolean" }

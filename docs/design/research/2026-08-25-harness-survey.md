@@ -32,7 +32,7 @@
 | usage 上报 | exec 输出含 token 用量【社区】 | 待查【待验证】 | 输出统计【社区】 | json 输出含 cost/usage【官方】 | json stats 含 tokens【社区】 |
 | Windows | 原生（PowerShell + 受限令牌沙箱）+ WSL2（Landlock/seccomp），官方现推荐原生【官方】 | Windows 原生【实证：本仓库开发环境即 win32 + Git Bash 下 ZCode CLI 驱动】 | 跨平台单二进制（TS 打包）【官方/社区】 | 原生支持【官方】 | Node 跨平台【官方】 |
 | macOS / Linux | 支持【官方】 | 支持（macOS；Linux/WSL 经由 CLI 运行）【实证/待验证】 | 支持【官方】 | 支持【官方】 | 支持【官方】 |
-| 已知编排陷阱 | `--json` 事件 schema 无稳定性承诺【社区】；`--output-schema` 在 ChatGPT 账号 provider 组合下上游 400（text.format.schema 序列化 bug，2026-08-29 本机实证 codex 0.149.1——适配器改走提示词约束 + 本地校验）；超时击杀须整进程组（孙进程握管道致调用方永挂，实证） | headless 缺失（#29）；Native Agent 不触发 config.json hooks（#32）【社区】 | 异常退出破坏 session 映射【社区】 | 子进程调用需关闭 stdin，否则可能挂起【社区】 | json 输出在个别非交互场景有 bug 报告【社区】 |
+| 已知编排陷阱 | `--json` 事件 schema 无稳定性承诺【社区】；`--output-schema` 在 ChatGPT 账号 provider 组合下上游 400（text.format.schema 序列化 bug，2026-08-28 本机实证 codex 0.149.1——适配器改走提示词约束 + 本地校验）；超时击杀须整进程组（孙进程握管道致调用方永挂，实证） | headless 缺失（#29）；Native Agent 不触发 config.json hooks（#32）【社区】 | 异常退出破坏 session 映射【社区】 | 子进程调用需关闭 stdin，否则可能挂起【社区】 | json 输出在个别非交互场景有 bug 报告【社区】 |
 
 ## 3. 各家详述与适配器要点
 

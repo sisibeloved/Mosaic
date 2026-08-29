@@ -1,0 +1,27 @@
+{
+  "event_id": "evt_01H8TESTINTENTUNRANKED000000",
+  "tenant_id": "ten_local",
+  "room_id": "room_01H8TESTROOM00000000000000",
+  "thread_id": "thr_01H8TESTTHREAD00000000000",
+  "discussion_epoch_id": "epoch_01H8TESTEPOCH0000000000",
+  "seq": 151,
+  "type": "intent.recorded",
+  "schema_version": 1,
+  "occurred_at": "2026-08-25T10:00:02.500Z",
+  "actor": { "participant_id": "par_silentone", "kind": "agent" },
+  "causation_id": "evt_01H8TESTTASKRESULT0000000",
+  "correlation_id": "rnd_01H8TESTROUND00000000000",
+  "visibility": { "kind": "participants" },
+  "payload": {
+    "intent_id": "int_01H8TESTINTENTUNR0000000",
+    "participant_id": "par_silentone",
+    "action": "silent",
+    "type": "",
+    "reply_to": null,
+    "public_rationale": "",
+    "score_band": "unranked",
+    "selected": false,
+    "endorsed": false
+  },
+  "metadata": {}
+}

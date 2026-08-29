@@ -278,6 +278,14 @@ func TestPersistRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("registry 文件应为合法 JSON: %v", err)
 	}
+	// 原子写（M1 收口补课）：不留 tmp 残件
+	if entries, err := os.ReadDir(filepath.Dir(path)); err == nil {
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".tmp") {
+				t.Fatalf("原子写不得残留 tmp 文件：%s", e.Name())
+			}
+		}
+	}
 }
 
 func TestManualAddValidation(t *testing.T) {

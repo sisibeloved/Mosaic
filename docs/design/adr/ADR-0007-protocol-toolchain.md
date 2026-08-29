@@ -5,6 +5,12 @@
 | 日期 | 2026-08-25 |
 | 关联 | RFC-0001 §3.1.6/§3.5；架构 v0.6 §8.1.2、§8.4.1 |
 
+> **修订（2026-08-28，M1 收口）**：OpenAPI 3.1 描述 + oapi-codegen 生成**延期至 M2**。
+> 原计划"随 M1 命令 API"落地，实际 M1 以手写 `httpapi` DTO + `command.schema.json`
+> 严格校验先行（对外契约由 Schema 门禁把守，不失控）；M2 React SPA 接入时补
+> OpenAPI 3.1 + oapi-codegen 并以契约测试回填。延期登记于交付计划 v1.5——
+> 延期项不得静默消失。
+
 ## 决策
 
 - `api/room-protocol` 以 JSON Schema（draft 2020-12）为事件 payload 的权威源；

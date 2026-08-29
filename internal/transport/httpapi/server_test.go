@@ -277,6 +277,76 @@ func TestSSEBadCursorRejected(t *testing.T) {
 	}
 }
 
+// M1 收口补课：落后超一批（1000）也必须补齐——只取一批即转直播会静默丢事件。
+func TestSSECatchUpPaginatesBeyondOneBatch(t *testing.T) {
+	ts, store, _ := newTestServer(t)
+	const total = 1005
+	envs := make([]protocol.Envelope, total)
+	for i := range envs {
+		envs[i] = protocol.Envelope{
+			EventID: fmt.Sprintf("evt_bulk_%04d", i), TenantID: "ten_local", RoomID: "room_bulk",
+			Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: "2026-08-28T11:00:00.000Z",
+			Actor:      protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+			Visibility: protocol.Visibility{Kind: "public"},
+			Payload:    []byte(`{"body":"bulk"}`), Metadata: map[string]any{},
+		}
+	}
+	if _, err := store.AppendEvents(context.Background(), envs); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	frames, cancel := readSSE(t, ts.URL+"/v1/rooms/room_bulk/events", total, 5*time.Second)
+	defer cancel()
+	if len(frames) != total {
+		t.Fatalf("追平帧数 = %d（期望 %d）：分页未补齐超一批的积压", len(frames), total)
+	}
+	if want := protocol.EncodeCursor(total); frames[total-1].ID != want {
+		t.Fatalf("末帧游标 = %q（期望 %q）", frames[total-1].ID, want)
+	}
+}
+
+// flakyReader 首次 EventsAfter 即失败：驱动 resync_required 信号。
+type flakyReader struct{ room.EventReader }
+
+func (f flakyReader) EventsAfter(ctx context.Context, roomID, cursor string, limit int) ([]room.StoredEvent, string, error) {
+	return nil, "", fmt.Errorf("reader boom")
+}
+
+// M1 收口补课：追平失败/慢消费者断流必须发 resync_required 具名事件（RFC-0001 §订阅），
+// 客户端据此走快照恢复，而非只给注释行。
+func TestSSEResyncRequiredOnCatchUpFailure(t *testing.T) {
+	store := room.NewMemStore()
+	svc := room.NewService(room.Config{
+		Store:  store,
+		Clock:  func() string { return "2026-08-28T11:00:00.000Z" },
+		NewID:  func(prefix string) string { return prefix + "_rs" },
+		Tenant: "ten_local",
+	})
+	ts := httptest.NewServer(New(Deps{
+		SVC: svc, Reader: flakyReader{EventReader: store}, Hub: sse.NewHub(),
+		Actor: room.Actor{ParticipantID: "par_owner", Kind: "human"},
+	}))
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/v1/rooms/room_rs/events", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get sse: %v", err)
+	}
+	defer resp.Body.Close()
+	scanner := bufio.NewScanner(resp.Body)
+	var sawResync bool
+	for scanner.Scan() {
+		if strings.HasPrefix(scanner.Text(), "event: resync_required") {
+			sawResync = true
+		}
+	}
+	if !sawResync {
+		t.Fatal("追平失败必须发出 event: resync_required 具名帧")
+	}
+}
+
 // ---- 宿主层端点 ----
 
 // miniRunner: httpapi 测试用的最小 harness.Runner（探测全成功形态）。

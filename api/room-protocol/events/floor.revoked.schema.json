@@ -10,7 +10,8 @@
     "grant_id": { "type": "string", "pattern": "^grant_[0-9A-Za-z_-]+$" },
     "reason": {
       "type": "string",
-      "enum": ["human_preemption", "room_paused", "budget", "thread_closed"]
+      "enum": ["human_preemption", "room_paused", "budget", "thread_closed", "generation_failed"],
+      "description": "generation_failed = 适配器生成失败（grant 未消费即撤销，非人类打断）"
     }
   }
 }
