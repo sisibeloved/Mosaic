@@ -34,6 +34,11 @@ func main() {
 	dataDir := flag.String("data", "./data", "data directory (SQLite + runtime files)")
 	flag.Parse()
 
+	// 信号处理必须先于一切：listening 日志出现后 ST 立即投递 SIGINT，
+	// 注册晚于日志会出现"信号走默认动作 → 非零码退出"的竞态（CI 双核实证）。
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	if err := os.MkdirAll(*dataDir, 0o755); err != nil {
@@ -81,7 +86,7 @@ func main() {
 	scanDone := make(chan struct{})
 	go func() {
 		defer close(scanDone)
-		scanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		scanCtx, cancel := context.WithTimeout(ctx, 30*time.Second) // 随主 ctx 取消：退出不被扫描拖住
 		defer cancel()
 		opts := harness.ScanOptions{IncludeWSL: goruntime.GOOS == "windows"}
 		if err := harnessRegistry.Scan(scanCtx, harness.NewHostRunner(), harness.BuiltinProbes, opts); err != nil {
@@ -111,9 +116,6 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("mosaic-server listening", "addr", ln.Addr().String())
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	// 房间引擎：M1 服务全部已创建房间；open_floor 默认参数（RFC-0003 §3.1.7）
 	engine := room.NewEngine(room.EngineConfig{
