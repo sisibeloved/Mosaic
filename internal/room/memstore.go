@@ -5,6 +5,7 @@ package room
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/sisibeloved/Mosaic/internal/protocol"
@@ -16,6 +17,7 @@ type MemStore struct {
 	events   []protocol.Envelope            // 全局提交序
 	byRoom   map[string][]protocol.Envelope // 房间视图
 	receipts map[string]*CommandReceipt     // key: tenant|idem|kind
+	claims   map[string][]byte              // key: room|stimulus → envelope（ClaimStore）
 	nextSeq  map[string]int64
 }
 
@@ -24,8 +26,43 @@ func NewMemStore() *MemStore {
 	return &MemStore{
 		byRoom:   map[string][]protocol.Envelope{},
 		receipts: map[string]*CommandReceipt{},
+		claims:   map[string][]byte{},
 		nextSeq:  map[string]int64{},
 	}
+}
+
+func claimKey(roomID, stimulusID string) string { return roomID + "|" + stimulusID }
+
+// ClaimStimulus 实现 ClaimStore。
+func (m *MemStore) ClaimStimulus(_ context.Context, roomID, stimulusID string, envelope []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := claimKey(roomID, stimulusID)
+	if _, exists := m.claims[key]; exists {
+		return false, nil
+	}
+	m.claims[key] = append([]byte(nil), envelope...)
+	return true, nil
+}
+
+// DeleteClaim 实现 ClaimStore。
+func (m *MemStore) DeleteClaim(_ context.Context, roomID, stimulusID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.claims, claimKey(roomID, stimulusID))
+	return nil
+}
+
+// PendingClaims 实现 ClaimStore。
+func (m *MemStore) PendingClaims(_ context.Context) ([]StimulusClaim, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]StimulusClaim, 0, len(m.claims))
+	for key, env := range m.claims {
+		roomID, stimulusID, _ := strings.Cut(key, "|")
+		out = append(out, StimulusClaim{RoomID: roomID, StimulusEventID: stimulusID, Envelope: append([]byte(nil), env...)})
+	}
+	return out, nil
 }
 
 func receiptKey(tenant, idem, kind string) string {

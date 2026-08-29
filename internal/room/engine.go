@@ -47,6 +47,7 @@ type EngineConfig struct {
 	Receipts    ReceiptStore     // 可选
 	OnDraft     DraftSink        // 可选：草稿流出口
 	Logger      *slog.Logger     // 可选：缺省 slog.Default()（轮中止/门控不再静默）
+	Claims      ClaimStore       // 可选：durable handoff（二轮审校 #9；nil = 无声明直驱，测试场景）
 	ResponseCap int64            // 对称预留的单发言 token 上限（默认 600）
 	Clock       func() string    // occurred_at（RFC3339）
 	Now         func() time.Time // 过期时刻计算
@@ -65,6 +66,9 @@ type Engine struct {
 	// roomLocks 同房间轮串行（roomID → *sync.Mutex）：两条人类消息并发到达时
 	// 不产生同 epoch 双轮——epoch 机制只兜底跨进程竞态，进程内先串行。
 	roomLocks sync.Map
+	// seats 动态座位（二轮审校 #1：运行时启用的适配器要能加入当前引擎）。
+	seatsMu sync.RWMutex
+	seats   []AgentSeat
 }
 
 // NewEngine 构造。
@@ -76,7 +80,22 @@ func NewEngine(cfg EngineConfig) *Engine {
 		cfg.Logger = slog.Default()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Engine{cfg: cfg, lifecycle: ctx, stop: cancel}
+	return &Engine{cfg: cfg, lifecycle: ctx, stop: cancel, seats: cfg.Seats}
+}
+
+// SetSeats 运行时更新座位（宿主注册表启用状态变化后由装配方调用；快照语义——
+// 只影响之后的轮，在途轮沿用其开始时的座位集）。
+func (e *Engine) SetSeats(seats []AgentSeat) {
+	e.seatsMu.Lock()
+	defer e.seatsMu.Unlock()
+	e.seats = append([]AgentSeat(nil), seats...)
+}
+
+// seatsSnapshot 当前座位副本。
+func (e *Engine) seatsSnapshot() []AgentSeat {
+	e.seatsMu.RLock()
+	defer e.seatsMu.RUnlock()
+	return append([]AgentSeat(nil), e.seats...)
 }
 
 // Close 关停引擎：取消在途轮与 agent 任务（适配器经 ctx 击杀子进程组），
@@ -85,7 +104,9 @@ func (e *Engine) Close() { e.stop() }
 
 // Deliver 实现 outbox.Consumer：仅对 message.posted 且 actor=human 的条目异步开轮。
 // 引擎自产事件（actor=agent/system）不再触发，无反馈环。
-func (e *Engine) Deliver(_ context.Context, entry outbox.Entry) {
+// durable handoff（二轮审校 #9）：配置 ClaimStore 时先落声明行再返回——dispatcher
+// 随后才确认 outbox，崩溃窗口内声明仍在，重启由 RecoverClaims 重驱动，不丢轮。
+func (e *Engine) Deliver(ctx context.Context, entry outbox.Entry) {
 	var env protocol.Envelope
 	if err := json.Unmarshal(entry.Envelope, &env); err != nil {
 		return
@@ -96,7 +117,59 @@ func (e *Engine) Deliver(_ context.Context, entry outbox.Entry) {
 	if e.cfg.RoomID != "" && env.RoomID != e.cfg.RoomID {
 		return
 	}
+	if e.cfg.Claims != nil {
+		newly, err := e.cfg.Claims.ClaimStimulus(ctx, env.RoomID, env.EventID, entry.Envelope)
+		if err != nil {
+			// 声明失败：退化为现状直驱（宁可内存内跑一轮，也不无声丢弃）+ 高声告警
+			e.warn(env.RoomID, "stimulus 声明落库失败（退化为非持久直驱）", "stimulus", env.EventID, "err", err)
+		} else if !newly {
+			return // 已声明过：outbox 重放/恢复并发的去重
+		}
+	}
 	go e.runRound(e.lifecycle, env)
+}
+
+// RecoverClaims 启动恢复：扫描声明未清的刺激——已开轮的清声明，未开轮的重驱动。
+func (e *Engine) RecoverClaims() {
+	if e.cfg.Claims == nil {
+		return
+	}
+	claims, err := e.cfg.Claims.PendingClaims(e.lifecycle)
+	if err != nil {
+		e.warn("", "claim 恢复扫描失败", "err", err)
+		return
+	}
+	for _, c := range claims {
+		var env protocol.Envelope
+		if json.Unmarshal(c.Envelope, &env) != nil {
+			_ = e.cfg.Claims.DeleteClaim(e.lifecycle, c.RoomID, c.StimulusEventID) // 信封损坏：清除毒声明
+			continue
+		}
+		if e.roundForStimulus(c.RoomID, c.StimulusEventID) {
+			_ = e.cfg.Claims.DeleteClaim(e.lifecycle, c.RoomID, c.StimulusEventID)
+			continue
+		}
+		e.warn(c.RoomID, "恢复未开轮的刺激声明", "stimulus", c.StimulusEventID)
+		go e.runRound(e.lifecycle, env)
+	}
+}
+
+// roundForStimulus 房间是否已有该刺激的 round.opened（恢复去重依据）。
+func (e *Engine) roundForStimulus(roomID, stimulusEventID string) bool {
+	events, err := e.roomHistory(e.lifecycle, roomID)
+	if err != nil {
+		return false
+	}
+	for _, ev := range events {
+		if ev.Envelope.Type != protocol.EventRoundOpened {
+			continue
+		}
+		var p protocol.RoundOpenedPayload
+		if json.Unmarshal(ev.Envelope.Payload, &p) == nil && p.StimulusEventID == stimulusEventID {
+			return true
+		}
+	}
+	return false
 }
 
 // lockRoom 取（或建）房间互斥锁。
@@ -148,6 +221,17 @@ func countRounds(events []StoredEvent) int64 {
 		}
 	}
 	return n
+}
+
+// pausedAfter fence（二轮审校 #7）：grant 落库（seq）之后出现过 room.paused（即便
+// 其后已 resume）即视为失效——"最终是否暂停"检查挡不住 pause→resume 快速往返。
+func pausedAfter(events []StoredEvent, grantSeq int64) bool {
+	for _, ev := range events {
+		if ev.Envelope.Type == protocol.EventRoomPaused && ev.Envelope.Seq > grantSeq {
+			return true
+		}
+	}
+	return false
 }
 
 // runRound 一轮：预算/暂停门控 → 评估全部 seat → 确定性选择 → 按 rank 揭示。
@@ -204,10 +288,17 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 		e.warn(roomID, "round.opened 落库失败，轮中止", "err", err)
 		return
 	}
+	if e.cfg.Claims != nil {
+		// 声明使命完成（认领→开轮）：清除（失败不致命——恢复扫描会按已开轮清理）
+		if err := e.cfg.Claims.DeleteClaim(ctx, roomID, stimulus.EventID); err != nil {
+			e.warn(roomID, "claim 清除失败（恢复扫描兜底）", "err", err)
+		}
+	}
 
 	// 2) 上下文组装（七层最小 + Receipt；同轮各任务共享组装、逐任务 Receipt）
-	seatsMin := make([]contextx.Seat, len(e.cfg.Seats))
-	for i, s := range e.cfg.Seats {
+	seats := e.seatsSnapshot()
+	seatsMin := make([]contextx.Seat, len(seats))
+	for i, s := range seats {
 		seatsMin[i] = contextx.Seat{ParticipantID: s.ParticipantID}
 	}
 	assembled := contextx.Assemble(contextx.Config{
@@ -233,12 +324,17 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 	// 3) 各 seat 意图评估 → 选择输入（预算 admission：对称预留不足者失格）
 	var candidates []attention.Candidate
 	evalUsage := map[string]*agent.Usage{} // 评估 token 入账（三维账本的评估侧）
-	for _, seat := range e.cfg.Seats {
+	stimulusThread := ""
+	if stimulus.ThreadID != nil {
+		stimulusThread = *stimulus.ThreadID // 线程归属透传（agent-native：回复不丢线程）
+	}
+	for _, seat := range e.seatsSnapshot() {
 		intentResult, err := e.runTask(ctx, seat.Profile, seat.ParticipantID, agent.Task{
 			TaskID:        e.cfg.NewID("tsk"),
 			Kind:          agent.KindEvaluateIntent,
 			ParticipantID: seat.ParticipantID,
 			RoomID:        roomID,
+			ThreadID:      stimulusThread,
 			Epoch:         roundID,
 			Context:       taskContext,
 		})
@@ -252,6 +348,8 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 		evalUsage[seat.ParticipantID] = intentResult.Usage
 		intent, ok := intentFromData(seat.ParticipantID, intentResult.Data)
 		if !ok {
+			// 结构校验失败即弃权：不虚构零分参与排序（二轮审校 #8）
+			e.warn(roomID, "intent 结构非法，该座弃权", "seat", seat.ParticipantID)
 			continue
 		}
 		intent.IntentID = e.cfg.NewID("int") // 选择前分配：Selection/Rejection 以此为键
@@ -401,11 +499,16 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 		return revealAbort
 	}
 
+	generateThread := ""
+	if stimulus.ThreadID != nil {
+		generateThread = *stimulus.ThreadID
+	}
 	draftResult, err := e.runTask(ctx, e.profileOf(sel.ParticipantID), sel.ParticipantID, agent.Task{
 		TaskID:        e.cfg.NewID("tsk"),
 		Kind:          agent.KindGenerate,
 		ParticipantID: sel.ParticipantID,
 		RoomID:        roomID,
+		ThreadID:      generateThread,
 		Epoch:         roundID,
 		Grant: &agent.Grant{
 			GrantID:        grantID,
@@ -426,18 +529,21 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 		return revealRevoked
 	}
 
-	// 迟到检查：生成期间房间被暂停或进入更新 epoch → 结果不发布（正文事件零迟到污染）
+	// 迟到检查：生成期间房间被暂停（含"暂停后又 resume"——fence 语义：grant 落库后
+	// 出现过 room.paused 即失效，快速 resume 不得复活旧生成）或进入更新 epoch →
+	// 结果不发布（正文事件零迟到污染）
 	fresh, err := e.roomHistory(ctx, roomID)
 	if err != nil {
 		return revealAbort
 	}
-	if roomPaused(fresh) || countRounds(fresh) > epoch {
+	if roomPaused(fresh) || pausedAfter(fresh, appended[0].Seq) || countRounds(fresh) > epoch {
 		e.revoke(ctx, roomID, grant.EventID, grantID, roundID, stimulus, "room_paused")
 		return revealRevoked
 	}
 
 	msg := e.newEnv(roomID, protocol.EventMessagePosted,
 		protocol.Actor{ParticipantID: sel.ParticipantID, Kind: "agent"}, appended[0].EventID, roundID, draftResult.Data)
+	msg.ThreadID = stimulus.ThreadID // 线程归属：回复落在刺激线程（agent-native 缺口修复）
 	if draftResult.Usage != nil {
 		msg.Metadata = map[string]any{
 			"usage": map[string]any{
@@ -480,7 +586,7 @@ func (e *Engine) runTask(ctx context.Context, profile agent.Profile, participant
 }
 
 func (e *Engine) profileOf(participantID string) agent.Profile {
-	for _, seat := range e.cfg.Seats {
+	for _, seat := range e.seatsSnapshot() {
 		if seat.ParticipantID == participantID {
 			return seat.Profile
 		}
@@ -488,15 +594,33 @@ func (e *Engine) profileOf(participantID string) agent.Profile {
 	return agent.Profile{}
 }
 
-// intentFromData 适配器 turn_intent 结果 → 域 Intent（严格校验字段存在性）。
-// IntentID 此时尚未分配（intent.recorded 时生成）——选择内部以 participant 为键。
+// intentActionSet/intentTypeSet 适配器输出的合法枚举（RFC-0003 §3.1.2；
+// 二轮审校 #8：未知枚举/非数值分数此前被静默转成合法零分进入选择引擎——严格写拒收）。
+var intentActionSet = map[string]bool{
+	"speak": true, "react": true, "fork": true, "summarize": true, "silent": true,
+}
+
+var intentTypeSet = map[string]bool{
+	"answer": true, "extend": true, "challenge": true, "support": true,
+	"question": true, "redirect": true, "synthesize": true,
+}
+
+// intentFromData 适配器 turn_intent 结果 → 域 Intent（严格校验：枚举合法、分数必为
+// 数值且字段齐全；silent 允许省略 type/scores。校验失败返回 false——该座弃权，
+// 不得以虚构零分参与排序）。IntentID 此时尚未分配（intent.recorded 时生成）。
 func intentFromData(participantID string, data map[string]any) (attention.Intent, bool) {
 	action, _ := data["action"].(string)
-	intentType, _ := data["type"].(string)
-	if action == "" || (intentType == "" && action != "silent") {
+	if !intentActionSet[action] {
 		return attention.Intent{}, false
 	}
-	scores, _ := data["scores"].(map[string]any)
+	intentType, _ := data["type"].(string)
+	if intentType == "" {
+		if action != "silent" { // silent 可省略 type；其余必须有
+			return attention.Intent{}, false
+		}
+	} else if !intentTypeSet[intentType] {
+		return attention.Intent{}, false
+	}
 	rationale, _ := data["public_rationale"].(string)
 	intent := attention.Intent{
 		ParticipantID:   participantID,
@@ -504,20 +628,31 @@ func intentFromData(participantID string, data map[string]any) (attention.Intent
 		Type:            intentType,
 		PublicRationale: rationale,
 	}
-	if scores != nil {
-		intent.Scores = attention.Scores{
-			Relevance:  floatOf(scores["relevance"]),
-			Novelty:    floatOf(scores["novelty"]),
-			Urgency:    floatOf(scores["urgency"]),
-			Confidence: floatOf(scores["confidence"]),
-		}
+	if action == "silent" {
+		return intent, true
+	}
+	scores, ok := data["scores"].(map[string]any)
+	if !ok {
+		return attention.Intent{}, false
+	}
+	num := func(key string) (float64, bool) {
+		v, ok := scores[key].(float64) // JSON 数值；字符串数字/布尔一律拒收
+		return v, ok
+	}
+	relevance, okR := num("relevance")
+	novelty, okN := num("novelty")
+	urgency, okU := num("urgency")
+	confidence, okC := num("confidence")
+	if !okR || !okN || !okU || !okC {
+		return attention.Intent{}, false // 缺字段/非数值不得默认 0（越界仍由 Select 严格拒）
+	}
+	intent.Scores = attention.Scores{
+		Relevance:  relevance,
+		Novelty:    novelty,
+		Urgency:    urgency,
+		Confidence: confidence,
 	}
 	return intent, true
-}
-
-func floatOf(v any) float64 {
-	f, _ := v.(float64)
-	return f
 }
 
 // recentFloorShare 该参与者最近发言占比（M1：全历史 agent 消息窗口；

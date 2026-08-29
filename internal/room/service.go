@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 )
@@ -68,6 +69,11 @@ func NewService(cfg Config) *Service {
 func (s *Service) ExecuteCommand(ctx context.Context, actor Actor, cmd Command) (*CommandResult, error) {
 	if !uuidv7Pattern.MatchString(cmd.IdempotencyKey) {
 		return nil, fmt.Errorf("%w: idempotency_key 必须为 UUIDv7", ErrInvalidCommand)
+	}
+	// 二轮审校 #21：issued_at 运行时校验（Schema 只管 fixture 门禁，不管运行时）。
+	// 未来时间戳不拒（时钟偏差容忍），非法格式拒——契约字段不得是自由文本。
+	if _, err := time.Parse(time.RFC3339, cmd.IssuedAt); err != nil {
+		return nil, fmt.Errorf("%w: issued_at 必须为 RFC3339 时间戳", ErrInvalidCommand)
 	}
 	if actor.ParticipantID == "" || (actor.Kind != "human" && actor.Kind != "system") {
 		return nil, fmt.Errorf("%w: 外部命令 actor 必须为具名 human/system", ErrInvalidCommand)

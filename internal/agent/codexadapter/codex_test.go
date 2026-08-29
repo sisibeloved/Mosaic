@@ -169,6 +169,35 @@ func newTestAdapter(exec Execer) *Adapter {
 	return New(Config{CodexPath: "/nvm/bin/codex", Execer: exec, Timeout: 30 * time.Second})
 }
 
+// WorkDir 隔离下的 argv 形态（回归：resume 传 -C 会被 codex 拒绝 exit 2，
+// 实证 2026-08-28——生产 ST 抓到，此处钉住 argv 契约）。
+func TestWorkDirResumeArgvShape(t *testing.T) {
+	first := `{"type":"thread.started","thread_id":"thr_1"}` + "\n" +
+		`{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"{\"action\":\"silent\"}"}}` + "\n" +
+		`{"type":"turn.completed"}`
+	second := `{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"{\"body\":\"d\"}"}}` + "\n" +
+		`{"type":"turn.completed"}`
+	exec := &fakeExecer{outputs: []string{first, second}}
+	adapter := New(Config{CodexPath: "/nvm/bin/codex", Execer: exec, Timeout: 30 * time.Second, WorkDir: "/tmp/agent-work"})
+	session, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "codex"})
+	defer session.Close()
+	h1, _ := session.Run(context.Background(), agent.Task{TaskID: "t1", Kind: agent.KindEvaluateIntent})
+	_, _ = h1.Result()
+	h2, _ := session.Run(context.Background(), agent.Task{TaskID: "t2", Kind: agent.KindGenerate})
+	_, _ = h2.Result()
+
+	if got := exec.calls[0].argv; !contains(got, "-C") {
+		t.Fatalf("首轮 exec 应带 -C 工作目录：%v", got)
+	}
+	resumeArgv := exec.calls[1].argv
+	if contains(resumeArgv, "-C") {
+		t.Fatalf("resume 子命令不接受 -C（实证 exit 2）：%v", resumeArgv)
+	}
+	if resumeArgv[2] != "resume" || !contains(resumeArgv, "thr_1") || !contains(resumeArgv, "-") {
+		t.Fatalf("resume argv 形态不符：%v", resumeArgv)
+	}
+}
+
 func TestSessionRunUsesExecThenResume(t *testing.T) {
 	first := `{"type":"thread.started","thread_id":"thr_1"}` + "\n" +
 		`{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"{\"action\":\"silent\"}"}}` + "\n" +
@@ -250,8 +279,72 @@ func TestGeneratePlainFallback(t *testing.T) {
 	}
 }
 
+// agent-native：提示词必须携带任务身份（grant/receipt/thread），Context Receipt 可证伪。
+func TestBuildPromptCarriesTaskIdentity(t *testing.T) {
+	grant := &agent.Grant{GrantID: "grant_x", Rank: 1, Epoch: 7}
+	prompt, err := buildPrompt(agent.Task{
+		TaskID: "tsk_1", Kind: agent.KindGenerate, RoomID: "room_1", ThreadID: "thr_1",
+		Grant:   grant,
+		Context: agent.Context{Inline: map[string]any{"k": "v"}, ReceiptRef: "rcpt_abc"},
+	})
+	if err != nil {
+		t.Fatalf("buildPrompt: %v", err)
+	}
+	for _, want := range []string{"grant_x", "rcpt_abc", "thr_1", "Charter"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt 缺身份要素 %q", want)
+		}
+	}
+}
+
+// 二轮审校 #4：发布安全门——控制字符剔除、超限截断（显式标注）、空正文拒发布。
+func TestGeneratePublishSanitizeGate(t *testing.T) {
+	t.Run("控制字符剔除", func(t *testing.T) {
+		stream := `{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"line\u0000one\u0007\u000b\r\nline\ttwo"}}` + "\n" + `{"type":"turn.completed"}`
+		exec := &fakeExecer{outputs: []string{stream}}
+		adapter := newTestAdapter(exec)
+		session, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "codex"})
+		defer session.Close()
+		h, _ := session.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+		res, err := h.Result()
+		if err != nil {
+			t.Fatalf("result: %v", err)
+		}
+		if body, _ := res.Data["body"].(string); body != "lineone\nline\ttwo" {
+			t.Fatalf("控制字符应被剔除：%q", body)
+		}
+	})
+	t.Run("超限截断标注", func(t *testing.T) {
+		long := strings.Repeat("字", 6000)
+		stream := `{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"` + long + `"}}` + "\n" + `{"type":"turn.completed"}`
+		exec := &fakeExecer{outputs: []string{stream}}
+		adapter := newTestAdapter(exec)
+		session, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "codex"})
+		defer session.Close()
+		h, _ := session.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+		res, err := h.Result()
+		if err != nil {
+			t.Fatalf("result: %v", err)
+		}
+		body, _ := res.Data["body"].(string)
+		if !strings.Contains(body, "[Mosaic: 输出超限已截断]") || len([]rune(body)) > 4100 {
+			t.Fatalf("超限应显式截断标注：%d runes", len([]rune(body)))
+		}
+	})
+	t.Run("空正文拒绝", func(t *testing.T) {
+		stream := `{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"   \u0000 "}}` + "\n" + `{"type":"turn.completed"}`
+		exec := &fakeExecer{outputs: []string{stream}}
+		adapter := newTestAdapter(exec)
+		session, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "codex"})
+		defer session.Close()
+		h, _ := session.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+		if _, err := h.Result(); err == nil {
+			t.Fatal("空正文必须拒绝发布")
+		}
+	})
+}
+
 func TestCancelYieldsStale(t *testing.T) {
-	// 阻塞型 Execer：等到 ctx 取消
 	blocking := &blockingExecer{}
 	adapter := newTestAdapter(blocking)
 	session, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "codex"})

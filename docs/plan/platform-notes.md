@@ -31,3 +31,4 @@
 | L-4 | modernc SQLite 的 per-connection pragma 经 `db.Exec` 只命中当时连接，并发立刻 SQLITE_BUSY | M0 spike：8×5 并发追加 | pragma 全部走 DSN（`_pragma=busy_timeout(5000)` 等） |
 | L-5 | 跨 `wsl.exe` 的交互式 shell（heredoc/单字符变量）在 Git Bash 侧被吞/展开 | 开发流程（本仓库） | 脚本走文件传递，避免 heredoc；WSL 内命令用 `bash -lc` 包裹 |
 | L-6 | `--output-schema` 在 ChatGPT 账号 provider 组合下上游 400（text.format.schema 序列化 bug，codex-cli 0.149.1） | M1 切片 E：结构化输出 | 提示词约束 + 本地提取校验（`ExtractJSON`）；上游修复后重评估 |
+| L-7 | `codex exec resume` 子命令不接受 `-C`（exit 2 "unexpected argument"）——工作目录参数只能在会话首轮 exec 传入 | 二轮审校 #18：WorkDir 隔离引入后由生产路径 ST 抓到（生成全失败、错误信息只落在非 JSON 行） | `-C` 仅首轮；回归钉在 `TestWorkDirResumeArgvShape`；子进程错误行建议适配器日志化（M2 backlog） |

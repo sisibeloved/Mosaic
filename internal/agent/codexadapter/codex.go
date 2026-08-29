@@ -22,7 +22,7 @@ import (
 // Config 适配器配置。
 type Config struct {
 	CodexPath string        // 可执行路径（来自 harness 注册表）
-	WorkDir   string        // 工作根（默认临时目录；不给仓库权限）
+	WorkDir   string        // 工作根（建议专用空目录：不给仓库/宿主内容；空 = 继承 cwd，不推荐）
 	ExtraArgs []string      // 预留（-c model=... 等 per-Profile 覆盖）
 	Timeout   time.Duration // 单任务超时（默认 120s）
 	Execer    Execer        // 测试注入；nil 用真实进程执行
@@ -30,6 +30,9 @@ type Config struct {
 	// 经 wsl.exe -d <WSLDistro> 包装执行（native exec 会启用即坏）。
 	WSLDistro string
 	WSLHome   string // 发行版内 HOME（宿主 HOME 不适用；由 harness.HostRunner.Home 解析）
+	// MaxOutputRunes 发布正文硬上限（runes；二轮审校 #4/#6：不可信输出的发布边界。
+	// token 级 ResponseCap 需流式计数，exec 批式路径以 rune 上限代理，M1 裁剪登记）。
+	MaxOutputRunes int
 }
 
 // Execer 进程执行抽象（UT 捕获/阻塞；生产为真实 codex 子进程）。
@@ -46,6 +49,9 @@ type Adapter struct {
 func New(cfg Config) *Adapter {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 120 * time.Second
+	}
+	if cfg.MaxOutputRunes <= 0 {
+		cfg.MaxOutputRunes = 4000
 	}
 	return &Adapter{cfg: cfg}
 }
@@ -81,7 +87,7 @@ func (s *session) Run(ctx context.Context, task agent.Task) (agent.Handle, error
 	if task.Kind == agent.KindObserve {
 		return nil, fmt.Errorf("codexadapter: 不支持 observe（Capabilities.Observe=false）")
 	}
-	h := &handle{done: make(chan struct{})}
+	h := &handle{done: make(chan struct{}), maxRunes: s.adapter.cfg.MaxOutputRunes}
 	// ctx 与 cancel 同步接线：Cancel() 必须能立即杀掉在途任务（端口取消契约）
 	taskCtx, cancel := context.WithTimeout(ctx, s.adapter.cfg.Timeout)
 	h.cancel = cancel
@@ -108,12 +114,13 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 
 	argv := []string{s.adapter.cfg.CodexPath, "exec", "--json", "--skip-git-repo-check", "-s", "read-only"}
 	argv = append(argv, s.adapter.cfg.ExtraArgs...)
-	if thread != "" {
-		// 连续性：resume <thread_id>（子命令不接受 -s，沙箱继承）
-		argv = []string{s.adapter.cfg.CodexPath, "exec", "resume", "--json", "--skip-git-repo-check", thread}
-	}
 	if s.adapter.cfg.WorkDir != "" {
-		argv = append(argv, "-C", s.adapter.cfg.WorkDir)
+		argv = append(argv, "-C", s.adapter.cfg.WorkDir) // 工作目录隔离（仅首轮）
+	}
+	if thread != "" {
+		// 连续性：resume <thread_id>（子命令不接受 -s 与 -C——实证 resume 传 -C 即
+		// exit 2 "unexpected argument"，沙箱/工作目录随会话首轮固定）
+		argv = []string{s.adapter.cfg.CodexPath, "exec", "resume", "--json", "--skip-git-repo-check", thread}
 	}
 	argv = append(argv, "-") // 提示词走 stdin：避免 argv 转义与长度问题
 
@@ -145,6 +152,37 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 		return
 	}
 	h.result, h.err = mapResult(task.Kind, parsed)
+	if h.err == nil && task.Kind == agent.KindGenerate {
+		h.sanitizePublish()
+	}
+}
+
+// sanitizePublish 发布边界（二轮审校 #4）：不可信模型文本在进入事件日志前过安全门——
+// 控制字符剔除（保留 \n\t）、去首尾空白、空正文判任务失败、超限截断并显式标注。
+func (h *handle) sanitizePublish() {
+	body, _ := h.result.Data["body"].(string)
+	body = sanitizeBody(body)
+	if body == "" {
+		h.err = fmt.Errorf("codexadapter: 发布正文为空（拒绝发布）")
+		return
+	}
+	if runes := len([]rune(body)); runes > h.maxRunes {
+		cut := string([]rune(body)[:h.maxRunes])
+		body = cut + "\n[Mosaic: 输出超限已截断]"
+	}
+	h.result.Data["body"] = body
+}
+
+// sanitizeBody 剔除控制字符（保留换行/制表）并去首尾空白。
+func sanitizeBody(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '\n' || r == '\t' || (r >= 0x20 && r != 0x7f) {
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func (s *session) execer() Execer {
@@ -167,9 +205,10 @@ func (s *session) envFor() []string {
 
 // handle 单任务句柄：同步等待结果；Cancel 置位后 Result 报 ErrStale。
 type handle struct {
-	done   chan struct{}
-	once   sync.Once
-	cancel context.CancelFunc
+	done     chan struct{}
+	once     sync.Once
+	cancel   context.CancelFunc
+	maxRunes int
 
 	mu     sync.Mutex
 	stale  bool
@@ -317,17 +356,38 @@ Reply with ONLY a JSON object: {"summary":"...","cited_event_ids":["..."]}`
 const closureInstruction = `Judge whether the discussion below has converged.
 Reply with ONLY a JSON object: {"action":"conclude|object|abstain","rationale":"..."}`
 
+// taskIdentity 任务身份要素（agent-native：模型必须能看到 receipt/grant/thread 身份，
+// Context Receipt 才能证伪"给了什么上下文"；与七层组装的 charter/directive 对齐）。
+func taskIdentity(task agent.Task) string {
+	ident := map[string]any{
+		"task_id":     task.TaskID,
+		"room_id":     task.RoomID,
+		"thread_id":   task.ThreadID,
+		"receipt_ref": task.Context.ReceiptRef,
+	}
+	if task.Grant != nil {
+		ident["grant_id"] = task.Grant.GrantID
+		ident["rank"] = task.Grant.Rank
+		ident["epoch"] = task.Grant.Epoch
+	}
+	raw, _ := json.Marshal(ident)
+	return string(raw)
+}
+
+const charterNote = "Charter: deterministic attention arbitration selects speakers; no hidden reasoning; keep replies within the granted floor."
+
 func buildPrompt(task agent.Task) (string, error) {
 	stimulus, _ := json.Marshal(task.Context.Inline)
+	ident := taskIdentity(task)
 	switch task.Kind {
 	case agent.KindEvaluateIntent:
-		return intentInstruction + "\n\nStimulus: " + string(stimulus), nil
+		return intentInstruction + "\n\n" + charterNote + "\nTask identity: " + ident + "\n\nStimulus: " + string(stimulus), nil
 	case agent.KindGenerate:
-		return generateInstruction + "\n\nDiscussion: " + string(stimulus), nil
+		return generateInstruction + "\n\n" + charterNote + "\nTask identity: " + ident + "\n\nDiscussion: " + string(stimulus), nil
 	case agent.KindSummarize:
-		return summarizeInstruction + "\n\nDiscussion: " + string(stimulus), nil
+		return summarizeInstruction + "\nTask identity: " + ident + "\n\nDiscussion: " + string(stimulus), nil
 	case agent.KindEvaluateClosure:
-		return closureInstruction + "\n\nDiscussion: " + string(stimulus), nil
+		return closureInstruction + "\nTask identity: " + ident + "\n\nDiscussion: " + string(stimulus), nil
 	default:
 		return "", fmt.Errorf("codexadapter: 未知任务类型 %q", task.Kind)
 	}

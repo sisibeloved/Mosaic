@@ -12,7 +12,10 @@ export interface IntentRecordedPayload {
   intent_id: string;
   participant_id: string;
   action: "speak" | "react" | "fork" | "summarize" | "silent";
-  type: "answer" | "extend" | "challenge" | "support" | "question" | "redirect" | "synthesize";
+  /**
+   * silent 意图可省略 type（空串）；R-01 全记录后 silent 也落 intent.recorded
+   */
+  type: "answer" | "extend" | "challenge" | "support" | "question" | "redirect" | "synthesize" | "";
   reply_to?: string | null;
   /**
    * @maxItems 3
@@ -20,9 +23,9 @@ export interface IntentRecordedPayload {
   addressed_to?: [] | [string] | [string, string] | [string, string, string];
   public_rationale: string;
   /**
-   * 五档：&lt;0.2 / 0.2–0.4 / 0.4–0.6 / 0.6–0.8 / ≥0.8；精确分仅入内部评测（RFC-0011）
+   * 五档：&lt;0.2 / 0.2–0.4 / 0.4–0.6 / 0.6–0.8 / ≥0.8；unranked = 未进入记分（硬失格/silent/越界，R-01 全记录仍落事件）；精确分仅入内部评测（RFC-0011）
    */
-  score_band: "very_low" | "low" | "medium" | "high" | "very_high";
+  score_band: "very_low" | "low" | "medium" | "high" | "very_high" | "unranked";
   selected: boolean;
   endorsed: boolean;
 }

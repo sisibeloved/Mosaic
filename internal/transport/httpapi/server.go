@@ -87,10 +87,16 @@ func (s *server) handleCommand(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) execute(w http.ResponseWriter, r *http.Request, roomID string) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 二轮审校 #20：命令体 1MiB 上限
 	var req commandRequest
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "命令体超过 1MiB 上限")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "bad_request", "命令体 JSON 不合法："+err.Error())
 		return
 	}
@@ -132,11 +138,15 @@ func (s *server) writeDomainError(w http.ResponseWriter, err error) {
 	writeError(w, status, code, err.Error())
 }
 
-// handleEvents：SSE 订阅。cursor 空串 = 从头；先订阅后追平（间隙事件由 position 去重）。
-// 慢消费者被断流时以注释行提示并结束响应，客户端携最后 id 重连追平。
+// handleEvents：SSE 订阅。cursor 空串 = 从头；断线自动重连（EventSource）携带
+// Last-Event-ID 头时以其续传（二轮审校 #14：忽略该头会整段重放，UI 时间线重复）；
+// 先订阅后追平（间隙事件由 position 去重）；慢消费者断流发 resync_required。
 func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	roomID := r.PathValue("room_id")
 	cursor := r.URL.Query().Get("cursor")
+	if cursor == "" {
+		cursor = r.Header.Get("Last-Event-ID") // 浏览器自动重连的标准续传位
+	}
 	if _, err := protocol.DecodeCursor(cursor); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_cursor", err.Error())
 		return
@@ -298,6 +308,7 @@ func (s *server) handleAddExecutable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表/探测面未配置")
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 二轮审校 #20：登记体 1MiB 上限
 	var req manualExecutableRequest
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()

@@ -68,3 +68,21 @@ type EventReader interface {
 	// EventsAfter 从 cursor 之后按全局位续读；next 为空串表示已追平。
 	EventsAfter(ctx context.Context, roomID, cursor string, limit int) (events []StoredEvent, next string, err error)
 }
+
+// StimulusClaim 轮次交接的持久声明（二轮审校 #9：dispatcher 在 durable handoff 前
+// 确认 outbox，崩溃即永久丢轮——声明行必须先于 Deliver 返回而落盘）。
+type StimulusClaim struct {
+	RoomID          string
+	StimulusEventID string
+	Envelope        []byte // 人类消息信封 JSON（恢复时重驱动一轮）
+}
+
+// ClaimStore 轮次交接声明端口（MemStore/SQLite 双实现）。
+type ClaimStore interface {
+	// ClaimStimulus 声明刺激（INSERT OR IGNORE 语义）：true = 首次声明（本方负责开轮）。
+	ClaimStimulus(ctx context.Context, roomID, stimulusEventID string, envelope []byte) (bool, error)
+	// DeleteClaim round.opened 已落库后删除声明（声明只覆盖"认领但未开轮"窗口）。
+	DeleteClaim(ctx context.Context, roomID, stimulusEventID string) error
+	// PendingClaims 未清除的声明（启动恢复扫描输入）。
+	PendingClaims(ctx context.Context) ([]StimulusClaim, error)
+}

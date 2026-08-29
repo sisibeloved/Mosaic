@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -66,6 +67,13 @@ CREATE TABLE IF NOT EXISTS context_receipts (
 	layer_digests TEXT NOT NULL,
 	created_at    TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS engine_claims (
+	room_id           TEXT NOT NULL,
+	stimulus_event_id TEXT NOT NULL,
+	envelope          TEXT NOT NULL,
+	claimed_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+	PRIMARY KEY (room_id, stimulus_event_id)
+);
 CREATE TABLE IF NOT EXISTS migrations (
 	version    INTEGER PRIMARY KEY,
 	applied_at TEXT NOT NULL
@@ -98,6 +106,11 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schemaDDL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: ensure schema: %w", err)
+	}
+	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
+	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+		db.Close()
+		return nil, fmt.Errorf("sqlite: chmod db: %w", err)
 	}
 	return &Store{db: db}, nil
 }
@@ -381,6 +394,54 @@ func isUniqueViolation(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "constraint failed") &&
 		(strings.Contains(msg, "UNIQUE") || strings.Contains(msg, "unique"))
+}
+
+// ---- ClaimStore：轮次交接声明（二轮审校 #9，room.ClaimStore 端口）----
+
+// ClaimStimulus 实现 room.ClaimStore：INSERT OR IGNORE，true = 首次声明。
+func (s *Store) ClaimStimulus(ctx context.Context, roomID, stimulusEventID string, envelope []byte) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO engine_claims (room_id, stimulus_event_id, envelope) VALUES (?, ?, ?)`,
+		roomID, stimulusEventID, string(envelope))
+	if err != nil {
+		return false, fmt.Errorf("sqlite: claim stimulus: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("sqlite: claim rows: %w", err)
+	}
+	return n > 0, nil
+}
+
+// DeleteClaim 实现 room.ClaimStore。
+func (s *Store) DeleteClaim(ctx context.Context, roomID, stimulusEventID string) error {
+	if _, err := s.db.ExecContext(ctx,
+		"DELETE FROM engine_claims WHERE room_id = ? AND stimulus_event_id = ?",
+		roomID, stimulusEventID); err != nil {
+		return fmt.Errorf("sqlite: delete claim: %w", err)
+	}
+	return nil
+}
+
+// PendingClaims 实现 room.ClaimStore。
+func (s *Store) PendingClaims(ctx context.Context) ([]room.StimulusClaim, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT room_id, stimulus_event_id, envelope FROM engine_claims")
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: query claims: %w", err)
+	}
+	defer rows.Close()
+	var out []room.StimulusClaim
+	for rows.Next() {
+		var c room.StimulusClaim
+		var raw string
+		if err := rows.Scan(&c.RoomID, &c.StimulusEventID, &raw); err != nil {
+			return nil, fmt.Errorf("sqlite: scan claim: %w", err)
+		}
+		c.Envelope = []byte(raw)
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // InsertReceipt 实现 room.ReceiptStore：上下文回执落库（可查可审计）。

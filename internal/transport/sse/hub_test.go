@@ -74,6 +74,28 @@ func TestHubSlowConsumerIsDropped(t *testing.T) {
 	}
 }
 
+// 二轮审校 #22：断流（Publish 侧关通道）后订阅方再 Close 不得双 close panic。
+func TestHubDisconnectedThenCloseNoPanic(t *testing.T) {
+	h := NewHub()
+	sub := h.Subscribe("room_dc", 1)
+	for i := 0; i < 5; i++ {
+		h.Publish("room_dc", viewOf("c"))
+	}
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case _, ok := <-sub.C:
+			if !ok {
+				sub.Close() // Publish 侧已关通道：这里必须幂等而非 panic
+				sub.Close()
+				return
+			}
+		case <-deadline:
+			t.Fatal("未被断流")
+		}
+	}
+}
+
 func TestHubManyRooms(t *testing.T) {
 	h := NewHub()
 	subs := make([]*Subscription, 20)

@@ -790,6 +790,276 @@ func (h usageHandle) Result() (agent.Result, error) {
 	return agent.Result{Block: "public_draft", Data: map[string]any{"body": "u"}, Usage: nil}, nil
 }
 
+// 二轮审校 #8：畸形 intent（未知枚举/非数值分数/缺分字段）必须弃权——不得转成合法零分入选择。
+func TestEngineRejectsMalformedIntent(t *testing.T) {
+	cases := []struct {
+		name string
+		data map[string]any
+	}{
+		{"未知 action", map[string]any{"action": "explode", "type": "extend",
+			"scores": map[string]any{"relevance": .5, "novelty": .5, "urgency": .5, "confidence": .5}}},
+		{"未知 type", map[string]any{"action": "speak", "type": "explode",
+			"scores": map[string]any{"relevance": .5, "novelty": .5, "urgency": .5, "confidence": .5}}},
+		{"字符串分数", map[string]any{"action": "speak", "type": "extend",
+			"scores": map[string]any{"relevance": "0.5", "novelty": .5, "urgency": .5, "confidence": .5}}},
+		{"缺分字段", map[string]any{"action": "speak", "type": "extend",
+			"scores": map[string]any{"relevance": .5, "novelty": .5, "confidence": .5}}},
+		{"缺 scores", map[string]any{"action": "speak", "type": "extend"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewMemStore()
+			sup := agent.NewSupervisor()
+			stubIntentData = tc.data
+			_ = sup.Register(intentStubAdapter{})
+			defer sup.Shutdown()
+			defer func() { stubIntentData = nil }()
+			eng := newEchoEngine(store, sup, contextx.Limits{}, "stub_intent")
+			store.AppendEvents(context.Background(), []protocol.Envelope{
+				{EventID: "mi0", TenantID: "ten_local", RoomID: "room_mi", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+			})
+			deliverHuman(t, store, eng, "room_mi")
+			waitRoundClosed(t, store, "room_mi")
+			events := store.RoomEvents("room_mi")
+			if hasType(events, protocol.EventIntentRecorded) || hasType(events, protocol.EventFloorGranted) {
+				t.Fatalf("畸形 intent 不得产生 intent.recorded/grant：%v", typesOf(events))
+			}
+			var rc protocol.RoundClosedPayload
+			_ = json.Unmarshal(events[len(events)-1].Payload, &rc)
+			if rc.Outcome != "quiescent" {
+				t.Fatalf("outcome = %s（期望 quiescent）", rc.Outcome)
+			}
+		})
+	}
+}
+
+// intentStubAdapter：按包级 stubIntentData 返回评估结果（畸形注入用）。
+type intentStubAdapter struct{}
+
+func (intentStubAdapter) Name() string                     { return "stub_intent" }
+func (intentStubAdapter) Capabilities() agent.Capabilities { return agent.Capabilities{} }
+func (intentStubAdapter) Boot(context.Context, agent.Profile) (agent.Session, error) {
+	return intentStubSession{}, nil
+}
+
+type intentStubSession struct{}
+
+func (intentStubSession) Run(context.Context, agent.Task) (agent.Handle, error) {
+	return intentStubHandle{}, nil
+}
+func (intentStubSession) Cancel(string) {}
+func (intentStubSession) Close()        {}
+
+type intentStubHandle struct{}
+
+func (intentStubHandle) Updates() <-chan agent.DraftUpdate { return nil }
+func (intentStubHandle) Cancel()                           {}
+func (intentStubHandle) Result() (agent.Result, error) {
+	return agent.Result{Block: "turn_intent", Data: stubIntentData}, nil
+}
+
+var stubIntentData map[string]any
+
+// 二轮审校 #7：生成在途 pause→快速 resume，旧生成仍必须拒发（fence：grant 后出现过
+// room.paused 即失效，"最终未暂停"检查挡不住这个窗口）。
+func TestEnginePauseResumeFence(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(gatedAdapter{})
+	defer sup.Shutdown()
+	gate = make(chan struct{})
+	defer func() { gate = nil }()
+	eng := newEchoEngine(store, sup, contextx.Limits{}, "gated")
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "pf1", TenantID: "ten_local", RoomID: "room_pf", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	deliverHuman(t, store, eng, "room_pf")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !hasType(store.RoomEvents("room_pf"), protocol.EventFloorGranted) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	// 生成在途：pause → 立即 resume
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "pf2", TenantID: "ten_local", RoomID: "room_pf", Type: protocol.EventRoomPaused, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+		{EventID: "pf3", TenantID: "ten_local", RoomID: "room_pf", Type: protocol.EventRoomStarted, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	close(gate)
+	waitRoundClosed(t, store, "room_pf")
+	events := store.RoomEvents("room_pf")
+	if !hasType(events, protocol.EventFloorRevoked) {
+		t.Fatalf("pause→resume 后旧生成必须撤销：%v", typesOf(events))
+	}
+	for _, ev := range events {
+		if ev.Type == protocol.EventMessagePosted && ev.Actor.Kind == "agent" {
+			t.Fatalf("失效生成不得发布正文：%v", typesOf(events))
+		}
+	}
+	var rc protocol.RoundClosedPayload
+	_ = json.Unmarshal(events[len(events)-1].Payload, &rc)
+	if rc.Outcome != "revoked_all" {
+		t.Fatalf("outcome = %s（期望 revoked_all）", rc.Outcome)
+	}
+}
+
+// 二轮审校 #9：durable handoff——Deliver 返回前声明已落盘；outbox 重放不双开轮；
+// 崩溃窗口（已声明未开轮）由 RecoverClaims 重驱动。
+func TestEngineDurableHandoffClaim(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(gatedAdapter{})
+	defer sup.Shutdown()
+	gate = make(chan struct{})
+	defer func() { gate = nil }()
+	eng := NewEngine(EngineConfig{
+		Store: store, Reader: store, Agents: sup, Claims: store,
+		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "gated"}}},
+		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
+		Clock:  testClock, Now: time.Now,
+		NewID: counterNewID(), Tenant: "ten_local",
+	})
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "dh0", TenantID: "ten_local", RoomID: "room_dh", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	stimulus := protocol.Envelope{
+		EventID: "dh1", TenantID: "ten_local", RoomID: "room_dh",
+		Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
+		Actor:   protocol.Actor{ParticipantID: "o", Kind: "human"},
+		Payload: []byte(`{"body":"dh"}`), Metadata: map[string]any{},
+	}
+	store.AppendEvents(context.Background(), []protocol.Envelope{stimulus})
+	raw, _ := json.Marshal(stimulus)
+	eng.Deliver(context.Background(), outbox.Entry{RoomID: "room_dh", Envelope: raw})
+	// Deliver 已返回：声明必须可查（此时轮仍在 generate 阻塞中——这正是 outbox 确认前的交接窗口）
+	claims, err := store.PendingClaims(context.Background())
+	if err != nil || len(claims) != 1 || claims[0].StimulusEventID != "dh1" {
+		t.Fatalf("Deliver 返回后声明必须已落盘：%v %v", claims, err)
+	}
+	// outbox 重放同一刺激（at-least-once）：不得双开轮
+	eng.Deliver(context.Background(), outbox.Entry{RoomID: "room_dh", Envelope: raw})
+	close(gate)
+	waitRoundClosed(t, store, "room_dh")
+	if n := countType(store.RoomEvents("room_dh"), protocol.EventRoundOpened); n != 1 {
+		t.Fatalf("重放不得双开轮：round.opened = %d", n)
+	}
+	// 开轮后声明应被清除
+	claims, _ = store.PendingClaims(context.Background())
+	if len(claims) != 0 {
+		t.Fatalf("开轮后声明应清除，剩 %d", len(claims))
+	}
+}
+
+// 二轮审校 #9：崩溃窗口（已声明、未开轮）——恢复扫描重驱动。
+func TestEngineRecoverClaimsDrivesLostRound(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(echo.Adapter{})
+	defer sup.Shutdown()
+	eng := NewEngine(EngineConfig{
+		Store: store, Reader: store, Agents: sup, Claims: store,
+		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
+		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
+		Clock:  testClock, Now: time.Now,
+		NewID: counterNewID(), Tenant: "ten_local",
+	})
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "rc0", TenantID: "ten_local", RoomID: "room_rc", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	lost := protocol.Envelope{
+		EventID: "rc1", TenantID: "ten_local", RoomID: "room_rc",
+		Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
+		Actor:   protocol.Actor{ParticipantID: "o", Kind: "human"},
+		Payload: []byte(`{"body":"lost"}`), Metadata: map[string]any{},
+	}
+	// 模拟崩溃窗口：声明落盘、事件落库，但轮从未开（未走 Deliver）
+	store.AppendEvents(context.Background(), []protocol.Envelope{lost})
+	if _, err := store.ClaimStimulus(context.Background(), "room_rc", "rc1", mustRawJSON(lost)); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	eng.RecoverClaims()
+	waitRoundClosed(t, store, "room_rc")
+	events := store.RoomEvents("room_rc")
+	if countType(events, protocol.EventRoundOpened) != 1 {
+		t.Fatalf("恢复扫描应重驱动丢失的轮：%v", typesOf(events))
+	}
+	if claims, _ := store.PendingClaims(context.Background()); len(claims) != 0 {
+		t.Fatalf("恢复后声明应清除，剩 %d", len(claims))
+	}
+}
+
+// 二轮审校 #1：运行时 SetSeats 后新座位参与下一轮（动态启用不重建引擎）。
+func TestEngineDynamicSeats(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(echo.Adapter{})
+	defer sup.Shutdown()
+	eng := newEchoEngine(store, sup, contextx.Limits{}, "echo") // 初始单座 par_echo
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "ds0", TenantID: "ten_local", RoomID: "room_ds", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	eng.SetSeats([]AgentSeat{
+		{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p1", Adapter: "echo"}},
+		{ParticipantID: "par_late", Profile: agent.Profile{ProfileID: "p2", Adapter: "echo"}},
+	})
+	deliverHuman(t, store, eng, "room_ds")
+	waitRoundClosed(t, store, "room_ds")
+	intents := countType(store.RoomEvents("room_ds"), protocol.EventIntentRecorded)
+	if intents != 2 {
+		t.Fatalf("动态座位应双双参与（intent.recorded=%d，期望 2）", intents)
+	}
+}
+
+// agent-native：刺激带 thread_id → agent 回复落同一线程（线程归属不丢）。
+func TestEngineThreadPassthrough(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(echo.Adapter{})
+	defer sup.Shutdown()
+	eng := newEchoEngine(store, sup, contextx.Limits{}, "echo")
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "tp0", TenantID: "ten_local", RoomID: "room_tp", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	threadID := "thr_test_branch"
+	stimulus := protocol.Envelope{
+		EventID: "tp1", TenantID: "ten_local", RoomID: "room_tp", ThreadID: &threadID,
+		Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
+		Actor:      protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Visibility: protocol.Visibility{Kind: "public"},
+		Payload:    []byte(`{"body":"threaded"}`), Metadata: map[string]any{},
+	}
+	if _, err := store.AppendEvents(context.Background(), []protocol.Envelope{stimulus}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	raw, _ := json.Marshal(stimulus)
+	eng.Deliver(context.Background(), outbox.Entry{RoomID: "room_tp", Envelope: raw})
+	waitRoundClosed(t, store, "room_tp")
+	for _, ev := range store.RoomEvents("room_tp") {
+		if ev.Type != protocol.EventMessagePosted || ev.Actor.Kind != "agent" {
+			continue
+		}
+		if ev.ThreadID == nil || *ev.ThreadID != threadID {
+			t.Fatalf("agent 回复应落在刺激线程 %s：%v", threadID, ev.ThreadID)
+		}
+		return
+	}
+	t.Fatal("未找到 agent 消息")
+}
+
+func counterNewID() func(string) string {
+	var mu sync.Mutex
+	var n int64
+	return func(p string) string {
+		mu.Lock()
+		defer mu.Unlock()
+		n++
+		return p + "_c" + jsonNumber(n)
+	}
+}
+
+func mustRawJSON(v protocol.Envelope) []byte {
+	raw, _ := json.Marshal(v)
+	return raw
+}
+
 func waitRoundClosed(t *testing.T, store *MemStore, roomID string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

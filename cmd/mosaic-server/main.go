@@ -36,6 +36,8 @@ import (
 func main() {
 	addr := flag.String("addr", "127.0.0.1:7420", "listen address")
 	dataDir := flag.String("data", "./data", "data directory (SQLite + runtime files)")
+	// 二轮审校 #17：owner 级 API（命令/SSE/宿主注册表）无认证——非回环监听必须显式豁免
+	allowRemote := flag.Bool("allow-remote", false, "allow non-loopback listen (owner APIs are unauthenticated)")
 	flag.Parse()
 
 	// 信号处理必须先于一切：listening 日志出现后 ST 立即投递 SIGINT，
@@ -45,7 +47,20 @@ func main() {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	if err := os.MkdirAll(*dataDir, 0o755); err != nil {
+	if host, _, err := net.SplitHostPort(*addr); err == nil {
+		loopback := host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
+		if !loopback && !*allowRemote {
+			logger.Error("拒绝非回环监听（owner/harness API 无认证；个人版本地形态）",
+				"addr", *addr, "豁免方式", "显式传 -allow-remote 并自行承担暴露面")
+			os.Exit(1)
+		}
+		if !loopback {
+			logger.Warn("非回环监听已豁免：API 无认证，请确保处于受信网络", "addr", *addr)
+		}
+	}
+
+	// 二轮审校 #19：数据目录 owner-only（组/其他不可读——事件日志含全部讨论内容）
+	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
 		logger.Error("mkdir data failed", "dir", *dataDir, "err", err)
 		os.Exit(1)
 	}
@@ -122,46 +137,71 @@ func main() {
 	logger.Info("mosaic-server listening", "addr", ln.Addr().String())
 
 	// 房间引擎 + 提交后分发：echo 恒在（conformance 基线）；宿主扫描完成后，
-	// 已启用的真实适配器（如 codex）动态注册并加入座位。分发循环晚于扫描启动——
-	// 扫描期间的命令照常受理，事件在分发启动后依序投递（outbox 不丢）。
+	// 已启用的真实适配器（如 codex）动态注册并加入座位；此后周期 resync——
+	// 运行时经 /v1/harness/*/enable 启用的适配器无需重启即可入座（二轮审校 #1）。
+	// 分发循环晚于扫描启动——扫描期间的命令照常受理，事件在分发启动后依序投递（outbox 不丢）。
 	var enginePtr atomic.Pointer[room.Engine]
 	go func() {
 		<-scanDone
-		seats := []room.AgentSeat{{
-			ParticipantID: "par_echo",
-			Profile:       agent.Profile{ProfileID: "prof_echo", Adapter: "echo", DisplayName: "Echo"},
-		}}
 		hostRunner := harness.NewHostRunner()
-		for _, exe := range harnessRegistry.EnabledList() {
-			switch exe.Adapter {
-			case "codex":
-				cfg := codexadapter.Config{CodexPath: exe.Path, Timeout: 180 * time.Second}
-				if harness.Runtime(exe.Runtime) == harness.RuntimeWSL {
-					// WSL 运行面：Linux 路径不能交给 native exec（启用即坏）——
-					// 适配器经 wsl.exe -d <distro> 包装执行，HOME 在发行版内解析。
-					cfg.WSLDistro = exe.Distro
-					cfg.WSLHome = hostRunner.Home(ctx, harness.RuntimeWSL, exe.Distro)
+		// agent 工作目录隔离（二轮审校 #18）：不给服务工作目录与 owner 文件——
+		// 专用空目录 + -C + read-only 沙箱三层约束
+		workRoot := filepath.Join(*dataDir, "agent-work")
+		if err := os.MkdirAll(workRoot, 0o700); err != nil {
+			logger.Warn("agent work root mkdir failed（回退服务器 cwd）", "err", err)
+			workRoot = ""
+		}
+		wslHomeCache := map[string]string{}
+		syncSeats := func() []room.AgentSeat {
+			seats := []room.AgentSeat{{
+				ParticipantID: "par_echo",
+				Profile:       agent.Profile{ProfileID: "prof_echo", Adapter: "echo", DisplayName: "Echo"},
+			}}
+			for _, exe := range harnessRegistry.EnabledList() {
+				switch exe.Adapter {
+				case "codex":
+					profileID := "prof_codex_" + exe.Runtime
+					if exe.Distro != "" {
+						profileID += "_" + strings.ReplaceAll(exe.Distro, ".", "_")
+					}
+					cfg := codexadapter.Config{CodexPath: exe.Path, Timeout: 180 * time.Second}
+					if workRoot != "" {
+						dir := filepath.Join(workRoot, profileID)
+						if err := os.MkdirAll(dir, 0o700); err == nil {
+							cfg.WorkDir = dir
+						}
+					}
+					if harness.Runtime(exe.Runtime) == harness.RuntimeWSL {
+						// WSL 运行面：Linux 路径不能交给 native exec（启用即坏）——
+						// 适配器经 wsl.exe -d <distro> 包装执行，HOME 在发行版内解析。
+						cfg.WSLDistro = exe.Distro
+						if home, ok := wslHomeCache[exe.Distro]; ok {
+							cfg.WSLHome = home
+						} else {
+							cfg.WSLHome = hostRunner.Home(ctx, harness.RuntimeWSL, exe.Distro)
+							wslHomeCache[exe.Distro] = cfg.WSLHome
+						}
+					}
+					if err := supervisor.Register(codexadapter.New(cfg)); err != nil {
+						// 已注册（resync 重复登记）不是错误；其余登记失败跳过座位
+						if !strings.Contains(err.Error(), "already registered") {
+							logger.Warn("codex adapter register failed", "path", exe.Path, "err", err)
+							continue
+						}
+					}
+					seats = append(seats, room.AgentSeat{
+						ParticipantID: "par_codex",
+						Profile:       agent.Profile{ProfileID: profileID, Adapter: "codex", DisplayName: "Codex"},
+					})
 				}
-				if err := supervisor.Register(codexadapter.New(cfg)); err != nil {
-					logger.Warn("codex adapter register failed", "path", exe.Path, "err", err)
-					continue
-				}
-				profileID := "prof_codex_" + exe.Runtime
-				if exe.Distro != "" {
-					profileID += "_" + strings.ReplaceAll(exe.Distro, ".", "_")
-				}
-				seats = append(seats, room.AgentSeat{
-					ParticipantID: "par_codex",
-					Profile:       agent.Profile{ProfileID: profileID, Adapter: "codex", DisplayName: "Codex"},
-				})
-				logger.Info("agent seat ready", "adapter", "codex", "runtime", exe.Runtime, "path", exe.Path)
 			}
+			return seats
 		}
 		engine := room.NewEngine(room.EngineConfig{
 			Store:  store,
 			Reader: store,
 			Agents: supervisor,
-			Seats:  seats,
+			Seats:  syncSeats(),
 			Policy: attention.Policy{
 				Mode:        "open_floor",
 				MaxSpeakers: 3,
@@ -172,6 +212,7 @@ func main() {
 				MaxRounds: 500, MaxUtterances: 1500, MaxTokens: 20_000_000,
 			},
 			Receipts: store,                      // Context Receipt 落库（RFC-0007）
+			Claims:   store,                      // durable handoff（二轮审校 #9）
 			OnDraft:  httpapi.DraftConsumer(hub), // DraftUpdate 安全子集 → SSE 瞬态帧
 			Logger:   logger,
 			Clock:    clock,
@@ -180,6 +221,20 @@ func main() {
 			Tenant:   "ten_local",
 		})
 		enginePtr.Store(engine)
+		engine.RecoverClaims() // 崩溃窗口重驱动：已声明未开轮的刺激（二轮审校 #9）
+		// 周期 resync（二轮审校 #1）：运行时启用/禁用 → 座位与适配器热更新
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					engine.SetSeats(syncSeats())
+				}
+			}
+		}()
 		dispatcher := outbox.NewDispatcher(store, []outbox.Consumer{
 			httpapi.HubConsumer(hub),
 			engine,

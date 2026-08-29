@@ -18,11 +18,12 @@ type Hub struct {
 
 // Subscription 单个订阅；C 关闭即被断流（重连后从最后 cursor 追平）。
 type Subscription struct {
-	C    <-chan ViewEvent
-	ch   chan ViewEvent
-	hub  *Hub
-	room string
-	once sync.Once
+	C      <-chan ViewEvent
+	ch     chan ViewEvent
+	hub    *Hub
+	room   string
+	once   sync.Once // 退订（集合摘除）幂等
+	closed sync.Once // 通道关闭幂等：Publish 断流与 Close 退订都可能关，双 close 会 panic
 }
 
 // NewHub 构造。
@@ -48,7 +49,12 @@ func (h *Hub) Subscribe(roomID string, buffer int) *Subscription {
 	return sub
 }
 
-// Close 退订（幂等）。
+// disconnect 关闭通道（幂等；不触碰 hub 状态，Publish 侧持锁调用安全）。
+func (s *Subscription) disconnect() {
+	s.closed.Do(func() { close(s.ch) })
+}
+
+// Close 退订（幂等；与 Publish 侧断流并发安全）。
 func (s *Subscription) Close() {
 	s.once.Do(func() {
 		s.hub.mu.Lock()
@@ -59,7 +65,7 @@ func (s *Subscription) Close() {
 				delete(s.hub.rooms, s.room)
 			}
 		}
-		close(s.ch)
+		s.disconnect()
 	})
 }
 
@@ -76,7 +82,7 @@ func (h *Hub) Publish(roomID string, ev ViewEvent) {
 		case sub.ch <- ev:
 		default:
 			delete(set, sub)
-			close(sub.ch)
+			sub.disconnect() // 断流：摘除 + 关通道（幂等，与 Close 并发安全）
 		}
 	}
 	if len(set) == 0 {

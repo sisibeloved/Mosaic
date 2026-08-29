@@ -10,5 +10,8 @@
  */
 export interface FloorRevokedPayload {
   grant_id: string;
-  reason: "human_preemption" | "room_paused" | "budget" | "thread_closed";
+  /**
+   * generation_failed = 适配器生成失败（grant 未消费即撤销，非人类打断）
+   */
+  reason: "human_preemption" | "room_paused" | "budget" | "thread_closed" | "generation_failed";
 }

@@ -156,6 +156,23 @@ func TestInvalidFlagExitsNonZero_ST(t *testing.T) {
 	}
 }
 
+// TestNonLoopbackGuard_ST（二轮审校 #17）：owner/harness API 无认证，
+// 非回环监听未显式豁免（-allow-remote）必须拒绝启动；豁免后放行进入监听。
+func TestNonLoopbackGuard_ST(t *testing.T) {
+	bin := buildServer(t)
+	err := exec.Command(bin, "-addr", "0.0.0.0:0", "-data", t.TempDir()).Run()
+	if err == nil {
+		t.Fatal("非回环监听未豁免必须拒绝启动")
+	}
+	cmd := exec.Command(bin, "-addr", "0.0.0.0:0", "-data", t.TempDir(), "-allow-remote")
+	stdout, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
+	waitListening(t, stdout) // 豁免后不拒绝：进入监听
+}
+
 // TestDiscussionLoop_ST：北极星规格——命令 → 事件 → SSE 游标订阅 → 引擎轮 → 断线重连。
 // 覆盖 M1 出口判据的 HTTP 形态（真实二进制 + SQLite + outbox 分发 + echo 引擎）。
 func TestDiscussionLoop_ST(t *testing.T) {
@@ -384,13 +401,13 @@ func TestSnapshotEndpoint_ST(t *testing.T) {
 
 	created := postJSONST(t, base, "/v1/rooms", map[string]any{
 		"command_kind": "create_room", "expected_room_version": 0,
-		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7201", "issued_at": "t",
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7201", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"display_name": "snap"},
 	})
 	roomID := created["room_id"].(string)
 	postJSONST(t, base, "/v1/rooms/"+roomID+"/commands", map[string]any{
 		"command_kind": "post_message", "expected_room_version": 1,
-		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7202", "issued_at": "t",
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7202", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"body": "snapshot 前的消息"},
 	})
 
@@ -467,14 +484,14 @@ func TestCrashRecovery_ST(t *testing.T) {
 	cmd1, base1 := startServer()
 	created := postJSONST(t, base1, "/v1/rooms", map[string]any{
 		"command_kind": "create_room", "expected_room_version": 0,
-		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7301", "issued_at": "t",
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7301", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"display_name": "crash"},
 	})
 	roomID := created["room_id"].(string)
 	// 人类消息触发引擎轮（echo 确定性完成）
 	postJSONST(t, base1, "/v1/rooms/"+roomID+"/commands", map[string]any{
 		"command_kind": "post_message", "expected_room_version": 1,
-		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7302", "issued_at": "t",
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7302", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"body": "crash 前的消息"},
 	})
 	// 等引擎轮完成（round.closed 到位）
@@ -518,7 +535,7 @@ func TestCrashRecovery_ST(t *testing.T) {
 	// 续传：携崩溃前水位订阅，只应收到重启后新事件（无重投）
 	postJSONST(t, base2, "/v1/rooms/"+roomID+"/commands", map[string]any{
 		"command_kind": "post_message", "expected_room_version": preVersion,
-		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7303", "issued_at": "t",
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7303", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"body": "crash 后的消息"},
 	})
 	sseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -561,4 +578,85 @@ func postJSONST(t *testing.T, base, path string, body map[string]any) map[string
 		t.Fatalf("POST %s status=%d body=%v", path, resp.StatusCode, out)
 	}
 	return out
+}
+
+// TestCodexProductionPath_ST（二轮审校 #3）：生产 codex 路径的端到端门禁——
+// 真实 codex 座位参与完整轮（评估→生成→发布）。显式 opt-in：设 MOSAIC_ST_CODEX
+// 指向 codex 可执行文件；未设或未登录时跳过（CI 无 codex；负责人真机演练与本用例同路径）。
+func TestCodexProductionPath_ST(t *testing.T) {
+	codexPath := os.Getenv("MOSAIC_ST_CODEX")
+	if codexPath == "" {
+		t.Skip("未设 MOSAIC_ST_CODEX（生产 codex 路径 ST 为显式 opt-in）")
+	}
+	if out, err := exec.Command(codexPath, "login", "status").CombinedOutput(); err != nil || !strings.Contains(string(out), "Logged in") {
+		t.Skipf("codex 未登录或 login status 不可用（skip）: %v %s", err, out)
+	}
+
+	bin := buildServer(t)
+	dataDir := t.TempDir()
+	// 预置已启用的 manual codex 登记：启动扫描按 ID 合并（enabled 保留）
+	registry := `{"executables":[{"id":"st-codex","adapter":"codex","runtime":"native","path":` +
+		strings.TrimSpace(mustMarshalString(codexPath)) + `,"login_state":"logged_in","source":"manual","enabled":true}]}`
+	if err := os.WriteFile(filepath.Join(dataDir, "harness-registry.json"), []byte(registry), 0o600); err != nil {
+		t.Fatalf("预置注册表: %v", err)
+	}
+
+	cmd := exec.Command(bin, "-addr", "127.0.0.1:0", "-data", dataDir)
+	stdout, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
+	base := "http://" + waitListening(t, stdout)
+
+	created := postJSONST(t, base, "/v1/rooms", map[string]any{
+		"command_kind": "create_room", "expected_room_version": 0,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d8001", "issued_at": "2026-08-28T12:00:00.000Z",
+		"payload": map[string]any{"display_name": "codex st"},
+	})
+	roomID, _ := created["room_id"].(string)
+	postJSONST(t, base, "/v1/rooms/"+roomID+"/commands", map[string]any{
+		"command_kind": "post_message", "expected_room_version": 1,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d8002", "issued_at": "2026-08-28T12:00:01.000Z",
+		"payload": map[string]any{"body": "用一句话回答：1+1 等于几？", "reply_to": nil, "addressed_to": []any{}, "relations": []any{}},
+	})
+
+	// codex 评估+生成可能耗时分钟级：轮询快照直至出现 par_codex 的 agent 消息
+	deadline := time.Now().Add(6 * time.Minute)
+	for time.Now().Before(deadline) {
+		resp, err := (&http.Client{Timeout: 5 * time.Second}).Get(base + "/v1/rooms/" + roomID + "/snapshot")
+		if err == nil {
+			var snap struct {
+				Timeline []struct {
+					ActorID   string `json:"actor_id"`
+					ActorKind string `json:"actor_kind"`
+					Body      string `json:"body"`
+				} `json:"timeline"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&snap) == nil {
+				for _, item := range snap.Timeline {
+					if item.ActorKind == "agent" && strings.HasPrefix(item.ActorID, "par_codex") && item.Body != "" {
+						t.Logf("codex 生产路径闭环：par_codex 发布 %q", truncateStr(item.Body, 80))
+						return
+					}
+				}
+			}
+			resp.Body.Close()
+		}
+		time.Sleep(3 * time.Second)
+	}
+	t.Fatal("codex 座位未在时限内发布消息（检查登录态/网络/预算）")
+}
+
+func mustMarshalString(s string) string {
+	raw, _ := json.Marshal(s)
+	return string(raw)
+}
+
+func truncateStr(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "…"
 }

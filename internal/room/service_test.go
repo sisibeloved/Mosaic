@@ -48,6 +48,18 @@ func createCmd(kind, idem string, version int64, payload any) Command {
 
 const validUUIDv7 = "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e6f"
 
+// 二轮审校 #21：issued_at 非 RFC3339 拒收（运行时校验，不依赖 Schema 门禁）。
+func TestIssuedAtMustBeRFC3339(t *testing.T) {
+	store := NewMemStore()
+	svc := newTestService(store)
+	bad := createCmd("create_room", validUUIDv7, 0, map[string]any{"display_name": "x"})
+	bad.IssuedAt = "yesterday"
+	_, err := svc.ExecuteCommand(context.Background(), Actor{ParticipantID: "par_owner", Kind: "human"}, bad)
+	if !errors.Is(err, ErrInvalidCommand) {
+		t.Fatalf("非法 issued_at 应拒收，got %v", err)
+	}
+}
+
 // ---- M1 收口补课（审校 2026-08-28）：幂等/并发/回执三件套 ----
 
 // D1：create_room 同键异载荷 → 幂等冲突（不得静默回放原房间）。
@@ -95,7 +107,7 @@ func TestConcurrentSameVersionOnlyOneWins(t *testing.T) {
 				CommandKind:         "post_message",
 				ExpectedRoomVersion: 1, // 全部基于同一版本
 				IdempotencyKey:      fmt.Sprintf("018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e%02x", i),
-				IssuedAt:            "t",
+				IssuedAt:            "2026-08-28T12:00:00.000Z",
 				Payload:             []byte(fmt.Sprintf(`{"body":"msg %d"}`, i)),
 			}
 			_, err := svc.ExecuteCommand(ctx, actor, cmd)
@@ -368,7 +380,7 @@ func TestPauseResumeCommands(t *testing.T) {
 	pause := func(v int64, idem string) *CommandResult {
 		res, err := svc.ExecuteCommand(ctx, actor, Command{
 			RoomID: created.RoomID, CommandKind: "pause_room", ExpectedRoomVersion: v,
-			IdempotencyKey: idem, IssuedAt: "t", Payload: []byte(`{"reason":"休息一下"}`),
+			IdempotencyKey: idem, IssuedAt: "2026-08-28T12:00:00.000Z", Payload: []byte(`{"reason":"休息一下"}`),
 		})
 		if err != nil {
 			t.Fatalf("pause: %v", err)
@@ -390,7 +402,7 @@ func TestPauseResumeCommands(t *testing.T) {
 	// resume → room.started
 	rres, err := svc.ExecuteCommand(ctx, actor, Command{
 		RoomID: created.RoomID, CommandKind: "resume_room", ExpectedRoomVersion: res.RoomVersion,
-		IdempotencyKey: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6102", IssuedAt: "t", Payload: []byte(`{}`),
+		IdempotencyKey: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6102", IssuedAt: "2026-08-28T12:00:00.000Z", Payload: []byte(`{}`),
 	})
 	if err != nil {
 		t.Fatalf("resume: %v", err)

@@ -70,7 +70,7 @@ func TestCommandEndpoints(t *testing.T) {
 
 	resp, created := postJSON(t, ts.URL+"/v1/rooms", map[string]any{
 		"command_kind": "create_room", "expected_room_version": 0,
-		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6001", "issued_at": "t",
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6001", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"display_name": "api 房"},
 	})
 	if resp.StatusCode != 200 || created.RoomID == "" || created.RoomVersion != 1 {
@@ -79,7 +79,7 @@ func TestCommandEndpoints(t *testing.T) {
 
 	msg := map[string]any{
 		"command_kind": "post_message", "expected_room_version": 1,
-		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6002", "issued_at": "t",
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6002", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"body": "hello"},
 	}
 	resp, posted := postJSON(t, ts.URL+"/v1/rooms/"+created.RoomID+"/commands", msg)
@@ -99,7 +99,7 @@ func TestCommandEndpoints(t *testing.T) {
 	// 版本冲突 409
 	resp, _ = postJSON(t, ts.URL+"/v1/rooms/"+created.RoomID+"/commands", map[string]any{
 		"command_kind": "post_message", "expected_room_version": 99,
-		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6003", "issued_at": "t",
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6003", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"body": "stale"},
 	})
 	if resp.StatusCode != http.StatusConflict {
@@ -109,7 +109,7 @@ func TestCommandEndpoints(t *testing.T) {
 	// 未知房间 404
 	resp, _ = postJSON(t, ts.URL+"/v1/rooms/room_ghost/commands", map[string]any{
 		"command_kind": "post_message", "expected_room_version": 0,
-		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6004", "issued_at": "t",
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6004", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"body": "?"},
 	})
 	if resp.StatusCode != http.StatusNotFound {
@@ -119,7 +119,7 @@ func TestCommandEndpoints(t *testing.T) {
 	// 非法载荷 400
 	resp, _ = postJSON(t, ts.URL+"/v1/rooms/"+created.RoomID+"/commands", map[string]any{
 		"command_kind": "post_message", "expected_room_version": 2,
-		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6005", "issued_at": "t",
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6005", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"body": ""},
 	})
 	if resp.StatusCode != http.StatusBadRequest {
@@ -208,12 +208,12 @@ func TestSSEStreamCatchUpLiveAndDedup(t *testing.T) {
 	// 先落两个事件（未接 dispatcher：手动 Deliver 模拟已分发）
 	_, created := postJSON(t, ts.URL+"/v1/rooms", map[string]any{
 		"command_kind": "create_room", "expected_room_version": 0,
-		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6010", "issued_at": "t",
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6010", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"display_name": "sse"},
 	})
 	_, _ = postJSON(t, ts.URL+"/v1/rooms/"+created.RoomID+"/commands", map[string]any{
 		"command_kind": "post_message", "expected_room_version": 1,
-		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6011", "issued_at": "t",
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6011", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"body": "catch me up"},
 	})
 	events, _, _ := store.EventsAfter(context.Background(), created.RoomID, "", 100)
@@ -301,6 +301,61 @@ func TestSSECatchUpPaginatesBeyondOneBatch(t *testing.T) {
 	}
 	if want := protocol.EncodeCursor(total); frames[total-1].ID != want {
 		t.Fatalf("末帧游标 = %q（期望 %q）", frames[total-1].ID, want)
+	}
+}
+
+// 二轮审校 #14：断线重连携带 Last-Event-ID 头时必须从该位续传（忽略则整段重放）。
+func TestSSELastEventIDHeaderResume(t *testing.T) {
+	ts, store, _ := newTestServer(t)
+	envs := make([]protocol.Envelope, 4)
+	for i := range envs {
+		envs[i] = protocol.Envelope{
+			EventID: fmt.Sprintf("evt_lei_%d", i), TenantID: "ten_local", RoomID: "room_lei",
+			Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: "2026-08-28T11:00:00.000Z",
+			Actor:      protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+			Visibility: protocol.Visibility{Kind: "public"},
+			Payload:    []byte(`{"body":"x"}`), Metadata: map[string]any{},
+		}
+	}
+	if _, err := store.AppendEvents(context.Background(), envs); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/v1/rooms/room_lei/events", nil)
+	req.Header.Set("Last-Event-ID", protocol.EncodeCursor(2)) // 已收到前 2 条
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	scanner := bufio.NewScanner(resp.Body)
+	got := 0
+	for scanner.Scan() {
+		if strings.HasPrefix(scanner.Text(), "id: ") {
+			got++
+		}
+	}
+	if got != 2 {
+		t.Fatalf("Last-Event-ID 续传应只补 2 条，got %d", got)
+	}
+}
+
+// 二轮审校 #20：命令体超过 1MiB 上限必须拒绝（413），不得无界读入。
+func TestCommandBodyLimit(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+	// 合法 JSON 前缀的超大体：decoder 持续读入直到触发上限（非法 JSON 会在读满前报 400）
+	big := `{"command_kind":"post_message","expected_room_version":1,` +
+		`"idempotency_key":"018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e6f",` +
+		`"issued_at":"2026-08-28T12:00:00.000Z","payload":{"body":"` +
+		strings.Repeat("x", 2<<20) + `"}}`
+	resp, err := http.Post(ts.URL+"/v1/rooms/room_x/commands", "application/json", strings.NewReader(big))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("超限命令体 status = %d（期望 413）", resp.StatusCode)
 	}
 }
 

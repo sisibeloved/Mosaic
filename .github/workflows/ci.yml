@@ -40,3 +40,8 @@ jobs:
           GOOS=darwin GOARCH=arm64 go build ./cmd/mosaic-server
           GOOS=windows GOARCH=amd64 go build ./cmd/mosaic-server
           GOOS=windows GOARCH=arm64 go build ./cmd/mosaic-server
+      - name: gen-ts drift gate (Schema → TS 产物新鲜度)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          bash tools/scripts/gen-ts.sh
+          git diff --exit-code -- api/room-protocol/gen/
