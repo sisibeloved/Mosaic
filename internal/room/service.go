@@ -77,6 +77,10 @@ func (s *Service) ExecuteCommand(ctx context.Context, actor Actor, cmd Command) 
 		return s.createRoom(ctx, actor, cmd)
 	case "post_message":
 		return s.postMessage(ctx, actor, cmd)
+	case "pause_room":
+		return s.roomLifecycle(ctx, actor, cmd, protocol.EventRoomPaused, "pause_room payload")
+	case "resume_room":
+		return s.roomLifecycle(ctx, actor, cmd, protocol.EventRoomStarted, "resume_room payload")
 	default:
 		return nil, fmt.Errorf("%w: 未知命令 %q", ErrInvalidCommand, cmd.CommandKind)
 	}
@@ -99,6 +103,7 @@ func (s *Service) createRoom(ctx context.Context, actor Actor, cmd Command) (*Co
 	}
 
 	roomID := s.cfg.NewID("room")
+	rootThread := s.cfg.NewID("thr") // 根线程：房间创建即有（Thread 生命周期 M2 展开）
 	env := protocol.Envelope{
 		EventID:       s.cfg.NewID("evt"),
 		TenantID:      s.cfg.Tenant,
@@ -108,7 +113,7 @@ func (s *Service) createRoom(ctx context.Context, actor Actor, cmd Command) (*Co
 		OccurredAt:    s.cfg.Clock(),
 		Actor:         protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
 		Visibility:    protocol.Visibility{Kind: "public"},
-		Payload:       mustJSON(map[string]any{"display_name": payload.DisplayName}),
+		Payload:       mustJSON(map[string]any{"display_name": payload.DisplayName, "thread_id": rootThread}),
 		Metadata:      map[string]any{},
 	}
 	receipt := CommandReceipt{
@@ -150,6 +155,9 @@ func (s *Service) postMessage(ctx context.Context, actor Actor, cmd Command) (*C
 	if err := dec.Decode(&payload); err != nil {
 		return nil, fmt.Errorf("%w: post_message payload: %v", ErrInvalidCommand, err)
 	}
+	if payload.ThreadID != nil && !threadIDPattern.MatchString(*payload.ThreadID) {
+		return nil, fmt.Errorf("%w: thread_id 形如 thr_*", ErrInvalidCommand)
+	}
 	bodyRunes := len([]rune(payload.Body))
 	if bodyRunes < 1 || bodyRunes > MaxBodyRunes {
 		return nil, fmt.Errorf("%w: body 长度 1..%d 字", ErrInvalidCommand, MaxBodyRunes)
@@ -162,7 +170,7 @@ func (s *Service) postMessage(ctx context.Context, actor Actor, cmd Command) (*C
 		EventID:       s.cfg.NewID("evt"),
 		TenantID:      s.cfg.Tenant,
 		RoomID:        cmd.RoomID,
-		ThreadID:      nil,
+		ThreadID:      payload.ThreadID,
 		Type:          protocol.EventMessagePosted,
 		SchemaVersion: 1,
 		OccurredAt:    s.cfg.Clock(),
@@ -189,7 +197,10 @@ type postMessagePayload struct {
 	ReplyTo     *string  `json:"reply_to"`
 	AddressedTo []string `json:"addressed_to"`
 	Relations   []any    `json:"relations"`
+	ThreadID    *string  `json:"thread_id"` // 可选：发往指定线程（根线程随 room.created 载荷）
 }
+
+var threadIDPattern = regexp.MustCompile(`^thr_[0-9A-Za-z_-]+$`)
 
 // commit 原子落库 + 回执；回执竞态时重查回放（并发同键后到者）。
 func (s *Service) commit(ctx context.Context, env protocol.Envelope, receipt CommandReceipt) (*CommandResult, error) {
@@ -252,4 +263,58 @@ func mustJSON(v any) []byte {
 		panic("room: marshal: " + err.Error())
 	}
 	return raw
+}
+
+// roomLifecycle pause/resume 命令链：版本并发 + 事件落库（RFC-0001 room.paused/room.started）。
+func (s *Service) roomLifecycle(ctx context.Context, actor Actor, cmd Command, eventType, payloadName string) (*CommandResult, error) {
+	if res, err := s.replayIfReceived(ctx, cmd, actor); res != nil || err != nil {
+		return res, err
+	}
+	exists, err := s.cfg.Store.RoomExists(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room exists: %w", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrRoomNotFound, cmd.RoomID)
+	}
+	version, err := s.cfg.Store.RoomVersion(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room version: %w", err)
+	}
+	if cmd.ExpectedRoomVersion != version {
+		return nil, fmt.Errorf("%w: expected=%d current=%d", ErrVersionConflict, cmd.ExpectedRoomVersion, version)
+	}
+	var payload struct {
+		Reason string `json:"reason"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(cmd.Payload)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("%w: %s: %v", ErrInvalidCommand, payloadName, err)
+	}
+	if len([]rune(payload.Reason)) > 280 {
+		return nil, fmt.Errorf("%w: reason 超 280 字", ErrInvalidCommand)
+	}
+	env := protocol.Envelope{
+		EventID:       s.cfg.NewID("evt"),
+		TenantID:      s.cfg.Tenant,
+		RoomID:        cmd.RoomID,
+		Type:          eventType,
+		SchemaVersion: 1,
+		OccurredAt:    s.cfg.Clock(),
+		Actor:         protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
+		Visibility:    protocol.Visibility{Kind: "public"},
+		Payload:       mustJSON(map[string]any{"reason": payload.Reason}),
+		Metadata:      map[string]any{},
+	}
+	receipt := CommandReceipt{
+		TenantID:           s.cfg.Tenant,
+		RoomID:             cmd.RoomID,
+		IdempotencyKey:     cmd.IdempotencyKey,
+		CommandKind:        cmd.CommandKind,
+		RequestFingerprint: fingerprint(cmd, actor),
+		EventID:            env.EventID,
+		ExecutedAt:         s.cfg.Clock(),
+	}
+	return s.commit(ctx, env, receipt)
 }

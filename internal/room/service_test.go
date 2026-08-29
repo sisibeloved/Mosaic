@@ -239,3 +239,52 @@ func TestPostMessageToUnknownRoom(t *testing.T) {
 		t.Fatalf("未知房间应报 ErrRoomNotFound，got %v", err)
 	}
 }
+
+// pause/resume 命令链：事件落库、幂等、版本并发。
+func TestPauseResumeCommands(t *testing.T) {
+	store := NewMemStore()
+	svc := newTestService(store)
+	ctx := context.Background()
+	actor := Actor{ParticipantID: "par_owner", Kind: "human"}
+	created, err := svc.ExecuteCommand(ctx, actor, createCmd("create_room", validUUIDv7, 0, map[string]any{}))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	pause := func(v int64, idem string) *CommandResult {
+		res, err := svc.ExecuteCommand(ctx, actor, Command{
+			RoomID: created.RoomID, CommandKind: "pause_room", ExpectedRoomVersion: v,
+			IdempotencyKey: idem, IssuedAt: "t", Payload: []byte(`{"reason":"休息一下"}`),
+		})
+		if err != nil {
+			t.Fatalf("pause: %v", err)
+		}
+		return res
+	}
+	res := pause(1, "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6101")
+	events := store.RoomEvents(created.RoomID)
+	if len(events) != 2 || events[1].Type != "room.paused" {
+		t.Fatalf("应产生 room.paused：%s", events[1].Type)
+	}
+	var pp struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.Unmarshal(events[1].Payload, &pp)
+	if pp.Reason != "休息一下" {
+		t.Fatalf("reason 丢失：%+v", pp)
+	}
+	// resume → room.started
+	rres, err := svc.ExecuteCommand(ctx, actor, Command{
+		RoomID: created.RoomID, CommandKind: "resume_room", ExpectedRoomVersion: res.RoomVersion,
+		IdempotencyKey: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6102", IssuedAt: "t", Payload: []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	events = store.RoomEvents(created.RoomID)
+	if len(events) != 3 || events[2].Type != "room.started" {
+		t.Fatalf("应产生 room.started：%s", events[2].Type)
+	}
+	if rres.RoomVersion != 3 {
+		t.Fatalf("version = %d", rres.RoomVersion)
+	}
+}

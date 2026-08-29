@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
@@ -57,6 +58,19 @@ CREATE TABLE IF NOT EXISTS command_receipts (
 	executed_at         TEXT NOT NULL,
 	PRIMARY KEY (tenant_id, idempotency_key, command_kind)
 );
+CREATE TABLE IF NOT EXISTS context_receipts (
+	receipt_id    TEXT PRIMARY KEY,
+	room_id       TEXT NOT NULL,
+	task_id       TEXT NOT NULL,
+	watermark     INTEGER NOT NULL,
+	layer_digests TEXT NOT NULL,
+	created_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS migrations (
+	version    INTEGER PRIMARY KEY,
+	applied_at TEXT NOT NULL
+);
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox(id) WHERE dispatched_at IS NULL;
 `
 
@@ -346,4 +360,21 @@ func isUniqueViolation(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "constraint failed") &&
 		(strings.Contains(msg, "UNIQUE") || strings.Contains(msg, "unique"))
+}
+
+// InsertReceipt 实现 room.ReceiptStore：上下文回执落库（可查可审计）。
+func (s *Store) InsertReceipt(ctx context.Context, receipt contextx.Receipt) error {
+	raw, err := json.Marshal(receipt.LayerDigests)
+	if err != nil {
+		return fmt.Errorf("sqlite: marshal digests: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO context_receipts (receipt_id, room_id, task_id, watermark, layer_digests, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(receipt_id) DO NOTHING`,
+		receipt.ReceiptID, receipt.RoomID, receipt.TaskID, receipt.Watermark, string(raw), receipt.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("sqlite: insert receipt: %w", err)
+	}
+	return nil
 }

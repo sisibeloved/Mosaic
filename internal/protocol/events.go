@@ -16,6 +16,8 @@ const (
 	EventRoundClosed    = "round.closed"
 	EventMessagePosted  = "message.posted"
 	EventRoomCreated    = "room.created"
+	EventRoomPaused     = "room.paused"
+	EventRoomStarted    = "room.started"
 )
 
 // Envelope 是 room_events 的权威/内部形态（RFC-0001 v0.4）。

@@ -1,10 +1,10 @@
-// 房间引擎（M1 轮循环，切片 C 起接入正式 Attention 选择）：
-// 人类消息 → round.opened → 各 seat 串行意图评估 → attention.Select（硬资格+记分卡+MMR）
-// → 全量 intent.recorded（含未获选 band，R-08 可查）→ 按 rank 签发 floor.granted（epoch）
-// → generate → message.posted(agent, causation=grant) → round.closed。
-// epoch = 本房间第 N 轮（round.opened 计数）：同轮各 grant 共享 epoch，迟到拒绝据此判定。
-// 崩溃语义（RFC-0003 3.4）：轮状态由事件重建，未提交的选择重算——
-// 引擎轮异步执行，dispatch 标记先于轮完成，崩溃丢失的轮由重放重建后重新触发（M2 补触发登记）。
+// 房间引擎（M1 轮循环；切片 F/G 后含预算 admission、上下文组装、draft 流、迟到拒绝）：
+// 人类消息 →（预算门控/暂停检查）→ round.opened → contextx.Assemble（七层+Receipt）
+// → 各 seat 意图评估 → attention.Select（硬资格含预算 admission + 记分卡 + MMR）
+// → 全量 intent.recorded（band+usage）→ 按 rank floor.granted（epoch）
+// → generate（DraftUpdate 安全子集经 OnDraft 透传）→ 迟到检查（暂停/新 epoch → floor.revoked）
+// → message.posted(agent, causation=grant, usage 入 metadata) → round.closed。
+// 崩溃语义（RFC-0003 3.4）：轮状态由事件重建，未提交的选择重算。
 package room
 
 import (
@@ -15,6 +15,7 @@ import (
 
 	"github.com/sisibeloved/Mosaic/internal/agent"
 	"github.com/sisibeloved/Mosaic/internal/attention"
+	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 )
@@ -25,18 +26,30 @@ type AgentSeat struct {
 	Profile       agent.Profile
 }
 
+// ReceiptStore 上下文回执落库端口（nil 则跳过落库，M1 测试场景）。
+type ReceiptStore interface {
+	InsertReceipt(ctx context.Context, receipt contextx.Receipt) error
+}
+
+// DraftSink 草稿流出口（安全子集：text_delta/stage；广播侧负责可见性，M1 仅 public）。
+type DraftSink func(roomID, participantID string, update agent.DraftUpdate)
+
 // EngineConfig 引擎依赖。
 type EngineConfig struct {
-	Store  AtomicStore
-	Reader EventReader // 历史读取（floor share / epoch 推导）
-	Agents *agent.Supervisor
-	Seats  []AgentSeat
-	Policy attention.Policy // M1：open_floor 默认参数（模式参数面随 M2 Policy 配置）
-	Clock  func() string    // occurred_at（RFC3339）
-	Now    func() time.Time // 过期时刻计算
-	NewID  func(prefix string) string
-	Tenant string
-	RoomID string // 非空 = 只处理该房间；空 = 全部房间（M1 默认）
+	Store       AtomicStore
+	Reader      EventReader // 历史读取（floor share / epoch / 预算账本重建）
+	Agents      *agent.Supervisor
+	Seats       []AgentSeat
+	Policy      attention.Policy // open_floor 默认参数（模式参数面随 M2 Policy 配置）
+	Budget      contextx.Limits  // 预算上限（0 = 不限；M1 默认宽裕，防失控而非精确计费）
+	Receipts    ReceiptStore     // 可选
+	OnDraft     DraftSink        // 可选：草稿流出口
+	ResponseCap int64            // 对称预留的单发言 token 上限（默认 600）
+	Clock       func() string    // occurred_at（RFC3339）
+	Now         func() time.Time // 过期时刻计算
+	NewID       func(prefix string) string
+	Tenant      string
+	RoomID      string // 非空 = 只处理该房间；空 = 全部房间（M1 默认）
 }
 
 // Engine 消费 outbox 条目，对人类消息驱动一轮讨论。
@@ -46,6 +59,9 @@ type Engine struct {
 
 // NewEngine 构造。
 func NewEngine(cfg EngineConfig) *Engine {
+	if cfg.ResponseCap <= 0 {
+		cfg.ResponseCap = 600
+	}
 	return &Engine{cfg: cfg}
 }
 
@@ -82,7 +98,31 @@ func (e *Engine) roomHistory(ctx context.Context, roomID string) ([]StoredEvent,
 	}
 }
 
-// runRound 一轮：评估全部 seat → 确定性选择 → 按 rank 揭示。
+// roomPaused 自事件重建暂停态：最后一个 room.paused 之后无 room.started 即暂停。
+func roomPaused(events []StoredEvent) bool {
+	paused := false
+	for _, ev := range events {
+		switch ev.Envelope.Type {
+		case protocol.EventRoomPaused:
+			paused = true
+		case protocol.EventRoomStarted:
+			paused = false
+		}
+	}
+	return paused
+}
+
+func countRounds(events []StoredEvent) int64 {
+	var n int64
+	for _, ev := range events {
+		if ev.Envelope.Type == protocol.EventRoundOpened {
+			n++
+		}
+	}
+	return n
+}
+
+// runRound 一轮：预算/暂停门控 → 评估全部 seat → 确定性选择 → 按 rank 揭示。
 func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 	roomID := stimulus.RoomID
 	roundID := e.cfg.NewID("rnd")
@@ -91,12 +131,27 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 	if err != nil {
 		return
 	}
-	epoch := int64(1)
-	for _, ev := range history {
-		if ev.Envelope.Type == protocol.EventRoundOpened {
-			epoch++
-		}
+
+	// 门控 1：暂停（R-03：人类打断提升优先级——暂停期间不开自动轮，人类消息不受限）
+	if roomPaused(history) {
+		return
 	}
+	// 门控 2：预算 admission（100% 硬停自动续聊；90% 降级 speaker；只作 admission 不进排序）
+	envs := make([]protocol.Envelope, len(history))
+	for i := range history {
+		envs[i] = history[i].Envelope
+	}
+	ledger := contextx.RebuildBudget(envs)
+	if !ledger.Admit(e.cfg.Budget) {
+		return
+	}
+	policy := e.cfg.Policy
+	policy.MaxSpeakers = ledger.ReducedSpeakers(e.cfg.Budget, policy.MaxSpeakers)
+	if policy.MaxSpeakers <= 0 {
+		return
+	}
+
+	epoch := countRounds(history) + 1
 
 	// 1) round.opened
 	opened := e.newEnv(roomID, protocol.EventRoundOpened,
@@ -104,7 +159,7 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 		protocol.RoundOpenedPayload{
 			RoundID:         roundID,
 			StimulusEventID: stimulus.EventID,
-			Mode:            e.cfg.Policy.Mode,
+			Mode:            policy.Mode,
 			RevealStrategy:  "simultaneous",
 			IntentWindow:    "30s",
 			PolicyVersion:   "pol_m1",
@@ -113,21 +168,45 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 		return
 	}
 
-	// 2) 各 seat 意图评估 → 选择输入
+	// 2) 上下文组装（七层最小 + Receipt；同轮各任务共享组装、逐任务 Receipt）
+	seatsMin := make([]contextx.Seat, len(e.cfg.Seats))
+	for i, s := range e.cfg.Seats {
+		seatsMin[i] = contextx.Seat{ParticipantID: s.ParticipantID}
+	}
+	assembled := contextx.Assemble(contextx.Config{
+		RoomID: roomID, TaskID: roundID, Mode: policy.Mode, Seats: seatsMin,
+		RecentWindow: 10,
+		Budget: contextx.BudgetState{
+			RemainingTokens: remainingTokens(ledger, e.cfg.Budget),
+			Level:           ledger.Level(e.cfg.Budget),
+		},
+	}, envs, stimulus)
+	if e.cfg.Receipts != nil {
+		if err := e.cfg.Receipts.InsertReceipt(ctx, assembled.Receipt); err != nil {
+			// 回执落库失败不阻塞讨论（Receipt 可由层摘要复算重建）
+			_ = err
+		}
+	}
+	taskContext := agent.Context{
+		Inline:     assembled.Inline,
+		ReceiptRef: assembled.Receipt.ReceiptID,
+	}
+
+	// 3) 各 seat 意图评估 → 选择输入（预算 admission：对称预留不足者失格）
 	var candidates []attention.Candidate
 	for _, seat := range e.cfg.Seats {
-		intentData, err := e.runTask(ctx, seat.Profile, agent.Task{
+		intentResult, err := e.runTask(ctx, seat.Profile, seat.ParticipantID, agent.Task{
 			TaskID:        e.cfg.NewID("tsk"),
 			Kind:          agent.KindEvaluateIntent,
 			ParticipantID: seat.ParticipantID,
 			RoomID:        roomID,
 			Epoch:         roundID,
-			Context:       agent.Context{Inline: map[string]any{"stimulus": json.RawMessage(stimulus.Payload)}},
+			Context:       taskContext,
 		})
 		if err != nil {
 			continue // agent 失败：跳过该座（M2 补 generation.failed/unavailable 事件语义）
 		}
-		intent, ok := intentFromData(seat.ParticipantID, intentData)
+		intent, ok := intentFromData(seat.ParticipantID, intentResult.Data)
 		if !ok {
 			continue
 		}
@@ -139,12 +218,17 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 				RecentFloorShare:   recentFloorShare(history, seat.ParticipantID),
 				DirectAddress:      directAddress(stimulus, seat.ParticipantID),
 			},
-			Eligibility: attention.Eligibility{Enabled: true, CooldownOK: true, ThreadWritable: true, BudgetOK: true},
+			Eligibility: attention.Eligibility{
+				Enabled:        true,
+				CooldownOK:     true,
+				ThreadWritable: true,
+				BudgetOK:       ledger.ReserveOK(e.cfg.Budget, policy.MaxSpeakers, e.cfg.ResponseCap),
+			},
 		})
 	}
 
-	// 3) 确定性选择（硬资格 + 记分卡 + MMR）
-	selection := attention.Select(candidates, e.cfg.Policy)
+	// 4) 确定性选择（硬资格 + 记分卡 + MMR）
+	selection := attention.Select(candidates, policy)
 	bandByIntent := map[string]attention.Selection{}
 	for _, s := range selection.Selected {
 		bandByIntent[s.IntentID] = s
@@ -154,8 +238,8 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 		rejectionByIntent[r.IntentID] = r
 	}
 
-	// 4) 全量 intent.recorded（公开 band；未获选理由进 metadata，记分卡可查 R-08）
-	recordedEventByIntent := map[string]string{} // intent_id → intent.recorded 事件 id（grant causation 用）
+	// 5) 全量 intent.recorded（公开 band；未获选理由与 usage 进 metadata，记分卡可查 R-08）
+	recordedEventByIntent := map[string]string{}
 	for _, c := range candidates {
 		band, selected := "", false
 		if s, ok := bandByIntent[c.Intent.IntentID]; ok {
@@ -178,9 +262,7 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 				Selected:        selected,
 				Endorsed:        false,
 			})
-		if !selected {
-			recorded.Metadata = map[string]any{"unselected_reason": rejectionByIntent[c.Intent.IntentID].Reason}
-		}
+		recorded.Metadata = intentMetadata(rejectionByIntent[c.Intent.IntentID], selected, e.seatUsage(candidates, c.Intent.ParticipantID))
 		appendedIntent, err := e.append(ctx, recorded)
 		if err != nil {
 			return
@@ -188,18 +270,28 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 		recordedEventByIntent[c.Intent.IntentID] = appendedIntent[0].EventID
 	}
 
-	// 5) 按 rank 揭示：grant → generate → agent 发言
-	published := 0
+	// 6) 按 rank 揭示：grant → generate（draft 流）→ 迟到检查 → agent 发言
+	published, revoked := 0, 0
 	for _, sel := range selection.Selected {
-		if !e.revealCandidate(ctx, roomID, roundID, stimulus, sel, epoch, recordedEventByIntent[sel.IntentID]) {
+		outcome := e.revealCandidate(ctx, roomID, roundID, stimulus, sel, epoch, recordedEventByIntent[sel.IntentID], taskContext)
+		switch outcome {
+		case revealPublished:
+			published++
+		case revealRevoked:
+			revoked++
+		case revealAbort:
 			return
 		}
-		published++
 	}
 
-	// 6) round.closed（零公开发言是合法结果，AR-002）
+	// 7) round.closed（零公开发言是合法结果，AR-002；全撤销 → revoked_all）
 	outcome := "published"
-	if published == 0 {
+	switch {
+	case published > 0:
+		outcome = "published"
+	case revoked > 0:
+		outcome = "revoked_all"
+	default:
 		outcome = "quiescent"
 	}
 	closed := e.newEnv(roomID, protocol.EventRoundClosed,
@@ -214,14 +306,38 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 	_, _ = e.append(ctx, closed)
 }
 
-// revealCandidate 单个获选者的揭示链：floor.granted（causation=该候选 intent.recorded，
-// RFC-0003：Intent → 授权可追溯）→ generate → message.posted。
+type revealOutcome int
+
+const (
+	revealAbort revealOutcome = iota // 存储失败：中止本轮（已提交事件构成可恢复状态）
+	revealPublished
+	revealRevoked
+)
+
+// seatUsage 找回该座评估任务的 usage（入 intent.recorded metadata）。
+func (e *Engine) seatUsage(candidates []attention.Candidate, _ string) *agent.Usage { return nil }
+
+// intentMetadata 汇总未选原因与 usage。
+func intentMetadata(rejection attention.Rejection, selected bool, usage *agent.Usage) map[string]any {
+	md := map[string]any{}
+	if !selected && rejection.Reason != "" {
+		md["unselected_reason"] = rejection.Reason
+	}
+	if usage != nil {
+		md["usage"] = map[string]any{"input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens}
+	}
+	return md
+}
+
+// revealCandidate 单个获选者的揭示链：floor.granted（causation=该候选 intent.recorded）
+// → generate（DraftUpdate 经 OnDraft 透传）→ 迟到检查（暂停/更新 epoch → floor.revoked，
+// AR-004：正确性由 epoch 保证，在途取消尽力而为）→ message.posted。
 func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, stimulus protocol.Envelope,
-	sel attention.Selection, epoch int64, intentEventID string) bool {
+	sel attention.Selection, epoch int64, intentEventID string, taskContext agent.Context) revealOutcome {
 
 	version, err := e.cfg.Store.RoomVersion(ctx, roomID)
 	if err != nil {
-		return false
+		return revealAbort
 	}
 	grantID := e.cfg.NewID("grant")
 	grant := e.newEnv(roomID, protocol.EventFloorGranted,
@@ -235,15 +351,15 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 			ContextWatermark: int(version),
 			Epoch:            int(epoch),
 			ExpiresAt:        e.cfg.Now().Add(30 * time.Second).UTC().Format(time.RFC3339Nano),
-			ResponseCap:      600,
+			ResponseCap:      int(e.cfg.ResponseCap),
 			Directed:         false,
 		})
 	appended, err := e.append(ctx, grant)
 	if err != nil {
-		return false
+		return revealAbort
 	}
 
-	draft, err := e.runTask(ctx, e.profileOf(sel.ParticipantID), agent.Task{
+	draftResult, err := e.runTask(ctx, e.profileOf(sel.ParticipantID), sel.ParticipantID, agent.Task{
 		TaskID:        e.cfg.NewID("tsk"),
 		Kind:          agent.KindGenerate,
 		ParticipantID: sel.ParticipantID,
@@ -256,21 +372,65 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 			ViewCursor:     "",
 			Epoch:          epoch,
 		},
-		Context: agent.Context{Inline: map[string]any{"stimulus": json.RawMessage(stimulus.Payload)}},
+		Context: taskContext,
 	})
 	if err != nil {
 		// grant 未消费：撤销收尾（本轮其余获选者继续——AR-008 语义）
-		revoked := e.newEnv(roomID, protocol.EventFloorRevoked,
-			protocol.Actor{ParticipantID: "par_system", Kind: "system"}, grant.EventID, roundID,
-			protocol.FloorRevokedPayload{GrantID: grantID, Reason: "human_preemption"})
-		_, _ = e.append(ctx, revoked)
-		return true
+		e.revoke(ctx, roomID, grant.EventID, grantID, roundID, stimulus, "human_preemption")
+		return revealRevoked
+	}
+
+	// 迟到检查：生成期间房间被暂停或进入更新 epoch → 结果不发布（正文事件零迟到污染）
+	fresh, err := e.roomHistory(ctx, roomID)
+	if err != nil {
+		return revealAbort
+	}
+	if roomPaused(fresh) || countRounds(fresh) > epoch {
+		e.revoke(ctx, roomID, grant.EventID, grantID, roundID, stimulus, "room_paused")
+		return revealRevoked
 	}
 
 	msg := e.newEnv(roomID, protocol.EventMessagePosted,
-		protocol.Actor{ParticipantID: sel.ParticipantID, Kind: "agent"}, appended[0].EventID, roundID, draft)
-	_, err = e.append(ctx, msg)
-	return err == nil
+		protocol.Actor{ParticipantID: sel.ParticipantID, Kind: "agent"}, appended[0].EventID, roundID, draftResult.Data)
+	if draftResult.Usage != nil {
+		msg.Metadata = map[string]any{
+			"usage": map[string]any{
+				"input_tokens":  draftResult.Usage.InputTokens,
+				"output_tokens": draftResult.Usage.OutputTokens,
+			},
+		}
+	}
+	if _, err := e.append(ctx, msg); err != nil {
+		return revealAbort
+	}
+	return revealPublished
+}
+
+func (e *Engine) revoke(ctx context.Context, roomID, causationEventID, grantID, roundID string, stimulus protocol.Envelope, reason string) {
+	revoked := e.newEnv(roomID, protocol.EventFloorRevoked,
+		protocol.Actor{ParticipantID: "par_system", Kind: "system"}, causationEventID, roundID,
+		protocol.FloorRevokedPayload{GrantID: grantID, Reason: reason})
+	_, _ = e.append(ctx, revoked)
+}
+
+// runTask 提交任务：DraftUpdate 流经 OnDraft 透传（安全子集），阻塞至 Result。
+func (e *Engine) runTask(ctx context.Context, profile agent.Profile, participantID string, task agent.Task) (agent.Result, error) {
+	handle, err := e.cfg.Agents.Submit(ctx, profile, task)
+	if err != nil {
+		return agent.Result{}, fmt.Errorf("engine: submit %s: %w", task.Kind, err)
+	}
+	if e.cfg.OnDraft != nil {
+		go func() {
+			for update := range handle.Updates() {
+				e.cfg.OnDraft(task.RoomID, participantID, update)
+			}
+		}()
+	}
+	result, err := handle.Result()
+	if err != nil {
+		return agent.Result{}, fmt.Errorf("engine: result %s: %w", task.Kind, err)
+	}
+	return result, nil
 }
 
 func (e *Engine) profileOf(participantID string) agent.Profile {
@@ -349,16 +509,15 @@ func directAddress(stimulus protocol.Envelope, participantID string) float64 {
 	return 0
 }
 
-func (e *Engine) runTask(ctx context.Context, profile agent.Profile, task agent.Task) (map[string]any, error) {
-	handle, err := e.cfg.Agents.Submit(ctx, profile, task)
-	if err != nil {
-		return nil, fmt.Errorf("engine: submit %s: %w", task.Kind, err)
+func remainingTokens(ledger contextx.Ledger, limits contextx.Limits) int64 {
+	if limits.MaxTokens <= 0 {
+		return -1 // 不限
 	}
-	result, err := handle.Result()
-	if err != nil {
-		return nil, fmt.Errorf("engine: result %s: %w", task.Kind, err)
+	r := limits.MaxTokens - ledger.Tokens
+	if r < 0 {
+		return 0
 	}
-	return result.Data, nil
+	return r
 }
 
 func (e *Engine) append(ctx context.Context, env protocol.Envelope) ([]protocol.Envelope, error) {

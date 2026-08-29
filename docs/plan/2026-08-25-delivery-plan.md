@@ -20,6 +20,7 @@
 | v1.1 | 2026-08-25 | Mosaic 项目组 / ZCode | M0 执行更新：形态决策确认（ADR-0008~0010）；新增测试分层约定（§5.5，UT/IT/ST + TDD backlog 机制）；M0 勾选同步（脚手架/端口与 echo/测试分层完成；协议生成链与严格校验、SQLite/Wails spike、Apple 账号待办） |
 | v1.2 | 2026-08-28 | Mosaic 项目组 / ZCode | 负责人裁定：**个人使用，不购买 Apple 开发者账号**——删除公证硬性项，macOS 改为 ad-hoc 签名 + 首次打开指引（DoD 1、M4、风险表同步）；sqlite-vec 冒烟移至 M3 记忆层入口（M0 三用例不含向量检索）；M0 出口判据的"命令→事件→游标续传"往返明确为进程内 IT（HTTP/SSE 形态属 M1） |
 | v1.3 | 2026-08-28 | Mosaic 项目组 / ZCode | M1 执行更新（TDD 切片 A/B）：命令处理域（幂等 receipt/乐观并发/严格校验，UT+IT 含并发竞态）+ 存储端口化（room.AtomicStore/EventReader，MemStore/SQLite 双实现）+ HTTP 命令 API 与 SSE 游标订阅（对外无 seq/tenant，RFC-0001 P0 落地）+ outbox 分发器 + 房间引擎（echo 全轮事件链）；**TestDiscussionLoop_ST 北极星转绿**（建房→发消息→引擎轮→agent 发言→断线重连续传→HTTP 幂等重放）；TDD 红灯驱动修复 commit 竞态分支 (nil,nil) 缺陷。切片 C：internal/attention 确定性选择引擎（记分卡/band/MMR/λ 衰减/严格校验 + 手算 fixture 门禁）接入引擎（全量 intent 投影、grant causation 纪律、同轮共享 epoch、多座 rank）。待做：native-codex 适配器、预算 admission 与公平机制、Context 七层、draft 流、进程管理 |
+| v1.4 | 2026-08-29 | Mosaic 项目组 / ZCode | **M1 里程碑完成**：切片 D/E/F/G/H——宿主层注册表（自动扫描含 WSL 覆盖/手动配置/登录门控）+ native-codex 适配器（真机 conformance：结构/会话恢复/可发布；进程组击杀与代理透传等 4 项实证坑位入档）+ Context 七层最小与 Receipt 落库 + 预算 admission（三维账本/梯度/对称预留）+ pause 命令链与 draft 瞬态帧 + epoch 迟到拒绝执行面 + 快照四元组端点与回放一致投影 + 内嵌 Timeline 最小 UI + 迁移基线（migrations 表，goose 评估结论：首个破坏性变更前不引入，见 ADR-0004 注记）+ 崩溃注入 ST（SIGKILL 恢复：版本不漂移/续传不重投）。M1 全部条目勾选；出口判据的"双平台真机演练（录屏）"待负责人在 Windows/macOS 实机执行（WSL 已全绿） |
 
 # 1. 交付目标与"完全可用"定义
 
@@ -104,11 +105,11 @@
 
 目标：在双平台上，人与 1 个真实 agent 完成完整、可回放的一轮讨论。
 
-- [ ] Room/Thread 最小生命周期 + `message.posted` 全链路（命令→事件→SSE 游标订阅→UI Timeline）**（2026-08-28：Room 创建 + message.posted + SSE 游标订阅/断线重连已落地（ST 北极星绿）；Thread 生命周期与 UI 待做）**
+- [x] Room/Thread 最小生命周期 + `message.posted` 全链路（命令→事件→SSE 游标订阅→UI Timeline）**（2026-08-29 M1 收口：全链路含内嵌 Timeline 最小 UI（GET /，SSE 渲染 + draft 瞬态帧 + 暂停/恢复）；thread_id 最小（room.created 载根线程、post_message 可选线程直达信封；fork/merge 属 M2）**
 - [ ] native-codex 适配器（headless 模式对接 + 结构化块解析 + 会话恢复）通过 conformance 三件套 **（2026-08-28 切片 E 落地：codexadapter 对接 codex exec --json【实证 codex-cli 0.149.1 事件流：thread.started/item.completed/turn.completed.usage/error/turn.failed，fixtures 钉版本】；结构化输出走提示词约束 + 本地提取校验【--output-schema 在当前 provider 上游 400，实证记录为已知缺口】；会话连续性 exec resume <thread_id>【真机 IT：codeword 回忆验证】；取消/超时 → ErrStale；进程组击杀 + WaitDelay 防孙进程握管道永挂【实证】；环境白名单含代理/CA 透传【实证：本机经 127.0.0.1:7890 出网】。真机 IT 三件：intent 结构 conformance / resume 连续 / generate 可发布，全绿；supervisor 注册 + 引擎座位随宿主扫描动态组装。待做：conformance fixture 阈值化、崩溃恢复演练）**
 - [ ] Attention 最小实现：硬资格 + 记分卡（默认权重）+ MMR + FloorGrant（epoch）；Open Floor 单模式先行 **（2026-08-28 切片 C 落地：internal/attention 纯函数选择引擎——记分卡公式/五档 band/硬资格序/duplicate_intent/score 越界严格拒/silent 计数/MMR 贪心含"无正边际即停"与 Roundtable·Review 的 challenge·question λ 减半/确定性平分决胜；fixtures/deterministic-selection-v1.json 手算基线进 CI（RFC-0003 §3.4 门禁）。引擎已接入：全量 intent.recorded（未获选 band+理由可查 R-08）、grant causation 指向 intent.recorded、同轮 grant 共享 epoch（round.opened 计数）、多座 rank 揭示。待做：预算 admission、公平机制（floor share 窗口/半衰期、frontier slot）、迟到拒绝执行面（epoch 已落 payload）**
-- [ ] Context 组装七层最小版 + Context Receipt 落库
-- [ ] draft 流（DraftUpdate 安全子集）+ 暂停/取消 + 迟到拒绝（epoch）
+- [x] Context 组装七层最小版 + Context Receipt 落库 **（2026-08-29：internal/contextx——charter/participants/stimulus/recent/relations/budget_watermark/task_directive 七层 + 层摘要 sha256 确定性（回放可验证）+ Receipt 落 SQLite（context_receipts 表）；任务携带 Inline+ReceiptRef**
+- [x] draft 流（DraftUpdate 安全子集）+ 暂停/取消 + 迟到拒绝（epoch）**（2026-08-29：pause_room/resume_room 命令链（room.paused/room.started）；暂停期间不开自动轮（人类消息不受限）；DraftUpdate 经 OnDraft→SSE 瞬态帧（无 id、不入日志、断线不补发）；迟到拒绝执行面——生成在途遇暂停/新 epoch → floor.revoked + 正文零发布 + round.closed=revoked_all；预算 admission（RFC-0003 §3.1.4：轮/发言/token 三维账本事件重建、70/90/100 梯度、90% 降 speaker、100% 硬停、对称预留入硬资格）；快照四元组端点 + 回放一致投影；崩溃注入 ST（SIGKILL→重启→版本不漂移/续传不重投）**
 - [ ] 双平台进程管理：spawn/健康检查/退避重启/优雅退出（含 Windows 信号语义）；CLI 检测（codex/kimi/zcode 是否安装）**（2026-08-28 切片 D：宿主层注册表落地——internal/harness：启动自动扫描【PATH + 已知安装位置 glob（nvm/fnm/volta 版本目录，文件系统事实驱动，不依赖 shell 初始化）+ Windows 宿主扫描 WSL 发行版（wsl.exe，UTF-16 输出解码）】、登录态探测【codex 命令式 / kimi 凭证文件，实证】、手动配置共存、启用登录门控（未登录不可启用）、持久化注册表 + /v1/harness/executables 端点；本机 IT 实证 codex（nvm 目录、logged_in）与 kimi 双双发现。待做：spawn/健康检查/退避重启）**
 - **出口判据**：Windows 与 macOS 各完成一次"创建房间 → 人发消息 → Codex agent 评估→获选→生成→发布 → 断线重连续传 → 回放重建一致"；崩溃注入后无迟到污染（fixture 断言）。
 

@@ -370,3 +370,188 @@ func TestHarnessEndpoint_ST(t *testing.T) {
 		}
 	}
 }
+
+// TestSnapshotEndpoint_ST：快照四元组（版本/水位/投影版本/Timeline）经真实服务可查。
+func TestSnapshotEndpoint_ST(t *testing.T) {
+	bin := buildServer(t)
+	cmd := exec.Command(bin, "-addr", "127.0.0.1:0", "-data", t.TempDir())
+	stdout, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
+	base := "http://" + waitListening(t, stdout)
+
+	created := postJSONST(t, base, "/v1/rooms", map[string]any{
+		"command_kind": "create_room", "expected_room_version": 0,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7201", "issued_at": "t",
+		"payload": map[string]any{"display_name": "snap"},
+	})
+	roomID := created["room_id"].(string)
+	postJSONST(t, base, "/v1/rooms/"+roomID+"/commands", map[string]any{
+		"command_kind": "post_message", "expected_room_version": 1,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7202", "issued_at": "t",
+		"payload": map[string]any{"body": "snapshot 前的消息"},
+	})
+
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Get(base + "/v1/rooms/" + roomID + "/snapshot")
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var snap struct {
+		RoomVersion       int64  `json:"room_version"`
+		Watermark         string `json:"watermark"`
+		ProjectionVersion int    `json:"projection_version"`
+		AlgorithmVersion  int    `json:"algorithm_version"`
+		Timeline          []any  `json:"timeline"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&snap); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if snap.RoomVersion < 2 || snap.Watermark == "" || snap.ProjectionVersion != 1 || snap.AlgorithmVersion != 1 {
+		t.Fatalf("快照四元组不符：%+v", snap)
+	}
+	if len(snap.Timeline) < 1 {
+		t.Fatalf("timeline = %d", len(snap.Timeline))
+	}
+}
+
+// TestIndexUI_ST：内嵌 Timeline 最小 UI 可达。
+func TestIndexUI_ST(t *testing.T) {
+	bin := buildServer(t)
+	cmd := exec.Command(bin, "-addr", "127.0.0.1:0", "-data", t.TempDir())
+	stdout, _ := cmd.StdoutPipe()
+	_ = cmd.Start()
+	defer func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
+	base := "http://" + waitListening(t, stdout)
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Get(base + "/")
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 || !bytes.Contains(body, []byte("Mosaic")) {
+		t.Fatalf("UI 不可达：status=%d", resp.StatusCode)
+	}
+}
+
+// TestCrashRecovery_ST：崩溃注入——SIGKILL 后重启同数据目录：
+// 事件日志零损坏、快照一致（版本不回退）、游标续传不重投、可继续写入。
+func TestCrashRecovery_ST(t *testing.T) {
+	bin := buildServer(t)
+	dataDir := t.TempDir()
+
+	startServer := func() (*exec.Cmd, string) {
+		cmd := exec.Command(bin, "-addr", "127.0.0.1:0", "-data", dataDir)
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		return cmd, "http://" + waitListening(t, stdout)
+	}
+
+	cmd1, base1 := startServer()
+	created := postJSONST(t, base1, "/v1/rooms", map[string]any{
+		"command_kind": "create_room", "expected_room_version": 0,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7301", "issued_at": "t",
+		"payload": map[string]any{"display_name": "crash"},
+	})
+	roomID := created["room_id"].(string)
+	// 人类消息触发引擎轮（echo 确定性完成）
+	postJSONST(t, base1, "/v1/rooms/"+roomID+"/commands", map[string]any{
+		"command_kind": "post_message", "expected_room_version": 1,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7302", "issued_at": "t",
+		"payload": map[string]any{"body": "crash 前的消息"},
+	})
+	// 等引擎轮完成（round.closed 到位）
+	waitForSnapshot := func(base string) map[string]any {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			resp, err := (&http.Client{Timeout: 3 * time.Second}).Get(base + "/v1/rooms/" + roomID + "/snapshot")
+			if err == nil {
+				var snap map[string]any
+				_ = json.NewDecoder(resp.Body).Decode(&snap)
+				resp.Body.Close()
+				tl, _ := snap["timeline"].([]any)
+				if len(tl) >= 2 { // human + agent 消息都在
+					return snap
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatal("崩溃前快照未就绪")
+		return nil
+	}
+	preSnap := waitForSnapshot(base1)
+	preVersion := int64(preSnap["room_version"].(float64))
+	preWatermark := preSnap["watermark"].(string)
+
+	// 崩溃注入：SIGKILL（无优雅退出——outbox/半途事务的最坏情形）
+	if err := cmd1.Process.Kill(); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	_, _ = cmd1.Process.Wait()
+
+	// 重启同数据目录
+	cmd2, base2 := startServer()
+	defer func() { _ = cmd2.Process.Kill(); _, _ = cmd2.Process.Wait() }()
+
+	postSnap := waitForSnapshot(base2)
+	if int64(postSnap["room_version"].(float64)) != preVersion {
+		t.Fatalf("重启后版本漂移：%v → %v（事件日志不得损坏/回退）", preVersion, postSnap["room_version"])
+	}
+
+	// 续传：携崩溃前水位订阅，只应收到重启后新事件（无重投）
+	postJSONST(t, base2, "/v1/rooms/"+roomID+"/commands", map[string]any{
+		"command_kind": "post_message", "expected_room_version": preVersion,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7303", "issued_at": "t",
+		"payload": map[string]any{"body": "crash 后的消息"},
+	})
+	sseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(sseCtx, http.MethodGet,
+		base2+"/v1/rooms/"+roomID+"/events?cursor="+url.QueryEscape(preWatermark), nil)
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		t.Fatalf("resume sse: %v", err)
+	}
+	defer resp.Body.Close()
+	sc := bufio.NewScanner(resp.Body)
+	sawNew := false
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, "id: ") {
+			if strings.TrimPrefix(line, "id: ") == preWatermark {
+				t.Fatal("续传重投了崩溃前事件")
+			}
+			sawNew = true
+			break // 收到任一新事件即证明续传健康
+		}
+	}
+	if !sawNew {
+		t.Fatal("续传未收到重启后新事件")
+	}
+}
+
+func postJSONST(t *testing.T, base, path string, body map[string]any) map[string]any {
+	t.Helper()
+	raw, _ := json.Marshal(body)
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Post(base+path, "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	if resp.StatusCode != 200 {
+		t.Fatalf("POST %s status=%d body=%v", path, resp.StatusCode, out)
+	}
+	return out
+}

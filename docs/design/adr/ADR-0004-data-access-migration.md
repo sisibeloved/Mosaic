@@ -21,3 +21,8 @@ Event Log / outbox 大量依赖 advisory lock、`FOR UPDATE SKIP LOCKED`、RLS�
 - tern、golang-migrate 亦为可行替代，选 goose 取其生态成熟度与容器化便利；
 - 迁移交付以 forward-fix 为主，不承诺回滚脚本（架构 §8.6.2）。
 - **个人版形态（2026-08-25 追加）**：v1.0 桌面形态随 [ADR-0008](ADR-0008-personal-storage-sqlite.md) 走 SQLite 方言（goose 双方言支持，迁移文件按方言分目录）；pgx/v5 + sqlc 组合保留于服务端形态。
+
+## 修订（2026-08-29，M1）
+
+- SQLite 形态下的迁移基线已落地：`migrations` 表记录已应用版本（v1 = 当前幂等 DDL：room_events/outbox/command_receipts/context_receipts）；
+- goose 评估结论：**首个破坏性 schema 变更出现前不引入 goose 依赖**——当前 DDL 全幂等（CREATE IF NOT EXISTS），新表即新增语句；需要 ALTER/回填时再评估 goose SQLite 方言 vs 内嵌版本化迁移（届时以新增 ADR 修订记录）。

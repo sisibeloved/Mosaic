@@ -23,6 +23,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/agent/codexadapter"
 	"github.com/sisibeloved/Mosaic/internal/agent/echo"
 	"github.com/sisibeloved/Mosaic/internal/attention"
+	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/room"
@@ -160,10 +161,15 @@ func main() {
 				Lambda:      0.30, // M1 默认；OQ-04 校准前可配（RFC-0003 §3.1.5）
 				Weights:     attention.DefaultWeights,
 			},
-			Clock:  clock,
-			Now:    time.Now,
-			NewID:  newID,
-			Tenant: "ten_local",
+			Budget: contextx.Limits{ // M1 防失控默认（宽裕）：预算只作 admission 不进排序（RFC-0003）
+				MaxRounds: 500, MaxUtterances: 1500, MaxTokens: 20_000_000,
+			},
+			Receipts: store,                      // Context Receipt 落库（RFC-0007）
+			OnDraft:  httpapi.DraftConsumer(hub), // DraftUpdate 安全子集 → SSE 瞬态帧
+			Clock:    clock,
+			Now:      time.Now,
+			NewID:    newID,
+			Tenant:   "ten_local",
 		})
 		dispatcher := outbox.NewDispatcher(store, []outbox.Consumer{
 			httpapi.HubConsumer(hub),

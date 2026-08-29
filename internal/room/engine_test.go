@@ -11,6 +11,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/agent"
 	"github.com/sisibeloved/Mosaic/internal/agent/echo"
 	"github.com/sisibeloved/Mosaic/internal/attention"
+	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 )
@@ -323,4 +324,199 @@ func TestEngineMultiSeatSelection(t *testing.T) {
 	if rc.Outcome != "published" || rc.SelectedCount != 2 {
 		t.Fatalf("round.closed 不符：%+v", rc)
 	}
+}
+
+// ---- 可控 fake 适配器：generate 可阻塞、可发 draft 流 ----
+
+type gatedAdapter struct {
+	release chan struct{} // nil = 不阻塞
+	drafts  []agent.DraftUpdate
+}
+
+func (gatedAdapter) Name() string                     { return "gated" }
+func (gatedAdapter) Capabilities() agent.Capabilities { return agent.Capabilities{CancelMode: "none"} }
+func (gatedAdapter) Boot(context.Context, agent.Profile) (agent.Session, error) {
+	return &gatedSession{}, nil
+}
+
+type gatedSession struct{}
+
+func (*gatedSession) Run(_ context.Context, task agent.Task) (agent.Handle, error) {
+	return &gatedHandle{task: task}, nil
+}
+func (*gatedSession) Cancel(string) {}
+func (*gatedSession) Close()        {}
+
+type gatedHandle struct {
+	task agent.Task
+	mu   sync.Mutex
+	done bool
+}
+
+func (h *gatedHandle) Updates() <-chan agent.DraftUpdate { return nil }
+
+func (h *gatedHandle) Result() (agent.Result, error) {
+	if h.task.Kind == agent.KindGenerate && gate != nil {
+		<-gate // 阻塞直到测试放行（期间可注入 pause）
+	}
+	if h.task.Kind == agent.KindEvaluateIntent {
+		return agent.Result{Block: "turn_intent", Data: map[string]any{
+			"action": "speak", "type": "extend", "public_rationale": "g",
+			"scores": map[string]any{"relevance": .5, "novelty": .5, "urgency": .5, "confidence": .5},
+		}}, nil
+	}
+	return agent.Result{Block: "public_draft", Data: map[string]any{"body": "gated draft"}}, nil
+}
+func (h *gatedHandle) Cancel() {}
+
+var gate chan struct{}
+
+// 预算硬停：轮次耗尽后人类消息不再触发自动轮。
+func TestEngineBudgetHardStop(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(echo.Adapter{})
+	defer sup.Shutdown()
+	_ = sup.Register(echo.Adapter{})
+	eng := newEchoEngine(store, sup, contextx.Limits{MaxRounds: 2}, "echo")
+
+	// 种子：created + human + 两轮已开的 round.opened（账本轮次已满）
+	seed := []protocol.Envelope{
+		{EventID: "e1", TenantID: "ten_local", RoomID: "room_b", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+		{EventID: "e2", TenantID: "ten_local", RoomID: "room_b", Type: protocol.EventRoundOpened, Actor: protocol.Actor{ParticipantID: "s", Kind: "system"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+		{EventID: "e3", TenantID: "ten_local", RoomID: "room_b", Type: protocol.EventRoundOpened, Actor: protocol.Actor{ParticipantID: "s", Kind: "system"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	}
+	if _, err := store.AppendEvents(context.Background(), seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	deliverHuman(t, store, eng, "room_b")
+	time.Sleep(150 * time.Millisecond)
+	if n := len(store.RoomEvents("room_b")); n != 4 {
+		t.Fatalf("预算硬停后不得开轮，事件数 = %d：%v", n, typesOf(store.RoomEvents("room_b")))
+	}
+}
+
+// 暂停期间人类消息不触发自动轮（人类消息本身已落库，不受限）。
+func TestEnginePauseBlocksRounds(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(echo.Adapter{})
+	defer sup.Shutdown()
+	_ = sup.Register(echo.Adapter{})
+	eng := newEchoEngine(store, sup, contextx.Limits{}, "echo")
+	seed := []protocol.Envelope{
+		{EventID: "p1", TenantID: "ten_local", RoomID: "room_p", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+		{EventID: "p2", TenantID: "ten_local", RoomID: "room_p", Type: protocol.EventRoomPaused, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	}
+	store.AppendEvents(context.Background(), seed)
+	deliverHuman(t, store, eng, "room_p")
+	time.Sleep(150 * time.Millisecond)
+	events := store.RoomEvents("room_p")
+	if len(events) != 3 { // created + paused + human（无轮事件）
+		t.Fatalf("暂停期间不得开轮：%v", typesOf(events))
+	}
+}
+
+// 迟到拒绝：生成在途时暂停 → 结果不发布，floor.revoked 落库（正文零迟到污染）。
+func TestEngineLateRejectionOnPause(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(gatedAdapter{})
+	defer sup.Shutdown()
+
+	gate = make(chan struct{})
+	defer func() { gate = nil }()
+	eng := newEchoEngine(store, sup, contextx.Limits{}, "gated")
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "l1", TenantID: "ten_local", RoomID: "room_l", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	deliverHuman(t, store, eng, "room_l")
+
+	// 等 grant 出现（generate 阻塞中）
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if hasType(store.RoomEvents("room_l"), protocol.EventFloorGranted) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// 生成在途注入暂停
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "l9", TenantID: "ten_local", RoomID: "room_l", Type: protocol.EventRoomPaused, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	close(gate) // 放行 generate
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		events := store.RoomEvents("room_l")
+		if len(events) > 0 && events[len(events)-1].Type == protocol.EventRoundClosed {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	events := store.RoomEvents("room_l")
+	types := typesOf(events)
+	if !hasType(events, protocol.EventFloorRevoked) {
+		t.Fatalf("应产生 floor.revoked：%v", types)
+	}
+	agentMsgs := 0
+	for _, e := range events {
+		if e.Type == protocol.EventMessagePosted && e.Actor.Kind == "agent" {
+			agentMsgs++
+		}
+	}
+	if agentMsgs != 0 {
+		t.Fatalf("迟到正文不得发布：%v", types)
+	}
+	var rc protocol.RoundClosedPayload
+	_ = json.Unmarshal(events[len(events)-1].Payload, &rc)
+	if rc.Outcome != "revoked_all" {
+		t.Fatalf("outcome = %s（期望 revoked_all）", rc.Outcome)
+	}
+}
+
+func hasType(events []protocol.Envelope, typ string) bool {
+	for _, e := range events {
+		if e.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+
+func deliverHuman(t *testing.T, store *MemStore, eng *Engine, roomID string) {
+	t.Helper()
+	env := protocol.Envelope{
+		EventID: "evt_human_" + roomID, TenantID: "ten_local", RoomID: roomID,
+		Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
+		Actor:      protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Visibility: protocol.Visibility{Kind: "public"},
+		Payload:    []byte(`{"body":"stimulus"}`), Metadata: map[string]any{},
+	}
+	if store != nil {
+		if _, err := store.AppendEvents(context.Background(), []protocol.Envelope{env}); err != nil {
+			t.Fatalf("append human: %v", err)
+		}
+	}
+	raw, _ := json.Marshal(env)
+	eng.Deliver(context.Background(), outbox.Entry{RoomID: roomID, Envelope: raw})
+}
+
+func newEchoEngine(store *MemStore, sup *agent.Supervisor, limits contextx.Limits, adapterName string) *Engine {
+	var mu sync.Mutex
+	var n int64
+	return NewEngine(EngineConfig{
+		Store: store, Reader: store, Agents: sup,
+		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: adapterName}}},
+		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
+		Budget: limits,
+		Clock:  testClock, Now: time.Now,
+		NewID: func(p string) string {
+			mu.Lock()
+			defer mu.Unlock()
+			n++
+			return p + "_g_" + jsonNumber(n)
+		},
+		Tenant: "ten_local",
+	})
 }

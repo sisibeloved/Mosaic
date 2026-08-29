@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sisibeloved/Mosaic/internal/agent"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
@@ -41,10 +42,12 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("POST /v1/rooms", s.handleCreateRoom)
 	mux.HandleFunc("POST /v1/rooms/{room_id}/commands", s.handleCommand)
 	mux.HandleFunc("GET /v1/rooms/{room_id}/events", s.handleEvents)
+	mux.HandleFunc("GET /v1/rooms/{room_id}/snapshot", s.handleSnapshot)
 	mux.HandleFunc("GET /v1/harness/executables", s.handleListExecutables)
 	mux.HandleFunc("POST /v1/harness/executables", s.handleAddExecutable)
 	mux.HandleFunc("POST /v1/harness/executables/{id}/enable", s.handleEnableExecutable(true))
 	mux.HandleFunc("POST /v1/harness/executables/{id}/disable", s.handleEnableExecutable(false))
+	mux.HandleFunc("GET /{$}", s.handleIndex)
 	return mux
 }
 
@@ -191,6 +194,12 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				flusher.Flush()
 				return
 			}
+			if ev.Cursor == "" {
+				// 瞬态帧（draft.update）：无 id、不入去重序——断线不补发，正式内容以事件流为准
+				fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, ev.Data)
+				flusher.Flush()
+				continue
+			}
 			pos, err := protocol.DecodeCursor(ev.Cursor)
 			if err != nil || pos <= lastPos {
 				continue
@@ -307,5 +316,50 @@ func (s *server) handleEnableExecutable(enabled bool) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "enabled": enabled})
+	}
+}
+
+// handleSnapshot：快照四元组（room_version + opaque watermark + 投影/算法版本 + Timeline）。
+func (s *server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
+	roomID := r.PathValue("room_id")
+	var events []room.StoredEvent
+	cursor := ""
+	for {
+		batch, next, err := s.deps.Reader.EventsAfter(r.Context(), roomID, cursor, 1000)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "snapshot_failed", err.Error())
+			return
+		}
+		events = append(events, batch...)
+		if next == "" || len(batch) == 0 {
+			break
+		}
+		cursor = next
+	}
+	if len(events) == 0 {
+		writeError(w, http.StatusNotFound, "room_not_found", "房间不存在或尚无事件")
+		return
+	}
+	writeJSON(w, http.StatusOK, room.ProjectSnapshot(roomID, events))
+}
+
+// handleIndex：Timeline 最小 UI（内嵌单页；React/Vite SPA 随 M2 接入）。
+func (s *server) handleIndex(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(indexHTML))
+}
+
+// DraftConsumer 把引擎草稿流桥到 SSE（draft.update 瞬态帧：无 id、不入事件日志、
+// 断线不补发——客户端以最新草稿状态渲染，正式消息以 message.posted 为准）。
+func DraftConsumer(hub *sse.Hub) room.DraftSink {
+	return func(roomID, participantID string, u agent.DraftUpdate) {
+		data, err := json.Marshal(map[string]any{
+			"room_id": roomID, "participant_id": participantID,
+			"kind": u.Kind, "text": u.Text, "stage": u.Stage,
+		})
+		if err != nil {
+			return
+		}
+		hub.Publish(roomID, sse.ViewEvent{Cursor: "", Type: "draft.update", Data: data})
 	}
 }
