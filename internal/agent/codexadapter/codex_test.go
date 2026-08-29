@@ -119,8 +119,9 @@ func TestExtractJSONVariants(t *testing.T) {
 // WSL 运行面（M1 收口补课）：wsl.exe 参数构造与发行版内 HOME 环境。
 func TestWSLArgsConstruction(t *testing.T) {
 	got := wslArgs("Ubuntu-22.04", []string{"HOME=/home/u", "PATH=/x"}, []string{"/home/u/.nvm/versions/node/v22/bin/codex", "exec", "-"})
+	// 复审 #7：env -i——发行版默认环境（profile 注入/WSLENV 透传）不在白名单内
 	want := []string{
-		"-d", "Ubuntu-22.04", "--", "env",
+		"-d", "Ubuntu-22.04", "--", "env", "-i",
 		"HOME=/home/u", "PATH=/x",
 		"/home/u/.nvm/versions/node/v22/bin/codex", "exec", "-",
 	}
@@ -342,6 +343,82 @@ func TestGeneratePublishSanitizeGate(t *testing.T) {
 			t.Fatal("空正文必须拒绝发布")
 		}
 	})
+}
+
+// 复审 #9：grant 宣告的 ResponseCap 必须真实约束发布上限（与适配器上限取较小者）。
+func TestGrantResponseCapBindsPublishLimit(t *testing.T) {
+	long := strings.Repeat("字", 500)
+	stream := `{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"` + long + `"}}` + "\n" + `{"type":"turn.completed"}`
+	exec := &fakeExecer{outputs: []string{stream}}
+	adapter := newTestAdapter(exec) // 默认 MaxOutputRunes=4000
+	session, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "codex"})
+	defer session.Close()
+	h, _ := session.Run(context.Background(), agent.Task{
+		TaskID: "t", Kind: agent.KindGenerate,
+		Grant: &agent.Grant{GrantID: "g", ResponseCap: 20},
+	})
+	res, err := h.Result()
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	body, _ := res.Data["body"].(string)
+	if runes := len([]rune(body)); runes > 40 {
+		t.Fatalf("grant ResponseCap=20 应约束发布（截断+标注 ≈38 runes）：got %d", runes)
+	}
+	if !strings.Contains(body, "[Mosaic: 输出超限已截断]") {
+		t.Fatalf("截断必须显式标注：%q", body)
+	}
+}
+
+// 复审 #6：封闭 DTO——模型输出的附加键不进发布载荷（走私通道封死）；
+// declared_relations 非数组按缺省空数组处理。
+func TestGenerateClosedDTOProjection(t *testing.T) {
+	stream := `{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"{\"body\":\"答案\",\"declared_relations\":\"oops\",\"hidden_channel\":\"smuggle\"}"}}` + "\n" + `{"type":"turn.completed"}`
+	exec := &fakeExecer{outputs: []string{stream}}
+	adapter := newTestAdapter(exec)
+	session, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "codex"})
+	defer session.Close()
+	h, _ := session.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+	res, err := h.Result()
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if len(res.Data) != 2 {
+		t.Fatalf("封闭 DTO 只允许 body+declared_relations，got keys: %v", res.Data)
+	}
+	if body, _ := res.Data["body"].(string); body != "答案" {
+		t.Fatalf("body 投影不符：%q", body)
+	}
+	if rel, ok := res.Data["declared_relations"].([]any); !ok || len(rel) != 0 {
+		t.Fatalf("非数组 declared_relations 应归一为空数组：%T %v", res.Data["declared_relations"], res.Data["declared_relations"])
+	}
+	if _, exists := res.Data["hidden_channel"]; exists {
+		t.Fatal("模型附加键不得进入发布载荷")
+	}
+}
+
+// 复审 #6：DLP 门——秘密形状（API key/bearer/token）不得进入发布正文。
+func TestGeneratePublishRedactsSecrets(t *testing.T) {
+	raw := "key sk-abcdefghijklmnopqrst then Bearer abcdef123456789012 and ghp_" + strings.Repeat("a", 30)
+	stream := `{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"` + raw + `"}}` + "\n" + `{"type":"turn.completed"}`
+	exec := &fakeExecer{outputs: []string{stream}}
+	adapter := newTestAdapter(exec)
+	session, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "codex"})
+	defer session.Close()
+	h, _ := session.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+	res, err := h.Result()
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	body, _ := res.Data["body"].(string)
+	for _, leak := range []string{"sk-abcdefghijklmnopqrst", "Bearer abcdef", strings.Repeat("a", 30)} {
+		if strings.Contains(body, leak) {
+			t.Fatalf("秘密形状泄漏进发布正文：%q", body)
+		}
+	}
+	if !strings.Contains(body, "[REDACTED]") {
+		t.Fatalf("秘密应替换为 [REDACTED]：%q", body)
+	}
 }
 
 func TestCancelYieldsStale(t *testing.T) {

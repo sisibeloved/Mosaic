@@ -63,12 +63,44 @@ type Engine struct {
 	// 但 Close() 会取消它，驱动在途任务取消，进程退出不孤儿化 agent 子进程）。
 	lifecycle context.Context
 	stop      context.CancelFunc
-	// roomLocks 同房间轮串行（roomID → *sync.Mutex）：两条人类消息并发到达时
-	// 不产生同 epoch 双轮——epoch 机制只兜底跨进程竞态，进程内先串行。
-	roomLocks sync.Map
+	// roomQueues 同房间 FIFO（roomID → *roomQueue；复审 #16）：stimulus 到达序即
+	// 处理序——此前每条刺激各起 goroutine 抢房间锁，调度序 ≠ 到达序，同房间事件
+	// 可能乱序开轮。roomLocks 保留为双保险（队列外直调 runRound 时仍串行）。
+	roomQueues sync.Map
+	roomLocks  sync.Map
 	// seats 动态座位（二轮审校 #1：运行时启用的适配器要能加入当前引擎）。
 	seatsMu sync.RWMutex
 	seats   []AgentSeat
+}
+
+// roomQueue 单房间串行队列：FIFO channel + 懒启动常驻 worker。
+type roomQueue struct {
+	ch    chan protocol.Envelope
+	start sync.Once
+}
+
+// enqueue 入队并确保该房间 worker 存活：严格按到达序处理（复审 #16）。
+// 缓冲 256 对个人版单房间足够；满时阻塞形成背压（不丢、不乱序）；Close 后丢弃。
+func (e *Engine) enqueue(env protocol.Envelope) {
+	qAny, _ := e.roomQueues.LoadOrStore(env.RoomID, &roomQueue{ch: make(chan protocol.Envelope, 256)})
+	q := qAny.(*roomQueue)
+	q.start.Do(func() { go e.roomWorker(q) })
+	select {
+	case q.ch <- env:
+	case <-e.lifecycle.Done():
+	}
+}
+
+// roomWorker 单房间常驻消费者：逐条跑轮（天然串行，保到达序）。
+func (e *Engine) roomWorker(q *roomQueue) {
+	for {
+		select {
+		case <-e.lifecycle.Done():
+			return
+		case env := <-q.ch:
+			e.runRound(e.lifecycle, env)
+		}
+	}
 }
 
 // NewEngine 构造。
@@ -102,31 +134,64 @@ func (e *Engine) seatsSnapshot() []AgentSeat {
 // 拒绝新轮。已提交事件构成可恢复状态（RFC-0003 3.4）。幂等。
 func (e *Engine) Close() { e.stop() }
 
-// Deliver 实现 outbox.Consumer：仅对 message.posted 且 actor=human 的条目异步开轮。
-// 引擎自产事件（actor=agent/system）不再触发，无反馈环。
+// Deliver 实现 outbox.Consumer：仅对 message.posted 且 actor=human 的条目开轮；
+// room.started（resume）触发该房间未开轮声明的重驱动（复审 #10：暂停期间到达的
+// 刺激不再只能等进程重启才重放）。引擎自产事件（actor=agent/system）不再触发，无反馈环。
 // durable handoff（二轮审校 #9）：配置 ClaimStore 时先落声明行再返回——dispatcher
-// 随后才确认 outbox，崩溃窗口内声明仍在，重启由 RecoverClaims 重驱动，不丢轮。
-func (e *Engine) Deliver(ctx context.Context, entry outbox.Entry) {
+// 随后才确认 outbox。声明落库失败返回错误：分发器不确认该条目、按原序重投
+// （复审 #15：fail closed——内存直驱在崩溃窗口内会丢轮，宁可重试不可丢）。
+func (e *Engine) Deliver(ctx context.Context, entry outbox.Entry) error {
 	var env protocol.Envelope
 	if err := json.Unmarshal(entry.Envelope, &env); err != nil {
-		return
-	}
-	if env.Type != protocol.EventMessagePosted || env.Actor.Kind != "human" {
-		return
+		return nil // 非信封条目：跳过（毒条目不阻塞分发）
 	}
 	if e.cfg.RoomID != "" && env.RoomID != e.cfg.RoomID {
-		return
+		return nil
+	}
+	switch {
+	case env.Type == protocol.EventRoomStarted:
+		e.redriveRoomClaims(env.RoomID)
+		return nil
+	case env.Type != protocol.EventMessagePosted || env.Actor.Kind != "human":
+		return nil
 	}
 	if e.cfg.Claims != nil {
 		newly, err := e.cfg.Claims.ClaimStimulus(ctx, env.RoomID, env.EventID, entry.Envelope)
 		if err != nil {
-			// 声明失败：退化为现状直驱（宁可内存内跑一轮，也不无声丢弃）+ 高声告警
-			e.warn(env.RoomID, "stimulus 声明落库失败（退化为非持久直驱）", "stimulus", env.EventID, "err", err)
-		} else if !newly {
-			return // 已声明过：outbox 重放/恢复并发的去重
+			e.warn(env.RoomID, "stimulus 声明落库失败（退回分发器待重投）", "stimulus", env.EventID, "err", err)
+			return fmt.Errorf("engine: claim stimulus %s: %w", env.EventID, err)
+		}
+		if !newly {
+			return nil // 已声明过：outbox 重放/恢复并发的去重
 		}
 	}
-	go e.runRound(e.lifecycle, env)
+	e.enqueue(env) // per-room FIFO（复审 #16）：到达序即处理序
+	return nil
+}
+
+// redriveRoomClaims resume 后重驱动该房间未开轮的刺激声明（复审 #10）。
+// 双入队竞态（多次 resume / 与 RecoverClaims 并发）由 runRound 的幂等护栏去重。
+func (e *Engine) redriveRoomClaims(roomID string) {
+	if e.cfg.Claims == nil {
+		return
+	}
+	claims, err := e.cfg.Claims.PendingClaims(e.lifecycle)
+	if err != nil {
+		e.warn(roomID, "resume 重驱动扫描失败", "err", err)
+		return
+	}
+	for _, c := range claims {
+		if c.RoomID != roomID {
+			continue
+		}
+		var env protocol.Envelope
+		if json.Unmarshal(c.Envelope, &env) != nil {
+			_ = e.cfg.Claims.DeleteClaim(e.lifecycle, c.RoomID, c.StimulusEventID) // 信封损坏：清毒声明
+			continue
+		}
+		e.warn(roomID, "resume 重驱动未开轮的刺激声明", "stimulus", c.StimulusEventID)
+		e.enqueue(env)
+	}
 }
 
 // RecoverClaims 启动恢复：扫描声明未清的刺激——已开轮的清声明，未开轮的重驱动。
@@ -150,7 +215,7 @@ func (e *Engine) RecoverClaims() {
 			continue
 		}
 		e.warn(c.RoomID, "恢复未开轮的刺激声明", "stimulus", c.StimulusEventID)
-		go e.runRound(e.lifecycle, env)
+		e.enqueue(env)
 	}
 }
 
@@ -160,6 +225,11 @@ func (e *Engine) roundForStimulus(roomID, stimulusEventID string) bool {
 	if err != nil {
 		return false
 	}
+	return roundOpenedForStimulus(events, stimulusEventID)
+}
+
+// roundOpenedForStimulus 历史中是否存在该刺激的 round.opened（纯函数）。
+func roundOpenedForStimulus(events []StoredEvent, stimulusEventID string) bool {
 	for _, ev := range events {
 		if ev.Envelope.Type != protocol.EventRoundOpened {
 			continue
@@ -170,6 +240,20 @@ func (e *Engine) roundForStimulus(roomID, stimulusEventID string) bool {
 		}
 	}
 	return false
+}
+
+// roundOpenedSeq 指定轮 round.opened 的 seq（迟到检查的 fence 锚点；0 = 未找到）。
+func roundOpenedSeq(events []StoredEvent, roundID string) int64 {
+	for _, ev := range events {
+		if ev.Envelope.Type != protocol.EventRoundOpened {
+			continue
+		}
+		var p protocol.RoundOpenedPayload
+		if json.Unmarshal(ev.Envelope.Payload, &p) == nil && p.RoundID == roundID {
+			return ev.Envelope.Seq
+		}
+	}
+	return 0
 }
 
 // lockRoom 取（或建）房间互斥锁。
@@ -223,11 +307,12 @@ func countRounds(events []StoredEvent) int64 {
 	return n
 }
 
-// pausedAfter fence（二轮审校 #7）：grant 落库（seq）之后出现过 room.paused（即便
-// 其后已 resume）即视为失效——"最终是否暂停"检查挡不住 pause→resume 快速往返。
-func pausedAfter(events []StoredEvent, grantSeq int64) bool {
+// pausedAfter fence（二轮审校 #7；复审 #13）：锚点 seq 之后出现过 room.paused
+// （即便其后已 resume）即视为失效——"最终是否暂停"检查挡不住 pause→resume 快速往返。
+// 锚点由调用方给定（本轮 round.opened 的 seq）。
+func pausedAfter(events []StoredEvent, anchorSeq int64) bool {
 	for _, ev := range events {
-		if ev.Envelope.Type == protocol.EventRoomPaused && ev.Envelope.Seq > grantSeq {
+		if ev.Envelope.Type == protocol.EventRoomPaused && ev.Envelope.Seq > anchorSeq {
 			return true
 		}
 	}
@@ -249,6 +334,15 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 	history, err := e.roomHistory(ctx, roomID)
 	if err != nil {
 		e.warn(roomID, "history 读取失败，轮中止", "err", err)
+		return
+	}
+
+	// 幂等护栏（复审 #10/#16）：同刺激已有 round.opened（outbox 重投 / resume 重驱动 /
+	// RecoverClaims 与在途轮竞态）——清声明即返回，不双开轮。
+	if roundOpenedForStimulus(history, stimulus.EventID) {
+		if e.cfg.Claims != nil {
+			_ = e.cfg.Claims.DeleteClaim(ctx, roomID, stimulus.EventID)
+		}
 		return
 	}
 
@@ -348,8 +442,26 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 		evalUsage[seat.ParticipantID] = intentResult.Usage
 		intent, ok := intentFromData(seat.ParticipantID, intentResult.Data)
 		if !ok {
-			// 结构校验失败即弃权：不虚构零分参与排序（二轮审校 #8）
+			// 结构校验失败即弃权：不虚构零分参与排序（二轮审校 #8）。
+			// 复审 #12：弃权仍全记录（R-01）且真实 usage 必须入账——畸形输出的
+			// 评估开销不得绕过预算账本（token 已花，事件零痕迹即账本漏记）。
 			e.warn(roomID, "intent 结构非法，该座弃权", "seat", seat.ParticipantID)
+			invalid := e.newEnv(roomID, protocol.EventIntentRecorded,
+				protocol.Actor{ParticipantID: seat.ParticipantID, Kind: "agent"}, stimulus.EventID, roundID,
+				protocol.IntentRecordedPayload{
+					IntentID:        e.cfg.NewID("int"),
+					ParticipantID:   seat.ParticipantID,
+					Action:          "silent", // 弃权语义（schema 合法枚举），band=unranked
+					ScoreBand:       "unranked",
+					Selected:        false,
+					Endorsed:        false,
+					PublicRationale: "intent 结构非法，弃权",
+				})
+			invalid.Metadata = intentMetadata(
+				attention.Rejection{Reason: "invalid_intent_structure"}, false, intentResult.Usage)
+			if _, err := e.append(ctx, invalid); err != nil {
+				return
+			}
 			continue
 		}
 		intent.IntentID = e.cfg.NewID("int") // 选择前分配：Selection/Rejection 以此为键
@@ -516,6 +628,7 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 			RevealStrategy: "simultaneous",
 			ViewCursor:     "",
 			Epoch:          epoch,
+			ResponseCap:    e.cfg.ResponseCap, // 复审 #9：宣告值必须传入适配器并约束发布
 		},
 		Context: taskContext,
 	})
@@ -529,14 +642,17 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 		return revealRevoked
 	}
 
-	// 迟到检查：生成期间房间被暂停（含"暂停后又 resume"——fence 语义：grant 落库后
-	// 出现过 room.paused 即失效，快速 resume 不得复活旧生成）或进入更新 epoch →
-	// 结果不发布（正文事件零迟到污染）
+	// 迟到检查（复审 #13：锚点 = 本轮 round.opened 的 seq，不再只是 grant）——
+	// 本轮开轮之后出现过 room.paused 即失效：覆盖"评估阶段 pause→grant 前 resume"
+	// 的往返（旧锚点只看 grant 之后，grant 前的暂停漏网）；开轮前的暂停历史
+	// 不毒化重驱动的新轮（暂停期到达的刺激在 resume 后重开轮，属合法新轮）。
+	// 更新 epoch 同理失效（正文事件零迟到污染）。
 	fresh, err := e.roomHistory(ctx, roomID)
 	if err != nil {
 		return revealAbort
 	}
-	if roomPaused(fresh) || pausedAfter(fresh, appended[0].Seq) || countRounds(fresh) > epoch {
+	openedSeq := roundOpenedSeq(fresh, roundID)
+	if roomPaused(fresh) || (openedSeq > 0 && pausedAfter(fresh, openedSeq)) || countRounds(fresh) > epoch {
 		e.revoke(ctx, roomID, grant.EventID, grantID, roundID, stimulus, "room_paused")
 		return revealRevoked
 	}

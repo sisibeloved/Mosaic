@@ -30,6 +30,10 @@ type Grant struct {
 	RevealStrategy string `json:"reveal_strategy"`
 	ViewCursor     string `json:"view_cursor"` // opaque 视图游标（RFC-0001 v0.4：全局 seq 仅内部）
 	Epoch          int64  `json:"epoch"`
+	// ResponseCap 宣告的单发言 token 上限（floor.granted 同名字段投影）。
+	// 适配器必须以其约束发布正文（复审 #9：此前宣告值从未传入适配器，
+	// 发布门只认适配器自身上限，宣告与执行脱节）。
+	ResponseCap int64 `json:"response_cap,omitempty"`
 }
 
 // Context 统一讨论输入（RFC-0007 组装产物；M0 为最小占位结构）。

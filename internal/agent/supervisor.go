@@ -32,6 +32,19 @@ func (s *Supervisor) Register(a Adapter) error {
 	return nil
 }
 
+// RegisterFor 以 Profile 键登记适配器（复审 #3：同名适配器的多个 executable——
+// 如 native 与 WSL 两份 codex——若只按 Name() 登记，后注册者被拒、座位却照加，
+// 全部流量折叠到首个实例）。同键重登即替换（resync 刷新配置）；空键拒绝。
+func (s *Supervisor) RegisterFor(profileKey string, a Adapter) error {
+	if profileKey == "" {
+		return fmt.Errorf("agent: RegisterFor 需要 profile 键")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adapters[profileKey] = a
+	return nil
+}
+
 // Submit 按需 Boot 会话并下发任务。
 //
 // Boot 在锁内完成（M0 取舍）：保证"每 Profile 恰好 Boot 一次"的 ownership 语义
@@ -41,7 +54,12 @@ func (s *Supervisor) Submit(ctx context.Context, profile Profile, task Task) (Ha
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	adapter, ok := s.adapters[profile.Adapter]
+	// 解析顺序：先按 ProfileID 精确命中（多 executable 同名适配器各有实例），
+	// 回退按适配器名单实例（echo 等 conformance 适配器）。
+	adapter, ok := s.adapters[profile.ProfileID]
+	if !ok {
+		adapter, ok = s.adapters[profile.Adapter]
+	}
 	if !ok {
 		return nil, fmt.Errorf("agent: adapter %q not registered", profile.Adapter)
 	}

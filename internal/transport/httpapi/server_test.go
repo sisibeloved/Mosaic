@@ -537,3 +537,78 @@ func TestHarnessLoginGateEndpoint(t *testing.T) {
 		t.Fatalf("未登记项启用应 404，got %d", resp.StatusCode)
 	}
 }
+
+// 复审 #18：loopback owner API 的跨站写防护——跨源 Origin 403；带 body 端点非 JSON
+// Content-Type 415（跨站 text/plain 简单请求无预检，是本门的核心威胁模型）；
+// 同源 Origin 与无 Origin（curl 等非浏览器客户端）放行。
+func TestWriteOriginAndContentTypeGuard(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+	raw, _ := json.Marshal(map[string]any{
+		"command_kind": "create_room", "expected_room_version": 0,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7001", "issued_at": "2026-08-28T12:00:00.000Z",
+		"payload": map[string]any{"display_name": "guard"},
+	})
+	post := func(origin, contentType string) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/rooms", bytes.NewReader(raw))
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		resp, err := (&http.Client{}).Do(req)
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := post("http://evil.example", "application/json"); code != http.StatusForbidden {
+		t.Fatalf("跨源写应 403，got %d", code)
+	}
+	if code := post("http://127.0.0.1.evil.example", "application/json"); code != http.StatusForbidden {
+		t.Fatalf("宿主前缀伪装应 403，got %d", code)
+	}
+	if code := post(ts.URL, "application/json"); code != http.StatusOK {
+		t.Fatalf("同源 Origin 应放行，got %d", code)
+	}
+	if code := post("", "application/json"); code != http.StatusOK {
+		t.Fatalf("无 Origin（非浏览器客户端）应放行，got %d", code)
+	}
+	if code := post("", "text/plain"); code != http.StatusUnsupportedMediaType {
+		t.Fatalf("text/plain JSON 跨站简单请求应 415，got %d", code)
+	}
+	if code := post("http://evil.example", "text/plain"); code != http.StatusForbidden {
+		t.Fatalf("跨源优先于 Content-Type 判定，got %d", code)
+	}
+}
+
+// 复审 #18：enable/disable 空 body 端点只做 Origin 门（无 Content-Type 要求）。
+func TestEnableOriginGuard(t *testing.T) {
+	ts, _ := newHarnessTestServer(t)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/harness/executables/nope/enable", nil)
+	req.Header.Set("Origin", "http://evil.example")
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("跨源 enable 应 403（先于 404），got %d", resp.StatusCode)
+	}
+}
+
+// 复审 #21：登记体超限必须 413（此前 MaxBytesError 被并入 400 语义）。
+func TestAddExecutableBodyLimit(t *testing.T) {
+	ts, _ := newHarnessTestServer(t)
+	big := `{"adapter":"codex","runtime":"native","path":"/x","version":"` + strings.Repeat("v", 2<<20) + `"}`
+	resp, err := http.Post(ts.URL+"/v1/harness/executables", "application/json", strings.NewReader(big))
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("登记体超限应 413，got %d", resp.StatusCode)
+	}
+}

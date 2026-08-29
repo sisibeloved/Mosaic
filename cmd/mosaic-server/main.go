@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	goruntime "runtime"
 	"strconv"
@@ -48,7 +49,10 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	if host, _, err := net.SplitHostPort(*addr); err == nil {
-		loopback := host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
+		// 复审 #4：空 host（":7420"）与通配地址 = 全接口监听，不是回环——
+		// 逐项字符串白名单会把空 host 误判为回环，绕过远程监听门禁。
+		ip := net.ParseIP(host)
+		loopback := host == "localhost" || (ip != nil && ip.IsLoopback())
 		if !loopback && !*allowRemote {
 			logger.Error("拒绝非回环监听（owner/harness API 无认证；个人版本地形态）",
 				"addr", *addr, "豁免方式", "显式传 -allow-remote 并自行承担暴露面")
@@ -63,6 +67,10 @@ func main() {
 	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
 		logger.Error("mkdir data failed", "dir", *dataDir, "err", err)
 		os.Exit(1)
+	}
+	// 复审 #17：既有目录权限补收紧（MkdirAll 只在新建时生效；忽略不支持的平台）
+	if err := os.Chmod(*dataDir, 0o700); err != nil {
+		logger.Warn("数据目录权限收紧失败（POSIX 语义平台外为 no-op）", "dir", *dataDir, "err", err)
 	}
 	store, err := sqlite.Open(filepath.Join(*dataDir, "mosaic.db"))
 	if err != nil {
@@ -145,10 +153,11 @@ func main() {
 		<-scanDone
 		hostRunner := harness.NewHostRunner()
 		// agent 工作目录隔离（二轮审校 #18）：不给服务工作目录与 owner 文件——
-		// 专用空目录 + -C + read-only 沙箱三层约束
+		// 专用空目录 + -C + read-only 沙箱三层约束。
+		// 复审 #1：准备失败 fail closed（不再回退服务器 cwd——隔离失效胜过静默降级）。
 		workRoot := filepath.Join(*dataDir, "agent-work")
 		if err := os.MkdirAll(workRoot, 0o700); err != nil {
-			logger.Warn("agent work root mkdir failed（回退服务器 cwd）", "err", err)
+			logger.Error("agent work root 准备失败：codex 座位不注册（fail closed）", "dir", workRoot, "err", err)
 			workRoot = ""
 		}
 		wslHomeCache := map[string]string{}
@@ -165,32 +174,42 @@ func main() {
 						profileID += "_" + strings.ReplaceAll(exe.Distro, ".", "_")
 					}
 					cfg := codexadapter.Config{CodexPath: exe.Path, Timeout: 180 * time.Second}
-					if workRoot != "" {
-						dir := filepath.Join(workRoot, profileID)
-						if err := os.MkdirAll(dir, 0o700); err == nil {
-							cfg.WorkDir = dir
-						}
-					}
 					if harness.Runtime(exe.Runtime) == harness.RuntimeWSL {
-						// WSL 运行面：Linux 路径不能交给 native exec（启用即坏）——
-						// 适配器经 wsl.exe -d <distro> 包装执行，HOME 在发行版内解析。
-						cfg.WSLDistro = exe.Distro
-						if home, ok := wslHomeCache[exe.Distro]; ok {
-							cfg.WSLHome = home
-						} else {
-							cfg.WSLHome = hostRunner.Home(ctx, harness.RuntimeWSL, exe.Distro)
-							wslHomeCache[exe.Distro] = cfg.WSLHome
+						// WSL 运行面（复审 #2）：工作目录必须是发行版内 Linux 路径——
+						// Windows 路径交给发行版内的 codex 即坏；HOME 同理在发行版内解析。
+						home, ok := wslHomeCache[exe.Distro]
+						if !ok {
+							home = hostRunner.Home(ctx, harness.RuntimeWSL, exe.Distro)
+							wslHomeCache[exe.Distro] = home
 						}
-					}
-					if err := supervisor.Register(codexadapter.New(cfg)); err != nil {
-						// 已注册（resync 重复登记）不是错误；其余登记失败跳过座位
-						if !strings.Contains(err.Error(), "already registered") {
-							logger.Warn("codex adapter register failed", "path", exe.Path, "err", err)
+						cfg.WSLDistro = exe.Distro
+						cfg.WSLHome = home
+						dir := path.Join(strings.TrimSuffix(home, "/"), ".mosaic", "agent-work", profileID)
+						if err := hostRunner.MkdirAll(ctx, harness.RuntimeWSL, exe.Distro, dir); err != nil {
+							logger.Error("codex WSL 工作目录准备失败：座位不注册（fail closed）", "profile", profileID, "err", err)
 							continue
 						}
+						cfg.WorkDir = dir
+					} else {
+						// native：宿主侧专用空目录；任一失败即跳过座位（复审 #1：fail closed）
+						if workRoot == "" {
+							continue
+						}
+						dir := filepath.Join(workRoot, profileID)
+						if err := os.MkdirAll(dir, 0o700); err != nil {
+							logger.Error("codex 工作目录准备失败：座位不注册（fail closed）", "profile", profileID, "err", err)
+							continue
+						}
+						cfg.WorkDir = dir
+					}
+					// 复审 #3：按 Profile 键登记——多 executable（native + WSL 两份 codex）
+					// 各自成适配器实例，不再折叠到首个 "codex"。
+					if err := supervisor.RegisterFor(profileID, codexadapter.New(cfg)); err != nil {
+						logger.Warn("codex adapter register failed", "profile", profileID, "err", err)
+						continue
 					}
 					seats = append(seats, room.AgentSeat{
-						ParticipantID: "par_codex",
+						ParticipantID: "par_" + strings.TrimPrefix(profileID, "prof_"),
 						Profile:       agent.Profile{ProfileID: profileID, Adapter: "codex", DisplayName: "Codex"},
 					})
 				}
@@ -238,11 +257,18 @@ func main() {
 		dispatcher := outbox.NewDispatcher(store, []outbox.Consumer{
 			httpapi.HubConsumer(hub),
 			engine,
-		}, 20*time.Millisecond)
+		}, 20*time.Millisecond).WithLogger(logger)
 		dispatcher.Run(ctx)
 	}()
 
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	// 复审 #20：请求读取期限——慢速滴灌 body 不得无限占用连接（大小上限之外的时限防线）。
+	// SSE 为无 body GET，不受 ReadTimeout 影响；WriteTimeout 不设（SSE 长流按连接存活）。
+	srv := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       65 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server error", "err", err)

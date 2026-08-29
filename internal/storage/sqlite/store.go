@@ -112,6 +112,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: chmod db: %w", err)
 	}
+	// 复审 #17：既有目录权限补收紧（MkdirAll 只在新建时生效；WAL/SHM 也在该目录）。
+	// best-effort：失败不阻断打开（只读介质等场景）；Windows 无 POSIX 权限语义，
+	// 依赖用户目录 ACL（platform-notes W-6）。
+	_ = os.Chmod(filepath.Dir(path), 0o700)
 	return &Store{db: db}, nil
 }
 

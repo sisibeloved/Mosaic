@@ -13,6 +13,7 @@
 | W-3 | Windows 侧击杀 `wsl.exe` 不必然终止发行版内进程 | M1 收口：wslExecer 设计 | 任务级超时内自行退出为主路径；Job Object 归 M2 进程管理 |
 | W-4 | WSL2 内 `127.0.0.1` 不是 Windows 宿主回环——代理透传在 NAT 模式 WSL 内失效可能 | M1 收口：代理环境白名单 | 代理变量照传（网络配置非凭据，OQ-20 允许）；mirrored 网络模式或宿主 IP 由用户网络环境决定，不代填 |
 | W-5 | Windows 无 POSIX 进程组；超时击杀只能杀直接子进程 | M1 切片 E：codex exec | `WaitDelay=10s` 放弃残留 IO 防 Wait 永挂；Job Object 归 M2（`sysproc_windows.go` 空实现为登记点） |
+| W-6 | Windows 无 POSIX 权限语义：Go `os.Chmod` 只拨只读位，`0700/0600` 收敛在 NTFS 上是 no-op | 三轮复审 #17：数据目录/DB 文件 owner-only 收紧 | Unix 侧 chmod 生效（DB 文件 0600 + 目录 0700 补收紧，IT 钉在 `TestOpenTightensExistingDirectoryPerms`）；Windows 侧依赖数据目录落在用户 profile（默认 user-only ACL），显式 ACL 收敛（icacls/x_sys）登记 M2 |
 
 ## macOS
 
@@ -32,3 +33,4 @@
 | L-5 | 跨 `wsl.exe` 的交互式 shell（heredoc/单字符变量）在 Git Bash 侧被吞/展开 | 开发流程（本仓库） | 脚本走文件传递，避免 heredoc；WSL 内命令用 `bash -lc` 包裹 |
 | L-6 | `--output-schema` 在 ChatGPT 账号 provider 组合下上游 400（text.format.schema 序列化 bug，codex-cli 0.149.1） | M1 切片 E：结构化输出 | 提示词约束 + 本地提取校验（`ExtractJSON`）；上游修复后重评估 |
 | L-7 | `codex exec resume` 子命令不接受 `-C`（exit 2 "unexpected argument"）——工作目录参数只能在会话首轮 exec 传入 | 二轮审校 #18：WorkDir 隔离引入后由生产路径 ST 抓到（生成全失败、错误信息只落在非 JSON 行） | `-C` 仅首轮；回归钉在 `TestWorkDirResumeArgvShape`；子进程错误行建议适配器日志化（M2 backlog） |
+| L-8 | `wsl.exe -d <distro> -- env K=V ... cmd` 会携带发行版默认环境（shell profile 注入 + WSLENV 透传），白名单外变量泄漏给发行版内进程 | 三轮复审 #7：环境白名单边界 | 前缀改 `env -i` 清空后仅显式注入（PATH/HOME/CODEX_HOME/网络配置）；argv 形状钉在 `TestWSLArgsConstruction` |

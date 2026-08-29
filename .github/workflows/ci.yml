@@ -30,6 +30,28 @@ jobs:
         run: go test -race -tags it ./...
       - name: System tests
         run: go test -race -tags st ./...
+      # 复审 #5：生产 codex 路径不得在必跑 CI 里恒 skip——桩 CLI 走真实装配
+      # （真二进制 + 真适配器 + 真子进程 + 真发布门），模型面以确定性脚本代理。
+      - name: Production codex path ST (stub CLI)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          stub_dir="$(mktemp -d)"
+          cat > "$stub_dir/codex" <<'STUB'
+          #!/usr/bin/env bash
+          # codex CLI 桩：仅实现 login status 与 exec --json 的最小 JSONL 契约。
+          if [ "$1" = "login" ]; then echo "Logged in"; exit 0; fi
+          prompt="$(cat)"
+          if printf '%s' "$prompt" | grep -q '"scores"'; then
+            line='{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"{\"action\":\"speak\",\"type\":\"answer\",\"public_rationale\":\"stub intent\",\"scores\":{\"relevance\":0.9,\"novelty\":0.5,\"urgency\":0.7,\"confidence\":0.8}}"}}'
+          else
+            line='{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"{\"body\":\"stub 回答：1+1=2\",\"declared_relations\":[]}"}}'
+          fi
+          printf '%s\n' '{"type":"thread.started","thread_id":"thr_stub_1"}'
+          printf '%s\n' "$line"
+          printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":5}}'
+          STUB
+          chmod +x "$stub_dir/codex"
+          MOSAIC_ST_CODEX_STUB="$stub_dir/codex" go test -race -tags st ./cmd/mosaic-server/ -run TestCodexProductionPath_ST -v
       - name: Build mosaic-server
         run: go build ./cmd/mosaic-server
       - name: Cross-compile gate (darwin amd64/arm64 + windows amd64)
@@ -40,8 +62,15 @@ jobs:
           GOOS=darwin GOARCH=arm64 go build ./cmd/mosaic-server
           GOOS=windows GOARCH=amd64 go build ./cmd/mosaic-server
           GOOS=windows GOARCH=arm64 go build ./cmd/mosaic-server
+      # 复审 #19：漂移门禁须覆盖新增/删除产物——git diff 不看未跟踪文件，
+      # 陈旧产物（生成器已不再输出）也测不出来；staged 比对全状态。
       - name: gen-ts drift gate (Schema → TS 产物新鲜度)
         if: matrix.os == 'ubuntu-latest'
         run: |
           bash tools/scripts/gen-ts.sh
-          git diff --exit-code -- api/room-protocol/gen/
+          git add -A api/room-protocol/gen/
+          if ! git diff --cached --quiet -- api/room-protocol/gen/; then
+            git diff --cached -- api/room-protocol/gen/
+            echo "::error::gen-ts 产物漂移（新增/修改/陈旧未清理）"
+            exit 1
+          fi

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -87,7 +88,14 @@ func (s *session) Run(ctx context.Context, task agent.Task) (agent.Handle, error
 	if task.Kind == agent.KindObserve {
 		return nil, fmt.Errorf("codexadapter: 不支持 observe（Capabilities.Observe=false）")
 	}
-	h := &handle{done: make(chan struct{}), maxRunes: s.adapter.cfg.MaxOutputRunes}
+	// 复审 #9：发布上限取 grant 宣告 ResponseCap 与适配器自身上限的较小者——
+	// floor.granted 宣告的 cap 必须真实约束发布正文（token 上限以 rune 上限代理，M1 登记）。
+	maxRunes := s.adapter.cfg.MaxOutputRunes
+	if task.Kind == agent.KindGenerate && task.Grant != nil && task.Grant.ResponseCap > 0 &&
+		int(task.Grant.ResponseCap) < maxRunes {
+		maxRunes = int(task.Grant.ResponseCap)
+	}
+	h := &handle{done: make(chan struct{}), maxRunes: maxRunes}
 	// ctx 与 cancel 同步接线：Cancel() 必须能立即杀掉在途任务（端口取消契约）
 	taskCtx, cancel := context.WithTimeout(ctx, s.adapter.cfg.Timeout)
 	h.cancel = cancel
@@ -157,11 +165,14 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 	}
 }
 
-// sanitizePublish 发布边界（二轮审校 #4）：不可信模型文本在进入事件日志前过安全门——
-// 控制字符剔除（保留 \n\t）、去首尾空白、空正文判任务失败、超限截断并显式标注。
+// sanitizePublish 发布边界（二轮审校 #4；复审 #6/#9）：不可信模型文本在进入
+// 事件日志前过安全门——控制字符剔除（保留 \n\t）、DLP 秘密形状剔除、去首尾空白、
+// 空正文判任务失败、超限截断并显式标注（上限取 grant 宣告的 ResponseCap 与
+// 适配器自身上限的较小者——宣告值必须真实约束发布，不得脱节）。
 func (h *handle) sanitizePublish() {
 	body, _ := h.result.Data["body"].(string)
 	body = sanitizeBody(body)
+	body = redactSecrets(body)
 	if body == "" {
 		h.err = fmt.Errorf("codexadapter: 发布正文为空（拒绝发布）")
 		return
@@ -183,6 +194,26 @@ func sanitizeBody(s string) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// secretPatterns DLP 秘密形状（RFC-0002 §3.1：草稿/发布需过 secret scan）。
+// M1 为形状启发式代理门；规则库与误报反馈随 M2 secret-scan 项演进。
+var secretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`),
+	regexp.MustCompile(`(?i)bearer\s+[a-z0-9._~+/-]{12,}={0,2}`),
+	regexp.MustCompile(`sk-[A-Za-z0-9_-]{16,}`),
+	regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}`),
+	regexp.MustCompile(`github_pat_[A-Za-z0-9_]{20,}`),
+	regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{10,}`),
+	regexp.MustCompile(`AKIA[0-9A-Z]{16}`),
+}
+
+// redactSecrets 秘密形状子串整体替换为 [REDACTED]（发布正文不得携带凭据形状）。
+func redactSecrets(s string) string {
+	for _, re := range secretPatterns {
+		s = re.ReplaceAllString(s, "[REDACTED]")
+	}
+	return s
 }
 
 func (s *session) execer() Execer {
@@ -416,12 +447,19 @@ func mapResult(kind agent.TaskKind, parsed Parsed) (agent.Result, error) {
 		}
 		return agent.Result{Block: "turn_intent", Data: data, Usage: parsed.Usage}, nil
 	case agent.KindGenerate:
+		// 复审 #6：封闭 DTO——模型输出只投影已知字段进 message.posted 载荷，
+		// 附加键（潜在的走私通道）不透传；declared_relations 非数组按缺省处理。
 		if data, err := ExtractJSON(text); err == nil {
 			if body, ok := data["body"].(string); ok && body != "" {
+				relations, _ := data["declared_relations"].([]any)
 				if data["declared_relations"] == nil {
-					data["declared_relations"] = []any{}
+					relations = []any{}
 				}
-				return agent.Result{Block: "public_draft", Data: data, Usage: parsed.Usage}, nil
+				return agent.Result{
+					Block: "public_draft",
+					Data:  map[string]any{"body": body, "declared_relations": relations},
+					Usage: parsed.Usage,
+				}, nil
 			}
 		}
 		// 纯文本回退：正文即发言
@@ -526,9 +564,11 @@ type wslExecer struct {
 }
 
 // wslArgs 构造 wsl.exe 参数（纯函数，UT 覆盖）。
+// env -i（复审 #7）：发行版默认环境（shell profile 注入 + WSLENV 透传）不在白名单内——
+// 清空后仅保留显式注入的 K=V（PATH/HOME/CODEX_HOME/网络配置），白名单外环境不继承。
 func wslArgs(distro string, env []string, argv []string) []string {
-	args := make([]string, 0, 4+len(env)+len(argv))
-	args = append(args, "-d", distro, "--", "env")
+	args := make([]string, 0, 5+len(env)+len(argv))
+	args = append(args, "-d", distro, "--", "env", "-i")
 	args = append(args, env...)
 	args = append(args, argv...)
 	return args

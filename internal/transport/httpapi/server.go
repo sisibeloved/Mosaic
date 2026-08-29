@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/agent"
@@ -87,6 +89,9 @@ func (s *server) handleCommand(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) execute(w http.ResponseWriter, r *http.Request, roomID string) {
+	if !s.guardWrite(w, r, true) {
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 二轮审校 #20：命令体 1MiB 上限
 	var req commandRequest
 	dec := json.NewDecoder(r.Body)
@@ -235,24 +240,46 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // HubConsumer 把 outbox 条目转成外部视图投递给 Hub（main 接线用）。
+// 永不返回错误：SSE 是 best-effort 通道（毒条目跳过即可，不能阻塞引擎侧的持久投递）。
 func HubConsumer(hub *sse.Hub) outbox.Consumer {
-	return outbox.ConsumerFunc(func(_ context.Context, entry outbox.Entry) {
+	return outbox.ConsumerFunc(func(_ context.Context, entry outbox.Entry) error {
 		var env protocol.Envelope
 		if err := json.Unmarshal(entry.Envelope, &env); err != nil {
-			return
+			return nil
 		}
 		cursor := protocol.EncodeCursor(entry.GlobalPos)
 		view := protocol.ToEventView(env, cursor)
 		data, err := json.Marshal(view)
 		if err != nil {
-			return
+			return nil
 		}
 		hub.Publish(entry.RoomID, sse.ViewEvent{Cursor: cursor, Type: env.Type, Data: data})
+		return nil
 	})
 }
 
 func writeSSE(w http.ResponseWriter, event, id string, data []byte) {
 	fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", id, event, data)
+}
+
+// guardWrite 变更端点的写防护（复审 #18）：loopback owner API 无认证，恶意网页可用
+// text/plain JSON 发起无预检的跨站写（简单请求直达）。双层：
+//  1. Origin 头存在时必须与请求 Host 同源（同源 UI 恒匹配；跨站 fetch/form 必带
+//     攻击者 Origin → 403；非浏览器客户端无 Origin，放行）。
+//  2. 带 body 的端点要求 Content-Type: application/json（跨站自定义头触发预检，
+//     本服务无 CORS 应答 → 预检即拒；同时挡掉跨站表单的默认类型）。
+func (s *server) guardWrite(w http.ResponseWriter, r *http.Request, requireJSON bool) bool {
+	if origin := r.Header.Get("Origin"); origin != "" {
+		if u, err := url.Parse(origin); err != nil || !strings.EqualFold(u.Host, r.Host) {
+			writeError(w, http.StatusForbidden, "origin_rejected", "跨源写被拒绝（本地 owner API）")
+			return false
+		}
+	}
+	if requireJSON && !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "Content-Type 须为 application/json")
+		return false
+	}
+	return true
 }
 
 func mustMarshalJSON(v any) []byte {
@@ -308,11 +335,19 @@ func (s *server) handleAddExecutable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表/探测面未配置")
 		return
 	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 二轮审校 #20：登记体 1MiB 上限
 	var req manualExecutableRequest
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) { // 复审 #21：超限是 413，不是 400
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "登记体超过 1MiB 上限")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "bad_request", "登记体不合法："+err.Error())
 		return
 	}
@@ -334,6 +369,9 @@ func (s *server) handleEnableExecutable(enabled bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.deps.Harness == nil {
 			writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")
+			return
+		}
+		if !s.guardWrite(w, r, false) { // 空 body：只做跨源门，不校验 Content-Type
 			return
 		}
 		if err := s.deps.Harness.SetEnabled(r.PathValue("id"), enabled); err != nil {

@@ -8,7 +8,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"sync"
 	"testing"
 
@@ -24,6 +26,30 @@ func openTempStore(t *testing.T) (*Store, string) {
 	}
 	t.Cleanup(func() { store.Close() })
 	return store, path
+}
+
+// 复审 #17：既有目录权限补收紧——目录先以宽松权限存在，Open 后应收紧为
+// owner-only（Unix POSIX；Windows 无对应语义，跳过）。
+func TestOpenTightensExistingDirectoryPerms(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("Windows 无 POSIX 权限语义（platform-notes W-6）")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("chmod loose: %v", err)
+	}
+	store, err := Open(filepath.Join(dir, "mosaic.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer store.Close()
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("既有目录应收紧为 0700，got %o", info.Mode().Perm())
+	}
 }
 
 func envelope(id, room string, seqIgnored int) protocol.Envelope {

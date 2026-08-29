@@ -96,6 +96,19 @@ func (h *HostRunner) Home(ctx context.Context, runtime Runtime, distro string) s
 	return strings.TrimSpace(out)
 }
 
+// MkdirAll 在目标运行面递归建目录（复审 #2：WSL 座位的工作目录是发行版内
+// Linux 路径，宿主侧 MkdirAll 建不出发行版内的目录；native 直接 os.MkdirAll）。
+func (h *HostRunner) MkdirAll(ctx context.Context, runtime Runtime, distro, dir string) error {
+	if runtime == RuntimeNative {
+		return os.MkdirAll(dir, 0o700)
+	}
+	_, code, err := h.Run(ctx, runtime, distro, []string{"mkdir", "-p", dir})
+	if err != nil || code != 0 {
+		return fmt.Errorf("harness: mkdir -p %s: %v (code=%d)", dir, err, code)
+	}
+	return nil
+}
+
 // Exists 文件存在性：native os.Stat；wsl test -e。
 func (h *HostRunner) Exists(ctx context.Context, runtime Runtime, distro, path string) bool {
 	if runtime == RuntimeNative {

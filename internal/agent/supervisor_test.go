@@ -197,3 +197,64 @@ func TestErrStaleIsSentinel(t *testing.T) {
 		t.Fatal("ErrStale 必须可用 errors.Is 判定")
 	}
 }
+
+// 复审 #3：同名适配器的多个 executable（native + WSL 两份 codex）各自成实例——
+// RegisterFor 按 Profile 键登记，Submit 按 ProfileID 精确解析；单实例适配器
+// （如 echo）仍走名字回退路径。
+func TestSupervisorResolvesPerProfileAdapter(t *testing.T) {
+	a1 := &fakeAdapter{name: "codex"}
+	a2 := &fakeAdapter{name: "codex"} // 同名第二个 executable
+	echoLike := &fakeAdapter{name: "echo"}
+	sup := NewSupervisor()
+
+	// 名字键登记：同名第二个必须被拒（折叠即坏）——这是 RegisterFor 存在的原因
+	if err := sup.Register(a1); err != nil {
+		t.Fatalf("register a1: %v", err)
+	}
+	if err := sup.Register(a2); err == nil {
+		t.Fatal("同名重复登记必须拒绝")
+	}
+	// Profile 键登记：两个同名实例并存
+	if err := sup.RegisterFor("prof_codex_native", a1); err != nil {
+		t.Fatalf("registerFor a1: %v", err)
+	}
+	if err := sup.RegisterFor("prof_codex_wsl", a2); err != nil {
+		t.Fatalf("registerFor a2: %v", err)
+	}
+	if err := sup.Register(echoLike); err != nil {
+		t.Fatalf("register echo: %v", err)
+	}
+
+	// 各 Profile 命中各自实例（Boot 计数增量可证：只动自己的实例）
+	for _, tc := range []struct {
+		profile    Profile
+		wantBoots  *atomic.Int64
+		otherBoots *atomic.Int64
+	}{
+		{Profile{ProfileID: "prof_codex_native", Adapter: "codex"}, &a1.bootCount, &a2.bootCount},
+		{Profile{ProfileID: "prof_codex_wsl", Adapter: "codex"}, &a2.bootCount, &a1.bootCount},
+	} {
+		beforeWant, beforeOther := tc.wantBoots.Load(), tc.otherBoots.Load()
+		h, err := sup.Submit(context.Background(), tc.profile, Task{TaskID: "t", Kind: KindEvaluateIntent})
+		if err != nil {
+			t.Fatalf("submit %s: %v", tc.profile.ProfileID, err)
+		}
+		if _, err := h.Result(); err != nil {
+			t.Fatalf("result %s: %v", tc.profile.ProfileID, err)
+		}
+		if tc.wantBoots.Load()-beforeWant != 1 {
+			t.Fatalf("%s 应命中专属实例（boot +1）", tc.profile.ProfileID)
+		}
+		if tc.otherBoots.Load()-beforeOther != 0 {
+			t.Fatalf("%s 不得折叠到另一实例", tc.profile.ProfileID)
+		}
+	}
+	// 名字回退：echo 类单实例不受影响
+	h, err := sup.Submit(context.Background(), Profile{ProfileID: "prof_echo", Adapter: "echo"}, Task{TaskID: "t", Kind: KindEvaluateIntent})
+	if err != nil || h == nil {
+		t.Fatalf("名字回退解析失败：%v", err)
+	}
+	if echoLike.bootCount.Load() != 1 {
+		t.Fatal("名字回退应命中 echo 实例")
+	}
+}

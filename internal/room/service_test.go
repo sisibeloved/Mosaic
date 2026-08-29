@@ -60,6 +60,57 @@ func TestIssuedAtMustBeRFC3339(t *testing.T) {
 	}
 }
 
+// 复审 #22：并发同键重试不得误报 version_conflict——入口回放检查与版本预检之间
+// 存在竞态窗口（首次执行恰在窗口内落回执）；预检冲突前必须重查回放。
+// 全部结果应为：恰一次首发 + 其余回放，零 ErrVersionConflict。
+func TestConcurrentSameKeyRetryNeverVersionConflict(t *testing.T) {
+	store := NewMemStore()
+	svc := newTestService(store)
+	ctx := context.Background()
+	actor := Actor{ParticipantID: "par_owner", Kind: "human"}
+
+	first, err := svc.ExecuteCommand(ctx, actor, createCmd("create_room", validUUIDv7, 0, map[string]any{"display_name": "race"}))
+	if err != nil {
+		t.Fatalf("create_room: %v", err)
+	}
+	cmd := createCmd("post_message", "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7f01", 1,
+		map[string]any{"body": "concurrent retry"})
+	cmd.RoomID = first.RoomID
+
+	const n = 16
+	var wg sync.WaitGroup
+	var conflicts atomic.Int32
+	var replays atomic.Int32
+	var others atomic.Int32
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, err := svc.ExecuteCommand(ctx, actor, cmd)
+			switch {
+			case err == nil && res.Replayed:
+				replays.Add(1)
+			case err == nil:
+				// 首发胜出（恰一次）
+			case errors.Is(err, ErrVersionConflict):
+				conflicts.Add(1)
+			default:
+				others.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if conflicts.Load() != 0 {
+		t.Fatalf("并发同键重试出现 %d 次 version_conflict（应回放）", conflicts.Load())
+	}
+	if others.Load() != 0 {
+		t.Fatalf("并发同键出现意外错误：%d", others.Load())
+	}
+	if replays.Load() != int32(n-1) {
+		t.Fatalf("应恰一次首发 + %d 次回放，replayed=%d", n-1, replays.Load())
+	}
+}
+
 // ---- M1 收口补课（审校 2026-08-28）：幂等/并发/回执三件套 ----
 
 // D1：create_room 同键异载荷 → 幂等冲突（不得静默回放原房间）。

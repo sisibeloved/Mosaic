@@ -581,15 +581,23 @@ func postJSONST(t *testing.T, base, path string, body map[string]any) map[string
 }
 
 // TestCodexProductionPath_ST（二轮审校 #3）：生产 codex 路径的端到端门禁——
-// 真实 codex 座位参与完整轮（评估→生成→发布）。显式 opt-in：设 MOSAIC_ST_CODEX
-// 指向 codex 可执行文件；未设或未登录时跳过（CI 无 codex；负责人真机演练与本用例同路径）。
+// 真实 codex 座位参与完整轮（评估→生成→发布）。两种 opt-in：
+//   - MOSAIC_ST_CODEX：真 codex 可执行文件（负责人真机演练与本用例同路径）；
+//   - MOSAIC_ST_CODEX_STUB：桩 CLI（CI 必跑腿——真二进制+真适配器+真子进程+真发布门，
+//     模型面以确定性脚本代理；复审 #5：生产路径不得在必跑 CI 里恒 skip）。
 func TestCodexProductionPath_ST(t *testing.T) {
 	codexPath := os.Getenv("MOSAIC_ST_CODEX")
-	if codexPath == "" {
-		t.Skip("未设 MOSAIC_ST_CODEX（生产 codex 路径 ST 为显式 opt-in）")
+	stub := codexPath == ""
+	if stub {
+		codexPath = os.Getenv("MOSAIC_ST_CODEX_STUB")
 	}
-	if out, err := exec.Command(codexPath, "login", "status").CombinedOutput(); err != nil || !strings.Contains(string(out), "Logged in") {
-		t.Skipf("codex 未登录或 login status 不可用（skip）: %v %s", err, out)
+	if codexPath == "" {
+		t.Skip("未设 MOSAIC_ST_CODEX / MOSAIC_ST_CODEX_STUB（生产 codex 路径 ST 为显式 opt-in）")
+	}
+	if !stub {
+		if out, err := exec.Command(codexPath, "login", "status").CombinedOutput(); err != nil || !strings.Contains(string(out), "Logged in") {
+			t.Skipf("codex 未登录或 login status 不可用（skip）: %v %s", err, out)
+		}
 	}
 
 	bin := buildServer(t)

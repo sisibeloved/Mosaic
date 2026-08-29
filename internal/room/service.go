@@ -157,6 +157,11 @@ func (s *Service) postMessage(ctx context.Context, actor Actor, cmd Command) (*C
 		return nil, fmt.Errorf("room: room version: %w", err)
 	}
 	if cmd.ExpectedRoomVersion != version {
+		// 复审 #22：并发同键的首次执行可能恰在本预检前提交回执——重查回放，
+		// 重试须回放而非误报版本冲突（入口的回放检查与此处之间存在竞态窗口）。
+		if res, rerr := s.replayIfReceived(ctx, cmd, actor); res != nil || rerr != nil {
+			return res, rerr
+		}
 		return nil, fmt.Errorf("%w: expected=%d current=%d", ErrVersionConflict, cmd.ExpectedRoomVersion, version)
 	}
 
@@ -300,6 +305,10 @@ func (s *Service) roomLifecycle(ctx context.Context, actor Actor, cmd Command, e
 		return nil, fmt.Errorf("room: room version: %w", err)
 	}
 	if cmd.ExpectedRoomVersion != version {
+		// 复审 #22：同 post_message——并发同键竞态先重查回放再判冲突
+		if res, rerr := s.replayIfReceived(ctx, cmd, actor); res != nil || rerr != nil {
+			return res, rerr
+		}
 		return nil, fmt.Errorf("%w: expected=%d current=%d", ErrVersionConflict, cmd.ExpectedRoomVersion, version)
 	}
 	var payload struct {

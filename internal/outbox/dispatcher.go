@@ -5,6 +5,7 @@ package outbox
 
 import (
 	"context"
+	"log/slog"
 	"time"
 )
 
@@ -24,21 +25,25 @@ type Store interface {
 }
 
 // Consumer 单个条目的消费者（同步调用：消费者自行决定是否异步处理）。
+// 返回错误 = 本条未消化：分发器不标记该条目（含其后整批），下轮按原序重投——
+// 持久消费者（如引擎的 durable claim）由此获得 at-least-once 重试而非静默丢失
+// （复审 #15：此前 Deliver 无错误通道，声明失败只能告警后内存直驱，崩溃即丢轮）。
 type Consumer interface {
-	Deliver(ctx context.Context, entry Entry)
+	Deliver(ctx context.Context, entry Entry) error
 }
 
 // ConsumerFunc 函数式适配器。
-type ConsumerFunc func(ctx context.Context, entry Entry)
+type ConsumerFunc func(ctx context.Context, entry Entry) error
 
 // Deliver 实现 Consumer。
-func (f ConsumerFunc) Deliver(ctx context.Context, entry Entry) { f(ctx, entry) }
+func (f ConsumerFunc) Deliver(ctx context.Context, entry Entry) error { return f(ctx, entry) }
 
 // Dispatcher 轮询分发器。
 type Dispatcher struct {
 	store     Store
 	consumers []Consumer
 	interval  time.Duration
+	logger    *slog.Logger
 }
 
 // NewDispatcher 构造；interval ≤0 时取 20ms。
@@ -46,7 +51,15 @@ func NewDispatcher(store Store, consumers []Consumer, interval time.Duration) *D
 	if interval <= 0 {
 		interval = 20 * time.Millisecond
 	}
-	return &Dispatcher{store: store, consumers: consumers, interval: interval}
+	return &Dispatcher{store: store, consumers: consumers, interval: interval, logger: slog.Default()}
+}
+
+// WithLogger 注入日志器（缺省 slog.Default；重投告警不再静默）。
+func (d *Dispatcher) WithLogger(l *slog.Logger) *Dispatcher {
+	if l != nil {
+		d.logger = l
+	}
+	return d
 }
 
 // Run 阻塞循环；ctx 取消即停（未分发条目留待下次启动重放）。
@@ -60,7 +73,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		case <-ticker.C:
 			if err := d.dispatchOnce(ctx); err != nil {
 				// 单轮失败不致命：下轮重试（条目未标记，天然重放）
-				continue
+				d.logger.Warn("outbox: 分发轮失败（下轮重试）", "err", err)
 			}
 		}
 	}
@@ -68,6 +81,8 @@ func (d *Dispatcher) Run(ctx context.Context) {
 
 // DispatchOnce 单轮：取一批 → 逐条投递全部消费者 → 统一标记。
 // 逐条投递保证同房间顺序；标记在投递后（at-least-once，消费者需幂等或可重放）。
+// 消费失败即中断本批：失败条目及其后继均不标记——重投时按原提交序补齐，
+// 后继条目先标记会破坏同房间顺序（SSE 已收到的帧按 at-least-once 语义容忍重发）。
 func (d *Dispatcher) dispatchOnce(ctx context.Context) error {
 	entries, err := d.store.Pending(ctx, 100)
 	if err != nil {
@@ -78,10 +93,21 @@ func (d *Dispatcher) dispatchOnce(ctx context.Context) error {
 	}
 	ids := make([]int64, 0, len(entries))
 	for _, entry := range entries {
+		failed := false
 		for _, c := range d.consumers {
-			c.Deliver(ctx, entry)
+			if err := c.Deliver(ctx, entry); err != nil {
+				d.logger.Warn("outbox: 消费失败，条目待重投（本批后继暂缓）", "event", entry.EventID, "err", err)
+				failed = true
+				break
+			}
+		}
+		if failed {
+			break
 		}
 		ids = append(ids, entry.ID)
+	}
+	if len(ids) == 0 {
+		return nil
 	}
 	return d.store.MarkDispatched(ctx, ids)
 }
