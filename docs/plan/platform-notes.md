@@ -19,7 +19,7 @@
 | # | 坑位 | 实证场景 | 结论/对策 |
 |---|---|---|---|
 | M-1 | CI 双核 runner 上信号注册晚于 listening 日志 → ST 投递 SIGINT 走默认动作非零退出 | M1 切片 B：优雅退出 ST（f6d0672） | `signal.NotifyContext` 必须在一切监听/日志之前注册 |
-| M-2 | macOS amd64 曾缺 CI 覆盖（§5.1 要求 arm64+amd64） | M1 收口审校 | CI matrix 补 `macos-13`（Intel）leg |
+| M-2 | macOS amd64 曾缺 CI 覆盖（§5.1 要求 arm64+amd64）；补 `macos-13`（Intel）leg 后**实测排队 30min+ 无 runner**——GitHub 托管 Intel macOS runner 已退役（macos-13 是最后一档 Intel 镜像） | M1 收口：CI matrix 实验（run 33234508894，三腿全绿、macos-13 恒 queued） | darwin/amd64 兼容改由 ubuntu 腿**交叉编译门禁**把守（GOOS=darwin GOARCH=amd64/arm64 + windows 双架构 build）；Intel mac 真机运行验证无上游 runner 可用，若需真机只能自托管（登记不阻塞主线） |
 
 ## Linux（WSL/dev 基线）
 

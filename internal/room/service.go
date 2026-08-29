@@ -121,14 +121,14 @@ func (s *Service) createRoom(ctx context.Context, actor Actor, cmd Command) (*Co
 		Metadata:      map[string]any{},
 	}
 	receipt := CommandReceipt{
-		TenantID:           s.cfg.Tenant,
-		RoomID:             roomID,
-		IdempotencyKey:     cmd.IdempotencyKey,
-		CommandKind:        cmd.CommandKind,
-		RequestFingerprint: fingerprint(cmd, actor),
-		EventID:            env.EventID,
+		TenantID:            s.cfg.Tenant,
+		RoomID:              roomID,
+		IdempotencyKey:      cmd.IdempotencyKey,
+		CommandKind:         cmd.CommandKind,
+		RequestFingerprint:  fingerprint(cmd, actor),
+		EventID:             env.EventID,
 		ExpectedRoomVersion: cmd.ExpectedRoomVersion,
-		ExecutedAt:         s.cfg.Clock(),
+		ExecutedAt:          s.cfg.Clock(),
 	}
 	return s.commit(ctx, env, receipt)
 }

@@ -11,9 +11,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 双平台一等公民（交付规划 §5：macOS arm64+amd64 双架构）+ linux 供服务端形态基线
-        # macos-latest = arm64；macos-13 = Intel（amd64）
-        os: [ubuntu-latest, windows-latest, macos-latest, macos-13]
+        # 双平台一等公民（交付规划 §5）+ linux 供服务端形态基线。
+        # macOS amd64：GitHub 托管 Intel runner（macos-13，最后一档 Intel 镜像）已退役，
+        # 实测排队 30min+ 无 runner（2026-08-28，platform-notes M-2）——
+        # darwin/amd64 兼容改由 ubuntu 腿交叉编译门禁把守（见 cross-compile 步骤）。
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -30,3 +32,11 @@ jobs:
         run: go test -race -tags st ./...
       - name: Build mosaic-server
         run: go build ./cmd/mosaic-server
+      - name: Cross-compile gate (darwin amd64/arm64 + windows amd64)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          go build ./cmd/mosaic-server
+          GOOS=darwin GOARCH=amd64 go build ./cmd/mosaic-server
+          GOOS=darwin GOARCH=arm64 go build ./cmd/mosaic-server
+          GOOS=windows GOARCH=amd64 go build ./cmd/mosaic-server
+          GOOS=windows GOARCH=arm64 go build ./cmd/mosaic-server
