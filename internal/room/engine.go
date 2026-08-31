@@ -389,6 +389,20 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 	epoch := countRounds(history) + 1
 	e.debug(roomID, "轮开始", "round", roundID, "stimulus", stimulus.EventID, "epoch", epoch)
 
+	// 定向交锋（RFC §3.1.9）：刺激点名 → 被点名者获定向 slot；交锋链（连续
+	// 定向轮）窗口缩短 2/3，深度超限回正常队列。链长自历史推导（事件溯源）。
+	directed, slotCap, chainLen := directedSlotsFor(history, stimulus, e.seatsSnapshot(), selPolicy.MaxSpeakers)
+	if chainLen >= 2 && chainLen <= maxDirectedChainDepth {
+		shortened := policy.IntentWindow * 2 / 3
+		if secs := (shortened + time.Second - 1) / time.Second; secs >= 1 {
+			policy.IntentWindow = secs * time.Second
+			policy.Params.IntentWindow = fmt.Sprintf("%ds", secs)
+		}
+		e.debug(roomID, "交锋链窗口缩短", "chain", chainLen, "window", policy.Params.IntentWindow)
+	}
+	fullHouse := policy.Params.Mode == "roundtable" &&
+		policy.EffectiveMaxSpeakers(len(e.seatsSnapshot())) >= len(e.seatsSnapshot())
+
 	// 1) round.opened（策略快照字段全部来自投影——声明即执行：reveal 本切片
 	// 只放行 sequential，M1"声明 simultaneous 实际按序执行"的名不副实在此纠正）
 	opened := e.newEnv(roomID, protocol.EventRoundOpened,
@@ -440,14 +454,16 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 
 	// 3-5) 评估 → 选择 → intent.recorded 全记录（主波 subround=0；cross 子轮复用）
 	selection, recordedByIntent, ok := e.evaluateAndSelect(ctx, roomID, roundID, stimulus,
-		history, e.seatsSnapshot(), taskContext, selPolicy, policy, ledger, 0)
+		history, e.seatsSnapshot(), taskContext, selPolicy, policy, ledger, 0,
+		directed, slotCap, fullHouse)
 	if !ok {
 		return
 	}
+	directedByIntent := directedIntentIDs(selection, directed)
 
 	// 6) 揭示策略执行器（RFC-0003 §3.1.8：sequential / simultaneous / independent_then_cross）
 	published, revoked, crossRounds, aborted := e.revealByStrategy(ctx, roomID, roundID, stimulus,
-		selection, recordedByIntent, taskContext, policy, selPolicy, epoch)
+		selection, recordedByIntent, taskContext, policy, selPolicy, epoch, directedByIntent)
 	if aborted {
 		return
 	}
@@ -502,6 +518,7 @@ func intentMetadata(rejection attention.Rejection, selected bool, usage *agent.U
 func (e *Engine) evaluateAndSelect(ctx context.Context, roomID, roundID string,
 	stimulus protocol.Envelope, history []StoredEvent, seats []AgentSeat, taskContext agent.Context,
 	selPolicy attention.Policy, policy RoundPolicy, baseLedger contextx.Ledger, subround int,
+	directed map[string]bool, slotCap int, fullHouse bool,
 ) (attention.Result, map[string]string, bool) {
 
 	var candidates []attention.Candidate
@@ -589,8 +606,11 @@ func (e *Engine) evaluateAndSelect(ctx context.Context, roomID, roundID string,
 		})
 	}
 
-	// 相 3：确定性选择（硬资格 + 记分卡 + MMR）
+	// 相 3：确定性选择（硬资格 + 记分卡 + MMR）→ 定向 slot 调整（RFC §3.1.9：
+	// 被点名者优先资格 + 发言顺序前置；slot ≤ min(2, ceil(名额/2))；全员模式仅
+	// 影响顺序不增名额；定向不绕过硬资格/预算）
 	selection := attention.Select(candidates, selPolicy)
+	selection = applyDirectedSlots(selection, candidates, directed, slotCap, selPolicy.MaxSpeakers, fullHouse)
 	e.debug(roomID, "选择完成", "round", roundID,
 		"candidates", len(candidates), "selected", len(selection.Selected),
 		"rejected", len(selection.Rejected), "silent", selection.SilentCount, "subround", subround)
@@ -665,13 +685,14 @@ func rejectionOf(sel attention.Result, intentID string) attention.Rejection {
 func (e *Engine) revealByStrategy(ctx context.Context, roomID, roundID string,
 	stimulus protocol.Envelope, selection attention.Result, recordedByIntent map[string]string,
 	taskContext agent.Context, policy RoundPolicy, selPolicy attention.Policy, epoch int64,
+	directedByIntent map[string]bool,
 ) (published, revoked, crossRounds int, aborted bool) {
 
 	switch policy.Params.RevealStrategy {
 	case "simultaneous", "independent_then_cross":
 		var speakers map[string]bool
 		published, revoked, speakers, aborted = e.revealSimultaneous(
-			ctx, roomID, roundID, stimulus, selection, recordedByIntent, taskContext, policy, epoch, 0)
+			ctx, roomID, roundID, stimulus, selection, recordedByIntent, taskContext, policy, epoch, 0, directedByIntent)
 		if aborted || policy.Params.RevealStrategy != "independent_then_cross" {
 			return published, revoked, 0, aborted
 		}
@@ -695,7 +716,7 @@ func (e *Engine) revealByStrategy(ctx context.Context, roomID, roundID string,
 	default: // sequential（B2 前的唯一执行面）
 		for _, sel := range selection.Selected {
 			outcome := e.revealCandidate(ctx, roomID, roundID, stimulus, sel, epoch,
-				recordedByIntent[sel.IntentID], taskContext, policy)
+				recordedByIntent[sel.IntentID], taskContext, policy, directedByIntent[sel.IntentID])
 			switch outcome {
 			case revealPublished:
 				published++
@@ -714,7 +735,7 @@ func (e *Engine) revealByStrategy(ctx context.Context, roomID, roundID string,
 // 按 rank 统一揭示发布。subround 参数供 ITC 复用（首轮传 0）。
 func (e *Engine) revealSimultaneous(ctx context.Context, roomID, roundID string,
 	stimulus protocol.Envelope, selection attention.Result, recordedByIntent map[string]string,
-	taskContext agent.Context, policy RoundPolicy, epoch int64, subround int,
+	taskContext agent.Context, policy RoundPolicy, epoch int64, subround int, directedByIntent map[string]bool,
 ) (published, revoked int, speakers map[string]bool, aborted bool) {
 
 	speakers = map[string]bool{}
@@ -732,7 +753,7 @@ func (e *Engine) revealSimultaneous(ctx context.Context, roomID, roundID string,
 	var wave []pending
 	for _, sel := range selection.Selected {
 		grantEnv, grantID, ok := e.issueGrant(ctx, roomID, roundID, sel, epoch,
-			recordedByIntent[sel.IntentID], policy, frozen, subround)
+			recordedByIntent[sel.IntentID], policy, frozen, subround, directedByIntent[sel.IntentID])
 		if !ok {
 			return 0, 0, speakers, true // 发授落库失败：中止（不写 round.closed）
 		}
@@ -826,7 +847,7 @@ func (e *Engine) runCrossSubround(ctx context.Context, roomID, roundID string,
 		crossPolicy.MaxSpeakers = len(seats)
 	}
 	selection, recorded, ok := e.evaluateAndSelect(ctx, roomID, roundID, anchor, fresh,
-		seats, taskCtx, crossPolicy, policy, ledger, subround)
+		seats, taskCtx, crossPolicy, policy, ledger, subround, nil, 0, false)
 	if !ok {
 		return 0, 0, newSpeakers, true
 	}
@@ -837,7 +858,7 @@ func (e *Engine) runCrossSubround(ctx context.Context, roomID, roundID string,
 			return published, revoked, newSpeakers, true
 		}
 		grantEnv, grantID, ok := e.issueGrant(ctx, roomID, roundID, sel, epoch,
-			recorded[sel.IntentID], policy, version, subround)
+			recorded[sel.IntentID], policy, version, subround, false)
 		if !ok {
 			return published, revoked, newSpeakers, true
 		}
@@ -863,7 +884,7 @@ func (e *Engine) runCrossSubround(ctx context.Context, roomID, roundID string,
 // causation=该候选 intent.recorded；watermark 由策略决定（simultaneous 冻结/
 // sequential 取当下）；subround>0 时 metadata 标记子轮关系。
 func (e *Engine) issueGrant(ctx context.Context, roomID, roundID string, sel attention.Selection,
-	epoch int64, intentEventID string, policy RoundPolicy, watermark int64, subround int,
+	epoch int64, intentEventID string, policy RoundPolicy, watermark int64, subround int, directed bool,
 ) (protocol.Envelope, string, bool) {
 
 	grantID := e.cfg.NewID("grant")
@@ -879,7 +900,7 @@ func (e *Engine) issueGrant(ctx context.Context, roomID, roundID string, sel att
 			Epoch:            int(epoch),
 			ExpiresAt:        e.cfg.Now().Add(policy.IntentWindow).UTC().Format(time.RFC3339Nano),
 			ResponseCap:      int(policy.Params.ResponseCap),
-			Directed:         false,
+			Directed:         directed,
 		})
 	if subround > 0 {
 		grant.Metadata = map[string]any{"subround": subround}
@@ -986,13 +1007,13 @@ func (e *Engine) publishMessage(ctx context.Context, roomID, roundID string, sti
 // revealCandidate sequential 揭示链：发授（水位取当下）→ 生成 → 发布。
 func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, stimulus protocol.Envelope,
 	sel attention.Selection, epoch int64, intentEventID string, taskContext agent.Context,
-	policy RoundPolicy) revealOutcome {
+	policy RoundPolicy, directed bool) revealOutcome {
 
 	version, err := e.cfg.Store.RoomVersion(ctx, roomID)
 	if err != nil {
 		return revealAbort
 	}
-	grantEnv, grantID, ok := e.issueGrant(ctx, roomID, roundID, sel, epoch, intentEventID, policy, version, 0)
+	grantEnv, grantID, ok := e.issueGrant(ctx, roomID, roundID, sel, epoch, intentEventID, policy, version, 0, directed)
 	if !ok {
 		return revealAbort
 	}

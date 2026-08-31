@@ -53,7 +53,7 @@ export interface RoomHandle {
   connection: Connection;
   error: string | null;
   createRoom(): Promise<void>;
-  send(body: string): Promise<void>;
+  send(body: string, addressedTo?: string[]): Promise<void>;
   pause(): Promise<void>;
   resume(): Promise<void>;
 }
@@ -232,10 +232,10 @@ export function useRoom(): RoomHandle {
   }, [loadAndSubscribe]);
 
   const send = useCallback(
-    async (body: string) => {
+    async (body: string, addressedTo: string[] = []) => {
       if (!state) return;
       try {
-        await withVersion(state.roomID, (v) => api.postMessage(state.roomID, v, body));
+        await withVersion(state.roomID, (v) => api.postMessage(state.roomID, v, body, addressedTo));
         setError(null);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));

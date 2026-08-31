@@ -1,7 +1,13 @@
 import { useEffect, useRef } from "react";
 import type { TimelineEntry } from "../api/room";
 
-export function Timeline({ entries }: { entries: TimelineEntry[] }) {
+export function Timeline({
+  entries,
+  onAddress,
+}: {
+  entries: TimelineEntry[];
+  onAddress?: (participantID: string) => void;
+}) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
@@ -17,7 +23,15 @@ export function Timeline({ entries }: { entries: TimelineEntry[] }) {
           return (
             <div key={e.key} className={`msg ${e.actorKind}`}>
               <div className="meta">
-                {e.actorID} · {e.occurredAt}
+                <button
+                  type="button"
+                  className="actor-chip"
+                  title={`点名 ${e.actorID}`}
+                  onClick={() => onAddress?.(e.actorID)}
+                >
+                  {e.actorID}
+                </button>{" "}
+                · {e.occurredAt}
               </div>
               <div className="body">{e.body}</div>
             </div>

@@ -105,13 +105,13 @@ export const api = {
   createRoom(displayName: string): Promise<CommandResponse> {
     return post("/v1/rooms", commandBody("create_room", 0, { display_name: displayName }));
   },
-  postMessage(roomID: string, version: number, body: string): Promise<CommandResponse> {
+  postMessage(roomID: string, version: number, body: string, addressedTo: string[] = []): Promise<CommandResponse> {
     return post(
       `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
       commandBody("post_message", version, {
         body,
         reply_to: null,
-        addressed_to: [],
+        addressed_to: addressedTo,
         relations: [],
       }),
     );

@@ -16,6 +16,7 @@ const CONNECTION_TEXT: Record<string, string> = {
 
 export function App() {
   const [view, setView] = useState<"room" | "settings">("room");
+  const [addressTarget, setAddressTarget] = useState<string | null>(null);
   const room = useRoom();
 
   return (
@@ -67,8 +68,13 @@ export function App() {
         ) : (
           <>
             <TypingStatus roundOpen={room.roundOpen} typing={room.typing} />
-            <Timeline entries={room.entries} />
-            <Composer disabled={!room.roomID} onSend={(body) => void room.send(body)} />
+            <Timeline entries={room.entries} onAddress={setAddressTarget} />
+            <Composer
+              disabled={!room.roomID}
+              addressTarget={addressTarget}
+              onClearAddress={() => setAddressTarget(null)}
+              onSend={(body, addressedTo) => void room.send(body, addressedTo)}
+            />
           </>
         )}
       </main>

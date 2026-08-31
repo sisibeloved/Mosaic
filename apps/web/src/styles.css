@@ -184,3 +184,10 @@ button.ghost { background: #2a323c; }
 }
 
 .room-info { min-height: 34px; }
+
+.composer-main { flex: 1; display: flex; gap: 6px; align-items: center; }
+.address-chip { white-space: nowrap; font-size: 12px; }
+.actor-chip {
+  background: none; border: none; padding: 0; color: inherit; font: inherit;
+  cursor: pointer; text-decoration: underline dotted;
+}
