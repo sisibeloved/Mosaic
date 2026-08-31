@@ -196,14 +196,36 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// wsl.exe 会在目标 sh -c 前先做一层 shell 展开；反斜杠让变量延迟到目标 shell。
+// glob 模式作为尾参数传入，外层可展开为多项，目标 shell 通过 "$@" 全量枚举。
+
+func wslGlobArgs(pattern string) []string {
+	return []string{
+		"sh",
+		"-c",
+		`for p in "\$@"; do [ -e "\$p" ] && printf "%s\n" "\$p"; done`,
+		"--",
+		pattern,
+	}
+}
+
+func wslRunWithDirArgs(binDir string, args []string) []string {
+	wrapped := []string{
+		"sh",
+		"-c",
+		`export PATH=` + shellQuote(binDir) + `:\$PATH; exec "\$@"`,
+		"--",
+	}
+	return append(wrapped, args...)
+}
+
 // Glob 展开通配模式：native filepath.Glob；wsl 用 shell glob（仅保留存在项）。
 func (h *HostRunner) Glob(ctx context.Context, runtime Runtime, distro, pattern string) []string {
 	if runtime == RuntimeNative {
 		matches, _ := filepath.Glob(pattern)
 		return matches
 	}
-	out, code, err := h.Run(ctx, runtime, distro,
-		[]string{"sh", "-c", "for p in " + shellQuote(pattern) + "; do [ -e \"$p\" ] && printf \"%s\n\" \"$p\"; done"})
+	out, code, err := h.Run(ctx, runtime, distro, wslGlobArgs(pattern))
 	if err != nil || code != 0 {
 		return nil
 	}
@@ -239,7 +261,5 @@ func (h *HostRunner) RunWithDir(ctx context.Context, runtime Runtime, distro, bi
 		}
 		return decodeOutput(runtime, buf.Bytes()), 0, nil
 	}
-	wrapped := append([]string{"sh", "-c",
-		"export PATH=" + shellQuote(binDir) + ":$PATH; exec \"$@\"", "--"}, args...)
-	return h.Run(ctx, runtime, distro, wrapped)
+	return h.Run(ctx, runtime, distro, wslRunWithDirArgs(binDir, args))
 }

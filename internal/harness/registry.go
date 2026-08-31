@@ -294,7 +294,8 @@ func sortByPriority(exes []Executable) {
 func (r *Registry) List() []Executable {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := append([]Executable(nil), r.exes...)
+	out := make([]Executable, len(r.exes))
+	copy(out, r.exes)
 	sortByPriority(out)
 	return out
 }

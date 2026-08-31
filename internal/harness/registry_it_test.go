@@ -7,6 +7,7 @@ package harness
 import (
 	"context"
 	"os/exec"
+	"runtime"
 	"testing"
 )
 
@@ -16,7 +17,7 @@ func TestHostRunnerScanRealCLIs_IT(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if err := reg.Scan(context.Background(), runner, BuiltinProbes, ScanOptions{}); err != nil {
+	if err := reg.Scan(context.Background(), runner, BuiltinProbes, ScanOptions{IncludeWSL: runtime.GOOS == "windows"}); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
 	list := reg.List()
@@ -52,7 +53,7 @@ func TestHostRunnerEnableGate_IT(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if err := reg.Scan(context.Background(), runner, BuiltinProbes, ScanOptions{}); err != nil {
+	if err := reg.Scan(context.Background(), runner, BuiltinProbes, ScanOptions{IncludeWSL: runtime.GOOS == "windows"}); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
 	list := reg.List()

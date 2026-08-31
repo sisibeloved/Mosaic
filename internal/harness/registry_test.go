@@ -88,6 +88,18 @@ func tempRegistry(t *testing.T) (*Registry, string) {
 	return reg, path
 }
 
+func TestRegistryListEmptyMarshalsAsJSONArray(t *testing.T) {
+	reg, _ := tempRegistry(t)
+
+	raw, err := json.Marshal(map[string]any{"executables": reg.List()})
+	if err != nil {
+		t.Fatalf("marshal empty registry: %v", err)
+	}
+	if got, want := string(raw), `{"executables":[]}`; got != want {
+		t.Fatalf("empty registry JSON = %s, want %s", got, want)
+	}
+}
+
 func TestScanNativeDiscoversProbesAndGates(t *testing.T) {
 	reg, _ := tempRegistry(t)
 	runner := newFakeRunner()
