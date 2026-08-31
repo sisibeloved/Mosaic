@@ -473,9 +473,9 @@ func TestIndexUI_ST(t *testing.T) {
 	js, _ := io.ReadAll(asset.Body)
 	asset.Body.Close()
 	for _, marker := range []string{
-		"idempotency_key",         // 幂等键契约字段（uuidv7 生成，crypto.getRandomValues）
-		"crypto.getRandomValues",  // 键随机位（非 Math.random 弱随机）
-		"expected_room_version",   // 乐观并发版本位
+		"idempotency_key",        // 幂等键契约字段（uuidv7 生成，crypto.getRandomValues）
+		"crypto.getRandomValues", // 键随机位（非 Math.random 弱随机）
+		"expected_room_version",  // 乐观并发版本位
 		"/snapshot",              // 发命令前的版本校准通道
 	} {
 		if !bytes.Contains(js, []byte(marker)) {
