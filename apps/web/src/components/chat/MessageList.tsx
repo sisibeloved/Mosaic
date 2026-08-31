@@ -1,0 +1,133 @@
+// 消息流（参考 Grok Bot / KimiClaw 群聊）：人类右侧气泡；agent 左侧带
+// 头像/显示名/kind 徽标；system 事件居中细灰条。用户上翻时暂停自动滚底。
+import { useEffect, useRef } from "react";
+import type { TimelineEntry } from "../../api/room";
+import type { ParticipantView } from "../../api/client";
+import { displayNameOf, participantOf, relativeTime } from "../../lib/ui";
+import { Avatar } from "./Avatar";
+
+export function MessageList({
+  entries,
+  participants,
+}: {
+  entries: TimelineEntry[];
+  participants: ParticipantView[];
+}) {
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const pinnedRef = useRef(true); // 贴底时才跟随新消息滚动
+
+  useEffect(() => {
+    const el = boxRef.current;
+    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
+  }, [entries]);
+
+  const onScroll = () => {
+    const el = boxRef.current;
+    if (!el) return;
+    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
+
+  return (
+    <div
+      ref={boxRef}
+      onScroll={onScroll}
+      className="flex-1 overflow-y-auto px-4 py-4"
+      role="log"
+      aria-label="讨论时间线"
+    >
+      <div className="mx-auto flex max-w-3xl flex-col gap-3">
+        {entries.length === 0 && (
+          <p className="py-16 text-center text-sm text-faint">
+            发送第一条消息——agent 会自行评估是否参与讨论。
+          </p>
+        )}
+        {entries.map((e) =>
+          e.kind === "system" ? (
+            <SystemBar key={e.key} text={e.detail ?? ""} />
+          ) : e.actorKind === "human" ? (
+            <HumanBubble key={e.key} entry={e} participants={participants} />
+          ) : (
+            <AgentBubble key={e.key} entry={e} participants={participants} />
+          ),
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SystemBar({ text }: { text: string }) {
+  return (
+    <div className="my-1 flex items-center gap-3 text-[11px] text-faint">
+      <span className="h-px flex-1 bg-border" />
+      <span className="shrink-0">{text}</span>
+      <span className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
+function AddressedLine({
+  entry,
+  participants,
+}: {
+  entry: TimelineEntry;
+  participants: ParticipantView[];
+}) {
+  if (!entry.addressedTo || entry.addressedTo.length === 0) return null;
+  const names = entry.addressedTo.map((id) => `@${displayNameOf(participants, id)}`).join(" ");
+  return <span className="mr-2 text-accent">{names}</span>;
+}
+
+function HumanBubble({
+  entry,
+  participants,
+}: {
+  entry: TimelineEntry;
+  participants: ParticipantView[];
+}) {
+  return (
+    <div className="animate-rise flex flex-col items-end">
+      <div className="max-w-[78%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-accent-soft px-3.5 py-2 text-sm text-text">
+        {entry.body}
+      </div>
+      <div className="mt-0.5 text-[11px] text-faint">
+        <AddressedLine entry={entry} participants={participants} />
+        {relativeTime(entry.occurredAt)}
+      </div>
+    </div>
+  );
+}
+
+function AgentBubble({
+  entry,
+  participants,
+}: {
+  entry: TimelineEntry;
+  participants: ParticipantView[];
+}) {
+  const p = participantOf(participants, entry.actorID);
+  const name = p?.display_name ?? displayNameOf(participants, entry.actorID);
+  return (
+    <div className="animate-rise flex gap-2.5">
+      <Avatar participantID={entry.actorID} displayName={name} />
+      <div className="min-w-0 max-w-[80%]">
+        <div className="mb-0.5 flex flex-wrap items-baseline gap-x-2 text-xs">
+          <span className="font-medium text-text">{name}</span>
+          <span className="rounded bg-surface-3 px-1.5 py-px text-[10px] leading-4 text-dim">
+            {entry.actorKind}
+          </span>
+          {p?.adapter && (
+            <span className="rounded bg-surface-3 px-1.5 py-px text-[10px] leading-4 text-dim">
+              {p.adapter}
+              {p.channel ? ` · ${p.channel}` : ""}
+            </span>
+          )}
+          <span className="text-faint">{relativeTime(entry.occurredAt)}</span>
+        </div>
+        <div className="w-fit max-w-full whitespace-pre-wrap break-words rounded-2xl rounded-tl-md bg-surface-2 px-3.5 py-2 text-sm">
+          <AddressedLine entry={entry} participants={participants} />
+          {entry.body}
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -1,8 +1,10 @@
+import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 
 // 开发态：vite dev server 代理 API 到本机 mosaic-server（契约同源）；
 // 构建产物 dist/ 入库并由 mosaic-server 经 go:embed 服务（apps/web/embed.go）。
 export default defineConfig({
+  plugins: [tailwindcss()],
   build: {
     outDir: "dist",
     target: "es2022",

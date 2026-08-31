@@ -419,6 +419,10 @@ export interface components {
             login_state?: string;
             /** @description auto_scan | manual */
             source?: string;
+            /** @description 实例渠道（ADR-0012）：cli | app:codex-desktop | app:kimi-work */
+            channel?: string;
+            /** @description 家族裁定优先级（数值小者优先；列表已按 adapter→priority→path 排序） */
+            priority?: number;
             /** Format: date-time */
             discovered_at?: string;
             enabled: boolean;
@@ -429,6 +433,8 @@ export interface components {
             distro?: string;
             path: string;
             version?: string;
+            /** @description 可选渠道覆盖（cli 或 app:<小写>），空值按 cli */
+            channel?: string;
         };
     };
     responses: {

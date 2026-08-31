@@ -7,6 +7,10 @@ export type EventView = Schemas["EventView"];
 export type Snapshot = Schemas["Snapshot"];
 export type Executable = Schemas["Executable"];
 export type CommandResponse = Schemas["CommandResponse"];
+export type RoomSummary = Schemas["RoomSummary"];
+export type ParticipantView = Schemas["ParticipantView"];
+export type PolicyParams = Schemas["PolicyParams"];
+export type ManualExecutableRequest = Schemas["ManualExecutableRequest"];
 
 export class ApiError extends Error {
   readonly status: number;
@@ -74,8 +78,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-function post(path: string, payload: unknown): Promise<CommandResponse> {
-  return request<CommandResponse>(path, {
+function post<T = CommandResponse>(path: string, payload: unknown): Promise<T> {
+  return request<T>(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -102,8 +106,17 @@ function commandBody(kind: string, expectedVersion: number, payload: unknown) {
 }
 
 export const api = {
+  listRooms(): Promise<{ rooms: RoomSummary[] }> {
+    return request<{ rooms: RoomSummary[] }>("/v1/rooms");
+  },
   createRoom(displayName: string): Promise<CommandResponse> {
     return post("/v1/rooms", commandBody("create_room", 0, { display_name: displayName }));
+  },
+  renameRoom(roomID: string, version: number, displayName: string): Promise<CommandResponse> {
+    return post(
+      `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
+      commandBody("rename_room", version, { display_name: displayName }),
+    );
   },
   postMessage(roomID: string, version: number, body: string, addressedTo: string[] = []): Promise<CommandResponse> {
     return post(
@@ -145,6 +158,9 @@ export const api = {
   },
   executables(): Promise<{ executables: Executable[] }> {
     return request<{ executables: Executable[] }>("/v1/harness/executables");
+  },
+  registerExecutable(req: ManualExecutableRequest): Promise<{ status: string }> {
+    return post<{ status: string }>(`/v1/harness/executables`, req);
   },
   setEnabled(id: string, enabled: boolean): Promise<{ status: string; enabled: boolean }> {
     return request(`/v1/harness/executables/${encodeURIComponent(id)}/${enabled ? "enable" : "disable"}`, {

@@ -2,26 +2,43 @@
 // - 初载/重同步走快照（Timeline + opaque watermark），EventSource 自水位续传；
 // - 断线由浏览器 EventSource 自动重连（Last-Event-ID）——不重不漏；
 // - resync_required 具名信号 → 弃流、快照重建、重新订阅（慢消费者恢复路径）；
-// - 时间线按 event_id 去重兜底（双通道交叠窗口）。
+// - 时间线按 event_id 去重兜底（双通道交叠窗口）；
+// - draft.update 瞬态帧（无 id、不入日志、断线不补发）驱动座位级打字预览；
+// - 投影区（participants/scorecard/graph/threads/policy）由事件触发防抖重取快照。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, type EventView, type Snapshot } from "./client";
+import { api, ApiError, type EventView, type ParticipantView, type Snapshot } from "./client";
 
 export type Connection = "idle" | "connecting" | "live" | "reconnecting" | "resync";
 
+export type ScorecardItem = Snapshot["scorecard"][number];
+export type ThreadItem = Snapshot["threads"][number];
+export type GraphEdge = Snapshot["graph"][number];
+export type PolicyView = Snapshot["policy"];
+
 export interface TimelineEntry {
   key: string;
-  kind: "message" | "round-open" | "round-close" | "pause" | "resume";
+  kind: "message" | "system";
   actorID: string;
   actorKind: string;
   occurredAt: string;
   body?: string;
+  addressedTo?: string[];
   detail?: string;
 }
 
-/** 座位级进行中状态（计划 v1.11：静默期反馈）。 */
+/** 座位级进行中状态（计划 v1.11：静默期反馈 + draft.update 草稿预览）。 */
 export interface TypingState {
-  phase: "evaluating" | "generating" | "drafting";
+  phase: "queued" | "evaluating" | "generating" | "validating" | "drafting";
   text?: string;
+}
+
+/** draft.update 线上帧（httpapi.DraftConsumer → SSE 瞬态帧：无 id、不补发）。 */
+interface DraftFrame {
+  room_id: string;
+  participant_id: string;
+  kind: "text_delta" | "stage";
+  text?: string;
+  stage?: "queued" | "evaluating" | "generating" | "validating";
 }
 
 const SUBSCRIBED_EVENTS = [
@@ -29,16 +46,36 @@ const SUBSCRIBED_EVENTS = [
   "round.opened",
   "round.closed",
   "intent.recorded",
+  "intent.endorsed",
   "floor.granted",
+  "floor.revoked",
   "room.paused",
   "room.started",
+  "room.renamed",
+  "policy.changed",
 ] as const;
+
+const ROUND_OUTCOME: Record<string, string> = {
+  published: "本轮讨论结束",
+  quiescent: "本轮无人发言（静默结束）",
+  budget_stopped: "本轮因预算上限停止",
+  revoked_all: "本轮发言被全部撤销",
+};
+
+/** 草稿文本内存上界（展示侧另截断 140 字）。 */
+const DRAFT_TEXT_CAP = 800;
 
 interface RoomModelState {
   roomID: string;
   version: number;
+  displayName: string;
   entries: TimelineEntry[];
   typing: Record<string, TypingState>;
+  participants: ParticipantView[];
+  scorecard: ScorecardItem[];
+  threads: ThreadItem[];
+  edges: GraphEdge[];
+  policy: PolicyView | null;
   roundOpen: boolean;
   paused: boolean;
 }
@@ -46,117 +83,224 @@ interface RoomModelState {
 export interface RoomHandle {
   roomID: string | null;
   version: number;
+  displayName: string;
   entries: TimelineEntry[];
   typing: Record<string, TypingState>;
+  participants: ParticipantView[];
+  scorecard: ScorecardItem[];
+  threads: ThreadItem[];
+  edges: GraphEdge[];
+  policy: PolicyView | null;
   roundOpen: boolean;
   paused: boolean;
   connection: Connection;
   error: string | null;
-  createRoom(): Promise<void>;
   send(body: string, addressedTo?: string[]): Promise<void>;
   pause(): Promise<void>;
   resume(): Promise<void>;
+  rename(displayName: string): Promise<void>;
+  endorse(intentID: string): Promise<void>;
+  /** 重取快照投影区（成员/记分卡/谱系/策略）——抽屉 Tab 打开时调用。 */
+  refreshProjections(): Promise<void>;
 }
 
-export function useRoom(): RoomHandle {
+function projections(snap: Snapshot) {
+  return {
+    version: snap.room_version,
+    displayName: snap.display_name,
+    participants: snap.participants,
+    scorecard: snap.scorecard,
+    threads: snap.threads,
+    edges: snap.graph,
+    policy: snap.policy,
+  };
+}
+
+export function useRoom(roomID: string | null): RoomHandle {
   const [state, setState] = useState<RoomModelState | null>(null);
   const [connection, setConnection] = useState<Connection>("idle");
   const [error, setError] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const versionRef = useRef(0);
+  const roomRef = useRef<string | null>(null);
+  /** floor.granted 的 grant_id → 座位（floor.revoked 载荷无 participant_id，靠它回收打字态）。 */
+  const grantSeatRef = useRef<Record<string, string>>({});
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshBusyRef = useRef(false);
 
   const closeStream = useCallback(() => {
     esRef.current?.close();
     esRef.current = null;
   }, []);
 
-  const applyEvent = useCallback((type: string, view: EventView) => {
-    setState((prev) => {
-      if (!prev) return prev;
-      const next: RoomModelState = {
-        ...prev,
-        entries: prev.entries,
-        typing: { ...prev.typing },
-      };
-      switch (type) {
-        case "message.posted": {
-          if (prev.entries.some((e) => e.key === view.event_id)) break; // 去重兜底
-          const body = (view.payload as { body?: string } | null)?.body;
-          next.entries = [
-            ...prev.entries,
-            {
+  const systemEntry = (view: EventView, detail: string): TimelineEntry => ({
+    key: view.event_id,
+    kind: "system",
+    actorID: "",
+    actorKind: "system",
+    occurredAt: view.occurred_at,
+    detail,
+  });
+
+  /** 投影区防抖重取（尾随 300ms + 单飞）：事件驱动，不轮询。 */
+  const refreshProjectionsNow = useCallback(async () => {
+    const id = roomRef.current;
+    if (!id || refreshBusyRef.current) return;
+    refreshBusyRef.current = true;
+    try {
+      const snap = await api.snapshot(id);
+      if (roomRef.current !== id) return; // 期间已切换房间
+      versionRef.current = snap.room_version;
+      setState((prev) => (prev ? { ...prev, ...projections(snap) } : prev));
+    } catch {
+      // 投影刷新失败不打扰主流程——下个事件会再触发
+    } finally {
+      refreshBusyRef.current = false;
+    }
+  }, []);
+
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null;
+      void refreshProjectionsNow();
+    }, 300);
+  }, [refreshProjectionsNow]);
+
+  const applyEvent = useCallback(
+    (type: string, view: EventView) => {
+      setState((prev) => {
+        if (!prev) return prev;
+        const next: RoomModelState = {
+          ...prev,
+          entries: prev.entries,
+          typing: { ...prev.typing },
+        };
+        const append = (entry: TimelineEntry) => {
+          if (prev.entries.some((e) => e.key === entry.key)) return; // 去重兜底
+          next.entries = [...prev.entries, entry];
+        };
+        switch (type) {
+          case "message.posted": {
+            const payload = view.payload as { body?: string; addressed_to?: string[] | null } | null;
+            append({
               key: view.event_id,
               kind: "message",
               actorID: view.actor.participant_id,
               actorKind: view.actor.kind,
               occurredAt: view.occurred_at,
-              body,
-            },
-          ];
-          if (view.actor.kind === "agent") {
-            delete next.typing[view.actor.participant_id];
+              body: payload?.body,
+              addressedTo: payload?.addressed_to ?? undefined,
+            });
+            if (view.actor.kind === "agent") {
+              delete next.typing[view.actor.participant_id];
+            }
+            break;
           }
-          break;
+          case "round.opened":
+            append(systemEntry(view, "新一轮讨论开始"));
+            next.roundOpen = true;
+            scheduleRefresh();
+            break;
+          case "round.closed": {
+            const outcome = (view.payload as { outcome?: string } | null)?.outcome ?? "";
+            append(systemEntry(view, ROUND_OUTCOME[outcome] ?? `本轮结束（${outcome}）`));
+            next.roundOpen = false;
+            next.typing = {};
+            grantSeatRef.current = {};
+            scheduleRefresh();
+            break;
+          }
+          case "room.paused":
+            append(systemEntry(view, "房间已暂停"));
+            next.paused = true;
+            next.typing = {};
+            break;
+          case "room.started":
+            append(systemEntry(view, "房间已恢复"));
+            next.paused = false;
+            break;
+          case "room.renamed": {
+            const name = (view.payload as { display_name?: string } | null)?.display_name;
+            if (name) {
+              next.displayName = name;
+              append(systemEntry(view, `房间更名为「${name}」`));
+            }
+            break;
+          }
+          case "floor.granted": {
+            const payload = view.payload as { participant_id?: string; grant_id?: string } | null;
+            if (payload?.participant_id) {
+              next.typing[payload.participant_id] = { phase: "generating" };
+              if (payload.grant_id) grantSeatRef.current[payload.grant_id] = payload.participant_id;
+            }
+            break;
+          }
+          case "floor.revoked": {
+            const grantID = (view.payload as { grant_id?: string } | null)?.grant_id;
+            const pid = grantID ? grantSeatRef.current[grantID] : undefined;
+            if (grantID && pid) {
+              delete next.typing[pid];
+              delete grantSeatRef.current[grantID];
+            }
+            break;
+          }
+          case "intent.recorded": {
+            const pid = (view.payload as { participant_id?: string } | null)?.participant_id;
+            if (pid && !next.typing[pid]) next.typing[pid] = { phase: "evaluating" };
+            scheduleRefresh();
+            break;
+          }
+          case "intent.endorsed":
+          case "policy.changed":
+            scheduleRefresh();
+            break;
         }
-        case "round.opened":
-          next.roundOpen = true;
-          break;
-        case "round.closed": {
-          if (prev.entries.some((e) => e.key === view.event_id)) break;
-          const outcome = (view.payload as { outcome?: string } | null)?.outcome ?? "";
-          next.entries = [
-            ...prev.entries,
-            {
-              key: view.event_id,
-              kind: "round-close",
-              actorID: "",
-              actorKind: "system",
-              occurredAt: view.occurred_at,
-              detail: outcome,
-            },
-          ];
-          next.roundOpen = false;
-          next.typing = {};
-          break;
-        }
-        case "floor.granted": {
-          const pid = (view.payload as { participant_id?: string } | null)?.participant_id;
-          if (pid) next.typing[pid] = { phase: "generating" };
-          break;
-        }
-        case "intent.recorded": {
-          const pid = (view.payload as { participant_id?: string } | null)?.participant_id;
-          if (pid && !next.typing[pid]) next.typing[pid] = { phase: "evaluating" };
-          break;
-        }
-        case "room.paused":
-          next.paused = true;
-          break;
-        case "room.started":
-          next.paused = false;
-          break;
+        return next;
+      });
+    },
+    [scheduleRefresh],
+  );
+
+  /** draft.update 瞬态帧：text_delta 累积文本（截尾上限）；stage 原值更新阶段。 */
+  const applyDraft = useCallback((frame: DraftFrame) => {
+    setState((prev) => {
+      if (!prev || frame.room_id !== prev.roomID) return prev;
+      const typing = { ...prev.typing };
+      const cur = typing[frame.participant_id] ?? { phase: "evaluating" as const };
+      if (frame.kind === "text_delta") {
+        const text = ((cur.text ?? "") + (frame.text ?? "")).slice(-DRAFT_TEXT_CAP);
+        typing[frame.participant_id] = {
+          phase: cur.phase === "queued" || cur.phase === "evaluating" ? "drafting" : cur.phase,
+          text,
+        };
+      } else if (frame.kind === "stage" && frame.stage) {
+        typing[frame.participant_id] = { ...cur, phase: frame.stage };
       }
-      return next;
+      return { ...prev, typing };
     });
   }, []);
 
   /** 快照重建 + 自水位订阅（初载与 resync_required 共用路径）。 */
   const loadAndSubscribe = useCallback(
-    async (roomID: string) => {
+    async (id: string) => {
       closeStream();
       setConnection("connecting");
+      setError(null);
       let snap: Snapshot;
       try {
-        snap = await api.snapshot(roomID);
+        snap = await api.snapshot(id);
       } catch (e) {
         setConnection("idle");
+        setState(null);
         setError(`快照获取失败：${e instanceof Error ? e.message : String(e)}`);
         return;
       }
+      if (roomRef.current !== id) return; // 等待期间已切换房间
       versionRef.current = snap.room_version;
+      grantSeatRef.current = {};
       setState({
-        roomID,
-        version: snap.room_version,
+        roomID: id,
         entries: snap.timeline.map((item) => ({
           key: item.event_id,
           kind: "message",
@@ -168,9 +312,10 @@ export function useRoom(): RoomHandle {
         typing: {},
         roundOpen: false,
         paused: false,
+        ...projections(snap),
       });
       const es = new EventSource(
-        `/v1/rooms/${encodeURIComponent(roomID)}/events?cursor=${encodeURIComponent(snap.watermark)}`,
+        `/v1/rooms/${encodeURIComponent(id)}/events?cursor=${encodeURIComponent(snap.watermark)}`,
       );
       esRef.current = es;
       es.onopen = () => setConnection("live");
@@ -186,22 +331,39 @@ export function useRoom(): RoomHandle {
           applyEvent(type, JSON.parse((ev as MessageEvent).data) as EventView);
         });
       }
+      es.addEventListener("draft.update", (ev) => {
+        applyDraft(JSON.parse((ev as MessageEvent).data) as DraftFrame);
+      });
       es.addEventListener("resync_required", () => {
         setConnection("resync");
-        void loadAndSubscribe(roomID);
+        void loadAndSubscribe(id);
       });
       setConnection("live");
     },
-    [applyEvent, closeStream],
+    [applyEvent, applyDraft, closeStream],
   );
 
-  useEffect(() => closeStream, [closeStream]);
+  // 房间切换：复位并重新装载；卸载/切换时断流。
+  useEffect(() => {
+    roomRef.current = roomID;
+    grantSeatRef.current = {};
+    if (!roomID) {
+      closeStream();
+      setState(null);
+      setConnection("idle");
+      return;
+    }
+    void loadAndSubscribe(roomID);
+    return closeStream;
+  }, [roomID, loadAndSubscribe, closeStream]);
 
   /** 发命令前以快照校准版本（引擎轮推进版本，SSE 帧不含版本）；409 兜底重试一次。 */
   const withVersion = useCallback(
-    async (roomID: string, run: (version: number) => Promise<unknown>): Promise<void> => {
+    async (run: (version: number) => Promise<unknown>): Promise<void> => {
+      const id = roomRef.current;
+      if (!id) throw new Error("房间未连接");
       try {
-        const snap = await api.snapshot(roomID);
+        const snap = await api.snapshot(id);
         versionRef.current = snap.room_version;
       } catch {
         // 校准失败沿用本地版本，由 409 兜底
@@ -210,7 +372,7 @@ export function useRoom(): RoomHandle {
         await run(versionRef.current);
       } catch (e) {
         if (e instanceof ApiError && e.status === 409) {
-          const snap = await api.snapshot(roomID);
+          const snap = await api.snapshot(id);
           versionRef.current = snap.room_version;
           await run(versionRef.current);
           return;
@@ -221,59 +383,63 @@ export function useRoom(): RoomHandle {
     [],
   );
 
-  const createRoom = useCallback(async () => {
-    setError(null);
-    try {
-      const created = await api.createRoom("Web 房间");
-      await loadAndSubscribe(created.room_id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [loadAndSubscribe]);
-
-  const send = useCallback(
-    async (body: string, addressedTo: string[] = []) => {
-      if (!state) return;
+  const runCommand = useCallback(
+    async (run: (id: string, version: number) => Promise<unknown>) => {
+      const id = roomRef.current;
+      if (!id) return;
       try {
-        await withVersion(state.roomID, (v) => api.postMessage(state.roomID, v, body, addressedTo));
+        await withVersion((v) => run(id, v));
         setError(null);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
+        throw e;
       }
     },
-    [state, withVersion],
+    [withVersion],
   );
 
-  const pause = useCallback(async () => {
-    if (!state) return;
-    try {
-      await withVersion(state.roomID, (v) => api.pauseRoom(state.roomID, v, "web"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [state, withVersion]);
-
-  const resume = useCallback(async () => {
-    if (!state) return;
-    try {
-      await withVersion(state.roomID, (v) => api.resumeRoom(state.roomID, v));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [state, withVersion]);
+  const send = useCallback(
+    (body: string, addressedTo: string[] = []) =>
+      runCommand((id, v) => api.postMessage(id, v, body, addressedTo)),
+    [runCommand],
+  );
+  const pause = useCallback(
+    () => runCommand((id, v) => api.pauseRoom(id, v, "web")),
+    [runCommand],
+  );
+  const resume = useCallback(() => runCommand((id, v) => api.resumeRoom(id, v)), [runCommand]);
+  const rename = useCallback(
+    async (displayName: string) => {
+      await runCommand((id, v) => api.renameRoom(id, v, displayName));
+      setState((prev) => (prev ? { ...prev, displayName } : prev)); // SSE room.renamed 到达前的即时反馈
+    },
+    [runCommand],
+  );
+  const endorse = useCallback(
+    (intentID: string) => runCommand((id, v) => api.endorseIntent(id, v, intentID)),
+    [runCommand],
+  );
 
   return {
     roomID: state?.roomID ?? null,
     version: state?.version ?? 0,
+    displayName: state?.displayName ?? "",
     entries: state?.entries ?? [],
     typing: state?.typing ?? {},
+    participants: state?.participants ?? [],
+    scorecard: state?.scorecard ?? [],
+    threads: state?.threads ?? [],
+    edges: state?.edges ?? [],
+    policy: state?.policy ?? null,
     roundOpen: state?.roundOpen ?? false,
     paused: state?.paused ?? false,
     connection,
     error,
-    createRoom,
     send,
     pause,
     resume,
+    rename,
+    endorse,
+    refreshProjections: refreshProjectionsNow,
   };
 }
