@@ -1,0 +1,476 @@
+openapi: 3.1.0
+info:
+  title: Mosaic Room API
+  version: 0.1.0
+  description: |
+    Mosaic 个人版本地 HTTP 契约（ADR-0007：OpenAPI 3.1 为 HTTP 面权威描述，oapi-codegen
+    生成 Go 服务端边界模型；事件 payload 的权威源仍是 api/room-protocol 的 JSON Schema）。
+
+    形态约束：
+    - 单用户本地进程，默认仅回环监听（127.0.0.1:7420）；owner 级 API 当前无认证
+      （owner token 属 M2 残留项，计划 v1.10 登记）。
+    - 写端点跨源门：Origin 头存在时必须是"回环 host + 配置端口"；带 body 的写端点
+      要求 Content-Type: application/json（415/403 语义见各端点响应）。
+    - 命令体上限 1MiB（413）；读超时 65s（SSE 无 body GET 不受影响）。
+    - 游标为 opaque 字符串：不得解析其内部结构，续传原样回传（RFC-0001 P0）。
+    - SSE 订阅：`text/event-stream`，帧格式 `id: <cursor>` + `event: <type>` + `data: <EventView JSON>`；
+      断线重连带 `Last-Event-ID` 头（或 `?cursor=`）从水位续传，不整段重放；
+      `draft.update` 为瞬态帧（无 id、断线不补发）；服务端发 `resync_required` 具名事件时
+      客户端应走快照恢复。事件类型见 api/room-protocol/events/。
+servers:
+  - url: http://127.0.0.1:7420
+    description: 默认回环监听（个人版）
+paths:
+  /healthz:
+    get:
+      operationId: getHealthz
+      summary: 存活探针
+      responses:
+        "200":
+          description: 服务存活
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+  /v1/rooms:
+    post:
+      operationId: createRoom
+      summary: 创建房间（create_room 命令）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoomCommand"
+            example:
+              command_kind: create_room
+              expected_room_version: 0
+              idempotency_key: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d9001"
+              issued_at: "2026-08-30T09:30:00.000Z"
+              payload:
+                display_name: 第一个房间
+      responses:
+        "200":
+          description: 命令受理（含幂等回放）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+  /v1/rooms/{room_id}/commands:
+    post:
+      operationId: submitRoomCommand
+      summary: 提交房间命令（post_message / pause_room / resume_room）
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoomCommand"
+            examples:
+              post_message:
+                value:
+                  command_kind: post_message
+                  expected_room_version: 4
+                  idempotency_key: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d9002"
+                  issued_at: "2026-08-30T09:30:01.000Z"
+                  payload:
+                    body: 一条消息
+                    reply_to: null
+                    addressed_to: []
+                    relations:
+                      - { target_event_id: evt_01H8XYZ, kind: extends }
+              pause_room:
+                value:
+                  command_kind: pause_room
+                  expected_room_version: 9
+                  idempotency_key: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d9003"
+                  issued_at: "2026-08-30T09:31:00.000Z"
+                  payload:
+                    reason: 暂停一下
+      responses:
+        "200":
+          description: 命令受理（含幂等回放）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+  /v1/rooms/{room_id}/events:
+    get:
+      operationId: subscribeRoomEvents
+      summary: SSE 订阅房间事件流（opaque cursor 续传）
+      description: |
+        响应为长流 `text/event-stream`。游标语义：`?cursor=` 或 `Last-Event-ID`（重连）；
+        先订阅后追平，position 去重兜底；慢消费者/追平失败发 `resync_required` 具名事件
+        （data 含 reason）后断流，客户端携最后 id 重连或走快照。
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+          description: opaque 游标（空 = 从头）；与 Last-Event-ID 同义，query 优先
+      responses:
+        "200":
+          description: 事件流（SSE）
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /v1/rooms/{room_id}/snapshot:
+    get:
+      operationId: getRoomSnapshot
+      summary: 快照四元组（版本 + 水位 + 投影/算法版本 + Timeline 投影）
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: 快照
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Snapshot"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /v1/harness/executables:
+    get:
+      operationId: listHarnessExecutables
+      summary: 宿主扫描到的 agent CLI 注册表
+      responses:
+        "200":
+          description: 注册表列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [executables]
+                properties:
+                  executables:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Executable"
+        "503": { $ref: "#/components/responses/HarnessUnavailable" }
+    post:
+      operationId: addHarnessExecutable
+      summary: 手动登记 agent CLI（探测失败拒收）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManualExecutableRequest"
+      responses:
+        "201":
+          description: 已登记
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: registered }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503": { $ref: "#/components/responses/HarnessUnavailable" }
+  /v1/harness/executables/{id}/enable:
+    post:
+      operationId: enableHarnessExecutable
+      summary: 启用可执行项（登录门控；启用后 ≤10s 入座，无需重启）
+      parameters:
+        - $ref: "#/components/parameters/ExecutableID"
+      responses:
+        "200":
+          description: 已启用
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, enabled]
+                properties:
+                  status: { type: string }
+                  enabled: { type: boolean, const: true }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: login_required（未登录不可启用）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503": { $ref: "#/components/responses/HarnessUnavailable" }
+  /v1/harness/executables/{id}/disable:
+    post:
+      operationId: disableHarnessExecutable
+      summary: 禁用可执行项（座位随 resync 撤出）
+      parameters:
+        - $ref: "#/components/parameters/ExecutableID"
+      responses:
+        "200":
+          description: 已禁用
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, enabled]
+                properties:
+                  status: { type: string }
+                  enabled: { type: boolean, const: false }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/HarnessUnavailable" }
+components:
+  parameters:
+    RoomID:
+      name: room_id
+      in: path
+      required: true
+      schema: { type: string, pattern: "^room_[0-9A-Za-z_-]+$" }
+    ExecutableID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+      description: 注册表唯一 ID（含路径，URL 编码传递）
+  responses:
+    BadRequest:
+      description: 请求不合法（bad_request / invalid_command / bad_cursor / bad_limit / invalid_entry）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: 版本冲突 / 幂等键指纹冲突（version_conflict / idempotency_conflict）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: 房间或条目不存在（room_not_found / not_found）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooLarge:
+      description: 请求体超过 1MiB（body_too_large）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    UnsupportedMediaType:
+      description: Content-Type 须为 application/json（unsupported_media_type）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    HarnessUnavailable:
+      description: 宿主注册表未配置（harness_unavailable）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Internal:
+      description: 服务端错误（internal / snapshot_failed）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    RoomCommand:
+      type: object
+      required: [command_kind, expected_room_version, idempotency_key, issued_at, payload]
+      additionalProperties: false
+      description: |
+        命令信封（RFC-0001）。payload 按 command_kind 严格校验（未知字段拒绝）：
+        create_room → CreateRoomPayload；post_message → PostMessagePayload；
+        pause_room → PauseRoomPayload；resume_room → 空 payload。
+      properties:
+        command_kind:
+          type: string
+          enum: [create_room, post_message, pause_room, resume_room]
+        expected_room_version:
+          type: integer
+          minimum: 0
+        idempotency_key:
+          type: string
+          pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          description: UUIDv7（服务端按 tenant+key+kind 去重；同键异指纹 409）
+        issued_at:
+          type: string
+          format: date-time
+        payload:
+          type: object
+    CreateRoomPayload:
+      type: object
+      additionalProperties: false
+      properties:
+        display_name:
+          type: string
+          maxLength: 120
+    PostMessagePayload:
+      type: object
+      required: [body]
+      additionalProperties: false
+      description: 字段集与 events/message.posted.schema.json 对齐（M2 定稿）；relations 项不收 provenance（系统固化 explicit）。
+      properties:
+        body:
+          type: string
+          minLength: 1
+          maxLength: 20000
+        reply_to:
+          oneOf:
+            - type: "null"
+            - type: string
+              pattern: "^evt_[0-9A-Za-z_-]+$"
+        addressed_to:
+          type: array
+          maxItems: 3
+          items: { type: string, minLength: 1 }
+        relations:
+          type: array
+          items:
+            $ref: "#/components/schemas/TypedRelationInput"
+        thread_id:
+          oneOf:
+            - type: "null"
+            - type: string
+              pattern: "^thr_[0-9A-Za-z_-]+$"
+    TypedRelationInput:
+      type: object
+      required: [target_event_id, kind]
+      additionalProperties: false
+      properties:
+        target_event_id:
+          type: string
+          pattern: "^evt_[0-9A-Za-z_-]+$"
+        kind:
+          type: string
+          enum: [supports, challenges, extends, questions, evidence_for, supersedes, analogy, relates]
+    PauseRoomPayload:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          maxLength: 280
+    CommandResponse:
+      type: object
+      required: [room_id, event_id, room_version, replayed]
+      properties:
+        room_id: { type: string }
+        event_id: { type: string }
+        room_version: { type: integer, format: int64 }
+        replayed: { type: boolean }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: 稳定错误码（transport 与 domain 映射）
+            message: { type: string }
+    EventView:
+      type: object
+      required: [event_id, room_id, type, schema_version, occurred_at, actor, visibility, payload, position]
+      description: 对外事件视图（RFC-0001 P0：无 seq/tenant_id，opaque position 替代）；payload 的事件族 Schema 见 api/room-protocol/events/。
+      properties:
+        event_id: { type: string }
+        room_id: { type: string }
+        thread_id:
+          oneOf:
+            - type: "null"
+            - type: string
+        type: { type: string }
+        schema_version: { type: integer }
+        occurred_at: { type: string, format: date-time }
+        actor:
+          type: object
+          required: [participant_id, kind]
+          properties:
+            participant_id: { type: string }
+            kind: { type: string, enum: [human, agent, system] }
+        causation_id:
+          oneOf:
+            - type: "null"
+            - type: string
+        correlation_id:
+          oneOf:
+            - type: "null"
+            - type: string
+        visibility:
+          type: object
+          required: [kind]
+          properties:
+            kind: { type: string, enum: [public, participants, moderators, system] }
+            participants:
+              type: array
+              items: { type: string }
+        payload:
+          type: object
+        position:
+          type: string
+          description: opaque cursor（续传位点）
+    Snapshot:
+      type: object
+      required: [room_id, room_version, watermark, projection_version, algorithm_version, timeline]
+      properties:
+        room_id: { type: string }
+        room_version: { type: integer, format: int64 }
+        watermark: { type: string }
+        projection_version: { type: integer, format: int64 }
+        algorithm_version: { type: integer, format: int64 }
+        timeline:
+          type: array
+          items:
+            $ref: "#/components/schemas/TimelineItem"
+    TimelineItem:
+      type: object
+      required: [position, event_id, type, actor_id, actor_kind, occurred_at]
+      properties:
+        position: { type: string }
+        event_id: { type: string }
+        type: { type: string }
+        actor_id: { type: string }
+        actor_kind: { type: string }
+        body: { type: string }
+        thread_id:
+          oneOf:
+            - type: "null"
+            - type: string
+        occurred_at: { type: string, format: date-time }
+    Executable:
+      type: object
+      required: [id, adapter, runtime, path, enabled]
+      properties:
+        id: { type: string, description: 注册表唯一 ID（adapter@runtime:path） }
+        adapter: { type: string }
+        runtime: { type: string, description: native | wsl }
+        distro: { type: string, description: WSL 运行面的发行版（native 为空） }
+        path: { type: string }
+        version: { type: string }
+        digest: { type: string, description: sha256（版本固定门禁用） }
+        login_state: { type: string, description: logged_in | logged_out | unknown }
+        source: { type: string, description: auto_scan | manual }
+        discovered_at: { type: string, format: date-time }
+        enabled: { type: boolean }
+    ManualExecutableRequest:
+      type: object
+      required: [adapter, runtime, path]
+      additionalProperties: false
+      properties:
+        adapter: { type: string }
+        runtime: { type: string }
+        distro: { type: string }
+        path: { type: string }
+        version: { type: string }

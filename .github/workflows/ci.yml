@@ -77,3 +77,15 @@ jobs:
             echo "::error::gen-ts 产物漂移（新增/修改/陈旧未清理）"
             exit 1
           fi
+      # ADR-0007（M2 履约）：OpenAPI spec → Go 边界模型的新鲜度门禁。
+      - name: gen-api drift gate (OpenAPI → Go 边界模型新鲜度)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          rm -f internal/transport/httpapi/apigen/api.gen.go
+          bash tools/scripts/gen-api.sh
+          git add -A internal/transport/httpapi/apigen/
+          if ! git diff --cached --quiet -- internal/transport/httpapi/apigen/; then
+            git diff --cached -- internal/transport/httpapi/apigen/
+            echo "::error::gen-api 产物漂移（spec 改动未重生成）"
+            exit 1
+          fi

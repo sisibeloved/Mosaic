@@ -1,0 +1,11 @@
+# oapi-codegen 生成配置（ADR-0007：边界模型生成链）。
+# 只生成边界：std-http 服务接口 + 模型 + 内嵌 spec——领域层不得 import 本包（架构 §8.4.1）。
+# 请求解码保留在 httpapi 手工实现（DisallowUnknownFields 严格拒收是 M1 复审以来的
+# 契约纪律；strict-server 包装会接管解码、静默放行未知字段，故不启用）。
+package: apigen
+generate:
+  std-http-server: true
+  models: true
+  embedded-spec: true
+# 注意：output 相对调用 CWD（gen 脚本已 cd 到仓库根）解析。
+output: internal/transport/httpapi/apigen/api.gen.go

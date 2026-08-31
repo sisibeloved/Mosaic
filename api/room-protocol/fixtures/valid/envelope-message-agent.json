@@ -1,0 +1,20 @@
+{
+  "event_id": "evt_01H8TESTMESSAGE0000000000002",
+  "tenant_id": "ten_local",
+  "room_id": "room_01H8TESTROOM00000000000000",
+  "thread_id": null,
+  "discussion_epoch_id": "epoch_01H8TESTEPOCH0000000000",
+  "seq": 151,
+  "type": "message.posted",
+  "schema_version": 1,
+  "occurred_at": "2026-08-25T10:02:00.123Z",
+  "actor": { "participant_id": "par_01H8TESTAGENT0000000000", "kind": "agent" },
+  "causation_id": "grant_01H8TESTGRANT00000000000",
+  "correlation_id": "rnd_01H8TESTROUND00000000000",
+  "visibility": { "kind": "public" },
+  "payload": {
+    "body": "fixture: agent 经发布门的发言",
+    "declared_relations": ["支持 evt_01H8TESTMESSAGE0000000000000 的结论，补充边界条件"]
+  },
+  "metadata": { "usage": { "input_tokens": 1200, "output_tokens": 80 } }
+}

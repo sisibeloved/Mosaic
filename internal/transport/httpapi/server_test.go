@@ -19,6 +19,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
+	"github.com/sisibeloved/Mosaic/internal/transport/httpapi/apigen"
 	"github.com/sisibeloved/Mosaic/internal/transport/sse"
 )
 
@@ -50,7 +51,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *room.MemStore, *sse.Hub) {
 	return ts, store, hub
 }
 
-func postJSON(t *testing.T, url string, body any) (*http.Response, commandResponse) {
+func postJSON(t *testing.T, url string, body any) (*http.Response, apigen.CommandResponse) {
 	t.Helper()
 	raw, _ := json.Marshal(body)
 	resp, err := http.Post(url, "application/json", bytes.NewReader(raw))
@@ -58,7 +59,7 @@ func postJSON(t *testing.T, url string, body any) (*http.Response, commandRespon
 		t.Fatalf("post %s: %v", url, err)
 	}
 	t.Cleanup(func() { resp.Body.Close() })
-	var out commandResponse
+	var out apigen.CommandResponse
 	if resp.StatusCode == http.StatusOK {
 		_ = json.NewDecoder(resp.Body).Decode(&out)
 	}
@@ -73,7 +74,7 @@ func TestCommandEndpoints(t *testing.T) {
 		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6001", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"display_name": "api 房"},
 	})
-	if resp.StatusCode != 200 || created.RoomID == "" || created.RoomVersion != 1 {
+	if resp.StatusCode != 200 || created.RoomId == "" || created.RoomVersion != 1 {
 		t.Fatalf("create: status=%d body=%+v", resp.StatusCode, created)
 	}
 
@@ -82,22 +83,22 @@ func TestCommandEndpoints(t *testing.T) {
 		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6002", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"body": "hello"},
 	}
-	resp, posted := postJSON(t, ts.URL+"/v1/rooms/"+created.RoomID+"/commands", msg)
+	resp, posted := postJSON(t, ts.URL+"/v1/rooms/"+created.RoomId+"/commands", msg)
 	if resp.StatusCode != 200 || posted.RoomVersion != 2 || posted.Replayed {
 		t.Fatalf("post: status=%d body=%+v", resp.StatusCode, posted)
 	}
 
 	// 幂等重放：同命令同键 → replayed=true 同事件
-	resp, replay := postJSON(t, ts.URL+"/v1/rooms/"+created.RoomID+"/commands", msg)
-	if resp.StatusCode != 200 || !replay.Replayed || replay.EventID != posted.EventID {
+	resp, replay := postJSON(t, ts.URL+"/v1/rooms/"+created.RoomId+"/commands", msg)
+	if resp.StatusCode != 200 || !replay.Replayed || replay.EventId != posted.EventId {
 		t.Fatalf("replay: status=%d body=%+v", resp.StatusCode, replay)
 	}
-	if n := len(store.RoomEvents(created.RoomID)); n != 2 {
+	if n := len(store.RoomEvents(created.RoomId)); n != 2 {
 		t.Fatalf("事件数 = %d（期望 2）", n)
 	}
 
 	// 版本冲突 409
-	resp, _ = postJSON(t, ts.URL+"/v1/rooms/"+created.RoomID+"/commands", map[string]any{
+	resp, _ = postJSON(t, ts.URL+"/v1/rooms/"+created.RoomId+"/commands", map[string]any{
 		"command_kind": "post_message", "expected_room_version": 99,
 		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6003", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"body": "stale"},
@@ -117,7 +118,7 @@ func TestCommandEndpoints(t *testing.T) {
 	}
 
 	// 非法载荷 400
-	resp, _ = postJSON(t, ts.URL+"/v1/rooms/"+created.RoomID+"/commands", map[string]any{
+	resp, _ = postJSON(t, ts.URL+"/v1/rooms/"+created.RoomId+"/commands", map[string]any{
 		"command_kind": "post_message", "expected_room_version": 2,
 		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6005", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"body": ""},
@@ -211,27 +212,27 @@ func TestSSEStreamCatchUpLiveAndDedup(t *testing.T) {
 		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6010", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"display_name": "sse"},
 	})
-	_, _ = postJSON(t, ts.URL+"/v1/rooms/"+created.RoomID+"/commands", map[string]any{
+	_, _ = postJSON(t, ts.URL+"/v1/rooms/"+created.RoomId+"/commands", map[string]any{
 		"command_kind": "post_message", "expected_room_version": 1,
 		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d6011", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"body": "catch me up"},
 	})
-	events, _, _ := store.EventsAfter(context.Background(), created.RoomID, "", 100)
+	events, _, _ := store.EventsAfter(context.Background(), created.RoomId, "", 100)
 	for i, ev := range events {
 		raw, _ := json.Marshal(ev.Envelope)
-		deliver.Deliver(context.Background(), outbox.Entry{RoomID: created.RoomID, EventID: ev.Envelope.EventID, GlobalPos: int64(i + 1), Envelope: raw})
+		deliver.Deliver(context.Background(), outbox.Entry{RoomID: created.RoomId, EventID: ev.Envelope.EventID, GlobalPos: int64(i + 1), Envelope: raw})
 	}
 
 	// 打开订阅（从头）：追平 2 帧后，延时投递第三帧走直播通道
 	go func() {
 		time.Sleep(200 * time.Millisecond)
-		hub.Publish(created.RoomID, sse.ViewEvent{
+		hub.Publish(created.RoomId, sse.ViewEvent{
 			Cursor: protocol.EncodeCursor(99),
 			Type:   protocol.EventMessagePosted,
 			Data:   []byte(`{"event_id":"evt_live","position":"` + protocol.EncodeCursor(99) + `"}`),
 		})
 	}()
-	frames, cancel := readSSE(t, ts.URL+"/v1/rooms/"+created.RoomID+"/events", 3, 3*time.Second)
+	frames, cancel := readSSE(t, ts.URL+"/v1/rooms/"+created.RoomId+"/events", 3, 3*time.Second)
 	defer cancel()
 
 	if len(frames) < 3 {

@@ -20,6 +20,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
+	"github.com/sisibeloved/Mosaic/internal/transport/httpapi/apigen"
 	"github.com/sisibeloved/Mosaic/internal/transport/sse"
 )
 
@@ -44,29 +45,19 @@ type Deps struct {
 	Authority string
 }
 
-// New 构造路由（含 healthz）。
+// New 构造路由。对外契约面（ADR-0007）由 apigen 生成的 ServerInterface +
+// 路由模式接线：操作集与 spec 一致是编译期保证（漏实现即编译失败）；
+// 内嵌 UI 与 -dev 调试端点不在对外契约内，保持手工注册。
 func New(deps Deps) http.Handler {
 	s := &server{deps: deps}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
-	})
-	mux.HandleFunc("POST /v1/rooms", s.handleCreateRoom)
-	mux.HandleFunc("POST /v1/rooms/{room_id}/commands", s.handleCommand)
-	mux.HandleFunc("GET /v1/rooms/{room_id}/events", s.handleEvents)
-	mux.HandleFunc("GET /v1/rooms/{room_id}/snapshot", s.handleSnapshot)
-	mux.HandleFunc("GET /v1/harness/executables", s.handleListExecutables)
-	mux.HandleFunc("POST /v1/harness/executables", s.handleAddExecutable)
-	mux.HandleFunc("POST /v1/harness/executables/{id}/enable", s.handleEnableExecutable(true))
-	mux.HandleFunc("POST /v1/harness/executables/{id}/disable", s.handleEnableExecutable(false))
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	if deps.Dev {
 		// 开发者模式（M1 v1.8）：只读调试面——非 dev 不注册（404 而非 403，不暴露面）
 		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/state", s.handleDebugState)
 		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/events", s.handleDebugEvents)
 	}
-	return mux
+	return apigen.HandlerWithOptions(s, apigen.StdHTTPServerOptions{BaseRouter: mux})
 }
 
 type server struct {
@@ -82,13 +73,6 @@ type commandRequest struct {
 	Payload             json.RawMessage `json:"payload"`
 }
 
-type commandResponse struct {
-	RoomID      string `json:"room_id"`
-	EventID     string `json:"event_id"`
-	RoomVersion int64  `json:"room_version"`
-	Replayed    bool   `json:"replayed"`
-}
-
 type errorResponse struct {
 	Error struct {
 		Code    string `json:"code"`
@@ -96,12 +80,21 @@ type errorResponse struct {
 	} `json:"error"`
 }
 
-func (s *server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
+// GetHealthz 存活探针（apigen.ServerInterface；对外契约操作）。
+func (s *server) GetHealthz(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
+}
+
+// CreateRoom / SubmitRoomCommand：命令上行（请求解码留在本包手工实现——
+// DisallowUnknownFields 严格拒收是 M1 以来的契约纪律，strict-server 包装会
+// 接管解码并静默放行未知字段，故边界模型只采用接口与路由层）。
+func (s *server) CreateRoom(w http.ResponseWriter, r *http.Request) {
 	s.execute(w, r, "")
 }
 
-func (s *server) handleCommand(w http.ResponseWriter, r *http.Request) {
-	s.execute(w, r, r.PathValue("room_id"))
+func (s *server) SubmitRoomCommand(w http.ResponseWriter, r *http.Request, roomID apigen.RoomID) {
+	s.execute(w, r, roomID)
 }
 
 func (s *server) execute(w http.ResponseWriter, r *http.Request, roomID string) {
@@ -138,9 +131,9 @@ func (s *server) execute(w http.ResponseWriter, r *http.Request, roomID string) 
 	}
 	s.debugf("httpapi: command committed", "trace_id", traceID,
 		"event_id", res.EventID, "room_version", res.RoomVersion, "replayed", res.Replayed)
-	writeJSON(w, http.StatusOK, commandResponse{
-		RoomID:      res.RoomID,
-		EventID:     res.EventID,
+	writeJSON(w, http.StatusOK, apigen.CommandResponse{
+		RoomId:      res.RoomID,
+		EventId:     res.EventID,
 		RoomVersion: res.RoomVersion,
 		Replayed:    res.Replayed,
 	})
@@ -164,12 +157,15 @@ func (s *server) writeDomainError(w http.ResponseWriter, err error) {
 	writeError(w, status, code, err.Error())
 }
 
-// handleEvents：SSE 订阅。cursor 空串 = 从头；断线自动重连（EventSource）携带
-// Last-Event-ID 头时以其续传（二轮审校 #14：忽略该头会整段重放，UI 时间线重复）；
-// 先订阅后追平（间隙事件由 position 去重）；慢消费者断流发 resync_required。
-func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	roomID := r.PathValue("room_id")
-	cursor := r.URL.Query().Get("cursor")
+// SubscribeRoomEvents：SSE 订阅（apigen.ServerInterface）。cursor 空串 = 从头；
+// 断线自动重连（EventSource）携带 Last-Event-ID 头时以其续传（二轮审校 #14：忽略
+// 该头会整段重放，UI 时间线重复）；先订阅后追平（间隙事件由 position 去重）；
+// 慢消费者断流发 resync_required。
+func (s *server) SubscribeRoomEvents(w http.ResponseWriter, r *http.Request, roomID apigen.RoomID, params apigen.SubscribeRoomEventsParams) {
+	cursor := ""
+	if params.Cursor != nil {
+		cursor = *params.Cursor
+	}
 	if cursor == "" {
 		cursor = r.Header.Get("Last-Event-ID") // 浏览器自动重连的标准续传位
 	}
@@ -354,9 +350,9 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, body)
 }
 
-// ---- 宿主层可执行程序端点（RFC-0002 双层管理的宿主面）----
+// ---- 宿主层可执行程序端点（RFC-0002 双层管理的宿主面；apigen.ServerInterface）----
 
-func (s *server) handleListExecutables(w http.ResponseWriter, _ *http.Request) {
+func (s *server) ListHarnessExecutables(w http.ResponseWriter, _ *http.Request) {
 	if s.deps.Harness == nil {
 		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")
 		return
@@ -372,7 +368,7 @@ type manualExecutableRequest struct {
 	Version string `json:"version"`
 }
 
-func (s *server) handleAddExecutable(w http.ResponseWriter, r *http.Request) {
+func (s *server) AddHarnessExecutable(w http.ResponseWriter, r *http.Request) {
 	if s.deps.Harness == nil || s.deps.ProbeRunner == nil {
 		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表/探测面未配置")
 		return
@@ -407,33 +403,38 @@ func (s *server) handleAddExecutable(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"status": "registered"})
 }
 
-func (s *server) handleEnableExecutable(enabled bool) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if s.deps.Harness == nil {
-			writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")
-			return
-		}
-		if !s.guardWrite(w, r, false) { // 空 body：只做跨源门，不校验 Content-Type
-			return
-		}
-		if err := s.deps.Harness.SetEnabled(r.PathValue("id"), enabled); err != nil {
-			switch {
-			case errors.Is(err, harness.ErrLoginRequired):
-				writeError(w, http.StatusConflict, "login_required", err.Error())
-			case errors.Is(err, harness.ErrNotFound):
-				writeError(w, http.StatusNotFound, "not_found", err.Error())
-			default:
-				s.writeDomainError(w, err)
-			}
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "enabled": enabled})
-	}
+func (s *server) EnableHarnessExecutable(w http.ResponseWriter, r *http.Request, id apigen.ExecutableID) {
+	s.setEnabled(w, r, id, true)
 }
 
-// handleSnapshot：快照四元组（room_version + opaque watermark + 投影/算法版本 + Timeline）。
-func (s *server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
-	roomID := r.PathValue("room_id")
+func (s *server) DisableHarnessExecutable(w http.ResponseWriter, r *http.Request, id apigen.ExecutableID) {
+	s.setEnabled(w, r, id, false)
+}
+
+func (s *server) setEnabled(w http.ResponseWriter, r *http.Request, id string, enabled bool) {
+	if s.deps.Harness == nil {
+		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")
+		return
+	}
+	if !s.guardWrite(w, r, false) { // 空 body：只做跨源门，不校验 Content-Type
+		return
+	}
+	if err := s.deps.Harness.SetEnabled(id, enabled); err != nil {
+		switch {
+		case errors.Is(err, harness.ErrLoginRequired):
+			writeError(w, http.StatusConflict, "login_required", err.Error())
+		case errors.Is(err, harness.ErrNotFound):
+			writeError(w, http.StatusNotFound, "not_found", err.Error())
+		default:
+			s.writeDomainError(w, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "enabled": enabled})
+}
+
+// GetRoomSnapshot：快照四元组（room_version + opaque watermark + 投影/算法版本 + Timeline）。
+func (s *server) GetRoomSnapshot(w http.ResponseWriter, r *http.Request, roomID apigen.RoomID) {
 	events, err := s.readAllEvents(r, roomID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "snapshot_failed", err.Error())

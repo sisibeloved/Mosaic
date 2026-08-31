@@ -390,6 +390,9 @@ func TestPostMessageValidation(t *testing.T) {
 		{"body 超长", Command{created.RoomID, "post_message", 1, "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e76", "t", []byte(`{"body":"` + strings.Repeat("长", 20001) + `"}`)}, ErrInvalidCommand},
 		{"非 UUIDv7 幂等键", Command{created.RoomID, "post_message", 1, "not-a-uuid", "t", []byte(`{"body":"x"}`)}, ErrInvalidCommand},
 		{"未知命令", Command{created.RoomID, "teleport", 1, "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e77", "t", []byte(`{}`)}, ErrInvalidCommand},
+		{"relations 非法 kind", Command{created.RoomID, "post_message", 1, "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e80", "t", []byte(`{"body":"x","relations":[{"target_event_id":"evt_a","kind":"agrees_with"}]}`)}, ErrInvalidCommand},
+		{"relations 目标非事件 ID", Command{created.RoomID, "post_message", 1, "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e81", "t", []byte(`{"body":"x","relations":[{"target_event_id":"not-an-event","kind":"supports"}]}`)}, ErrInvalidCommand},
+		{"relations 项夹带客户端 provenance", Command{created.RoomID, "post_message", 1, "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e82", "t", []byte(`{"body":"x","relations":[{"target_event_id":"evt_a","kind":"supports","provenance":"explicit"}]}`)}, ErrInvalidCommand},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -415,6 +418,44 @@ func TestPostMessageToUnknownRoom(t *testing.T) {
 	})
 	if !errors.Is(err, ErrRoomNotFound) {
 		t.Fatalf("未知房间应报 ErrRoomNotFound，got %v", err)
+	}
+}
+
+// M2 定稿：typed relations 命令侧只收 target_event_id + kind，落库固化 provenance=explicit。
+func TestPostMessageRelationsNormalized(t *testing.T) {
+	store := NewMemStore()
+	svc := newTestService(store)
+	ctx := context.Background()
+	created, _ := svc.ExecuteCommand(ctx, Actor{ParticipantID: "par_owner", Kind: "human"},
+		createCmd("create_room", validUUIDv7, 0, map[string]any{}))
+
+	_, err := svc.ExecuteCommand(ctx, Actor{ParticipantID: "par_owner", Kind: "human"}, Command{
+		RoomID:              created.RoomID,
+		CommandKind:         "post_message",
+		ExpectedRoomVersion: 1,
+		IdempotencyKey:      "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e83",
+		IssuedAt:            "2026-08-28T09:00:06.000Z",
+		Payload:             []byte(`{"body":"带关系","reply_to":null,"addressed_to":[],"relations":[{"target_event_id":"evt_abc","kind":"challenges"}]}`),
+	})
+	if err != nil {
+		t.Fatalf("post_message: %v", err)
+	}
+	var payload struct {
+		Relations []struct {
+			TargetEventID string `json:"target_event_id"`
+			Kind          string `json:"kind"`
+			Provenance    string `json:"provenance"`
+		} `json:"relations"`
+	}
+	if err := json.Unmarshal(store.byRoom[created.RoomID][1].Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if len(payload.Relations) != 1 {
+		t.Fatalf("relations 数 = %d", len(payload.Relations))
+	}
+	rel := payload.Relations[0]
+	if rel.TargetEventID != "evt_abc" || rel.Kind != "challenges" || rel.Provenance != "explicit" {
+		t.Fatalf("关系项未按权威形态固化：%+v", rel)
 	}
 }
 

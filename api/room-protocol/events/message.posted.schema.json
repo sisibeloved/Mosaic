@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/message.posted.schema.json",
+  "title": "MessagePostedPayload",
+  "description": "发言事件载荷（M2 定稿，计划 v1.11）。两条路径共用本 Schema：人类路径（post_message 命令直落）携带 body/reply_to/addressed_to/relations/thread_id；agent 路径（floor 授予后经发布门）携带 body/declared_relations（字符串数组，适配器整形：≤8 项、单项 ≤200 runes、DLP 剔除）。relations 为带类型声明（RFC-0004 §3.1.4：kind 八枚举、provenance 恒为 explicit）；系统推断关系只进 RFC-0006 投影，不回写 payload。",
+  "type": "object",
+  "required": ["body"],
+  "properties": {
+    "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000,
+      "description": "正文（UTF-8 字符数 1..20000，与 room.MaxBodyRunes 一致）"
+    },
+    "reply_to": {
+      "type": ["string", "null"],
+      "pattern": "^evt_[0-9A-Za-z_-]+$",
+      "description": "单值回复锚点（目标为消息事件）"
+    },
+    "addressed_to": {
+      "type": ["array", "null"],
+      "items": { "type": "string", "minLength": 1 },
+      "maxItems": 3,
+      "description": "点名对象（participant_id，≤3）"
+    },
+    "relations": {
+      "type": ["array", "null"],
+      "items": { "$ref": "#/$defs/typedRelation" },
+      "description": "显式声明的类型化关系；不接受无类型简写"
+    },
+    "thread_id": {
+      "type": ["string", "null"],
+      "pattern": "^thr_[0-9A-Za-z_-]+$",
+      "description": "发言归属线程（缺省为房间根线程语境）"
+    },
+    "declared_relations": {
+      "type": "array",
+      "items": { "type": "string", "maxLength": 200 },
+      "maxItems": 8,
+      "description": "agent 侧自由文本关系声明（适配器发布门整形后的封闭投影）"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "typedRelation": {
+      "type": "object",
+      "required": ["target_event_id", "kind", "provenance"],
+      "properties": {
+        "target_event_id": {
+          "type": "string",
+          "pattern": "^evt_[0-9A-Za-z_-]+$"
+        },
+        "kind": {
+          "enum": ["supports", "challenges", "extends", "questions", "evidence_for", "supersedes", "analogy", "relates"]
+        },
+        "provenance": {
+          "const": "explicit",
+          "description": "事件载荷中恒为 explicit；推断关系不进 payload（RFC-0004 原则 13）"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

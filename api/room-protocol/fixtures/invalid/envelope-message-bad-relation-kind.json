@@ -1,0 +1,25 @@
+{
+  "event_id": "evt_01H8TESTMESSAGE0000000000003",
+  "tenant_id": "ten_local",
+  "room_id": "room_01H8TESTROOM00000000000000",
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "seq": 152,
+  "type": "message.posted",
+  "schema_version": 1,
+  "occurred_at": "2026-08-25T10:03:00.123Z",
+  "actor": { "participant_id": "par_01H8TESTOWNER0000000000", "kind": "human" },
+  "causation_id": null,
+  "correlation_id": null,
+  "visibility": { "kind": "public" },
+  "payload": {
+    "body": "fixture: 非法 relation kind 反例",
+    "reply_to": null,
+    "addressed_to": [],
+    "relations": [
+      { "target_event_id": "evt_01H8TESTMESSAGE0000000000000", "kind": "agrees_with", "provenance": "explicit" }
+    ],
+    "thread_id": null
+  },
+  "metadata": {}
+}

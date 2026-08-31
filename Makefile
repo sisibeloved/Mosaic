@@ -1,5 +1,5 @@
 # 开发便捷入口（CI 的权威流程见 .github/workflows/ci.yml，此处仅为本地等价命令）
-.PHONY: vet test test-it test-st fmt gen-ts
+.PHONY: vet test test-it test-st fmt gen-ts gen-api
 
 vet:
 	go vet -tags "it st" ./...
@@ -18,3 +18,6 @@ fmt:
 
 gen-ts:
 	./tools/scripts/gen-ts.sh
+
+gen-api:
+	./tools/scripts/gen-api.sh

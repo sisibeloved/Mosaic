@@ -181,6 +181,18 @@ func (s *Service) postMessage(ctx context.Context, actor Actor, cmd Command) (*C
 	if len(payload.AddressedTo) > 3 {
 		return nil, fmt.Errorf("%w: addressed_to ≤ 3", ErrInvalidCommand)
 	}
+	// M2 定稿（message.posted Schema）：relations 为带类型声明（RFC-0004 §3.1.4）——
+	// 命令侧只收 target_event_id + kind（provenance 由系统固化为 explicit，不收客户端值）。
+	for i, rel := range payload.Relations {
+		if !eventIDPattern.MatchString(rel.TargetEventID) {
+			return nil, fmt.Errorf("%w: relations[%d].target_event_id 形如 evt_*", ErrInvalidCommand, i)
+		}
+		if !relationKinds[rel.Kind] {
+			return nil, fmt.Errorf("%w: relations[%d].kind 非法 %q", ErrInvalidCommand, i, rel.Kind)
+		}
+		rel.Provenance = "explicit"
+		payload.Relations[i] = rel
+	}
 
 	env := protocol.Envelope{
 		EventID:       s.cfg.NewID("evt"),
@@ -208,16 +220,34 @@ func (s *Service) postMessage(ctx context.Context, actor Actor, cmd Command) (*C
 	return s.commit(ctx, env, receipt)
 }
 
-// postMessagePayload 消息命令载荷（严格字段集：多余字段拒绝）。
+// postMessagePayload 消息命令载荷（严格字段集：多余字段拒绝；
+// 字段集与 events/message.posted.schema.json 对齐，M2 定稿）。
 type postMessagePayload struct {
-	Body        string   `json:"body"`
-	ReplyTo     *string  `json:"reply_to"`
-	AddressedTo []string `json:"addressed_to"`
-	Relations   []any    `json:"relations"`
-	ThreadID    *string  `json:"thread_id"` // 可选：发往指定线程（根线程随 room.created 载荷）
+	Body        string          `json:"body"`
+	ReplyTo     *string         `json:"reply_to"`
+	AddressedTo []string        `json:"addressed_to"`
+	Relations   []typedRelation `json:"relations"`
+	ThreadID    *string         `json:"thread_id"` // 可选：发往指定线程（根线程随 room.created 载荷）
 }
 
-var threadIDPattern = regexp.MustCompile(`^thr_[0-9A-Za-z_-]+$`)
+// typedRelation 类型化关系声明（RFC-0004 §3.1.4）。命令侧不收 provenance
+// （DisallowUnknownFields 即拒绝），落库前由服务固化为 explicit。
+type typedRelation struct {
+	TargetEventID string `json:"target_event_id"`
+	Kind          string `json:"kind"`
+	Provenance    string `json:"provenance"`
+}
+
+// relationKinds 关系类型枚举（RFC-0004：八种，无无类型简写）。
+var relationKinds = map[string]bool{
+	"supports": true, "challenges": true, "extends": true, "questions": true,
+	"evidence_for": true, "supersedes": true, "analogy": true, "relates": true,
+}
+
+var (
+	threadIDPattern = regexp.MustCompile(`^thr_[0-9A-Za-z_-]+$`)
+	eventIDPattern  = regexp.MustCompile(`^evt_[0-9A-Za-z_-]+$`)
+)
 
 // commit 原子落库 + 回执；回执竞态时重查回放（并发同键后到者）。
 // 存储在事务内强制乐观并发（ExpectedRoomVersion）——本函数之上只做快速失败预检。
