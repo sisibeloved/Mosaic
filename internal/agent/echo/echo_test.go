@@ -7,7 +7,14 @@ import (
 	"testing"
 
 	"github.com/sisibeloved/Mosaic/internal/agent"
+	"github.com/sisibeloved/Mosaic/internal/agent/conformance"
 )
+
+// TestConformanceSuite：echo 作为常备正确回环适配器（RFC-0002 §3.5.1 三件套之一），
+// 必须过 conformance 全套检查；套件变更对 echo 误伤即套件自身回归。
+func TestConformanceSuite(t *testing.T) {
+	conformance.Suite(t, Adapter{})
+}
 
 func sampleTask(kind agent.TaskKind) agent.Task {
 	return agent.Task{

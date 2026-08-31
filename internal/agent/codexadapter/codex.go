@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -165,82 +164,17 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 	}
 }
 
-// sanitizePublish 发布边界（二轮审校 #4；复审 #6/#9；四轮复审 #7）：不可信模型
-// 输出在进入事件日志前过安全门——控制字符剔除（保留 \n\t）、DLP 秘密形状剔除、
-// 去首尾空白、空正文判任务失败、超限截断并显式标注（上限取 grant 宣告的
-// ResponseCap 与适配器自身上限的较小者）；declared_relations 逐项过同一套门
-// （非字符串项丢弃、项数/单项字长上限——模型不得经 relations 侧漏私货）。
+// sanitizePublish 发布边界：委托端口级共享门 agent.PublishGate（规则库单一事实源，
+// M2 C 轨上移；上限取 grant 宣告 ResponseCap 与适配器自身上限的较小者，见 Run）。
 func (h *handle) sanitizePublish() {
 	body, _ := h.result.Data["body"].(string)
-	body = sanitizeBody(body)
-	body = redactSecrets(body)
-	if body == "" {
-		h.err = fmt.Errorf("codexadapter: 发布正文为空（拒绝发布）")
+	clean, rels, err := agent.PublishGate(body, h.result.Data["declared_relations"], h.maxRunes)
+	if err != nil {
+		h.err = fmt.Errorf("codexadapter: %w", err)
 		return
 	}
-	if runes := len([]rune(body)); runes > h.maxRunes {
-		cut := string([]rune(body)[:h.maxRunes])
-		body = cut + "\n[Mosaic: 输出超限已截断]"
-	}
-	h.result.Data["body"] = body
-	h.result.Data["declared_relations"] = sanitizeRelations(h.result.Data["declared_relations"])
-}
-
-// sanitizeRelations 关系引用白名单化（四轮复审 #7）：只保留经过正文同款安全门的
-// 字符串项（控制字符剔除 + DLP + 单项 200 runes），非字符串项丢弃，至多 8 项。
-func sanitizeRelations(v any) []any {
-	rels, _ := v.([]any)
-	cleaned := make([]any, 0, len(rels))
-	for _, item := range rels {
-		s, ok := item.(string)
-		if !ok {
-			continue // 非字符串项（对象/数字等）不得混入事件载荷
-		}
-		s = redactSecrets(sanitizeBody(s))
-		if s == "" {
-			continue
-		}
-		if runes := []rune(s); len(runes) > 200 {
-			s = string(runes[:200])
-		}
-		cleaned = append(cleaned, s)
-		if len(cleaned) >= 8 {
-			break
-		}
-	}
-	return cleaned
-}
-
-// sanitizeBody 剔除控制字符（保留换行/制表）并去首尾空白。
-func sanitizeBody(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		if r == '\n' || r == '\t' || (r >= 0x20 && r != 0x7f) {
-			b.WriteRune(r)
-		}
-	}
-	return strings.TrimSpace(b.String())
-}
-
-// secretPatterns DLP 秘密形状（RFC-0002 §3.1：草稿/发布需过 secret scan）。
-// M1 为形状启发式代理门；规则库与误报反馈随 M2 secret-scan 项演进。
-var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`),
-	regexp.MustCompile(`(?i)bearer\s+[a-z0-9._~+/-]{12,}={0,2}`),
-	regexp.MustCompile(`sk-[A-Za-z0-9_-]{16,}`),
-	regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}`),
-	regexp.MustCompile(`github_pat_[A-Za-z0-9_]{20,}`),
-	regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{10,}`),
-	regexp.MustCompile(`AKIA[0-9A-Z]{16}`),
-}
-
-// redactSecrets 秘密形状子串整体替换为 [REDACTED]（发布正文不得携带凭据形状）。
-func redactSecrets(s string) string {
-	for _, re := range secretPatterns {
-		s = re.ReplaceAllString(s, "[REDACTED]")
-	}
-	return s
+	h.result.Data["body"] = clean
+	h.result.Data["declared_relations"] = rels
 }
 
 func (s *session) execer() Execer {
@@ -364,37 +298,10 @@ func ParseStream(raw []byte) (Parsed, error) {
 	return out, nil
 }
 
-// ExtractJSON 从模型文本提取 JSON 对象：容忍围栏与前后散文；无 JSON 报错。
+// ExtractJSON 委托端口级共享实现 agent.ExtractJSON（M2 C 轨上移，供全部 CLI 适配器
+// 共用）；保留本包符号以维持既有调用与测试面不变。
 func ExtractJSON(text string) (map[string]any, error) {
-	text = strings.TrimSpace(text)
-	if s := stripFence(text); s != "" {
-		text = s
-	}
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start < 0 || end <= start {
-		return nil, fmt.Errorf("codexadapter: 文本中无 JSON 对象")
-	}
-	var data map[string]any
-	if err := json.Unmarshal([]byte(text[start:end+1]), &data); err != nil {
-		return nil, fmt.Errorf("codexadapter: JSON 解析失败: %w", err)
-	}
-	return data, nil
-}
-
-func stripFence(text string) string {
-	if !strings.HasPrefix(text, "```") {
-		return ""
-	}
-	lines := strings.Split(text, "\n")
-	var body []string
-	for i, line := range lines {
-		if i == 0 || strings.TrimSpace(line) == "```" {
-			continue
-		}
-		body = append(body, line)
-	}
-	return strings.Join(body, "\n")
+	return agent.ExtractJSON(text)
 }
 
 // ---- 提示词与结果映射 ----

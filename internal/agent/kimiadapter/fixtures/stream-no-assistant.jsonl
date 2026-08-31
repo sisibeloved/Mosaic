@@ -1,0 +1,3 @@
+{"role":"meta","type":"system.version","version":"0.39.1"}
+{"role":"meta","type":"session.resume_hint","session_id":"session_00000000-0000-0000-0000-000000000000","command":"kimi -r session_00000000-0000-0000-0000-000000000000"}
+noise line not json

@@ -19,3 +19,4 @@ ADR 记录**实现与工具选型**级决策。三层文档分工：架构级约
 | [ADR-0009](ADR-0009-personal-local-identity.md) | 个人版身份：本地单用户免登录 | Accepted |
 | [ADR-0010](ADR-0010-personal-app-shell-wails.md) | 个人版应用壳：Wails（WebView2 / WKWebView） | Accepted |
 | [ADR-0011](ADR-0011-snapshot-inline-deviation.md) | 快照四元组内联正文：对 RFC-0001 快照形态的 M1 偏离登记（M2 对齐） | Accepted |
+| [ADR-0012](ADR-0012-multi-instance-discovery-priority.md) | Harness 多实例发现：全枚举 + 渠道标签 + 家族优先级（Codex App 优先、Kimi Code 优先） | Accepted |

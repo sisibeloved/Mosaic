@@ -24,6 +24,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/agent"
 	"github.com/sisibeloved/Mosaic/internal/agent/codexadapter"
 	"github.com/sisibeloved/Mosaic/internal/agent/echo"
+	"github.com/sisibeloved/Mosaic/internal/agent/kimiadapter"
 	"github.com/sisibeloved/Mosaic/internal/attention"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/harness"
@@ -210,53 +211,61 @@ func main() {
 			workRoot = ""
 		}
 		wslHomeCache := map[string]string{}
+		// resolveWorkDir 解析座位工作目录（fail closed：任一准备失败即不注册座位——
+		// 复审 #1：隔离失效胜过静默降级）。WSL 面返回发行版内 Linux 路径与 HOME
+		// （复审 #2：Windows 路径交给发行版内 CLI 即坏；四轮复审 #4：HOME 非空且为
+		// 绝对路径才可用，无效即跳过不缓存）；native 面为宿主专用空目录（四轮复审 #2：
+		// 工作根在数据目录之外）。
+		resolveWorkDir := func(exe harness.Executable, profileID string) (dir, wslHome string, ok bool) {
+			if harness.Runtime(exe.Runtime) == harness.RuntimeWSL {
+				home, cached := wslHomeCache[exe.Distro]
+				if !cached {
+					home = hostRunner.Home(ctx, harness.RuntimeWSL, exe.Distro)
+				}
+				if home == "" || !strings.HasPrefix(home, "/") {
+					logger.Error("WSL HOME 解析无效（座位不注册，fail closed）",
+						"adapter", exe.Adapter, "distro", exe.Distro, "home", home)
+					return "", "", false
+				}
+				wslHomeCache[exe.Distro] = home
+				dir = path.Join(strings.TrimSuffix(home, "/"), ".mosaic", "agent-work", profileID)
+				if err := hostRunner.MkdirAll(ctx, harness.RuntimeWSL, exe.Distro, dir); err != nil {
+					logger.Error("WSL 工作目录准备失败：座位不注册（fail closed）", "adapter", exe.Adapter, "profile", profileID, "err", err)
+					return "", "", false
+				}
+				return dir, home, true
+			}
+			if workRoot == "" {
+				return "", "", false
+			}
+			dir = filepath.Join(workRoot, profileID)
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				logger.Error("agent 工作目录准备失败：座位不注册（fail closed）", "adapter", exe.Adapter, "profile", profileID, "err", err)
+				return "", "", false
+			}
+			return dir, "", true
+		}
 		syncSeats := func() []room.AgentSeat {
 			seats := []room.AgentSeat{{
 				ParticipantID: "par_echo",
 				Profile:       agent.Profile{ProfileID: "prof_echo", Adapter: "echo", DisplayName: "Echo"},
 			}}
 			for _, exe := range harnessRegistry.EnabledList() {
+				// 四轮复审 #3：身份基于注册表唯一 ID 派生——runtime+distro 派生会让
+				// 两个 native executable 折叠成一个 profile（后者替换前者、座位却同名）。
+				// 多实例（C 轨）：每实例独立 profile/座位/会话，同家族并存不折叠。
+				exeKey := sanitizeProfileKey(exe.ID)
+				profileID := "prof_" + exe.Adapter + "_" + exeKey
+				dir, wslHome, ok := resolveWorkDir(exe, profileID)
+				if !ok {
+					continue
+				}
 				switch exe.Adapter {
 				case "codex":
-					// 四轮复审 #3：身份基于注册表唯一 ID 派生——runtime+distro 派生会让
-					// 两个 native executable 折叠成一个 profile（后者替换前者、座位却同名）。
-					exeKey := sanitizeProfileKey(exe.ID)
-					profileID := "prof_codex_" + exeKey
-					cfg := codexadapter.Config{CodexPath: exe.Path, Timeout: 180 * time.Second}
-					if harness.Runtime(exe.Runtime) == harness.RuntimeWSL {
-						// WSL 运行面（复审 #2）：工作目录必须是发行版内 Linux 路径——
-						// Windows 路径交给发行版内的 codex 即坏；HOME 同理在发行版内解析。
-						// 四轮复审 #4：HOME 非空且为绝对路径才可用——空值缓存会把
-						// 相对路径送进 -C（静默指向错位目录）；无效即跳过座位，不缓存。
-						home, ok := wslHomeCache[exe.Distro]
-						if !ok {
-							home = hostRunner.Home(ctx, harness.RuntimeWSL, exe.Distro)
-						}
-						if home == "" || !strings.HasPrefix(home, "/") {
-							logger.Error("codex WSL HOME 解析无效（座位不注册，fail closed）",
-								"distro", exe.Distro, "home", home)
-							continue
-						}
-						wslHomeCache[exe.Distro] = home
+					cfg := codexadapter.Config{CodexPath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir}
+					if wslHome != "" {
 						cfg.WSLDistro = exe.Distro
-						cfg.WSLHome = home
-						dir := path.Join(strings.TrimSuffix(home, "/"), ".mosaic", "agent-work", profileID)
-						if err := hostRunner.MkdirAll(ctx, harness.RuntimeWSL, exe.Distro, dir); err != nil {
-							logger.Error("codex WSL 工作目录准备失败：座位不注册（fail closed）", "profile", profileID, "err", err)
-							continue
-						}
-						cfg.WorkDir = dir
-					} else {
-						// native：宿主侧专用空目录；任一失败即跳过座位（复审 #1：fail closed）
-						if workRoot == "" {
-							continue
-						}
-						dir := filepath.Join(workRoot, profileID)
-						if err := os.MkdirAll(dir, 0o700); err != nil {
-							logger.Error("codex 工作目录准备失败：座位不注册（fail closed）", "profile", profileID, "err", err)
-							continue
-						}
-						cfg.WorkDir = dir
+						cfg.WSLHome = wslHome
 					}
 					// 复审 #3：按 Profile 键登记——多 executable 各自成适配器实例；
 					// 四轮复审 #9：重登驱逐旧会话（换实例后旧进程/旧 thread 不复用）。
@@ -267,6 +276,22 @@ func main() {
 					seats = append(seats, room.AgentSeat{
 						ParticipantID: "par_codex_" + exeKey,
 						Profile:       agent.Profile{ProfileID: profileID, Adapter: "codex", DisplayName: "Codex"},
+					})
+				case "kimi":
+					// M2 C 轨：第二个真实适配器入座（native-kimi，kimi -p stream-json +
+					// -S 会话恢复；工作目录经进程 cwd 生效，kimi 无 -C 等价物）。
+					cfg := kimiadapter.Config{KimiPath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir}
+					if wslHome != "" {
+						cfg.WSLDistro = exe.Distro
+						cfg.WSLHome = wslHome
+					}
+					if err := supervisor.RegisterFor(profileID, kimiadapter.New(cfg)); err != nil {
+						logger.Warn("kimi adapter register failed", "profile", profileID, "err", err)
+						continue
+					}
+					seats = append(seats, room.AgentSeat{
+						ParticipantID: "par_kimi_" + exeKey,
+						Profile:       agent.Profile{ProfileID: profileID, Adapter: "kimi", DisplayName: "Kimi"},
 					})
 				}
 			}

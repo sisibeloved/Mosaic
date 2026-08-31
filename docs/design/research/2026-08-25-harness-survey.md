@@ -6,7 +6,7 @@
 |---|---|
 | 目的 | 支撑 [RFC-0002](../rfc/2026-08-25-rfc-0002-agent-protocol.md) v0.4（首批适配器、OS 适配、session/mode/provider/model 配置、历史回查通道）与 OQ-03 裁决 |
 | 方法 | 公开官方文档 / 仓库 / issue 检索 + 本地使用实证；检索时间 2026-08-25 |
-| 修订 | 2026-08-25 复核（随 RFC 首轮审校）：app-server 已有官方文档但标注 experimental、不支持生产负载；ACP 官方列表含 Kimi CLI 与 Codex CLI（经适配器）；补 Kimi 非交互默认自动权限注意项 |
+| 修订 | 2026-08-25 复核（随 RFC 首轮审校）：app-server 已有官方文档但标注 experimental、不支持生产负载；ACP 官方列表含 Kimi CLI 与 Codex CLI（经适配器）；补 Kimi 非交互默认自动权限注意项。2026-08-31 复核（M2 C 轨）：Kimi headless 官方文档化确认 + 0.39.1 本机实证（stream-json 行流形状、`-S` 会话恢复、`-p` 权限约束、无 usage 面）；Codex 桌面 App bundled CLI 路径形状归档 |
 | 可信度标注 | 【官方】官方文档或仓库；【社区】社区文章 / issue / 论坛；【实证】本项目开发环境直接观察；【待验证】单一来源或需上手确认 |
 | 范围 | 首批适配目标：Codex、ZCode、Kimi Code CLI；生态参照：Claude Code、Gemini CLI |
 
@@ -22,14 +22,14 @@
 
 | 维度 | Codex | ZCode | Kimi Code | Claude Code | Gemini CLI |
 |---|---|---|---|---|---|
-| headless 模式 | `codex exec`【官方】 | 未见公开文档；需求追踪中【社区】 | 单轮无 TUI + `--output-format`【官方/社区】 | `-p/--print` 成熟【官方】 | `-p/--prompt`【官方】 |
+| headless 模式 | `codex exec`【官方】 | 未见公开文档；需求追踪中【社区】 | 单轮无 TUI + `--output-format`【官方/实证 0.39.1】 | `-p/--print` 成熟【官方】 | `-p/--prompt`【官方】 |
 | 流式结构化输出 | `--json` JSONL 事件流（实验性）【官方】 | —（hooks 机制为 stdin JSON 行 → stdout JSON）【官方】 | stream-json/JSONL，含 session resume hint 结构化元消息【官方 changelog】 | `--output-format stream-json` + `--include-partial-messages`【官方】 | `--output-format json`（stats 含 token，含 cached）【官方/社区】 |
 | 会话恢复 | `codex exec resume --last` / 按 id；本地 rollout JSONL【官方/社区】 | ADE 任务内会话概念；CLI 侧待查【待验证】 | `--resume` / `--continue`；JSON 会话映射（**异常退出会破坏映射**）【社区】 | `--resume <id>` / `--continue` / `--fork-session`【官方】 | `--resume [id\|last]`，自动保存会话【官方】 |
 | 模式（审批×沙箱） | `approval_policy` × `sandbox_mode` 组合（含细粒度表）【官方】 | 任务内可切换模型/执行模式（交互面）【官方】 | 跳过审批类标志【社区】 | `--permission-mode`：default / acceptEdits / plan / bypassPermissions【官方】 | 审批模式、`--checkpointing` 检查点【官方/社区】 |
 | provider / model 配置 | `~/.codex/config.toml`：`model`、`model_providers`（可自定义 provider）【官方】 | GLM Coding Plan 账号计费；GLM 系列模型；CLI 配置文件 `~/.zcode/cli/config.json`【官方/社区】 | Kimi 系列模型，账号/API 登录【官方】 | Anthropic 及兼容网关（环境变量/配置）【官方】 | Gemini 系列 + API key【官方】 |
 | MCP client | `config.toml` 的 `mcp_servers`【官方】 | 支持（CLI 生态含 MCP/插件/skills/hooks）【实证】 | 支持（`/mcp-config`）【社区】 | `--mcp-config` + `--allowedTools` 预授权【官方】 | `mcp.json`（项目/全局、scoped）【官方】 |
 | ACP | ACP 官方列表含 Codex CLI（经适配器）【官方列表】 | 未见【待验证】 | ACP 官方列表含 Kimi CLI【官方列表】 | 已支持（经适配）【社区】 | ACP 参考实现【官方】 |
-| usage 上报 | exec 输出含 token 用量【社区】 | 待查【待验证】 | 输出统计【社区】 | json 输出含 cost/usage【官方】 | json stats 含 tokens【社区】 |
+| usage 上报 | exec 输出含 token 用量【社区】 | 待查【待验证】 | headless 无 usage 面【实证 0.39.1】 | json 输出含 cost/usage【官方】 | json stats 含 tokens【社区】 |
 | Windows | 原生（PowerShell + 受限令牌沙箱）+ WSL2（Landlock/seccomp），官方现推荐原生【官方】 | Windows 原生【实证：本仓库开发环境即 win32 + Git Bash 下 ZCode CLI 驱动】 | 跨平台单二进制（TS 打包）【官方/社区】 | 原生支持【官方】 | Node 跨平台【官方】 |
 | macOS / Linux | 支持【官方】 | 支持（macOS；Linux/WSL 经由 CLI 运行）【实证/待验证】 | 支持【官方】 | 支持【官方】 | 支持【官方】 |
 | 已知编排陷阱 | `--json` 事件 schema 无稳定性承诺【社区】；`--output-schema` 在 ChatGPT 账号 provider 组合下上游 400（text.format.schema 序列化 bug，2026-08-28 本机实证 codex 0.149.1——适配器改走提示词约束 + 本地校验）；超时击杀须整进程组（孙进程握管道致调用方永挂，实证） | headless 缺失（#29）；Native Agent 不触发 config.json hooks（#32）【社区】 | 异常退出破坏 session 映射【社区】 | 子进程调用需关闭 stdin，否则可能挂起【社区】 | json 输出在个别非交互场景有 bug 报告【社区】 |
@@ -57,6 +57,7 @@
 - **headless**：单轮无 TUI 执行 + `--output-format`（stream-json/JSONL）；changelog 明确"以结构化元消息输出 session resume hint"——对适配器获取会话句柄非常友好；
 - **session**：`--resume` / `--continue`；会话映射存 JSON 文件，**非正常退出（非 /exit、非 Ctrl+D）会破坏映射**——supervisor 的终止路径必须考虑优雅退出，或适配器不依赖其自身映射而由 Mosaic 侧持有会话句柄；
 - **MCP/ACP**：均支持（`/mcp-config`；ACP 支持见社区日报）；
+- **2026-08-31 实证（0.39.1，M2 C 轨适配器落地）**：headless 官方文档化（`kimi -p <prompt> --output-format stream-json`）；行流只三类——`meta system.version` / `assistant` content / `meta session.resume_hint`（含 `session_id` 与 `kimi -r` 恢复命令，适配器会话句柄即取此处）；`-p` 与 `-S <session_id>` 可组合恢复；`-p` 模式默认 auto 权限且不可与 `--auto`/`--yolo`/`--plan` 组合；**无 usage 面**（适配器 `UsageReporting=false`）；`kimi -p -` 不把 `-` 当 stdin 标记，提示词只能走 argv（`MaxPromptRunes` 护栏 6000）；
 - **适配器要点**：流式解析 + 会话句柄提取路径清晰；注意异常退出语义。
 
 ### 3.4 Claude Code（Anthropic，生态参照）
@@ -93,7 +94,7 @@
 |---|---|---|
 | ZCode headless/JSON | 无公开文档，#29 需求追踪中 | 内部推动；适配器详细设计前复访 |
 | Codex `app-server` 模式 | 官方文档已有，experimental、不支持生产负载（2026-08-25 复核） | 持续观察；生产路径不依赖 |
-| Kimi 非交互默认自动权限 | 官方命令文档确认 | 适配器显式权限参数映射 + 实测门禁 |
+| Kimi 非交互默认自动权限 | 官方文档 + 0.39.1 实证（`-p` 默认 auto 权限，不可与 `--auto`/`--yolo`/`--plan` 组合） | 已落地：kimiadapter 固定默认权限形态，fixtures 钉 0.39.1（2026-08-31） |
 | Codex `--json` schema 稳定性 | 实验性、无承诺 | 钉版本 + fixture |
 | Kimi 异常退出会话映射破坏 | 论坛确认 | supervisor 优雅退出 + Mosaic 侧持有句柄 |
 | Claude 子进程 stdin 挂起 | 多来源确认 | supervisor 规约吸收 |
