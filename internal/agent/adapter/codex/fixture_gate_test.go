@@ -1,6 +1,6 @@
-// fixtures 版本门禁（与 codex 适配器同制）：manifest 钉 CLI 版本与文件哈希——
-// 任何 fixture 改动/重捕获未同步 manifest 即红。
-package kimiadapter
+// fixtures 版本门禁（M1 收口补课）：manifest 钉 CLI 版本与文件哈希——
+// “钉版本”从注释级升级为机器可检：任何 fixture 改动/重捕获未同步 manifest 即红。
+package codex
 
 import (
 	"crypto/sha256"

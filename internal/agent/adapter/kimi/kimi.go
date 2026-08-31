@@ -1,4 +1,4 @@
-// Package kimiadapter：native-kimi 适配器（RFC-0002 分级晋级：第二个真实适配器，M2 C 轨）。
+// Package kimi：native-kimi 适配器（RFC-0002 分级晋级：第二个真实适配器，M2 C 轨）。
 // 对接 kimi -p <prompt> --output-format stream-json（官方命令参考钉住 -p 非交互语义与
 // stream-json 行流；实证 kimi-code 0.39.1：meta system.version / assistant content /
 // meta session.resume_hint 三类行——fixtures 钉版本，漂移由 conformance 暴露）。
@@ -6,7 +6,7 @@
 // 已知约束（实证 2026-08-31）：-p 提示词只走 argv（"-p -" 不读 stdin）——argv 有 OS
 // 长度上限（Windows CreateProcess ≈32k 字符），MaxPromptRunes 前置护栏fail fast；
 // 大上下文/流式草稿的解法是 ACP 通道（kimi acp 已在官方命令面），登记为演进项。
-package kimiadapter
+package kimi
 
 import (
 	"bytes"
@@ -94,7 +94,7 @@ type session struct {
 
 func (s *session) Run(ctx context.Context, task agent.Task) (agent.Handle, error) {
 	if task.Kind == agent.KindObserve {
-		return nil, fmt.Errorf("kimiadapter: 不支持 observe（Capabilities.Observe=false）")
+		return nil, fmt.Errorf("kimi: 不支持 observe（Capabilities.Observe=false）")
 	}
 	// 发布上限取 grant 宣告 ResponseCap 与适配器自身上限的较小者（宣告即执行，同 codex 面）。
 	maxRunes := s.adapter.cfg.MaxOutputRunes
@@ -123,7 +123,7 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 		return
 	}
 	if n := len([]rune(prompt)); n > s.adapter.cfg.MaxPromptRunes {
-		h.err = fmt.Errorf("kimiadapter: 提示词超 argv 安全上限（%d > %d runes）：kimi -p 不读 stdin（实证），缩小上下文或走 ACP 通道", n, s.adapter.cfg.MaxPromptRunes)
+		h.err = fmt.Errorf("kimi: 提示词超 argv 安全上限（%d > %d runes）：kimi -p 不读 stdin（实证），缩小上下文或走 ACP 通道", n, s.adapter.cfg.MaxPromptRunes)
 		return
 	}
 
@@ -144,7 +144,7 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 			h.stale = true // 取消/超时：不发布正文，语义同迟到拒绝
 			return
 		}
-		h.err = fmt.Errorf("kimiadapter: exec: %w", err)
+		h.err = fmt.Errorf("kimi: exec: %w", err)
 		return
 	}
 	parsed := ParseStream([]byte(stdout))
@@ -154,11 +154,11 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 		s.mu.Unlock()
 	}
 	if code != 0 {
-		h.err = fmt.Errorf("kimiadapter: kimi 退出码 %d：%s", code, firstLineOf(stdout, 200))
+		h.err = fmt.Errorf("kimi: kimi 退出码 %d：%s", code, firstLineOf(stdout, 200))
 		return
 	}
 	if len(parsed.Messages) == 0 {
-		h.err = fmt.Errorf("kimiadapter: 无 assistant 输出")
+		h.err = fmt.Errorf("kimi: 无 assistant 输出")
 		return
 	}
 	h.result, h.err = mapResult(task.Kind, parsed)
@@ -172,7 +172,7 @@ func (h *handle) sanitizePublish() {
 	body, _ := h.result.Data["body"].(string)
 	clean, rels, err := agent.PublishGate(body, h.result.Data["declared_relations"], h.maxRunes)
 	if err != nil {
-		h.err = fmt.Errorf("kimiadapter: %w", err)
+		h.err = fmt.Errorf("kimi: %w", err)
 		return
 	}
 	h.result.Data["body"] = clean
@@ -366,7 +366,7 @@ func buildPrompt(task agent.Task) (string, error) {
 	case agent.KindEvaluateClosure:
 		return closureInstruction + "\nTask identity: " + ident + "\n\nDiscussion: " + string(stimulus), nil
 	default:
-		return "", fmt.Errorf("kimiadapter: 未知任务类型 %q", task.Kind)
+		return "", fmt.Errorf("kimi: 未知任务类型 %q", task.Kind)
 	}
 }
 
@@ -383,12 +383,12 @@ func mapResult(kind agent.TaskKind, parsed Parsed) (agent.Result, error) {
 		}
 		action, _ := data["action"].(string)
 		if action == "" {
-			return agent.Result{}, fmt.Errorf("kimiadapter: turn_intent 缺字段 %q", "action")
+			return agent.Result{}, fmt.Errorf("kimi: turn_intent 缺字段 %q", "action")
 		}
 		if action != "silent" {
 			for _, field := range []string{"type", "scores"} {
 				if _, ok := data[field]; !ok {
-					return agent.Result{}, fmt.Errorf("kimiadapter: turn_intent 缺字段 %q", field)
+					return agent.Result{}, fmt.Errorf("kimi: turn_intent 缺字段 %q", field)
 				}
 			}
 		}
@@ -430,7 +430,7 @@ func mapResult(kind agent.TaskKind, parsed Parsed) (agent.Result, error) {
 		}
 		return agent.Result{Block: agent.BlockClosureIntent, Data: data}, nil
 	default:
-		return agent.Result{}, fmt.Errorf("kimiadapter: 未知任务类型 %q", kind)
+		return agent.Result{}, fmt.Errorf("kimi: 未知任务类型 %q", kind)
 	}
 }
 

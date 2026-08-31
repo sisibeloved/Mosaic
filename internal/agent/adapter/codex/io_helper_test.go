@@ -1,6 +1,6 @@
 //go:build it
 
-package codexadapter
+package codex
 
 import "os"
 

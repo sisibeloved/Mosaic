@@ -3,7 +3,7 @@
 // IT 层：native-kimi 适配器真机 conformance（真实 kimi CLI + 真实登录态）。
 // 断言结构契约（结构化块字段齐全、usage 不虚构、会话连续），不断言具体内容（真实模型非确定性）。
 // CI 无 kimi/未登录时跳过；解析契约已由 UT fixtures 钉死（0.39.1）。
-package kimiadapter
+package kimi
 
 import (
 	"context"

@@ -2,7 +2,7 @@
 // 事件流解析（真实 fixtures）、JSON 提取、任务→提示词→结果映射、
 // 会话 resume 连续性、取消语义、PATH 注入。
 // TDD：本文件先行于实现（红→绿）。fixtures 为 2026-08-28 真机 codex 0.149.1 捕获。
-package codexadapter
+package codex
 
 import (
 	"context"

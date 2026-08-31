@@ -1,9 +1,9 @@
-// Package codexadapter：native-codex 适配器（RFC-0002 原生适配首批）。
+// Package codex：native-codex 适配器（RFC-0002 原生适配首批）。
 // 对接 codex exec --json（JSONL 事件流；实证 codex-cli 0.149.1，事件 schema 无稳定性
 // 承诺——fixtures 钉版本，漂移由 conformance 测试暴露）。
 // 已知缺口（实证 2026-08-28）：--output-schema 在当前 provider 组合下上游 400
 // （text.format.schema 序列化 bug），结构化输出走提示词约束 + 本地提取校验。
-package codexadapter
+package codex
 
 import (
 	"bytes"
@@ -85,7 +85,7 @@ type session struct {
 
 func (s *session) Run(ctx context.Context, task agent.Task) (agent.Handle, error) {
 	if task.Kind == agent.KindObserve {
-		return nil, fmt.Errorf("codexadapter: 不支持 observe（Capabilities.Observe=false）")
+		return nil, fmt.Errorf("codex: 不支持 observe（Capabilities.Observe=false）")
 	}
 	// 复审 #9：发布上限取 grant 宣告 ResponseCap 与适配器自身上限的较小者——
 	// floor.granted 宣告的 cap 必须真实约束发布正文（token 上限以 rune 上限代理，M1 登记）。
@@ -137,16 +137,16 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 			h.stale = true // 取消/超时：不发布正文，语义同迟到拒绝
 			return
 		}
-		h.err = fmt.Errorf("codexadapter: exec: %w", err)
+		h.err = fmt.Errorf("codex: exec: %w", err)
 		return
 	}
 	parsed, err := ParseStream([]byte(stdout))
 	if err != nil {
-		h.err = fmt.Errorf("codexadapter: parse: %w", err)
+		h.err = fmt.Errorf("codex: parse: %w", err)
 		return
 	}
 	if parsed.Err != "" {
-		h.err = fmt.Errorf("codexadapter: turn failed: %s", parsed.Err)
+		h.err = fmt.Errorf("codex: turn failed: %s", parsed.Err)
 		return
 	}
 	if parsed.ThreadID != "" && parsed.ThreadID != thread {
@@ -155,7 +155,7 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 		s.mu.Unlock()
 	}
 	if len(parsed.Messages) == 0 {
-		h.err = fmt.Errorf("codexadapter: 无 agent_message 输出")
+		h.err = fmt.Errorf("codex: 无 agent_message 输出")
 		return
 	}
 	h.result, h.err = mapResult(task.Kind, parsed)
@@ -170,7 +170,7 @@ func (h *handle) sanitizePublish() {
 	body, _ := h.result.Data["body"].(string)
 	clean, rels, err := agent.PublishGate(body, h.result.Data["declared_relations"], h.maxRunes)
 	if err != nil {
-		h.err = fmt.Errorf("codexadapter: %w", err)
+		h.err = fmt.Errorf("codex: %w", err)
 		return
 	}
 	h.result.Data["body"] = clean
@@ -354,7 +354,7 @@ func buildPrompt(task agent.Task) (string, error) {
 	case agent.KindEvaluateClosure:
 		return closureInstruction + "\nTask identity: " + ident + "\n\nDiscussion: " + string(stimulus), nil
 	default:
-		return "", fmt.Errorf("codexadapter: 未知任务类型 %q", task.Kind)
+		return "", fmt.Errorf("codex: 未知任务类型 %q", task.Kind)
 	}
 }
 
@@ -369,13 +369,13 @@ func mapResult(kind agent.TaskKind, parsed Parsed) (agent.Result, error) {
 		}
 		action, _ := data["action"].(string)
 		if action == "" {
-			return agent.Result{}, fmt.Errorf("codexadapter: turn_intent 缺字段 %q", "action")
+			return agent.Result{}, fmt.Errorf("codex: turn_intent 缺字段 %q", "action")
 		}
 		// RFC-0003 §3.1.2：silent Intent 其余字段可选
 		if action != "silent" {
 			for _, field := range []string{"type", "scores"} {
 				if _, ok := data[field]; !ok {
-					return agent.Result{}, fmt.Errorf("codexadapter: turn_intent 缺字段 %q", field)
+					return agent.Result{}, fmt.Errorf("codex: turn_intent 缺字段 %q", field)
 				}
 			}
 		}
@@ -421,7 +421,7 @@ func mapResult(kind agent.TaskKind, parsed Parsed) (agent.Result, error) {
 		}
 		return agent.Result{Block: "closure_intent", Data: data, Usage: parsed.Usage}, nil
 	default:
-		return agent.Result{}, fmt.Errorf("codexadapter: 未知任务类型 %q", kind)
+		return agent.Result{}, fmt.Errorf("codex: 未知任务类型 %q", kind)
 	}
 }
 

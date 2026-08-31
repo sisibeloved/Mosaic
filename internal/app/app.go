@@ -26,9 +26,9 @@ import (
 
 	"github.com/sisibeloved/Mosaic/apps/web"
 	"github.com/sisibeloved/Mosaic/internal/agent"
-	"github.com/sisibeloved/Mosaic/internal/agent/codexadapter"
+	"github.com/sisibeloved/Mosaic/internal/agent/adapter/codex"
+	"github.com/sisibeloved/Mosaic/internal/agent/adapter/kimi"
 	"github.com/sisibeloved/Mosaic/internal/agent/echo"
-	"github.com/sisibeloved/Mosaic/internal/agent/kimiadapter"
 	"github.com/sisibeloved/Mosaic/internal/attention"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/harness"
@@ -264,13 +264,13 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 				}
 				switch exe.Adapter {
 				case "codex":
-					cfg := codexadapter.Config{CodexPath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir}
+					cfg := codex.Config{CodexPath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir}
 					if wslHome != "" {
 						cfg.WSLDistro = exe.Distro
 						cfg.WSLHome = wslHome
 					}
 					// 四轮复审 #9：重登驱逐旧会话。
-					if err := supervisor.RegisterFor(profileID, codexadapter.New(cfg)); err != nil {
+					if err := supervisor.RegisterFor(profileID, codex.New(cfg)); err != nil {
 						logger.Warn("codex adapter register failed", "profile", profileID, "err", err)
 						continue
 					}
@@ -280,12 +280,12 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 					})
 				case "kimi":
 					// C 轨：第二个真实适配器（kimi -p stream-json + -S 会话恢复）。
-					cfg := kimiadapter.Config{KimiPath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir}
+					cfg := kimi.Config{KimiPath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir}
 					if wslHome != "" {
 						cfg.WSLDistro = exe.Distro
 						cfg.WSLHome = wslHome
 					}
-					if err := supervisor.RegisterFor(profileID, kimiadapter.New(cfg)); err != nil {
+					if err := supervisor.RegisterFor(profileID, kimi.New(cfg)); err != nil {
 						logger.Warn("kimi adapter register failed", "profile", profileID, "err", err)
 						continue
 					}

@@ -1,8 +1,8 @@
-// POSIX 进程组：codex（node）会派生孙进程，超时击杀必须整组，
-// 否则孙进程握着管道导致 Wait 永挂（2026-08-28 IT 实证）。
+// POSIX 进程组：超时击杀必须整组，否则孙进程握着管道导致 Wait 永挂
+// （codex 适配器 2026-08-28 IT 实证教训，kimi 同形态继承）。
 //go:build !windows
 
-package codexadapter
+package kimi
 
 import (
 	"os/exec"

@@ -1,7 +1,7 @@
 // UT 层：native-kimi 适配器——stream-json 解析（fixtures 钉 0.39.1）、argv 契约
 // （-p 走 argv + -S resume）、发布门委托、提示词长度护栏、取消语义、
 // conformance 套件（桩输出钉结构）。真机三件套见 kimi_it_test.go（IT 层）。
-package kimiadapter
+package kimi
 
 import (
 	"context"
