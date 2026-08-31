@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.10 |
+| 版本 | v1.11 |
 | 日期 | 2026-08-30 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -27,6 +27,7 @@
 | v1.8 | 2026-08-30 | Mosaic 项目组 / ZCode | **负责人裁定：开发者模式自 M2 切片 0 再前置至 M1**——主线打通期即需要定位手段，v1.5/v1.6 收口暴露的缺陷多靠临时埋点定位，前置可省弯路。处置：M1 新增条目（开发者模式，范围同 v1.7 定义：`--dev` 开关 + debug 日志级别 / trace id 贯通命令→事件→outbox→适配器 / 内部状态只读端点 / 事件流检视 / 最小 UI 调试面板）；M1 出口判据补"开发者模式复盘完整轮次链路"；M2 切片 0 与 M2 出口判据对应条款移除（M2 不再含开发者模式条目）；D-4 诊断页条目同步。**当日落地**：实现与门禁见 M1 条目注记（2026-08-30）；出口判据补"开发者模式复盘完整轮次链路"由 TestDevMode_ST 覆盖（真实二进制 -dev：完整轮后 state 水位/事件因果链/debug 日志链/UI 面板注入四通道验证通过）；vet/UT/IT/ST 全绿，四目标交叉编译不回归 |
 | v1.9 | 2026-08-30 | Mosaic 项目组 / ZCode | **三轮复审收口（复审报告，冻结范围 26a04ad→793dfb6，19 项：15×P1 + 4×P2——上轮 23 项余量：10 关闭/11 部分/2 开放）**。全部处置（7f2c35c + 补钉 74173a1）：**Codex 动态装配（#1-#4）**——工作目录准备失败 fail closed（不再回退服务器 cwd）；WSL 座位工作目录改发行版内 Linux 路径并经 harness.MkdirAll 在发行版内创建（Windows 路径交给发行版内 codex 即坏）；多 executable 按 Profile 键登记（Supervisor.RegisterFor + Submit 先按 ProfileID 解析回退按名），参与者 ID 派生自 profile（par_codex_native/par_codex_wsl_*）不再全折叠到首个 codex 实例；空 host/通配地址判非回环（ParseIP().IsLoopback；ST 场景表钉 :0/0.0.0.0/[::]:0 三写法）。**生产边界（#5-#7/#9）**——CI 增生产路径桩步骤（MOSAIC_ST_CODEX_STUB：真二进制+真适配器+真子进程+真发布门，模型面以确定性脚本代理；本机桩 3.5s/真 codex 36.6s 双通过，CI ubuntu 腿实跑通过——生产路径不再在必跑 CI 恒 skip）；生成结果封闭 DTO 投影（模型附加键走私通道封死、declared_relations 非数组归一）；发布门增 DLP 秘密形状剔除（私钥块/bearer/sk-/ghp_/xox/AKIA→[REDACTED]，形状启发式为 M1 代理门）；wslArgs 前缀 env -i（发行版默认环境/WSLENV 透传不再继承，platform-notes L-8）；Grant.ResponseCap 进端口契约，适配器以 min(宣告 cap, 适配器上限) 真实约束发布正文（宣告与执行不再脱节）。**轮次所有权/pause/预算（#10/#12/#13/#15/#16）**——outbox Consumer 错误契约（声明落库失败退回分发器按序重投 fail closed；消费失败中断本批保序；WithLogger 重投可观测）；engine per-room FIFO 队列（goroutine 抢锁改为到达序=处理序）；resume(room.started) 即时重驱动未开轮声明（不再只能等进程重启）+ runRound 幂等护栏（历史扫描防双开轮，覆盖重投/重驱动竞态）；迟到 fence 锚点自 grant 前移至本轮 round.opened（评估阶段 pause→grant 前 resume 的漏网关闭；开轮前暂停历史不毒化重驱动新轮）；畸形 intent 弃权仍全记录（R-01：silent/unranked/理由入 metadata）且真实 usage 入账（预算账本不被畸形输出绕过）。**本地安全（#17/#18/#20/#21）**——写端点 Origin 同源门 + application/json Content-Type 门（跨站 text/plain 简单请求无预检可达的写通道关闭：403/415；enable 空 body 端点只做 Origin 门）；既有数据目录/DB 目录权限补收紧（Unix chmod；Windows 无 POSIX 语义登记 platform-notes W-6，显式 ACL 收敛列 M2）；HTTP ReadTimeout=65s + IdleTimeout=120s（慢滴灌 body 期限；SSE 无 body GET 不受影响）；登记体超限 413（此前 MaxBytesError 被并入 400）。**守门（#19/#22）**——gen-ts 漂移门禁改 staged 比对（git add -A + diff --cached：新增/修改/陈旧产物全覆盖，git diff 不看未跟踪文件的盲区关闭）；并发同键重试：版本冲突预检前重查回放（入口回放检查与预检间的竞态窗口内首次执行恰落回执时，重试不再误报 version_conflict；16 路并发钉住恰一次首发+15 回放零冲突）。**门禁**：UT/IT/ST 三层 -race 全绿；CI 三腿绿（含新生产路径桩步骤与 staged 版 gen-ts 门）；platform-notes 增 W-6/L-8。M1 出口判据维持 v1.7/v1.8 裁定状态 |
 | v1.10 | 2026-08-30 | Mosaic 项目组 / ZCode | **四轮复审收口（复审报告，冻结 74173a1，13 项：11×P1 + 2×P2——上轮 19 项余量：8 关闭/11 部分；范围不含同日 dev 模式批次 a797c54/0b02917）**。全部处置：**Codex identity/trust（#2/#3/#4/#7/#9）**——agent 工作根移出数据目录（默认用户缓存目录，-agent-work 可覆写；read-only 沙箱不限制读取，dataDir 内工作目录使 ../mosaic.db 邻位可达——同用户 exec 模型的读取隔离边界如实登记：低权限身份/容器/文件 allowlist 属 M2+，本项为位置隔离+登记而非完整隔离）；身份改由注册表唯一 exe.ID 派生（runtime+distro 派生使两个 native executable 折叠为一个 profile；ID 过 sanitize 入 profileID/参与者 ID/目录名）；WSL HOME 非空且绝对路径才可用（空值不再缓存——相对路径进 -C 即静默错位；无效即跳过座位 fail closed）；declared_relations 过正文同款安全门（非字符串项丢弃/DLP 剔除/单项 200 runes/至多 8 项——模型不得经 relations 侧漏私货）；RegisterFor 替换适配器时驱逐旧会话（否则旧 session 持旧实例与旧 thread，替换形同虚设）。**Room budget/order（#10/#12/#13/#14/#19）**——评估两相化：全部 eval 先跑完、用量汇入"现在"的账本再判 BudgetOK（同轮 eval 消耗不再绕过对称预留）；正文落库改 CAS（新增 room.CASStore.AppendEventsIf，MemStore/SQLite 双实现，BEGIN IMMEDIATE 临界区内判定）：迟到检查与落库间插入事件 → CAS 失败 → 回读判别——真迟到（pause/epoch）撤销、良性交错（如人类消息）换期位重试（至多 3 次），正文零迟到污染由"检查"升级为"检查+条件提交"；被撤销生成的 usage 入 floor.revoked metadata 且 RebuildBudget 汇总（撤销侧开销不再永久漏账）；engine_claims 增 position 列（v2 迁移，ALTER 幂等），PendingClaims 按持久位升序——恢复重驱动顺序=刺激到达顺序（无序查询会反转同房间人类消息顺序）；resume 重驱动扫描失败退回分发器按序重投（此前只告警即确认，重驱动静默丢失）。**Owner security（#6/#15）**——数据目录权限收紧失败 fail closed（安全边界建立不起来不承载事件日志；Windows Chmod 为无害 no-op 不触发）；Origin 门改对"配置的回环 authority"判定（Deps.Authority 注入真实监听地址：host 必须回环——rebinding 后 Origin host 是攻击者域名即拒；端口必须与配置一致——不信请求自带 Host；owner token 认证登记 M2）。**Generator guard（#17）**——gen-ts 门禁先 git rm 整个 gen 树再重生（删除 schema 后的陈旧声明以删除差异可见；不清树则旧文件原样保留，staged 比对也看不见）。**门禁**：UT/IT/ST 三层 -race 全绿（新增 9 测试：会话驱逐/relations 门/同轮 admission 对照/CAS 竞态注入两场景/撤销入账/claim 排序双实现/resume 退回/authority 门含 rebinding 场景）；真 codex 生产路径 ST 36.8s 回归通过；四目标交叉编译不回归 |
+| v1.11 | 2026-08-30 | Mosaic 项目组 / ZCode | **M1 验收反馈：M2 增补两条目（负责人意见）**。(1) **完整设置页面（设置菜单）**——M1 验收暴露配置面缺口：harness 可执行项仅 API 无界面、开发者模式调试面板无导航入口、Policy/预算参数无配置面；M2 新增设置页条目统一承载（"Policy 参数配置面"自三模式条目归入设置页）。(2) **发言静默期"正在输入"状态显示**——实测相邻发言间隔十几秒至几十秒（exec 批式生成时长），房间仅渲染已发布发言，静默期零反馈、观感如卡死；M2 新增进行中状态条目：复用既有事件流（round.opened/intent.recorded/floor.granted/message.posted）与 OnDraft 瞬态帧通道导出"评估中/正在生成"座位级状态，不新增日志事件族；Capabilities.Streaming=false 的适配器（native-codex exec 批式）以此状态帧代理 draft 流，结构化流式仍随 ACP/MCP 通道评估。两条均写入 M2 出口判据；M2 工期不变（计入既有缓冲，均直接服务 dogfood 体验） |
 
 # 1. 交付目标与"完全可用"定义
 
@@ -126,7 +127,9 @@
 目标：日常讨论体验成形，开始自用（dogfood）。开发者模式已随 v1.8 前置至 M1，M2 起全部主线开发默认在其上进行。
 
 - [ ] **真实 SPA 界面先行（v1.7 制度化"界面原型验证"原则）**：SPA 接入 Wails 壳后，先在真实界面复验核心闭环（建房→讨论→断线续传→回放），再铺下述功能面
-- [ ] 三模式（Open Floor / Roundtable 含 rebuttals / Deep Dive）+ Policy 参数配置面
+- [ ] 完整设置页面（设置菜单，**v1.11 增补·M1 验收反馈**）：统一承载配置面——harness 可执行项管理（启用/禁用/登录态展示，复用 `/v1/harness/executables` 端点）；开发者模式开关说明与调试面板入口（M1 已落地 `-dev` 与 webui 面板，接导航）；Policy/预算参数（三模式条目的"Policy 参数配置面"归入本页）；界面偏好（语言/主题，i18n 文案随 M4 填充）
+- [ ] 发言静默期"正在输入"状态显示（**v1.11 增补·M1 验收反馈**）：相邻发言间隔实测十几至几十秒（exec 批式生成时长），当前 Timeline 仅渲染已发布发言、静默期零反馈；复用既有信号导出进行中状态——`round.opened`→"评估中"（全座位并行 intent 评估）、`floor.granted`→座位级"正在生成"、`message.posted` 解除，经 SSE 事件与 OnDraft 瞬态帧通道渲染，不新增日志事件族；Capabilities.Streaming=false 的适配器（native-codex）以此状态帧代理 draft 流
+- [ ] 三模式（Open Floor / Roundtable 含 rebuttals / Deep Dive）+ Policy 参数配置面（配置面 UI 归入设置页面条目）
 - [ ] reveal 三策略（sequential / simultaneous / independent_then_cross）
 - [ ] 点名与定向交锋快速通道（slot 上限 + 交锋链）
 - [ ] 人类保送（intent.endorsed）+ 记分卡面板（band + 未选 Intent 可查）
@@ -137,7 +140,7 @@
 - [ ] `message.posted` payload Schema 定稿（M1 声明未兑现，延期登记；含 addressed_to/relations 严格字段集）
 - **M2 backlog（M1 收口审校遗留，随相关切片消化）**：conformance 反例 fixture 集 + chaos 适配器（RFC-0002 §3.5.1 三件套补全）；attention 变异验证留档（CI 门禁化）；崩溃恢复演练深化（轮中途崩溃：重复开轮/永久丢失刺激两个窗口的注入用例）；grant 过期可见态（超时/取消当前都映射 ErrStale，RFC-0003 要 expired 可区分）+ A-03 在途取消 <500ms（当前正确性靠 epoch 兜底，取消动作不发出）
 - **M4 backlog**：Windows Job Object（孙进程整组击杀，替代 POSIX Setpgid 空实现）；登录态使用时复核（座位调用前 re-probe，当前为启用时点门控）
-- **出口判据**：连续 5 个工作日真实自用（≥1 场多 agent 讨论含分叉与合并）；零数据丢失；体验阻塞项清单清空或降级记录。
+- **出口判据**：连续 5 个工作日真实自用（≥1 场多 agent 讨论含分叉与合并）；零数据丢失；体验阻塞项清单清空或降级记录；**（v1.11 增补）** M1 验收反馈两项——完整设置页面、静默期"正在输入"状态显示——落地并在真实自用中验证。
 
 ## M3 收束、记忆与投影（3 周）
 
