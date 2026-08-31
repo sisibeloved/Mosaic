@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.6 |
+| 版本 | v1.8 |
 | 日期 | 2026-08-29 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -23,6 +23,8 @@
 | v1.4 | 2026-08-28 | Mosaic 项目组 / ZCode | **M1 里程碑完成**：切片 D/E/F/G/H——宿主层注册表（自动扫描含 WSL 覆盖/手动配置/登录门控）+ native-codex 适配器（真机 conformance：结构/会话恢复/可发布；进程组击杀与代理透传等 4 项实证坑位入档）+ Context 七层最小与 Receipt 落库 + 预算 admission（三维账本/梯度/对称预留）+ pause 命令链与 draft 瞬态帧 + epoch 迟到拒绝执行面 + 快照四元组端点与回放一致投影 + 内嵌 Timeline 最小 UI + 迁移基线（migrations 表，goose 评估结论：首个破坏性变更前不引入，见 ADR-0004 注记）+ 崩溃注入 ST（SIGKILL 恢复：版本不漂移/续传不重投）。M1 全部条目勾选；出口判据的"双平台真机演练（录屏）"待负责人在 Windows/macOS 实机执行（WSL 已全绿） |
 | v1.5 | 2026-08-28 | Mosaic 项目组 / ZCode | **M1 收口质量补课（审校驱动）**：外部审校（实测复跑非静态）发现两类问题——正确性缺陷与声明名不副实，本版全部处置。(1) **正确性修复**：内嵌 UI 端到端不可用（幂等键 40 字符全量 400 + SSE 帧读不存在的 room_version 必 409）→ uuidv7 生成器（node 实测 1 万键过服务端正则）+ 发命令前快照端点校准版本；create_room 幂等指纹漏洞（无预检 + 竞态分支空 actor 跳过比对）→ 预检 + replayByReceipt 指纹强制；乐观并发 TOCTOU（校验与提交分属两事务）→ ExpectedRoomVersion 下沉 AppendWithReceipt 事务内（MemStore/SQLite 双实现，回执键先查保竞态重放优先）；SQLite 回执 room_version 恒 0 → 存储权威回填；SSE 追平只取一批静默丢事件 → 分页续读 + resync_required 具名信号；失格候选零痕迹（违 R-01）→ intent.recorded 全记录（unranked band，schema/fixture 同步）；评估 token 永不入账（三维实为二维）→ evalUsage 入 metadata + RebuildBudget 计入；同房间并发双轮 → per-room 串行；generate 失败 revoke reason 张冠李戴 → generation_failed（schema 同步）；Receipt.CreatedAt 恒空 → 引擎时钟赋值；registry 半截写致启动失败 → tmp+rename 原子写；WSL 可执行项启用即坏（Linux 路径交 native exec）→ wslExecer（wsl.exe -d <distro> -- env 包装）；退出孤儿 codex 子进程 → 引擎 Close 生命周期（ctx 取消→进程组击杀，main 接线）。(2) **声明对齐**：v1.4 称"全部勾选"但正文三条目未勾 → 本版核实勾齐并逐条注记遗留；m1 tag（26a04ad）先于出口判据（双平台演练）打下，违反 §7 治理 → 登记偏离：tag 语义修正为"M1 代码完成点"，演练完成后以 tag 注记补录；快照内联正文偏离 RFC-0001 → ADR-0011 登记；OpenAPI/oapi-codegen 未随 M1 落地 → ADR-0007 修订注明延期至 M2（延期不静默消失）；`message.posted` payload Schema 延期至 M2（M2 backlog 登记）；CI 补 macOS amd64 覆盖：macos-13 runner leg 实测恒排队（GitHub 托管 Intel macOS 已退役，platform-notes M-2）→ 改为 ubuntu 腿交叉编译门禁（darwin amd64/arm64 + windows 双架构）；platform-notes.md 建立（§5.2 欠账，13 条实证坑位）；v1.4/ADR-0004 落款 2026-08-29 未来日期修正为 08-28；(3) **M2 backlog 增补**：Windows Job Object、登录态使用时复核、崩溃恢复演练深化（轮中途语义）、conformance 反例 fixture 集（chaos 适配器）、attention 变异验证留档 |
 | v1.6 | 2026-08-29 | Mosaic 项目组 / ZCode | **二轮审校收口（Codex 审校报告，冻结快照 26a04ad，23 项：19×P1 + 4×P2）**。其中 8 项（#5/#10/#11/#12/#13/#15/#16/#2 及 #6 intent 用量半项）已在 v1.5 修复（见上）；其余 15 项本轮全部处置：**#14** SSE 断线重连识别 Last-Event-ID 头（忽略会整段重放致 UI 重复）；**#20** 命令/登记体 1MiB 上限（MaxBytesReader → 413）；**#21** issued_at RFC3339 运行时校验（此前 Schema 只管 fixture）；**#22** hub 断流与退订双 close panic（closed.Once 收口 + 回归测试）；**#8** intent 严格校验（action/type 枚举、分数必为数值且齐全——未知枚举/字符串分数此前被转成合法零分入选择引擎，现弃权 + 告警）；**#7** pause fence（grant 落库后出现过 room.paused 即失效——"最终未暂停"挡不住 pause→resume 快速往返）；**#9** durable round handoff（新增 engine_claims 声明表 + room.ClaimStore 端口：Deliver 返回前声明已落盘、开轮后清除、启动 RecoverClaims 重驱动"已声明未开轮"窗口；outbox 确认不再可能先于轮交接）；**#1** 运行时启用入座（Engine.SetSeats + main 10s resync：enable 端点后无需重启）；**#4** codex 输出发布安全门（控制字符剔除/超限截断显式标注/空正文拒发布——MaxOutputRunes 默认 4000，token 级 cap 需流式、M1 以 rune 代理并登记）；**#18** agent 工作目录隔离（data/agent-work/<profile> 0700 + -C + read-only 三层）；**#17** 非回环监听门禁（-allow-remote 显式豁免 + ST 双向用例）；**#19** 数据面 owner-only（目录 0700 + DB 0600）；**#23** gen-ts 漂移门禁进 CI（版本锁定 15.0.3 + git diff --exit-code；门禁上线即揪出上轮 schema 改动未重生成的 2 个 TS 产物）；**#3** 生产 codex 路径门禁（TestCodexProductionPath_ST：设 MOSAIC_ST_CODEX 即真 codex 全轮闭环，本机已跑通 par_codex 发布"1+1 等于 2."30.7s；CI 无 codex 显式 skip）；**#6 余项** response cap 以 rune 上限代理执行（见 #4）。**过程中发现并修复 1 项自引入回归**：WorkDir 的 -C 与 exec resume 不兼容（codex exit 2，platform-notes L-7）——生产 ST 抓到，-C 改为仅首轮，argv 契约钉入 UT。**agent-native 处置**：thread_id 透传（刺激线程 → Task → agent 回复信封，不再丢线程归属）；提示词补 charter/grant/receipt/thread 任务身份（Context Receipt 可证伪）；draft 流在 native-codex 路径不可用属 exec 批式形态限制（Capabilities.Streaming=false 声明即降级，非缺陷——结构化流式随 M2 ACP/MCP 通道评估）；Resume IT 只验非空回答、每轮全量回放房间历史两项登记 M2 性能/强化项。**结论对照**：审校 Verdict "Not ready" 的五组建议顺序全部执行；出口判据"双平台真机演练（录屏）"仍待负责人 |
+| v1.7 | 2026-08-29 | Mosaic 项目组 / ZCode | **负责人评审三意见处置**。(1) **界面原型**：核实 M1 已交付内嵌 Timeline 最小 UI 并实际承担界面验证职责（v1.5 收口经其端到端复跑揪出幂等键全量 400、SSE 恒 409 两缺陷——界面验证确曾排雷），但计划未将其列为显式目标；本版制度化"核心闭环先经界面可见验证"：M2 首切片真实 SPA 接入 Wails 壳并复验核心闭环后再铺功能面。(2) **多平台后置**：真机演练/安装器/签名/72h 长跑等"多平台成品化"移出主线里程碑出口判据、集中 M4/M5——M1 出口判据的"双平台真机演练（录屏）"正式移交 M4，§7 m1 tag 挂起偏离随之下账；**CI 交叉编译与双平台测试矩阵保留**（§5 条款 1/4 分级改写）：门禁已在跑、边际成本近零，撤销则平台特定缺陷堆积至 M4 集中爆发（platform-notes 13 条实证坑位佐证风险真实）。影响面：M2/M3 出口判据本无双平台项无需改动；DoD（v1.0.0 双平台成品）不变。(3) **开发者模式前置**：现状核实——服务端仅 -addr/-data/-allow-remote 三参数、默认 info 级 slog、internal/ 零调试设施，主线调试缺手段。M2 新增切片 0：`--dev` 开关、debug 日志级别、trace id 贯通命令→事件→outbox→适配器、内部状态只读端点（引擎/座位/epoch/预算水位/outbox 积压）、事件流检视（按房间过滤 + payload 展开）、最小 UI 调试面板；M2 出口判据加"开发者模式复盘完整轮次链路"；M4 一键自诊断报告改为在其上构建；D-4 诊断页条目同步前置。工期计入 M2 既有缓冲（该切片直接服务主线调试效率） |
+| v1.8 | 2026-08-30 | Mosaic 项目组 / ZCode | **负责人裁定：开发者模式自 M2 切片 0 再前置至 M1**——主线打通期即需要定位手段，v1.5/v1.6 收口暴露的缺陷多靠临时埋点定位，前置可省弯路。处置：M1 新增条目（开发者模式，范围同 v1.7 定义：`--dev` 开关 + debug 日志级别 / trace id 贯通命令→事件→outbox→适配器 / 内部状态只读端点 / 事件流检视 / 最小 UI 调试面板）；M1 出口判据补"开发者模式复盘完整轮次链路"；M2 切片 0 与 M2 出口判据对应条款移除（M2 不再含开发者模式条目）；D-4 诊断页条目同步。**当日落地**：实现与门禁见 M1 条目注记（2026-08-30）；出口判据补"开发者模式复盘完整轮次链路"由 TestDevMode_ST 覆盖（真实二进制 -dev：完整轮后 state 水位/事件因果链/debug 日志链/UI 面板注入四通道验证通过）；vet/UT/IT/ST 全绿，四目标交叉编译不回归 |
 
 # 1. 交付目标与"完全可用"定义
 
@@ -73,7 +75,7 @@
 | Edge/Ingress/多副本/Worker 分离 | 单进程；API+worker 角色合并 |
 | S3 对象存储 | 本地文件系统 Artifact 仓库（quarantine/扫描/引用机制照旧，RFC-0009 不变） |
 | egress proxy / SSRF 面 | 本地无回调面；agent 进程出网不设强制边界（个人机器，用户自管），保留可选 allowlist 配置 |
-| OTel 后端 / Prometheus | 本地结构化日志（slog JSON）+ 内置诊断页（指标只读视图）；OTLP 导出保留为可选开关 |
+| OTel 后端 / Prometheus | 本地结构化日志（slog JSON）+ 开发者模式调试面（v1.8 前置至 M1；M4 自诊断报告在其上构建）；OTLP 导出保留为可选开关 |
 | NATS / Temporal / Redis | 永不（架构既定） |
 | 远端 Harness 形态 | 不做（RFC-0002 演进项） |
 
@@ -113,12 +115,15 @@
 - [x] Context 组装七层最小版 + Context Receipt 落库 **（2026-08-28：internal/contextx——charter/participants/stimulus/recent/relations/budget_watermark/task_directive 七层 + 层摘要 sha256 确定性（回放可验证）+ Receipt 落 SQLite（context_receipts 表）；任务携带 Inline+ReceiptRef；**2026-08-28 收口补课：Receipt.CreatedAt 引擎时钟赋值（原恒空串）；评估 usage 入账（intent.recorded metadata + RebuildBudget 汇总，token 维度不再欠计）****
 - [x] draft 流（DraftUpdate 安全子集）+ 暂停/取消 + 迟到拒绝（epoch）**（2026-08-28：pause_room/resume_room 命令链（room.paused/room.started）；暂停期间不开自动轮（人类消息不受限）；DraftUpdate 经 OnDraft→SSE 瞬态帧（无 id、不入日志、断线不补发）；迟到拒绝执行面——生成在途遇暂停/新 epoch → floor.revoked + 正文零发布 + round.closed=revoked_all；预算 admission（RFC-0003 §3.1.4：轮/发言/token 三维账本事件重建、70/90/100 梯度、90% 降 speaker、100% 硬停、对称预留入硬资格）；快照四元组端点 + 回放一致投影（**内联正文是对 RFC-0001 快照形态的已登记偏离，见 ADR-0011**）；崩溃注入 ST（SIGKILL→重启→版本不漂移/续传不重投）。**2026-08-28 收口补课：同房间轮串行（防同 epoch 双轮）；generate 失败撤销 reason 修正为 generation_failed（原张冠李戴 human_preemption）；引擎 Close 生命周期（在途任务取消→子进程组击杀，退出不孤儿化）****
 - [x] 双平台进程管理：spawn/健康检查/退避重启/优雅退出（含 Windows 信号语义）；CLI 检测（codex/kimi/zcode 是否安装）**（2026-08-28 切片 D：宿主层注册表落地——internal/harness：启动自动扫描【PATH + 已知安装位置 glob（nvm/fnm/volta 版本目录，文件系统事实驱动，不依赖 shell 初始化）+ Windows 宿主扫描 WSL 发行版（wsl.exe，UTF-16 输出解码）】、登录态探测【codex 命令式 / kimi 凭证文件，实证】、手动配置共存、启用登录门控（未登录不可启用）、持久化注册表【**2026-08-28 收口：原子写 tmp+rename，半截写不再导致启动失败**】+ /v1/harness/executables 端点；本机 IT 实证 codex（nvm 目录、logged_in）与 kimi 双双发现。**2026-08-28 收口补课：spawn=exec-per-task（任务级超时/整组击杀）；优雅退出=HTTP 排空→引擎 Close→supervisor 关闭；"健康检查/退避重启"经评估不适用 exec-per-task 模型（无常驻进程可查可退避；等价物=登录态门控+任务超时），登记为语义偏移而非缺件。遗留（M2 backlog）：Windows Job Object（孙进程击杀）、登录态使用时复核（当前为启用时点门控）****
-- **出口判据**：Windows 与 macOS 各完成一次"创建房间 → 人发消息 → Codex agent 评估→获选→生成→发布 → 断线重连续传 → 回放重建一致"；崩溃注入后无迟到污染（fixture 断言）。
+- **出口判据**：Windows 与 macOS 各完成一次"创建房间 → 人发消息 → Codex agent 评估→获选→生成→发布 → 断线重连续传 → 回放重建一致"；崩溃注入后无迟到污染（fixture 断言）。（**v1.7 修订**："双平台真机演练"移交 M4 产品化验收——多平台成品化后置，见 §5；同一闭环在开发机（Linux/WSL）已随 v1.6 生产路径 ST 达成，M1 出口判据视为全部满足）
+- [x] 开发者模式（**v1.8 自 M2 切片 0 再前置至 M1**）：`--dev` 开关 + debug 日志级别；trace id 贯通命令→事件→outbox→适配器全链路；内部状态只读端点（引擎/座位/epoch/预算水位/outbox 积压）；事件流检视（按房间过滤 + payload 展开）；最小 UI 调试面板 **（2026-08-30 落地：`-dev` 开关放开 slog debug 级别（LevelVar，常规模式零输出）；trace id——命令端点受理/提交/拒绝均落 trace_id 日志并回带 X-Trace-Id 响应头（客户端自带则透传）；内部状态端点 GET /v1/debug/rooms/{id}/state（room.InspectState 纯函数重建版本/epoch/暂停——与引擎门控同函数不双轨；预算水位 RebuildBudget+梯度+剩余 token；座位经 Engine.Seats 快照；outbox 积压 Pending 前 100 条）+ GET /v1/debug/rooms/{id}/events（权威信封含 seq/tenant/causation/correlation 内部字段，type 过滤 + 游标分页）；引擎/outbox 链路埋点（刺激入队/轮开始/门控跳过原因/选择完成含获选与未获选理由/floor 授予/适配器任务提交与完成/发言发布/轮结束/分发条目逐条）——以 stimulus/round/grant/task 任一 id grep 即还原链路；webui 调试面板（MOSAIC_DEV 注入：状态/事件双视图 + 最近 trace id）。非 dev 端点不注册（404 不暴露面）。门禁：UT（端点门禁/状态/事件分页与过滤/trace id 透传）+ ST（TestDevMode_ST：无 -dev 404、完整轮后三通道复盘——state 水位、事件因果链 round.opened.causation=刺激事件、stdout debug 日志标记、UI 注入标记）；过程中修复 ST 轮完成判据竞态（epoch=1 在 round.opened 落库即成立，outbox 未排空致 backlog 断言偶发——判据改为轮闭环+发言入账+排空三者齐备）**
+- **出口判据补（v1.8）**：开发者模式下可复盘一次完整轮次链路（命令→intent→grant→生成→发布）
 
 ## M2 可用的讨论体验（4 周）
 
-目标：日常讨论体验成形，开始自用（dogfood）。
+目标：日常讨论体验成形，开始自用（dogfood）。开发者模式已随 v1.8 前置至 M1，M2 起全部主线开发默认在其上进行。
 
+- [ ] **真实 SPA 界面先行（v1.7 制度化"界面原型验证"原则）**：SPA 接入 Wails 壳后，先在真实界面复验核心闭环（建房→讨论→断线续传→回放），再铺下述功能面
 - [ ] 三模式（Open Floor / Roundtable 含 rebuttals / Deep Dive）+ Policy 参数配置面
 - [ ] reveal 三策略（sequential / simultaneous / independent_then_cross）
 - [ ] 点名与定向交锋快速通道（slot 上限 + 交锋链）
@@ -178,10 +183,10 @@
 
 # 5. 双平台工程要求（贯穿所有里程碑）
 
-1. **CI 矩阵**：Windows（latest）+ macOS（arm64 + amd64）双 runner，从 M0 起即为合入门禁；conformance fixture 双平台各跑一遍；
+1. **CI 矩阵（门禁保留，v1.7 维持）**：Windows（latest）+ macOS（arm64 + amd64）双 runner，从 M0 起即为合入门禁；conformance fixture 双平台各跑一遍。**多平台成品化后置（M4/M5）不撤此门禁**——交叉编译与双平台测试边际成本近零，是防止平台特定缺陷堆积到 M4 集中爆发的唯一早期防线（platform-notes 实证坑位持续登记）；
 2. **平台差异登记**：进程信号语义（Windows 控制台事件 vs POSIX）、路径/编码、agent CLI 的 per-OS 启动参数（adapter_options per-OS 覆盖，RFC-0002）、WebView 差异（WebView2 运行时检测）——统一登记在 `docs/plan/platform-notes.md`（**2026-08-28 已建立**：M0/M1 实证坑位 13 条入档——wsl.exe UTF-16、登录 shell PATH 不可靠、孙进程握管道、DSN pragma、SIGINT 注册竞态、--output-schema 上游 400 等）；
 3. **不做 WSL 依赖**：Windows 上一等公民为原生；WSL 仅作为用户自选的 agent 运行环境，不做要求；
-4. **发布物**：每里程碑出双平台构建产物；v1.0.0 起附带 checksum 与（如签署）签名；
+4. **发布物（v1.7 分级）**：M0–M3 仅要求 CI 交叉编译产物可构建（免真机）；M4 起出双平台安装产物并以真机演练验收（安装器/签名/首次打开指引/72h 长跑均集中 M4）；v1.0.0 起附带 checksum 与（如签署）签名；
 5. **测试分层（TDD）**：**UT**——无构建标签、进程内纯内存、随包存放，`go test ./...` 常跑；**IT**——构建标签 `it`，跨模块真实组件装配（如 supervisor × echo），`go test -tags it`；**ST**——构建标签 `st`，真实二进制 + 真实 HTTP（现场 `go build` 后拉起进程），`go test -tags st`。CI 依次执行 vet（含全部标签）→ UT → IT → ST。新行为先写测试：未实现的以 `t.Skip` 标注 **TDD backlog**（转绿即销账），禁止无测试的实现合入。
 
 # 6. 依赖与风险
@@ -195,10 +200,11 @@
 | 单人带宽 | 排期滑移 | 范围刚性顺序：M4 产品化不可裁（"不是半成品"是硬要求）；可裁项仅 M5 与 M2 的非主流程模式增强 |
 | agent CLI 本机安装/登录态多样性 | onboarding 复杂 | 向导只承诺支持矩阵内版本；检测失败给出明确指引与降级说明 |
 | Wails 深水区（托盘/更新/通知） | M4 拖期 | M0 做最小壳 spike；通知类降级为应用内 + 托盘角标 |
+| 平台适配后置堆积（v1.7 新增） | M4 集成时平台特定缺陷集中暴露，挤占产品化工期 | CI 双平台编译+测试矩阵不撤（§5 条款 1）；平台相关代码即写即登记 platform-notes；M4 排期已含缓冲 |
 
 # 7. 治理
 
-- **进度跟踪**：本文勾选框为唯一进度事实源，每周更新；里程碑完成打 git tag 并附验收记录（录屏/清单勾选）。**治理偏离登记（2026-08-28，v1.5）**：`m1` tag（26a04ad）先于出口判据"双平台真机演练"打下——tag 语义修正为"M1 代码完成点 + 三层测试全绿"，演练录屏完成后以 tag 附注（`git tag -a -f` 追加验收记录）补录；此后里程碑 tag 严格待出口判据满足。
+- **进度跟踪**：本文勾选框为唯一进度事实源，每周更新；里程碑完成打 git tag 并附验收记录（录屏/清单勾选）。**治理偏离登记（2026-08-28，v1.5）**：`m1` tag（26a04ad）先于出口判据"双平台真机演练"打下——tag 语义修正为"M1 代码完成点 + 三层测试全绿"，演练录屏完成后以 tag 附注（`git tag -a -f` 追加验收记录）补录；此后里程碑 tag 严格待出口判据满足。（**v1.7 下账**："双平台真机演练"已正式移交 M4 产品化验收，`m1` tag 维持"M1 代码完成点 + 三层测试全绿"语义，不再后补。）
 - **范围变更**：任何影响 DoD、形态决策或里程碑出口判据的变更，须先修订本文并在修订记录登记（涉及设计的同步走 RFC/ADR，不逆向）；
 - **验收**：M1/M2/M3 由开发者自验 + 录屏；M4 DoD 由用户逐项验收；v1.0.0 发布 = DoD 全绿 + 双平台安装录屏 + 干净机演练通过。
 

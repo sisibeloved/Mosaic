@@ -39,6 +39,9 @@ func main() {
 	dataDir := flag.String("data", "./data", "data directory (SQLite + runtime files)")
 	// 二轮审校 #17：owner 级 API（命令/SSE/宿主注册表）无认证——非回环监听必须显式豁免
 	allowRemote := flag.Bool("allow-remote", false, "allow non-loopback listen (owner APIs are unauthenticated)")
+	// 开发者模式（M1 v1.8）：debug 日志级别 + /v1/debug 只读端点 + UI 调试面板。
+	// 主线排障入口前置——定位手段先于功能面铺开。
+	dev := flag.Bool("dev", false, "developer mode: debug logs + read-only /v1/debug endpoints + UI debug panel")
 	flag.Parse()
 
 	// 信号处理必须先于一切：listening 日志出现后 ST 立即投递 SIGINT，
@@ -46,7 +49,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	// 日志级别：-dev 下放开 debug（轮链路/分发/命令各环节的 ids 全程可查）；
+	// 常规模式维持 info——debug 埋点在级别门控下零输出。
+	logLevel := new(slog.LevelVar)
+	if *dev {
+		logLevel.Set(slog.LevelDebug)
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
 
 	if host, _, err := net.SplitHostPort(*addr); err == nil {
 		// 复审 #4：空 host（":7420"）与通配地址 = 全接口监听，不是回环——
@@ -126,6 +135,15 @@ func main() {
 		}
 	}()
 
+	// 预算上限：引擎 admission 与调试面水位共用同一份配置（口径不得分叉）。
+	budgetLimits := contextx.Limits{ // M1 防失控默认（宽裕）：预算只作 admission 不进排序（RFC-0003）
+		MaxRounds: 500, MaxUtterances: 1500, MaxTokens: 20_000_000,
+	}
+
+	// 引擎指针先于装配声明：httpapi 调试面的座位快照经其惰性读取
+	// （引擎在宿主扫描完成后才构造，调试端点不得阻塞启动序）。
+	var enginePtr atomic.Pointer[room.Engine]
+
 	mux := httpapi.New(httpapi.Deps{
 		SVC:         svc,
 		Reader:      store,
@@ -134,6 +152,15 @@ func main() {
 		Harness:     harnessRegistry,
 		ProbeRunner: harness.NewHostRunner(),
 		Logger:      logger,
+		Dev:         *dev,
+		Budget:      budgetLimits,
+		Outbox:      store,
+		Seats: func() []room.AgentSeat {
+			if engine := enginePtr.Load(); engine != nil {
+				return engine.Seats()
+			}
+			return nil
+		},
 	})
 
 	// 先 Listen 再 Serve：暴露实际绑定地址（支持 -addr 127.0.0.1:0；裸 ":port"
@@ -144,12 +171,14 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("mosaic-server listening", "addr", ln.Addr().String())
+	if *dev {
+		logger.Info("开发者模式已启用", "debug日志", "已放开", "调试端点", "/v1/debug/rooms/{room_id}/state|events", "UI面板", "已注入")
+	}
 
 	// 房间引擎 + 提交后分发：echo 恒在（conformance 基线）；宿主扫描完成后，
 	// 已启用的真实适配器（如 codex）动态注册并加入座位；此后周期 resync——
 	// 运行时经 /v1/harness/*/enable 启用的适配器无需重启即可入座（二轮审校 #1）。
 	// 分发循环晚于扫描启动——扫描期间的命令照常受理，事件在分发启动后依序投递（outbox 不丢）。
-	var enginePtr atomic.Pointer[room.Engine]
 	go func() {
 		<-scanDone
 		hostRunner := harness.NewHostRunner()
@@ -228,9 +257,7 @@ func main() {
 				Lambda:      0.30, // M1 默认；OQ-04 校准前可配（RFC-0003 §3.1.5）
 				Weights:     attention.DefaultWeights,
 			},
-			Budget: contextx.Limits{ // M1 防失控默认（宽裕）：预算只作 admission 不进排序（RFC-0003）
-				MaxRounds: 500, MaxUtterances: 1500, MaxTokens: 20_000_000,
-			},
+			Budget:   budgetLimits,
 			Receipts: store,                      // Context Receipt 落库（RFC-0007）
 			Claims:   store,                      // durable handoff（二轮审校 #9）
 			OnDraft:  httpapi.DraftConsumer(hub), // DraftUpdate 安全子集 → SSE 瞬态帧

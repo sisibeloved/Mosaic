@@ -166,6 +166,7 @@ func (e *Engine) Deliver(ctx context.Context, entry outbox.Entry) error {
 		}
 	}
 	e.enqueue(env) // per-room FIFO（复审 #16）：到达序即处理序
+	e.debug(env.RoomID, "刺激已入队", "stimulus", env.EventID)
 	return nil
 }
 
@@ -266,6 +267,15 @@ func (e *Engine) warn(roomID, msg string, args ...any) {
 	e.cfg.Logger.Warn("engine: "+msg, append([]any{"room", roomID}, args...)...)
 }
 
+// debug 调试级日志（开发者模式 M1 v1.8）：轮链路各环节的 ids 全部落日志——
+// 复盘时以任一 id（stimulus/round/grant/task）grep 即可还原完整链路。
+func (e *Engine) debug(roomID, msg string, args ...any) {
+	e.cfg.Logger.Debug("engine: "+msg, append([]any{"room", roomID}, args...)...)
+}
+
+// Seats 当前座位快照（开发者模式状态端点用；与轮执行同一份数据）。
+func (e *Engine) Seats() []AgentSeat { return e.seatsSnapshot() }
+
 // roomHistory 拉全量房间事件（M1 房间规模小；增量缓存随 M2 性能项）。
 func (e *Engine) roomHistory(ctx context.Context, roomID string) ([]StoredEvent, error) {
 	var all []StoredEvent
@@ -348,6 +358,7 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 
 	// 门控 1：暂停（R-03：人类打断提升优先级——暂停期间不开自动轮，人类消息不受限）
 	if roomPaused(history) {
+		e.debug(roomID, "轮跳过：房间暂停", "stimulus", stimulus.EventID)
 		return
 	}
 	// 门控 2：预算 admission（100% 硬停自动续聊；90% 降级 speaker；只作 admission 不进排序）
@@ -357,15 +368,19 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 	}
 	ledger := contextx.RebuildBudget(envs)
 	if !ledger.Admit(e.cfg.Budget) {
+		e.debug(roomID, "轮跳过：预算熔断", "stimulus", stimulus.EventID,
+			"rounds", ledger.Rounds, "utterances", ledger.Utterances, "tokens", ledger.Tokens)
 		return
 	}
 	policy := e.cfg.Policy
 	policy.MaxSpeakers = ledger.ReducedSpeakers(e.cfg.Budget, policy.MaxSpeakers)
 	if policy.MaxSpeakers <= 0 {
+		e.debug(roomID, "轮跳过：speaker 降级至零（预算 100%）", "stimulus", stimulus.EventID)
 		return
 	}
 
 	epoch := countRounds(history) + 1
+	e.debug(roomID, "轮开始", "round", roundID, "stimulus", stimulus.EventID, "epoch", epoch)
 
 	// 1) round.opened
 	opened := e.newEnv(roomID, protocol.EventRoundOpened,
@@ -483,6 +498,17 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 
 	// 4) 确定性选择（硬资格 + 记分卡 + MMR）
 	selection := attention.Select(candidates, policy)
+	e.debug(roomID, "选择完成", "round", roundID,
+		"candidates", len(candidates), "selected", len(selection.Selected),
+		"rejected", len(selection.Rejected), "silent", selection.SilentCount)
+	for _, sel := range selection.Selected {
+		e.debug(roomID, "获选", "round", roundID,
+			"intent", sel.IntentID, "participant", sel.ParticipantID, "rank", sel.Rank, "band", sel.Band)
+	}
+	for _, rej := range selection.Rejected {
+		e.debug(roomID, "未获选", "round", roundID,
+			"intent", rej.IntentID, "reason", rej.Reason, "band", rej.Band)
+	}
 	bandByIntent := map[string]attention.Selection{}
 	for _, s := range selection.Selected {
 		bandByIntent[s.IntentID] = s
@@ -559,6 +585,8 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 			CrossSubrounds: 0,
 		})
 	_, _ = e.append(ctx, closed)
+	e.debug(roomID, "轮结束", "round", roundID, "outcome", outcome,
+		"published", published, "revoked", revoked)
 }
 
 type revealOutcome int
@@ -610,6 +638,8 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 	if err != nil {
 		return revealAbort
 	}
+	e.debug(roomID, "floor 已授予", "round", roundID, "grant", grantID,
+		"participant", sel.ParticipantID, "rank", sel.Rank, "epoch", epoch)
 
 	generateThread := ""
 	if stimulus.ThreadID != nil {
@@ -671,6 +701,8 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 	if _, err := e.append(ctx, msg); err != nil {
 		return revealAbort
 	}
+	e.debug(roomID, "agent 发言已发布", "round", roundID, "grant", grantID,
+		"participant", sel.ParticipantID, "event", msg.EventID)
 	return revealPublished
 }
 
@@ -683,6 +715,8 @@ func (e *Engine) revoke(ctx context.Context, roomID, causationEventID, grantID, 
 
 // runTask 提交任务：DraftUpdate 流经 OnDraft 透传（安全子集），阻塞至 Result。
 func (e *Engine) runTask(ctx context.Context, profile agent.Profile, participantID string, task agent.Task) (agent.Result, error) {
+	e.debug(task.RoomID, "适配器任务提交", "task", task.TaskID, "kind", task.Kind,
+		"participant", participantID, "adapter", profile.Adapter, "epoch", task.Epoch)
 	handle, err := e.cfg.Agents.Submit(ctx, profile, task)
 	if err != nil {
 		return agent.Result{}, fmt.Errorf("engine: submit %s: %w", task.Kind, err)
@@ -698,6 +732,8 @@ func (e *Engine) runTask(ctx context.Context, profile agent.Profile, participant
 	if err != nil {
 		return agent.Result{}, fmt.Errorf("engine: result %s: %w", task.Kind, err)
 	}
+	e.debug(task.RoomID, "适配器任务完成", "task", task.TaskID, "kind", task.Kind,
+		"participant", participantID)
 	return result, nil
 }
 

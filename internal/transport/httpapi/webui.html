@@ -32,6 +32,15 @@
 			<button class="ghost" onclick="pauseRoom()">暂停</button>
 			<button class="ghost" onclick="resumeRoom()">恢复</button>
 		</div>
+		<div id="debugPanel" style="display:none; margin-top:16px; border-top:1px solid #232a33; padding-top:10px;">
+			<div class="small">开发者模式</div>
+			<div id="traceInfo" class="small"></div>
+			<div style="display:flex; gap:6px;">
+				<button class="ghost" onclick="debugState()">状态</button>
+				<button class="ghost" onclick="debugEvents()">事件</button>
+			</div>
+			<pre id="debugOut" style="max-height:40vh; overflow:auto; font-size:11px; background:#0d1117; padding:8px; border-radius:6px; white-space:pre-wrap; word-break:break-all;"></pre>
+		</div>
 	</div>
 	<div class="main">
 		<div id="timeline"><div class="small">先创建房间，然后发送消息——agent 会自动参与讨论。</div></div>
@@ -42,7 +51,21 @@
 	</div>
 <script>
 let roomID = null, version = 0, es = null;
+// 开发者模式（M1 v1.8）：服务端 -dev 时本常量被注入为 true，面板展开。
+// 面板直读 /v1/debug 只读端点——状态（版本/epoch/预算/座位/outbox）与权威事件流。
+const MOSAIC_DEV = false;
 const timeline = document.getElementById('timeline');
+if (MOSAIC_DEV) document.getElementById('debugPanel').style.display = 'block';
+async function debugState() {
+  if (!roomID) return;
+  const r = await fetch('/v1/debug/rooms/' + roomID + '/state');
+  document.getElementById('debugOut').textContent = JSON.stringify(await r.json(), null, 2);
+}
+async function debugEvents() {
+  if (!roomID) return;
+  const r = await fetch('/v1/debug/rooms/' + roomID + '/events');
+  document.getElementById('debugOut').textContent = JSON.stringify(await r.json(), null, 2);
+}
 // UUIDv7（服务端契约 ^[0-9a-f]{8}-...-7...-[89ab]...-...{12}$）：
 // 48bit 毫秒时间戳 + 版本/变体位 + 随机尾。旧实现末组 16 hex/全长 40 → 服务端 400（审校实证）。
 function uuidv7() {
@@ -63,6 +86,10 @@ async function syncVersion() {
 }
 async function api(path, body) {
   const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  if (MOSAIC_DEV) {
+    const trc = r.headers.get('X-Trace-Id');
+    if (trc) document.getElementById('traceInfo').textContent = 'trace: ' + trc;
+  }
   const d = await r.json();
   if (!r.ok) throw new Error(d.error ? d.error.message : r.status);
   return d;

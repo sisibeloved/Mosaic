@@ -5,6 +5,7 @@ package outbox
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"time"
 )
@@ -92,7 +93,21 @@ func (d *Dispatcher) dispatchOnce(ctx context.Context) error {
 		return nil
 	}
 	ids := make([]int64, 0, len(entries))
+	// 开发者模式（M1 v1.8）：分发环节是命令→事件→引擎链路的中转——
+	// 每条分发落 debug 日志（含事件类型，解析开销仅在 debug 开启时承担）。
+	verbose := d.logger.Enabled(ctx, slog.LevelDebug)
 	for _, entry := range entries {
+		if verbose {
+			eventType := ""
+			var probe struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(entry.Envelope, &probe) == nil {
+				eventType = probe.Type
+			}
+			d.logger.Debug("outbox: 分发条目", "event", entry.EventID,
+				"room", entry.RoomID, "pos", entry.GlobalPos, "type", eventType)
+		}
 		failed := false
 		for _, c := range d.consumers {
 			if err := c.Deliver(ctx, entry); err != nil {

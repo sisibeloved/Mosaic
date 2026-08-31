@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/agent"
+	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
@@ -31,6 +32,11 @@ type Deps struct {
 	Harness     *harness.Registry
 	ProbeRunner harness.Runner // 手动登记时的探测执行面（nil 时禁止手动登记）
 	Logger      *slog.Logger
+	// 开发者模式（M1 v1.8）：Dev 开启才注册 /v1/debug 只读端点与 UI 调试面板。
+	Dev    bool
+	Budget contextx.Limits         // 预算上限（状态端点的水位/梯度计算基准）
+	Seats  func() []room.AgentSeat // 引擎座位快照（引擎未就绪时返回空）
+	Outbox outbox.Store            // outbox 积压检视（nil 时状态端点该节为 0）
 }
 
 // New 构造路由（含 healthz）。
@@ -50,6 +56,11 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("POST /v1/harness/executables/{id}/enable", s.handleEnableExecutable(true))
 	mux.HandleFunc("POST /v1/harness/executables/{id}/disable", s.handleEnableExecutable(false))
 	mux.HandleFunc("GET /{$}", s.handleIndex)
+	if deps.Dev {
+		// 开发者模式（M1 v1.8）：只读调试面——非 dev 不注册（404 而非 403，不暴露面）
+		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/state", s.handleDebugState)
+		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/events", s.handleDebugEvents)
+	}
 	return mux
 }
 
@@ -92,6 +103,7 @@ func (s *server) execute(w http.ResponseWriter, r *http.Request, roomID string) 
 	if !s.guardWrite(w, r, true) {
 		return
 	}
+	traceID := ensureTraceID(w, r)                 // 命令→事件→outbox→适配器链路的排障口子
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 二轮审校 #20：命令体 1MiB 上限
 	var req commandRequest
 	dec := json.NewDecoder(r.Body)
@@ -105,6 +117,7 @@ func (s *server) execute(w http.ResponseWriter, r *http.Request, roomID string) 
 		writeError(w, http.StatusBadRequest, "bad_request", "命令体 JSON 不合法："+err.Error())
 		return
 	}
+	s.debugf("httpapi: command received", "trace_id", traceID, "kind", req.CommandKind, "room", roomID)
 	res, err := s.deps.SVC.ExecuteCommand(r.Context(), s.deps.Actor, room.Command{
 		RoomID:              roomID,
 		CommandKind:         req.CommandKind,
@@ -114,9 +127,12 @@ func (s *server) execute(w http.ResponseWriter, r *http.Request, roomID string) 
 		Payload:             req.Payload,
 	})
 	if err != nil {
+		s.debugf("httpapi: command rejected", "trace_id", traceID, "kind", req.CommandKind, "err", err)
 		s.writeDomainError(w, err)
 		return
 	}
+	s.debugf("httpapi: command committed", "trace_id", traceID,
+		"event_id", res.EventID, "room_version", res.RoomVersion, "replayed", res.Replayed)
 	writeJSON(w, http.StatusOK, commandResponse{
 		RoomID:      res.RoomID,
 		EventID:     res.EventID,
@@ -392,19 +408,10 @@ func (s *server) handleEnableExecutable(enabled bool) http.HandlerFunc {
 // handleSnapshot：快照四元组（room_version + opaque watermark + 投影/算法版本 + Timeline）。
 func (s *server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	roomID := r.PathValue("room_id")
-	var events []room.StoredEvent
-	cursor := ""
-	for {
-		batch, next, err := s.deps.Reader.EventsAfter(r.Context(), roomID, cursor, 1000)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "snapshot_failed", err.Error())
-			return
-		}
-		events = append(events, batch...)
-		if next == "" || len(batch) == 0 {
-			break
-		}
-		cursor = next
+	events, err := s.readAllEvents(r, roomID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "snapshot_failed", err.Error())
+		return
 	}
 	if len(events) == 0 {
 		writeError(w, http.StatusNotFound, "room_not_found", "房间不存在或尚无事件")
@@ -414,9 +421,14 @@ func (s *server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleIndex：Timeline 最小 UI（内嵌单页；React/Vite SPA 随 M2 接入）。
+// 开发者模式（M1 v1.8）注入 MOSAIC_DEV=true——UI 据此展开调试面板。
 func (s *server) handleIndex(w http.ResponseWriter, _ *http.Request) {
+	html := indexHTML
+	if s.deps.Dev {
+		html = strings.Replace(indexHTML, "const MOSAIC_DEV = false;", "const MOSAIC_DEV = true;", 1)
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(indexHTML))
+	_, _ = w.Write([]byte(html))
 }
 
 // DraftConsumer 把引擎草稿流桥到 SSE（draft.update 瞬态帧：无 id、不入事件日志、
