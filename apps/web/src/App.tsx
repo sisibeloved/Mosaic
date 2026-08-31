@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useRoom } from "./api/room";
 import { Composer } from "./components/Composer";
 import { DevPanel } from "./components/DevPanel";
+import { GraphView } from "./components/GraphView";
 import { ScorecardView } from "./components/ScorecardView";
 import { SettingsView } from "./components/SettingsView";
 import { Timeline } from "./components/Timeline";
@@ -16,7 +17,7 @@ const CONNECTION_TEXT: Record<string, string> = {
 };
 
 export function App() {
-  const [view, setView] = useState<"room" | "scorecard" | "settings">("room");
+  const [view, setView] = useState<"room" | "scorecard" | "graph" | "settings">("room");
   const [addressTarget, setAddressTarget] = useState<string | null>(null);
   const room = useRoom();
 
@@ -30,6 +31,9 @@ export function App() {
           </button>
           <button className={view === "scorecard" ? "active" : ""} onClick={() => setView("scorecard")}>
             记分卡
+          </button>
+          <button className={view === "graph" ? "active" : ""} onClick={() => setView("graph")}>
+            图谱
           </button>
           <button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>
             设置
@@ -71,6 +75,8 @@ export function App() {
           <SettingsView roomID={room.roomID} />
         ) : view === "scorecard" ? (
           <ScorecardView roomID={room.roomID} />
+        ) : view === "graph" ? (
+          <GraphView roomID={room.roomID} />
         ) : (
           <>
             <TypingStatus roundOpen={room.roundOpen} typing={room.typing} />

@@ -16,6 +16,12 @@ const (
 	EventRoundClosed    = "round.closed"
 	EventMessagePosted  = "message.posted"
 	EventPolicyChanged  = "policy.changed"
+	EventThreadForked   = "thread.forked"
+	EventThreadPaused   = "thread.paused"
+	EventThreadResumed  = "thread.resumed"
+	EventThreadClosed   = "thread.closed"
+	EventThreadReopened = "thread.reopened"
+	EventThreadMerged   = "thread.merged"
 	EventRoomCreated    = "room.created"
 	EventRoomPaused     = "room.paused"
 	EventRoomStarted    = "room.started"
@@ -101,6 +107,17 @@ type PolicyWeights struct {
 	DirectAddress float64 `json:"direct_address"`
 	FloorShare    float64 `json:"floor_share"`
 	Repetition    float64 `json:"repetition"`
+}
+
+// ThreadLifecyclePayload thread 生命周期事件族（RFC-0004；forked 携带谱系）。
+type ThreadLifecyclePayload struct {
+	ThreadID       string   `json:"thread_id"`
+	ParentThreadID string   `json:"parent_thread_id,omitempty"` // forked
+	SourceEventID  string   `json:"source_event_id,omitempty"`  // forked
+	Goal           string   `json:"goal,omitempty"`             // forked（必填于命令面）
+	Participants   []string `json:"participants,omitempty"`
+	MergedInto     string   `json:"merged_into,omitempty"` // merged
+	Reason         string   `json:"reason,omitempty"`
 }
 
 // IntentEndorsedPayload intent.endorsed：人类保送（OQ-17；Agent 不能保送 Agent）。

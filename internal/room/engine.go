@@ -373,6 +373,18 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 	for i := range history {
 		envs[i] = history[i].Envelope
 	}
+
+	// 门控 0：线程状态（RFC-0004）——刺激落暂停/关闭/已合并线程不开自动轮
+	//（人类消息本身不受限，只是不驱动该线程的仲裁轮）。
+	if stimulus.ThreadID != nil && *stimulus.ThreadID != "" {
+		switch ThreadStateOf(envs, *stimulus.ThreadID) {
+		case ThreadPaused, ThreadClosed, ThreadMerged:
+			e.debug(roomID, "轮跳过：线程不在活跃态", "thread", *stimulus.ThreadID,
+				"state", ThreadStateOf(envs, *stimulus.ThreadID))
+			return
+		}
+	}
+
 	ledger := contextx.RebuildBudget(envs)
 	if !ledger.Admit(e.cfg.Budget) {
 		e.debug(roomID, "轮跳过：预算熔断", "stimulus", stimulus.EventID,

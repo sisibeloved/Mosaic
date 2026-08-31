@@ -178,11 +178,13 @@ export interface components {
          *     create_room → CreateRoomPayload；post_message → PostMessagePayload；
          *     pause_room → PauseRoomPayload；resume_room → 空 payload；
          *     set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）；
-         *     endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）。
+         *     endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）；
+         *     fork/pause/resume/close/reopen/merge_thread → ThreadLifecyclePayload（RFC-0004 线程生命周期，
+         *     状态机转移校验；merge 在个人版单 owner 形态下为直接命令=确认权）。
          */
         RoomCommand: {
             /** @enum {string} */
-            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "set_policy" | "endorse_intent";
+            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "set_policy" | "endorse_intent" | "fork_thread" | "pause_thread" | "resume_thread" | "close_thread" | "reopen_thread" | "merge_thread";
             expected_room_version: number;
             /** @description UUIDv7（服务端按 tenant+key+kind 去重；同键异指纹 409） */
             idempotency_key: string;
@@ -207,6 +209,15 @@ export interface components {
             kind: "supports" | "challenges" | "extends" | "questions" | "evidence_for" | "supersedes" | "analogy" | "relates";
         };
         PauseRoomPayload: {
+            reason?: string;
+        };
+        /** @description 线程生命周期命令载荷（RFC-0004）。fork_thread 必填 source_event_id+goal；其余必填 thread_id；merge 另必填 merged_into。 */
+        ThreadLifecyclePayload: {
+            thread_id?: string;
+            source_event_id?: string;
+            goal?: string;
+            participants?: string[];
+            merged_into?: string;
             reason?: string;
         };
         /** @description 人类保送（RFC-0003 §3.1.11 / OQ-17）。effect=grant 直接授予 Floor（默认）；boost 随 Policy 加权参数定稿开放。不绕过预算/硬资格/安全；对全体可见。 */
@@ -298,6 +309,23 @@ export interface components {
                 response_cap?: number;
                 reveal_strategy?: string;
             };
+            /** @description 线程投影（RFC-0004 生命周期状态 + fork 谱系 + 合并去向）。 */
+            threads: {
+                thread_id: string;
+                /** @enum {string} */
+                state: "active" | "paused" | "closed" | "merged";
+                parent?: string;
+                goal?: string;
+                merged_into?: string;
+                message_count?: number;
+            }[];
+            /** @description 显式关系边（forked_from/responds_to/merged_into + relations 类型化边）。推断边属结构投影（M3），接入后标 inferred=true——双视图显式与推断区分。 */
+            graph: {
+                kind: string;
+                from: string;
+                to: string;
+                inferred: boolean;
+            }[];
             /** @description 记分卡（R-08/OQ-17：intent 全量投影，band + 未选理由 + 保送状态）。 */
             scorecard: {
                 intent_id: string;

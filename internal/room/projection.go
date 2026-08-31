@@ -49,6 +49,8 @@ type Snapshot struct {
 	Timeline          []TimelineItem  `json:"timeline"`
 	Policy            PolicyView      `json:"policy"`
 	Scorecard         []ScorecardItem `json:"scorecard"`
+	Threads           []ThreadView    `json:"threads"`
+	Graph             []GraphEdge     `json:"graph"`
 }
 
 // ScorecardItem 记分卡视图项（R-08/OQ-17：band + 未选理由 + 保送状态对成员可查）。
@@ -94,6 +96,12 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 		envs[i] = events[i].Envelope
 	}
 	policy := RebuildPolicy(envs)
+	threads, graph := RebuildThreads(envs)
+	snap.Threads = make([]ThreadView, 0, len(threads))
+	for _, th := range threads {
+		snap.Threads = append(snap.Threads, *th)
+	}
+	snap.Graph = graph
 	snap.Policy = PolicyView{
 		PolicyVersion:  policy.PolicyVersion,
 		Mode:           policy.Params.Mode,

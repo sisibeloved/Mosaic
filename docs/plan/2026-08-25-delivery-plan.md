@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.18 |
+| 版本 | v1.19 |
 | 日期 | 2026-08-31 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -35,6 +35,7 @@
 | v1.16 | 2026-08-31 | Mosaic 项目组 / ZCode | **B 轨切片 2：reveal 三策略执行面（RFC-0003 §3.1.8）**。(1) **simultaneous**：全部获选者以同一冻结 context_watermark 先行发授（生成时互不可见），逐个生成（失败仅撤销该授 AR-008），全部生成完成后按 rank 统一揭示——B1 的 sequential 收口解除，默认束对齐 RFC（Open Floor=simultaneous / Roundtable=independent_then_cross / Deep Dive=sequential）。(2) **independent_then_cross**：独立首轮（simultaneous 语义）后开放 cross 子轮——复用完整 Intent→Floor 路径（评估→选择→发授→生成→发布，非免评审直通）；参与资格限本轮已发言者；选择上限不超发言者数（cross 不增加名额）；预算按当下账本重判（熔断即静默收口）；cross 上下文重新组装（揭示后历史 + 最近 agent 发言为回应锚 + 任务指令层 cross 标注）；Roundtable 的 rebuttals=k 即本机制参数化命名（policy 增 rebuttals 0-2，默认 1）。round.closed.cross_subrounds 计数，授予/intent 事件 metadata 标记子轮关系。(3) **工程**：揭示链拆为发授/生成/发布三段（三策略复用；迟到围栏与 CAS 语义不变）；评估→选择→记录抽为 evaluateAndSelect（主波与 cross 共用）；引擎 11 处静态 Policy 注入全部移除。UT 三策略断言（冻结水位/交错推进/cross 计数与资格）/IT/ST 全绿；Schema/OpenAPI/TS 类型同步。**登记**：Deep Dive 交锋链与模式自动续聊参数不随本切片（前者随 B3 点名定向、后者属轮次自驱动语义，均已在 policy 注释与计划登记） |
 | v1.17 | 2026-08-31 | Mosaic 项目组 / ZCode | **B 轨切片 3：点名与定向交锋快速通道（RFC-0003 §3.1.9）**。(1) **定向 slot**：公开消息 addressed_to → 被点名者下一轮获定向回应 slot——优先资格（未获选的合格定向候选强制入围前排）+ 发言顺序前置（稳定排序 + rank 重排）；floor.granted.directed 标记；slot 调整在选择后、intent.recorded 前应用（Selected 标记与最终选择一致）。(2) **slot 约束**：上限 min(ceil(名额/2), 2)（纯函数 UT 表驱动钉住 1/1/2/2/2）；全员模式（Roundtable）仅顺序前置不增名额；定向不绕过硬资格/预算 admission。(3) **交锋链**：连续定向轮链长自事件历史推导（round.opened causation → 刺激 addressed_to 回溯）；链 ≥2 意图窗口缩短 2/3（整数秒向上取整，20s→14s/15s→10s）；深度 >4（RFC 默认）回正常评分队列与窗口——链计数、缩短、截止全在 round.opened 写入前完成（声明即执行）。(4) **界面**：时间线作者可点击点名（输入区定向 chip，可取消）；post_message addressed_to 全链路（客户端/时间线/引擎）。UT（slot 优先与上限/链窗口缩短与超限回退/上限推导表）+ 三层门禁全绿。**登记**：dyad_share 对交锋链的降权约束依赖 RFC-0006 结构投影（M3 接入后挂接）；agent 侧主动 addressed_to（交锋链自动延续）随适配器提示词引导落地 |
 | v1.18 | 2026-08-31 | Mosaic 项目组 / ZCode | **B 轨切片 4：人类保送 + 记分卡面板（RFC-0003 §3.1.11 / OQ-17 / R-08）**。(1) **endorse_intent 命令**：intent_id 存在性校验（Reader 注入）→ intent.endorsed 事件（human actor、public 对全体可见；effect 本切片仅 grant——boost 语义依赖 Policy 加权参数定稿，未定不收）。(2) **引擎执行面**：intent.endorsed → 上下文重组（保送指令层 + 原轮刺激锚）→ floor.granted（grant_id 语义化前缀 + causation=endorsed 事件——人类可追溯链 message→grant→endorsed(human)；metadata endorsed 标记）→ 生成 → 发布（独立暂停围栏 + CAS 良性重试）；不绕过预算（熔断/预留不足跳过）、硬资格（座位在席）、安全（适配器发布门）。(3) **记分卡**：intent.recorded 增公开 unselected_reason（R-08 从 metadata 升公开 payload，schema expand-first 可选字段）；快照增 scorecard 区（intent 全量投影 + intent.endorsed 合并 endorsed 标记——事件不回写）；SPA 记分卡面板（第三导航：band/获选/未选理由/公开理由 + 未获选意向一键保送，409 校准重试）。UT（保送全链 + 人类可追溯链断言 + boost/未知 intent/非法 id 拒绝）/IT/ST 全绿；OpenAPI 契约枚举扩 6 种 |
+| v1.19 | 2026-08-31 | Mosaic 项目组 / ZCode | **B 轨切片 5（收口）：Thread 生命周期 + Timeline/Graph 双视图（RFC-0004）——B 轨全部切片完成**。(1) **事件族**：thread.forked/paused/resumed/closed/reopened/merged（六事件 payload 携谱系/目标/合并去向；phase.changed 与 archived 随 M3——RFC 表 T2/归档项如实登记）。(2) **命令族**：fork_thread（source_event_id+goal 必填，源事件定位父线程）/pause/resume/close/reopen/merge_thread——状态机转移在命令面校验（active↔paused→closed→reopened；merged 终态），merge 在个人版单 owner 形态下为直接命令（owner 即 OQ-05 确认权；propose/accept 双步为多人类形态语义，登记）。(3) **引擎门控**：刺激落暂停/关闭/已合并线程不开自动轮（人类消息本身不受限）；线程状态自事件投影。(4) **投影**：快照增 threads（状态/谱系/目标/消息数）与 graph（显式边全集：forked_from/responds_to/merged_into + relations 类型化边；推断边属 RFC-0006 结构投影 M3 接入后标 inferred——双视图显式与推断的区分语义已就位）。(5) **界面**：图谱视图（第四导航——线程表 + 边列表，显式边全量、推断位标注 M3）。UT（状态机全转移 + 非法转移拒绝 + 图边投影 + 引擎线程门）/IT/ST 全绿；契约枚举扩 12 种命令。**B 轨五切片（B1 策略基座/B2 reveal 三策略/B3 点名定向/B4 保送记分卡/B5 Thread 图谱）全部完成**。**登记**：上下文按线程隔离的完整契约（RFC-0004 §3.5 近期窗口线程内过滤）与 fork 参与者子集的上下文裁剪随 M3 记忆层；Thread UI 的 fork 入口（消息级分叉按钮）随 M2 后续 dogfood 反馈迭代 |
 
 # 1. 交付目标与"完全可用"定义
 
@@ -137,10 +138,10 @@
 - [ ] 完整设置页面（设置菜单，**v1.11 增补·M1 验收反馈**）：统一承载配置面——harness 可执行项管理（启用/禁用/登录态展示，复用 `/v1/harness/executables` 端点）；开发者模式开关说明与调试面板入口（M1 已落地 `-dev` 与 webui 面板，接导航）；Policy/预算参数（三模式条目的"Policy 参数配置面"归入本页）；界面偏好（语言/主题，i18n 文案随 M4 填充）
 - [ ] 发言静默期"正在输入"状态显示（**v1.11 增补·M1 验收反馈**）：相邻发言间隔实测十几至几十秒（exec 批式生成时长），当前 Timeline 仅渲染已发布发言、静默期零反馈；复用既有信号导出进行中状态——`round.opened`→"评估中"（全座位并行 intent 评估）、`floor.granted`→座位级"正在生成"、`message.posted` 解除，经 SSE 事件与 OnDraft 瞬态帧通道渲染，不新增日志事件族；Capabilities.Streaming=false 的适配器（native-codex）以此状态帧代理 draft 流
 - [ ] 三模式（Open Floor / Roundtable 含 rebuttals / Deep Dive）+ Policy 参数配置面（配置面 UI 归入设置页面条目）
-- [ ] reveal 三策略（sequential / simultaneous / independent_then_cross）
-- [ ] 点名与定向交锋快速通道（slot 上限 + 交锋链）
-- [ ] 人类保送（intent.endorsed）+ 记分卡面板（band + 未选 Intent 可查）
-- [ ] Thread fork/pause/resume/close/reopen/merge + Timeline/Graph 双视图（显式 vs 推断区分）
+- [x] reveal 三策略（sequential / simultaneous / independent_then_cross）**（2026-08-31 B2：simultaneous 冻结水位统一揭示 + ITC cross 子轮；默认束对齐 RFC）**
+- [x] 点名与定向交锋快速通道（slot 上限 + 交锋链）**（2026-08-31 B3：定向 slot 优先资格+顺序前置、上限 min(ceil(名额/2),2)、交锋链窗口 2/3 与深度 4；dyad 约束随 M3 投影）**
+- [x] 人类保送（intent.endorsed）+ 记分卡面板（band + 未选 Intent 可查）**（2026-08-31 B4：endorse 命令/事件/执行链（人类可追溯）+ 快照 scorecard + SPA 记分卡面板；boost 随 Policy 加权参数定稿）**
+- [x] Thread fork/pause/resume/close/reopen/merge + Timeline/Graph 双视图（显式 vs 推断区分）**（2026-08-31 B5：六命令/六事件/状态机/引擎门控/快照 threads+graph/图谱视图；推断边 M3 接入后标 inferred）**
 - [ ] Kimi Code 适配器晋级（native 或 ACP，按 spike 证据）→ 凑足 2 个真实适配器
 - [ ] 历史查询双通道之一落地（MCP server 或结构化请求，HistoryItem 视图）
 - [x] OpenAPI 3.1 + oapi-codegen strict 生成（ADR-0007 修订：自 M1 延期至此，随 SPA 接入）+ gen/ts 产物新鲜度 CI 校验（Schema 改动未重生成即红）**（2026-08-31 A 轨契约切片落地：api/http-api/openapi.yaml 全表面 + oapi-codegen v2.8.0（go.mod tool 锁版本）生成 ServerInterface/边界模型/内嵌 spec，httpapi 实现接口——操作集一致性编译期保证；strict-server 包装有意不启用（接管解码会静默放行未知字段，与 DisallowUnknownFields 纪律冲突，ADR-0007 登记偏离），请求侧行为由契约测试回填；CI 增 gen-api 漂移门禁。SPA 侧类型消费随 A 轨次切片接入）**

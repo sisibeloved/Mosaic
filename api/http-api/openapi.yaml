@@ -361,11 +361,13 @@ components:
         create_room → CreateRoomPayload；post_message → PostMessagePayload；
         pause_room → PauseRoomPayload；resume_room → 空 payload；
         set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）；
-        endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）。
+        endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）；
+        fork/pause/resume/close/reopen/merge_thread → ThreadLifecyclePayload（RFC-0004 线程生命周期，
+        状态机转移校验；merge 在个人版单 owner 形态下为直接命令=确认权）。
       properties:
         command_kind:
           type: string
-          enum: [create_room, post_message, pause_room, resume_room, set_policy, endorse_intent]
+          enum: [create_room, post_message, pause_room, resume_room, set_policy, endorse_intent, fork_thread, pause_thread, resume_thread, close_thread, reopen_thread, merge_thread]
         expected_room_version:
           type: integer
           minimum: 0
@@ -431,6 +433,17 @@ components:
         reason:
           type: string
           maxLength: 280
+    ThreadLifecyclePayload:
+      type: object
+      additionalProperties: false
+      description: 线程生命周期命令载荷（RFC-0004）。fork_thread 必填 source_event_id+goal；其余必填 thread_id；merge 另必填 merged_into。
+      properties:
+        thread_id: { type: string, pattern: "^thr_[0-9A-Za-z_-]+$" }
+        source_event_id: { type: string, pattern: "^evt_[0-9A-Za-z_-]+$" }
+        goal: { type: string, maxLength: 280 }
+        participants: { type: array, items: { type: string } }
+        merged_into: { type: string, pattern: "^thr_[0-9A-Za-z_-]+$" }
+        reason: { type: string, maxLength: 280 }
     EndorseIntentPayload:
       type: object
       required: [intent_id, effect]
@@ -551,7 +564,7 @@ components:
           description: opaque cursor（续传位点）
     Snapshot:
       type: object
-      required: [room_id, room_version, watermark, projection_version, algorithm_version, timeline, policy, scorecard]
+      required: [room_id, room_version, watermark, projection_version, algorithm_version, timeline, policy, scorecard, threads, graph]
       properties:
         room_id: { type: string }
         room_version: { type: integer, format: int64 }
@@ -571,6 +584,30 @@ components:
             intent_window: { type: string }
             response_cap: { type: integer, format: int64 }
             reveal_strategy: { type: string }
+        threads:
+          type: array
+          description: 线程投影（RFC-0004 生命周期状态 + fork 谱系 + 合并去向）。
+          items:
+            type: object
+            required: [thread_id, state]
+            properties:
+              thread_id: { type: string }
+              state: { type: string, enum: [active, paused, closed, merged] }
+              parent: { type: string }
+              goal: { type: string }
+              merged_into: { type: string }
+              message_count: { type: integer }
+        graph:
+          type: array
+          description: 显式关系边（forked_from/responds_to/merged_into + relations 类型化边）。推断边属结构投影（M3），接入后标 inferred=true——双视图显式与推断区分。
+          items:
+            type: object
+            required: [kind, from, to, inferred]
+            properties:
+              kind: { type: string }
+              from: { type: string }
+              to: { type: string }
+              inferred: { type: boolean }
         scorecard:
           type: array
           description: 记分卡（R-08/OQ-17：intent 全量投影，band + 未选理由 + 保送状态）。

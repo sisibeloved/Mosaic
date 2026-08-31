@@ -16,28 +16,70 @@ import (
 
 // Defines values for RoomCommandCommandKind.
 const (
+	CloseThread   RoomCommandCommandKind = "close_thread"
 	CreateRoom    RoomCommandCommandKind = "create_room"
 	EndorseIntent RoomCommandCommandKind = "endorse_intent"
+	ForkThread    RoomCommandCommandKind = "fork_thread"
+	MergeThread   RoomCommandCommandKind = "merge_thread"
 	PauseRoom     RoomCommandCommandKind = "pause_room"
+	PauseThread   RoomCommandCommandKind = "pause_thread"
 	PostMessage   RoomCommandCommandKind = "post_message"
+	ReopenThread  RoomCommandCommandKind = "reopen_thread"
 	ResumeRoom    RoomCommandCommandKind = "resume_room"
+	ResumeThread  RoomCommandCommandKind = "resume_thread"
 	SetPolicy     RoomCommandCommandKind = "set_policy"
 )
 
 // Valid indicates whether the value is a known member of the RoomCommandCommandKind enum.
 func (e RoomCommandCommandKind) Valid() bool {
 	switch e {
+	case CloseThread:
+		return true
 	case CreateRoom:
 		return true
 	case EndorseIntent:
 		return true
+	case ForkThread:
+		return true
+	case MergeThread:
+		return true
 	case PauseRoom:
+		return true
+	case PauseThread:
 		return true
 	case PostMessage:
 		return true
+	case ReopenThread:
+		return true
 	case ResumeRoom:
 		return true
+	case ResumeThread:
+		return true
 	case SetPolicy:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SnapshotThreadsState.
+const (
+	Active SnapshotThreadsState = "active"
+	Closed SnapshotThreadsState = "closed"
+	Merged SnapshotThreadsState = "merged"
+	Paused SnapshotThreadsState = "paused"
+)
+
+// Valid indicates whether the value is a known member of the SnapshotThreadsState enum.
+func (e SnapshotThreadsState) Valid() bool {
+	switch e {
+	case Active:
+		return true
+	case Closed:
+		return true
+	case Merged:
+		return true
+	case Paused:
 		return true
 	default:
 		return false
@@ -161,7 +203,9 @@ type ManualExecutableRequest struct {
 // create_room → CreateRoomPayload；post_message → PostMessagePayload；
 // pause_room → PauseRoomPayload；resume_room → 空 payload；
 // set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）；
-// endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）。
+// endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）；
+// fork/pause/resume/close/reopen/merge_thread → ThreadLifecyclePayload（RFC-0004 线程生命周期，
+// 状态机转移校验；merge 在个人版单 owner 形态下为直接命令=确认权）。
 type RoomCommand struct {
 	CommandKind         RoomCommandCommandKind `json:"command_kind"`
 	ExpectedRoomVersion int                    `json:"expected_room_version"`
@@ -178,6 +222,14 @@ type RoomCommandCommandKind string
 // Snapshot defines model for Snapshot.
 type Snapshot struct {
 	AlgorithmVersion int64 `json:"algorithm_version"`
+
+	// Graph 显式关系边（forked_from/responds_to/merged_into + relations 类型化边）。推断边属结构投影（M3），接入后标 inferred=true——双视图显式与推断区分。
+	Graph []struct {
+		From     string `json:"from"`
+		Inferred bool   `json:"inferred"`
+		Kind     string `json:"kind"`
+		To       string `json:"to"`
+	} `json:"graph"`
 
 	// Policy 当前策略区（记分卡透明 OQ-17——权重/模式参数对成员可见、版本化）。
 	Policy struct {
@@ -208,9 +260,22 @@ type Snapshot struct {
 		Type             *string    `json:"type,omitempty"`
 		UnselectedReason *string    `json:"unselected_reason,omitempty"`
 	} `json:"scorecard"`
+
+	// Threads 线程投影（RFC-0004 生命周期状态 + fork 谱系 + 合并去向）。
+	Threads []struct {
+		Goal         *string              `json:"goal,omitempty"`
+		MergedInto   *string              `json:"merged_into,omitempty"`
+		MessageCount *int                 `json:"message_count,omitempty"`
+		Parent       *string              `json:"parent,omitempty"`
+		State        SnapshotThreadsState `json:"state"`
+		ThreadId     string               `json:"thread_id"`
+	} `json:"threads"`
 	Timeline  []TimelineItem `json:"timeline"`
 	Watermark string         `json:"watermark"`
 }
+
+// SnapshotThreadsState defines model for Snapshot.Threads.State.
+type SnapshotThreadsState string
 
 // TimelineItem defines model for TimelineItem.
 type TimelineItem struct {

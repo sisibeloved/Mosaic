@@ -92,6 +92,13 @@ func (s *Service) ExecuteCommand(ctx context.Context, actor Actor, cmd Command) 
 		return s.setPolicy(ctx, actor, cmd)
 	case "endorse_intent":
 		return s.endorseIntent(ctx, actor, cmd)
+	case "fork_thread", "pause_thread", "resume_thread", "close_thread", "reopen_thread", "merge_thread":
+		eventType := map[string]string{
+			"fork_thread": "thread.forked", "pause_thread": "thread.paused",
+			"resume_thread": "thread.resumed", "close_thread": "thread.closed",
+			"reopen_thread": "thread.reopened", "merge_thread": "thread.merged",
+		}[cmd.CommandKind]
+		return s.executeThreadCommand(ctx, actor, cmd, eventType)
 	default:
 		return nil, fmt.Errorf("%w: 未知命令 %q", ErrInvalidCommand, cmd.CommandKind)
 	}
