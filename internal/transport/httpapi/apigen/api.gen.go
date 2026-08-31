@@ -191,6 +191,9 @@ type Error struct {
 type Executable struct {
 	Adapter string `json:"adapter"`
 
+	// Channel 实例渠道（ADR-0012）：cli | app:codex-desktop | app:kimi-work
+	Channel *string `json:"channel,omitempty"`
+
 	// Digest sha256（版本固定门禁用）
 	Digest       *string    `json:"digest,omitempty"`
 	DiscoveredAt *time.Time `json:"discovered_at,omitempty"`
@@ -206,6 +209,9 @@ type Executable struct {
 	LoginState *string `json:"login_state,omitempty"`
 	Path       string  `json:"path"`
 
+	// Priority 家族裁定优先级（数值小者优先；列表已按 adapter→priority→path 排序）
+	Priority *int `json:"priority,omitempty"`
+
 	// Runtime native | wsl
 	Runtime string `json:"runtime"`
 
@@ -216,7 +222,10 @@ type Executable struct {
 
 // ManualExecutableRequest defines model for ManualExecutableRequest.
 type ManualExecutableRequest struct {
-	Adapter string  `json:"adapter"`
+	Adapter string `json:"adapter"`
+
+	// Channel 可选渠道覆盖（cli 或 app:<小写>），空值按 cli
+	Channel *string `json:"channel,omitempty"`
 	Distro  *string `json:"distro,omitempty"`
 	Path    string  `json:"path"`
 	Runtime string  `json:"runtime"`

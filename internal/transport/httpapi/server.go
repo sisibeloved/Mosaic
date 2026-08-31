@@ -418,6 +418,7 @@ type manualExecutableRequest struct {
 	Distro  string `json:"distro"`
 	Path    string `json:"path"`
 	Version string `json:"version"`
+	Channel string `json:"channel"` // 可选渠道覆盖（ADR-0012）：cli 或 app:<小写>
 }
 
 func (s *server) AddHarnessExecutable(w http.ResponseWriter, r *http.Request) {
@@ -443,7 +444,7 @@ func (s *server) AddHarnessExecutable(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.deps.Harness.AddManual(r.Context(), s.deps.ProbeRunner, harness.Executable{
 		Adapter: req.Adapter, Runtime: req.Runtime, Distro: req.Distro,
-		Path: req.Path, Version: req.Version,
+		Path: req.Path, Version: req.Version, Channel: req.Channel,
 	}); err != nil {
 		if errors.Is(err, harness.ErrInvalidEntry) {
 			writeError(w, http.StatusBadRequest, "invalid_entry", err.Error())

@@ -728,6 +728,8 @@ components:
         digest: { type: string, description: sha256（版本固定门禁用） }
         login_state: { type: string, description: logged_in | logged_out | unknown }
         source: { type: string, description: auto_scan | manual }
+        channel: { type: string, description: 实例渠道（ADR-0012）：cli | app:codex-desktop | app:kimi-work }
+        priority: { type: integer, description: 家族裁定优先级（数值小者优先；列表已按 adapter→priority→path 排序） }
         discovered_at: { type: string, format: date-time }
         enabled: { type: boolean }
     ManualExecutableRequest:
@@ -740,3 +742,4 @@ components:
         distro: { type: string }
         path: { type: string }
         version: { type: string }
+        channel: { type: string, description: 可选渠道覆盖（cli 或 app:<小写>），空值按 cli }

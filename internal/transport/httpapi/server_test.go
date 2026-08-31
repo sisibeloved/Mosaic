@@ -513,6 +513,50 @@ func TestHarnessEndpoints(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown id status = %d", resp.StatusCode)
 	}
+
+	// 渠道覆盖（ADR-0012）：手动登记带 channel → 列表回显 channel 与家族 priority
+	resp, err = http.Post(ts.URL+"/v1/harness/executables", "application/json",
+		strings.NewReader(`{"adapter":"kimi","runtime":"native","path":"/opt/tools/kimi-work","channel":"app:kimi-work"}`))
+	if err != nil {
+		t.Fatalf("add with channel: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("add with channel status = %d", resp.StatusCode)
+	}
+
+	// 非法 channel 形态 → 400
+	resp, _ = http.Post(ts.URL+"/v1/harness/executables", "application/json",
+		strings.NewReader(`{"adapter":"kimi","runtime":"native","path":"/opt/tools/kimi-bad","channel":"Bad Channel!"}`))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad channel status = %d", resp.StatusCode)
+	}
+
+	list2, err := http.Get(ts.URL + "/v1/harness/executables")
+	if err != nil {
+		t.Fatalf("list2: %v", err)
+	}
+	defer list2.Body.Close()
+	var doc2 struct {
+		Executables []harness.Executable `json:"executables"`
+	}
+	_ = json.NewDecoder(list2.Body).Decode(&doc2)
+	var kimiExe *harness.Executable
+	for i := range doc2.Executables {
+		if doc2.Executables[i].Path == "/opt/tools/kimi-work" {
+			kimiExe = &doc2.Executables[i]
+		}
+	}
+	if kimiExe == nil {
+		t.Fatalf("kimi-work 未入列表：%+v", doc2.Executables)
+	}
+	if kimiExe.Channel != "app:kimi-work" {
+		t.Fatalf("channel = %q，应回显 app:kimi-work", kimiExe.Channel)
+	}
+	if kimiExe.Priority != harness.PriorityFor("kimi", "app:kimi-work") {
+		t.Fatalf("priority = %d，应为家族裁定值 %d", kimiExe.Priority, harness.PriorityFor("kimi", "app:kimi-work"))
+	}
 }
 
 func TestHarnessLoginGateEndpoint(t *testing.T) {
