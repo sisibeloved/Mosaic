@@ -8,10 +8,15 @@
   "type": "policy.changed",
   "schema_version": 1,
   "occurred_at": "2026-08-31T10:01:00.123Z",
-  "actor": { "participant_id": "par_01H8TESTOWNER0000000000", "kind": "human" },
+  "actor": {
+    "participant_id": "par_01H8TESTOWNER0000000000",
+    "kind": "human"
+  },
   "causation_id": null,
   "correlation_id": null,
-  "visibility": { "kind": "public" },
+  "visibility": {
+    "kind": "public"
+  },
   "payload": {
     "mode": "deep_dive",
     "max_speakers": 2,
@@ -27,7 +32,8 @@
     },
     "intent_window": "15s",
     "response_cap": 900,
-    "reveal_strategy": "sequential"
+    "reveal_strategy": "sequential",
+    "rebuttals": 0
   },
   "metadata": {}
 }

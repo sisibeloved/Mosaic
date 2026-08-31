@@ -9,11 +9,11 @@ import (
 
 const setPolicyValidJSON = `{"mode":"roundtable","max_speakers":8,"lambda":0.3,` +
 	`"weights":{"relevance":0.3,"novelty":0.2,"diversity":0.15,"urgency":0.1,"direct_address":0.15,"floor_share":0.05,"repetition":0.05},` +
-	`"intent_window":"30s","response_cap":600,"reveal_strategy":"sequential"}`
+	`"intent_window":"30s","response_cap":600,"reveal_strategy":"independent_then_cross","rebuttals":1}`
 
 const setPolicyBadRevealJSON = `{"mode":"open_floor","max_speakers":3,"lambda":0.3,` +
 	`"weights":{"relevance":0.3,"novelty":0.2,"diversity":0.15,"urgency":0.1,"direct_address":0.15,"floor_share":0.05,"repetition":0.05},` +
-	`"intent_window":"20s","response_cap":500,"reveal_strategy":"simultaneous"}`
+	`"intent_window":"20s","response_cap":500,"reveal_strategy":"random"}`
 
 const setPolicyUnknownFieldJSON = `{"mode":"open_floor","max_speakers":3,"lambda":0.3,` +
 	`"weights":{"relevance":0.3,"novelty":0.2,"diversity":0.15,"urgency":0.1,"direct_address":0.15,"floor_share":0.05,"repetition":0.05},` +

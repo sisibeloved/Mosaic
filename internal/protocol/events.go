@@ -88,6 +88,7 @@ type PolicyParams struct {
 	IntentWindow   string        `json:"intent_window"`
 	ResponseCap    int64         `json:"response_cap"`
 	RevealStrategy string        `json:"reveal_strategy"`
+	Rebuttals      int           `json:"rebuttals"` // cross 子轮数（0-2；Roundtable 默认 1）
 }
 
 // PolicyWeights 记分卡权重 wire 形态（七项；正项之和 >1 由投影端归一化）。

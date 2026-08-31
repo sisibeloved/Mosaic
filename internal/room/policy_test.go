@@ -28,18 +28,19 @@ func TestPolicyDefaultsPerMode(t *testing.T) {
 		win   string
 		cap   int64
 		reval string
+		rebut int
 	}{
-		"open_floor": {3, "20s", 500, "sequential"},
-		"roundtable": {8, "30s", 600, "sequential"},
-		"deep_dive":  {2, "15s", 900, "sequential"},
-		"review":     {3, "30s", 500, "sequential"},
-		"decision":   {2, "45s", 400, "sequential"},
+		"open_floor": {3, "20s", 500, "simultaneous", 0},
+		"roundtable": {8, "30s", 600, "independent_then_cross", 1},
+		"deep_dive":  {2, "15s", 900, "sequential", 0},
+		"review":     {3, "30s", 500, "sequential", 0},
+		"decision":   {2, "45s", 400, "sequential", 0},
 	}
 	def := DefaultPolicy()
 	for mode, want := range cases {
 		got := policyDefaults(mode)
 		if got.MaxSpeakers != want.max || got.IntentWindow != want.win ||
-			got.ResponseCap != want.cap || got.RevealStrategy != want.reval {
+			got.ResponseCap != want.cap || got.RevealStrategy != want.reval || got.Rebuttals != want.rebut {
 			t.Fatalf("%s 参数束不符：%+v（want %+v）", mode, got, want)
 		}
 	}
@@ -93,7 +94,8 @@ func TestValidatePolicyParamsBounds(t *testing.T) {
 		{"窗口零", func(p *protocol.PolicyParams) { p.IntentWindow = "0s" }},
 		{"窗口格式", func(p *protocol.PolicyParams) { p.IntentWindow = "soon" }},
 		{"cap 下界", func(p *protocol.PolicyParams) { p.ResponseCap = 50 }},
-		{"reveal 未开放", func(p *protocol.PolicyParams) { p.RevealStrategy = "simultaneous" }},
+		{"reveal 非法值", func(p *protocol.PolicyParams) { p.RevealStrategy = "random" }},
+		{"rebuttals 越界", func(p *protocol.PolicyParams) { p.Rebuttals = 3 }},
 		{"权重越界", func(p *protocol.PolicyParams) { p.Weights.Relevance = 0.7 }},
 	}
 	for _, tc := range cases {

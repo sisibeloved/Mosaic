@@ -438,158 +438,18 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 		ReceiptRef: assembled.Receipt.ReceiptID,
 	}
 
-	// 3) 各 seat 意图评估 → 选择输入（预算 admission：对称预留不足者失格）
-	var candidates []attention.Candidate
-	evalUsage := map[string]*agent.Usage{} // 评估 token 入账（三维账本的评估侧）
-	stimulusThread := ""
-	if stimulus.ThreadID != nil {
-		stimulusThread = *stimulus.ThreadID // 线程归属透传（agent-native：回复不丢线程）
-	}
-	// 相 1：全部评估先跑完（四轮复审 #10——本轮评估消耗要进同一轮的 admission，
-	// 必须先汇总用量再判预算资格；按座位序收集，确定性保持）。
-	type seatEval struct {
-		seat   AgentSeat
-		result agent.Result
-	}
-	var evals []seatEval
-	for _, seat := range e.seatsSnapshot() {
-		intentResult, err := e.runTask(ctx, seat.Profile, seat.ParticipantID, agent.Task{
-			TaskID:        e.cfg.NewID("tsk"),
-			Kind:          agent.KindEvaluateIntent,
-			ParticipantID: seat.ParticipantID,
-			RoomID:        roomID,
-			ThreadID:      stimulusThread,
-			Epoch:         roundID,
-			Context:       taskContext,
-		})
-		if err != nil {
-			if ctx.Err() != nil {
-				return // Close/取消：整轮中止，不留半截事件链
-			}
-			e.warn(roomID, "意图评估失败，跳过该座", "seat", seat.ParticipantID, "err", err)
-			continue // agent 失败：跳过该座（M2 补 generation.failed/unavailable 事件语义）
-		}
-		evalUsage[seat.ParticipantID] = intentResult.Usage
-		evals = append(evals, seatEval{seat: seat, result: intentResult})
-	}
-	// 相 1.5：评估消耗入"现在"的账本——BudgetOK 用当下余额判对称预留，
-	// 评估前的旧账本会让本轮 eval 开销绕过同轮 admission（四轮复审 #10）。
-	ledgerNow := ledger
-	for _, u := range evalUsage {
-		if u != nil {
-			ledgerNow.Tokens += u.InputTokens + u.OutputTokens
-		}
-	}
-	// 相 2：结构校验 + 全记录 + 候选构建（座位序）。
-	for _, ev := range evals {
-		intent, ok := intentFromData(ev.seat.ParticipantID, ev.result.Data)
-		if !ok {
-			// 结构校验失败即弃权：不虚构零分参与排序（二轮审校 #8）。
-			// 复审 #12：弃权仍全记录（R-01）且真实 usage 必须入账——畸形输出的
-			// 评估开销不得绕过预算账本（token 已花，事件零痕迹即账本漏记）。
-			e.warn(roomID, "intent 结构非法，该座弃权", "seat", ev.seat.ParticipantID)
-			invalid := e.newEnv(roomID, protocol.EventIntentRecorded,
-				protocol.Actor{ParticipantID: ev.seat.ParticipantID, Kind: "agent"}, stimulus.EventID, roundID,
-				protocol.IntentRecordedPayload{
-					IntentID:        e.cfg.NewID("int"),
-					ParticipantID:   ev.seat.ParticipantID,
-					Action:          "silent", // 弃权语义（schema 合法枚举），band=unranked
-					ScoreBand:       "unranked",
-					Selected:        false,
-					Endorsed:        false,
-					PublicRationale: "intent 结构非法，弃权",
-				})
-			invalid.Metadata = intentMetadata(
-				attention.Rejection{Reason: "invalid_intent_structure"}, false, ev.result.Usage)
-			if _, err := e.append(ctx, invalid); err != nil {
-				return
-			}
-			continue
-		}
-		intent.IntentID = e.cfg.NewID("int") // 选择前分配：Selection/Rejection 以此为键
-		candidates = append(candidates, attention.Candidate{
-			Intent: intent,
-			Ctx: attention.ContextFeatures{
-				ViewpointDiversity: 0.5, // M1 中性；结构投影 M3 接入（RFC-0006 降级路径）
-				RecentFloorShare:   recentFloorShare(history, ev.seat.ParticipantID),
-				DirectAddress:      directAddress(stimulus, ev.seat.ParticipantID),
-			},
-			Eligibility: attention.Eligibility{
-				Enabled:        true,
-				CooldownOK:     true,
-				ThreadWritable: true,
-				BudgetOK:       ledgerNow.ReserveOK(e.cfg.Budget, selPolicy.MaxSpeakers, policy.Params.ResponseCap),
-			},
-		})
+	// 3-5) 评估 → 选择 → intent.recorded 全记录（主波 subround=0；cross 子轮复用）
+	selection, recordedByIntent, ok := e.evaluateAndSelect(ctx, roomID, roundID, stimulus,
+		history, e.seatsSnapshot(), taskContext, selPolicy, policy, ledger, 0)
+	if !ok {
+		return
 	}
 
-	// 4) 确定性选择（硬资格 + 记分卡 + MMR）
-	selection := attention.Select(candidates, selPolicy)
-	e.debug(roomID, "选择完成", "round", roundID,
-		"candidates", len(candidates), "selected", len(selection.Selected),
-		"rejected", len(selection.Rejected), "silent", selection.SilentCount)
-	for _, sel := range selection.Selected {
-		e.debug(roomID, "获选", "round", roundID,
-			"intent", sel.IntentID, "participant", sel.ParticipantID, "rank", sel.Rank, "band", sel.Band)
-	}
-	for _, rej := range selection.Rejected {
-		e.debug(roomID, "未获选", "round", roundID,
-			"intent", rej.IntentID, "reason", rej.Reason, "band", rej.Band)
-	}
-	bandByIntent := map[string]attention.Selection{}
-	for _, s := range selection.Selected {
-		bandByIntent[s.IntentID] = s
-	}
-	rejectionByIntent := map[string]attention.Rejection{}
-	for _, r := range selection.Rejected {
-		rejectionByIntent[r.IntentID] = r
-	}
-
-	// 5) 全量 intent.recorded（R-01：失格/越界也记录——band=unranked，理由进 metadata；
-	// 公开 band；未获选理由与 usage 进 metadata，记分卡可查 R-08）
-	recordedEventByIntent := map[string]string{}
-	for _, c := range candidates {
-		band, selected := "", false
-		if s, ok := bandByIntent[c.Intent.IntentID]; ok {
-			band, selected = s.Band, true
-		} else if r, ok := rejectionByIntent[c.Intent.IntentID]; ok {
-			band = r.Band
-		}
-		if band == "" {
-			band = "unranked" // 未进入记分（硬失格/silent/越界）：零痕迹违反 R-01 全记录
-		}
-		recorded := e.newEnv(roomID, protocol.EventIntentRecorded,
-			protocol.Actor{ParticipantID: c.Intent.ParticipantID, Kind: "agent"}, stimulus.EventID, roundID,
-			protocol.IntentRecordedPayload{
-				IntentID:        c.Intent.IntentID,
-				ParticipantID:   c.Intent.ParticipantID,
-				Action:          c.Intent.Action,
-				Type:            c.Intent.Type,
-				PublicRationale: truncate(c.Intent.PublicRationale, 280),
-				ScoreBand:       band,
-				Selected:        selected,
-				Endorsed:        false,
-			})
-		recorded.Metadata = intentMetadata(rejectionByIntent[c.Intent.IntentID], selected, evalUsage[c.Intent.ParticipantID])
-		appendedIntent, err := e.append(ctx, recorded)
-		if err != nil {
-			return
-		}
-		recordedEventByIntent[c.Intent.IntentID] = appendedIntent[0].EventID
-	}
-
-	// 6) 按 rank 揭示：grant → generate（draft 流）→ 迟到检查 → agent 发言
-	published, revoked := 0, 0
-	for _, sel := range selection.Selected {
-		outcome := e.revealCandidate(ctx, roomID, roundID, stimulus, sel, epoch, recordedEventByIntent[sel.IntentID], taskContext, policy)
-		switch outcome {
-		case revealPublished:
-			published++
-		case revealRevoked:
-			revoked++
-		case revealAbort:
-			return
-		}
+	// 6) 揭示策略执行器（RFC-0003 §3.1.8：sequential / simultaneous / independent_then_cross）
+	published, revoked, crossRounds, aborted := e.revealByStrategy(ctx, roomID, roundID, stimulus,
+		selection, recordedByIntent, taskContext, policy, selPolicy, epoch)
+	if aborted {
+		return
 	}
 
 	// 7) round.closed（零公开发言是合法结果，AR-002；全撤销 → revoked_all）
@@ -609,7 +469,7 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 			Outcome:        outcome,
 			SelectedCount:  published,
 			SilentCount:    selection.SilentCount,
-			CrossSubrounds: 0,
+			CrossSubrounds: crossRounds,
 		})
 	_, _ = e.append(ctx, closed)
 	e.debug(roomID, "轮结束", "round", roundID, "outcome", outcome,
@@ -636,17 +496,376 @@ func intentMetadata(rejection attention.Rejection, selected bool, usage *agent.U
 	return md
 }
 
-// revealCandidate 单个获选者的揭示链：floor.granted（causation=该候选 intent.recorded）
-// → generate（DraftUpdate 经 OnDraft 透传）→ 迟到检查（暂停/更新 epoch → floor.revoked，
-// AR-004：正确性由 epoch 保证，在途取消尽力而为）→ message.posted。
-func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, stimulus protocol.Envelope,
-	sel attention.Selection, epoch int64, intentEventID string, taskContext agent.Context,
-	policy RoundPolicy) revealOutcome {
+// evaluateAndSelect 一轮波的评估→选择→intent.recorded（主波与 cross 子轮共用；
+// cross 复用完整 Intent→Floor 路径——非免评审直通，RFC-0003 §3.1.8）。
+// subround=0 为主波；>0 为 cross 子轮（事件 metadata 标记子轮关系）。
+func (e *Engine) evaluateAndSelect(ctx context.Context, roomID, roundID string,
+	stimulus protocol.Envelope, history []StoredEvent, seats []AgentSeat, taskContext agent.Context,
+	selPolicy attention.Policy, policy RoundPolicy, baseLedger contextx.Ledger, subround int,
+) (attention.Result, map[string]string, bool) {
 
-	version, err := e.cfg.Store.RoomVersion(ctx, roomID)
-	if err != nil {
-		return revealAbort
+	var candidates []attention.Candidate
+	evalUsage := map[string]*agent.Usage{} // 评估 token 入账（三维账本的评估侧）
+	stimulusThread := ""
+	if stimulus.ThreadID != nil {
+		stimulusThread = *stimulus.ThreadID // 线程归属透传（agent-native：回复不丢线程）
 	}
+	// 相 1：全部评估先跑完（四轮复审 #10——本轮评估消耗要进同一轮的 admission，
+	// 必须先汇总用量再判预算资格；按座位序收集，确定性保持）。
+	type seatEval struct {
+		seat   AgentSeat
+		result agent.Result
+	}
+	var evals []seatEval
+	for _, seat := range seats {
+		intentResult, err := e.runTask(ctx, seat.Profile, seat.ParticipantID, agent.Task{
+			TaskID:        e.cfg.NewID("tsk"),
+			Kind:          agent.KindEvaluateIntent,
+			ParticipantID: seat.ParticipantID,
+			RoomID:        roomID,
+			ThreadID:      stimulusThread,
+			Epoch:         roundID,
+			Context:       taskContext,
+		})
+		if err != nil {
+			if ctx.Err() != nil {
+				return attention.Result{}, nil, false // Close/取消：整轮中止
+			}
+			e.warn(roomID, "意图评估失败，跳过该座", "seat", seat.ParticipantID, "err", err)
+			continue // agent 失败：跳过该座（M2 补 generation.failed/unavailable 事件语义）
+		}
+		evalUsage[seat.ParticipantID] = intentResult.Usage
+		evals = append(evals, seatEval{seat: seat, result: intentResult})
+	}
+	// 相 1.5：评估消耗入"现在"的账本（四轮复审 #10）。
+	ledgerNow := baseLedger
+	for _, u := range evalUsage {
+		if u != nil {
+			ledgerNow.Tokens += u.InputTokens + u.OutputTokens
+		}
+	}
+	// 相 2：结构校验 + 全记录 + 候选构建（座位序）。
+	for _, ev := range evals {
+		intent, ok := intentFromData(ev.seat.ParticipantID, ev.result.Data)
+		if !ok {
+			// 结构校验失败即弃权：不虚构零分参与排序（二轮审校 #8）；
+			// 复审 #12：弃权仍全记录（R-01）且真实 usage 入账。
+			e.warn(roomID, "intent 结构非法，该座弃权", "seat", ev.seat.ParticipantID)
+			invalid := e.newEnv(roomID, protocol.EventIntentRecorded,
+				protocol.Actor{ParticipantID: ev.seat.ParticipantID, Kind: "agent"}, stimulus.EventID, roundID,
+				protocol.IntentRecordedPayload{
+					IntentID:        e.cfg.NewID("int"),
+					ParticipantID:   ev.seat.ParticipantID,
+					Action:          "silent", // 弃权语义（schema 合法枚举），band=unranked
+					ScoreBand:       "unranked",
+					Selected:        false,
+					Endorsed:        false,
+					PublicRationale: "intent 结构非法，弃权",
+				})
+			invalid.Metadata = intentMetadata(
+				attention.Rejection{Reason: "invalid_intent_structure"}, false, ev.result.Usage)
+			if subround > 0 {
+				invalid.Metadata["subround"] = subround
+			}
+			if _, err := e.append(ctx, invalid); err != nil {
+				return attention.Result{}, nil, false
+			}
+			continue
+		}
+		intent.IntentID = e.cfg.NewID("int") // 选择前分配：Selection/Rejection 以此为键
+		candidates = append(candidates, attention.Candidate{
+			Intent: intent,
+			Ctx: attention.ContextFeatures{
+				ViewpointDiversity: 0.5, // M1 中性；结构投影 M3 接入（RFC-0006 降级路径）
+				RecentFloorShare:   recentFloorShare(history, ev.seat.ParticipantID),
+				DirectAddress:      directAddress(stimulus, ev.seat.ParticipantID),
+			},
+			Eligibility: attention.Eligibility{
+				Enabled:        true,
+				CooldownOK:     true,
+				ThreadWritable: true,
+				BudgetOK:       ledgerNow.ReserveOK(e.cfg.Budget, selPolicy.MaxSpeakers, policy.Params.ResponseCap),
+			},
+		})
+	}
+
+	// 相 3：确定性选择（硬资格 + 记分卡 + MMR）
+	selection := attention.Select(candidates, selPolicy)
+	e.debug(roomID, "选择完成", "round", roundID,
+		"candidates", len(candidates), "selected", len(selection.Selected),
+		"rejected", len(selection.Rejected), "silent", selection.SilentCount, "subround", subround)
+	for _, sel := range selection.Selected {
+		e.debug(roomID, "获选", "round", roundID,
+			"intent", sel.IntentID, "participant", sel.ParticipantID, "rank", sel.Rank, "band", sel.Band)
+	}
+	for _, rej := range selection.Rejected {
+		e.debug(roomID, "未获选", "round", roundID,
+			"intent", rej.IntentID, "reason", rej.Reason, "band", rej.Band)
+	}
+
+	// 相 4：全量 intent.recorded（R-01；公开 band；未获选理由与 usage 进 metadata）
+	recordedEventByIntent := map[string]string{}
+	for _, c := range candidates {
+		band, selected := "", false
+		for _, s := range selection.Selected {
+			if s.IntentID == c.Intent.IntentID {
+				band, selected = s.Band, true
+			}
+		}
+		if !selected {
+			for _, r := range selection.Rejected {
+				if r.IntentID == c.Intent.IntentID {
+					band = r.Band
+				}
+			}
+		}
+		if band == "" {
+			band = "unranked" // 未进入记分（硬失格/silent/越界）：零痕迹违反 R-01 全记录
+		}
+		recorded := e.newEnv(roomID, protocol.EventIntentRecorded,
+			protocol.Actor{ParticipantID: c.Intent.ParticipantID, Kind: "agent"}, stimulus.EventID, roundID,
+			protocol.IntentRecordedPayload{
+				IntentID:        c.Intent.IntentID,
+				ParticipantID:   c.Intent.ParticipantID,
+				Action:          c.Intent.Action,
+				Type:            c.Intent.Type,
+				PublicRationale: truncate(c.Intent.PublicRationale, 280),
+				ScoreBand:       band,
+				Selected:        selected,
+				Endorsed:        false,
+			})
+		recorded.Metadata = intentMetadata(rejectionOf(selection, c.Intent.IntentID), selected, evalUsage[c.Intent.ParticipantID])
+		if subround > 0 {
+			recorded.Metadata["subround"] = subround
+		}
+		appendedIntent, err := e.append(ctx, recorded)
+		if err != nil {
+			return attention.Result{}, nil, false
+		}
+		recordedEventByIntent[c.Intent.IntentID] = appendedIntent[0].EventID
+	}
+	return selection, recordedEventByIntent, true
+}
+
+// rejectionOf 未获选理由查找（R-08 可查）。
+func rejectionOf(sel attention.Result, intentID string) attention.Rejection {
+	for _, r := range sel.Rejected {
+		if r.IntentID == intentID {
+			return r
+		}
+	}
+	return attention.Rejection{}
+}
+
+// revealByStrategy 揭示策略执行器（RFC-0003 §3.1.8）。三策略共享事件语义与
+// 迟到围栏；sequential 按 rank 顺序生成发布（后续生成前按新水位重验）；
+// simultaneous 冻结水位统一揭示；independent_then_cross 先独立首轮再开放
+// 受预算约束的 cross 子轮（Roundtable 的 rebuttals=k 即本机制的参数化命名）。
+// 返回 aborted=true 时调用方不得写 round.closed（存储失败中止，恢复语义接手）。
+func (e *Engine) revealByStrategy(ctx context.Context, roomID, roundID string,
+	stimulus protocol.Envelope, selection attention.Result, recordedByIntent map[string]string,
+	taskContext agent.Context, policy RoundPolicy, selPolicy attention.Policy, epoch int64,
+) (published, revoked, crossRounds int, aborted bool) {
+
+	switch policy.Params.RevealStrategy {
+	case "simultaneous", "independent_then_cross":
+		var speakers map[string]bool
+		published, revoked, speakers, aborted = e.revealSimultaneous(
+			ctx, roomID, roundID, stimulus, selection, recordedByIntent, taskContext, policy, epoch, 0)
+		if aborted || policy.Params.RevealStrategy != "independent_then_cross" {
+			return published, revoked, 0, aborted
+		}
+		for k := 1; k <= policy.Params.Rebuttals && len(speakers) > 0; k++ {
+			n, r, more, abort := e.runCrossSubround(
+				ctx, roomID, roundID, stimulus, policy, selPolicy, epoch, speakers, k)
+			if abort {
+				return published, revoked, crossRounds, true
+			}
+			published += n
+			revoked += r
+			if n == 0 || len(more) == 0 {
+				break // 静默 cross（无回应）：链终止；预算/资格不足同理
+			}
+			crossRounds = k
+			for sp := range more {
+				speakers[sp] = true
+			}
+		}
+		return published, revoked, crossRounds, false
+	default: // sequential（B2 前的唯一执行面）
+		for _, sel := range selection.Selected {
+			outcome := e.revealCandidate(ctx, roomID, roundID, stimulus, sel, epoch,
+				recordedByIntent[sel.IntentID], taskContext, policy)
+			switch outcome {
+			case revealPublished:
+				published++
+			case revealRevoked:
+				revoked++
+			case revealAbort:
+				return published, revoked, 0, true
+			}
+		}
+		return published, revoked, 0, false
+	}
+}
+
+// revealSimultaneous 冻结水位揭示：全部获选者先发授（同一 context_watermark——
+// 生成时互不可见），逐个生成（失败仅撤销该授，其余继续 AR-008），全部生成完成后
+// 按 rank 统一揭示发布。subround 参数供 ITC 复用（首轮传 0）。
+func (e *Engine) revealSimultaneous(ctx context.Context, roomID, roundID string,
+	stimulus protocol.Envelope, selection attention.Result, recordedByIntent map[string]string,
+	taskContext agent.Context, policy RoundPolicy, epoch int64, subround int,
+) (published, revoked int, speakers map[string]bool, aborted bool) {
+
+	speakers = map[string]bool{}
+	frozen, err := e.cfg.Store.RoomVersion(ctx, roomID)
+	if err != nil {
+		return 0, 0, speakers, true
+	}
+	type pending struct {
+		sel      attention.Selection
+		grantID  string
+		grantEnv protocol.Envelope
+		draft    agent.Result
+		genOK    bool
+	}
+	var wave []pending
+	for _, sel := range selection.Selected {
+		grantEnv, grantID, ok := e.issueGrant(ctx, roomID, roundID, sel, epoch,
+			recordedByIntent[sel.IntentID], policy, frozen, subround)
+		if !ok {
+			return 0, 0, speakers, true // 发授落库失败：中止（不写 round.closed）
+		}
+		wave = append(wave, pending{sel: sel, grantID: grantID, grantEnv: grantEnv})
+	}
+	for i := range wave {
+		draft, ok := e.runGenerate(ctx, roomID, roundID, stimulus, wave[i].sel,
+			wave[i].grantEnv, wave[i].grantID, taskContext, policy)
+		if !ok {
+			revoked++ // 该授已按 generation_failed 撤销；其余继续（AR-008）
+			continue
+		}
+		wave[i].draft = draft
+		wave[i].genOK = true
+	}
+	for _, p := range wave {
+		if !p.genOK {
+			continue
+		}
+		switch e.publishMessage(ctx, roomID, roundID, stimulus, p.sel, p.grantEnv, p.grantID, p.draft, epoch) {
+		case revealPublished:
+			published++
+			speakers[p.sel.ParticipantID] = true
+		case revealRevoked:
+			revoked++
+		case revealAbort:
+			return published, revoked, speakers, true
+		}
+	}
+	return published, revoked, speakers, false
+}
+
+// runCrossSubround cross 子轮：参与资格限本轮已发言者；复用完整 Intent→Floor
+// 路径（评估→选择→发授→生成→发布）；预算按当下账本重判（100% 熔断即静默收口）。
+// cross 语境重新组装上下文（揭示后的历史 + 最近 agent 发言为回应锚）。
+func (e *Engine) runCrossSubround(ctx context.Context, roomID, roundID string,
+	stimulus protocol.Envelope, policy RoundPolicy, selPolicy attention.Policy,
+	epoch int64, speakers map[string]bool, subround int,
+) (published, revoked int, newSpeakers map[string]bool, aborted bool) {
+
+	newSpeakers = map[string]bool{}
+	fresh, err := e.roomHistory(ctx, roomID)
+	if err != nil {
+		return 0, 0, newSpeakers, true
+	}
+	envs := make([]protocol.Envelope, len(fresh))
+	for i := range fresh {
+		envs[i] = fresh[i].Envelope
+	}
+	ledger := contextx.RebuildBudget(envs)
+	if !ledger.Admit(e.cfg.Budget) {
+		return 0, 0, newSpeakers, false // 预算熔断：cross 静默收口（round 正常闭合）
+	}
+	var seats []AgentSeat
+	seatsMin := make([]contextx.Seat, 0)
+	for _, s := range e.seatsSnapshot() {
+		if speakers[s.ParticipantID] {
+			seats = append(seats, s)
+			seatsMin = append(seatsMin, contextx.Seat{ParticipantID: s.ParticipantID})
+		}
+	}
+	if len(seats) == 0 {
+		return 0, 0, newSpeakers, false
+	}
+	// 回应锚：本轮最近一条 agent 发言（揭示后的最新语境）
+	anchor := stimulus
+	for _, ev := range fresh {
+		if ev.Envelope.Type == protocol.EventMessagePosted && ev.Envelope.Actor.Kind == "agent" {
+			anchor = ev.Envelope
+		}
+	}
+	assembled := contextx.Assemble(contextx.Config{
+		RoomID: roomID, TaskID: roundID + "-cross", Mode: policy.Params.Mode, Seats: seatsMin,
+		RecentWindow: 10, Subround: subround,
+		Budget: contextx.BudgetState{
+			RemainingTokens: remainingTokens(ledger, e.cfg.Budget),
+			Level:           ledger.Level(e.cfg.Budget),
+		},
+	}, envs, anchor)
+	if e.cfg.Receipts != nil {
+		assembled.Receipt.CreatedAt = e.cfg.Clock()
+		if err := e.cfg.Receipts.InsertReceipt(ctx, assembled.Receipt); err != nil {
+			e.warn(roomID, "context receipt 落库失败（cross）", "err", err)
+		}
+	}
+	taskCtx := agent.Context{Inline: assembled.Inline, ReceiptRef: assembled.Receipt.ReceiptID}
+
+	// cross 不增加发言名额（RFC §3.1.9 精神）：选择上限 ≤ 本轮已发言者数
+	crossPolicy := selPolicy
+	if crossPolicy.MaxSpeakers > len(seats) {
+		crossPolicy.MaxSpeakers = len(seats)
+	}
+	selection, recorded, ok := e.evaluateAndSelect(ctx, roomID, roundID, anchor, fresh,
+		seats, taskCtx, crossPolicy, policy, ledger, subround)
+	if !ok {
+		return 0, 0, newSpeakers, true
+	}
+	// cross 内按 rank 顺序揭示（回应对可见性敏感——顺序生成让后位呼应前位）
+	for _, sel := range selection.Selected {
+		version, err := e.cfg.Store.RoomVersion(ctx, roomID)
+		if err != nil {
+			return published, revoked, newSpeakers, true
+		}
+		grantEnv, grantID, ok := e.issueGrant(ctx, roomID, roundID, sel, epoch,
+			recorded[sel.IntentID], policy, version, subround)
+		if !ok {
+			return published, revoked, newSpeakers, true
+		}
+		draft, genOK := e.runGenerate(ctx, roomID, roundID, anchor, sel, grantEnv, grantID, taskCtx, policy)
+		if !genOK {
+			revoked++
+			continue
+		}
+		switch e.publishMessage(ctx, roomID, roundID, anchor, sel, grantEnv, grantID, draft, epoch) {
+		case revealPublished:
+			published++
+			newSpeakers[sel.ParticipantID] = true
+		case revealRevoked:
+			revoked++
+		case revealAbort:
+			return published, revoked, newSpeakers, true
+		}
+	}
+	return published, revoked, newSpeakers, false
+}
+
+// issueGrant 发授（提取自 revealCandidate，供三策略复用）：floor.granted，
+// causation=该候选 intent.recorded；watermark 由策略决定（simultaneous 冻结/
+// sequential 取当下）；subround>0 时 metadata 标记子轮关系。
+func (e *Engine) issueGrant(ctx context.Context, roomID, roundID string, sel attention.Selection,
+	epoch int64, intentEventID string, policy RoundPolicy, watermark int64, subround int,
+) (protocol.Envelope, string, bool) {
+
 	grantID := e.cfg.NewID("grant")
 	grant := e.newEnv(roomID, protocol.EventFloorGranted,
 		protocol.Actor{ParticipantID: "par_system", Kind: "system"}, intentEventID, roundID,
@@ -656,18 +875,29 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 			ParticipantID:    sel.ParticipantID,
 			Rank:             sel.Rank,
 			RevealStrategy:   policy.Params.RevealStrategy,
-			ContextWatermark: int(version),
+			ContextWatermark: int(watermark),
 			Epoch:            int(epoch),
 			ExpiresAt:        e.cfg.Now().Add(policy.IntentWindow).UTC().Format(time.RFC3339Nano),
 			ResponseCap:      int(policy.Params.ResponseCap),
 			Directed:         false,
 		})
+	if subround > 0 {
+		grant.Metadata = map[string]any{"subround": subround}
+	}
 	appended, err := e.append(ctx, grant)
 	if err != nil {
-		return revealAbort
+		return protocol.Envelope{}, "", false
 	}
 	e.debug(roomID, "floor 已授予", "round", roundID, "grant", grantID,
-		"participant", sel.ParticipantID, "rank", sel.Rank, "epoch", epoch)
+		"participant", sel.ParticipantID, "rank", sel.Rank, "epoch", epoch, "subround", subround)
+	return grant, appended[0].EventID, true
+}
+
+// runGenerate 生成（提取自 revealCandidate）：DraftUpdate 流经 OnDraft 透传；
+// 失败（非引擎关停）按 generation_failed 撤销该授并返回 false（其余继续 AR-008）。
+func (e *Engine) runGenerate(ctx context.Context, roomID, roundID string, stimulus protocol.Envelope,
+	sel attention.Selection, grantEnv protocol.Envelope, grantID string,
+	taskContext agent.Context, policy RoundPolicy) (agent.Result, bool) {
 
 	generateThread := ""
 	if stimulus.ThreadID != nil {
@@ -685,50 +915,51 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 			Rank:           sel.Rank,
 			RevealStrategy: policy.Params.RevealStrategy,
 			ViewCursor:     "",
-			Epoch:          epoch,
+			Epoch:          0,
 			ResponseCap:    policy.Params.ResponseCap, // 复审 #9：宣告值必须传入适配器并约束发布
 		},
 		Context: taskContext,
 	})
 	if err != nil {
 		if ctx.Err() != nil {
-			return revealAbort // 引擎关停：不写撤销收尾（事件链由恢复语义接手）
+			return agent.Result{}, false // 引擎关停：不写撤销收尾（事件链由恢复语义接手）
 		}
 		// grant 未消费：撤销收尾（本轮其余获选者继续——AR-008 语义）
-		e.revoke(ctx, roomID, grant.EventID, grantID, roundID, stimulus, "generation_failed", nil)
-		e.warn(roomID, "generate 失败，撤销 grant", "seat", sel.ParticipantID, "err", err)
-		return revealRevoked
+		e.revoke(ctx, roomID, grantEnv.EventID, grantID, roundID, stimulus, "generation_failed", nil)
+		e.debug(roomID, "生成失败已撤销", "round", roundID, "grant", grantID,
+			"participant", sel.ParticipantID, "err", err)
+		return agent.Result{}, false
 	}
+	return draftResult, true
+}
 
-	// 迟到检查（复审 #13：锚点 = 本轮 round.opened 的 seq，不再只是 grant）——
-	// 本轮开轮之后出现过 room.paused 即失效：覆盖"评估阶段 pause→grant 前 resume"
-	// 的往返（旧锚点只看 grant 之后，grant 前的暂停漏网）；开轮前的暂停历史
-	// 不毒化重驱动的新轮（暂停期到达的刺激在 resume 后重开轮，属合法新轮）。
-	// 更新 epoch 同理失效（正文事件零迟到污染）。
+// publishMessage 发布（提取自 revealCandidate）：迟到围栏 + 正文 CAS 落库。
+func (e *Engine) publishMessage(ctx context.Context, roomID, roundID string, stimulus protocol.Envelope,
+	sel attention.Selection, grantEnv protocol.Envelope, grantID string, draft agent.Result, epoch int64) revealOutcome {
+
+	// 迟到检查（复审 #13：锚点 = 本轮 round.opened 的 seq）。
 	fresh, err := e.roomHistory(ctx, roomID)
 	if err != nil {
 		return revealAbort
 	}
 	openedSeq := roundOpenedSeq(fresh, roundID)
 	if e.fenceViolated(fresh, roundID, openedSeq, epoch) {
-		e.revoke(ctx, roomID, grant.EventID, grantID, roundID, stimulus, "room_paused", draftResult.Usage)
+		e.revoke(ctx, roomID, grantEnv.EventID, grantID, roundID, stimulus, "room_paused", draft.Usage)
 		return revealRevoked
 	}
 
 	msg := e.newEnv(roomID, protocol.EventMessagePosted,
-		protocol.Actor{ParticipantID: sel.ParticipantID, Kind: "agent"}, appended[0].EventID, roundID, draftResult.Data)
+		protocol.Actor{ParticipantID: sel.ParticipantID, Kind: "agent"}, grantEnv.EventID, roundID, draft.Data)
 	msg.ThreadID = stimulus.ThreadID // 线程归属：回复落在刺激线程（agent-native 缺口修复）
-	if draftResult.Usage != nil {
+	if draft.Usage != nil {
 		msg.Metadata = map[string]any{
 			"usage": map[string]any{
-				"input_tokens":  draftResult.Usage.InputTokens,
-				"output_tokens": draftResult.Usage.OutputTokens,
+				"input_tokens":  draft.Usage.InputTokens,
+				"output_tokens": draft.Usage.OutputTokens,
 			},
 		}
 	}
-	// 正文落库走 CAS（四轮复审 #12）：以迟到检查读到的版本为期位——检查与落库
-	// 之间插入的事件使 CAS 失败；回读后真迟到（暂停/epoch）→ 撤销，良性交错
-	// （如人类消息）→ 换新期位重试。无 CAS 能力的测试存储退化为普通追加。
+	// 正文落库走 CAS（四轮复审 #12）：良性交错换期位重试，真迟到撤销。
 	expected := expectedVersionOf(fresh)
 	for attempt := 0; attempt < 3; attempt++ {
 		if _, err := e.appendCAS(ctx, msg, expected); err == nil {
@@ -742,14 +973,34 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 		if err != nil {
 			return revealAbort
 		}
-		if e.fenceViolated(recheck, roundID, roundOpenedSeq(recheck, roundID), epoch) {
-			e.revoke(ctx, roomID, grant.EventID, grantID, roundID, stimulus, "room_paused", draftResult.Usage)
+		if e.fenceViolated(recheck, roomID, roundOpenedSeq(recheck, roundID), epoch) {
+			e.revoke(ctx, roomID, grantEnv.EventID, grantID, roundID, stimulus, "room_paused", draft.Usage)
 			return revealRevoked
 		}
 		expected = expectedVersionOf(recheck) // 良性交错：换新期位重试
 	}
 	e.warn(roomID, "正文 CAS 重试耗尽，轮中止", "round", roundID, "grant", grantID)
 	return revealAbort
+}
+
+// revealCandidate sequential 揭示链：发授（水位取当下）→ 生成 → 发布。
+func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, stimulus protocol.Envelope,
+	sel attention.Selection, epoch int64, intentEventID string, taskContext agent.Context,
+	policy RoundPolicy) revealOutcome {
+
+	version, err := e.cfg.Store.RoomVersion(ctx, roomID)
+	if err != nil {
+		return revealAbort
+	}
+	grantEnv, grantID, ok := e.issueGrant(ctx, roomID, roundID, sel, epoch, intentEventID, policy, version, 0)
+	if !ok {
+		return revealAbort
+	}
+	draft, genOK := e.runGenerate(ctx, roomID, roundID, stimulus, sel, grantEnv, grantID, taskContext, policy)
+	if !genOK {
+		return revealRevoked
+	}
+	return e.publishMessage(ctx, roomID, roundID, stimulus, sel, grantEnv, grantID, draft, epoch)
 }
 
 // fenceViolated 迟到判定（fresh 重读后复用）：当前暂停 / 本轮开轮后出现过暂停 /

@@ -117,7 +117,8 @@ paths:
                     weights: { relevance: 0.3, novelty: 0.2, diversity: 0.15, urgency: 0.1, direct_address: 0.15, floor_share: 0.05, repetition: 0.05 }
                     intent_window: 30s
                     response_cap: 600
-                    reveal_strategy: sequential
+                    reveal_strategy: independent_then_cross
+                    rebuttals: 1
       responses:
         "200":
           description: 命令受理（含幂等回放）
@@ -431,9 +432,9 @@ components:
           maxLength: 280
     PolicyParams:
       type: object
-      required: [mode, max_speakers, lambda, weights, intent_window, response_cap, reveal_strategy]
+      required: [mode, max_speakers, lambda, weights, intent_window, response_cap, reveal_strategy, rebuttals]
       additionalProperties: false
-      description: 策略参数束（RFC-0003 §3.1.7；set_policy 命令体与 policy.changed 事件 payload 同构）。reveal_strategy 当前仅 sequential 可配置（其余策略的执行面随 reveal 切片开放）。
+      description: 策略参数束（RFC-0003 §3.1.7；set_policy 命令体与 policy.changed 事件 payload 同构）。reveal 三策略自 B2 起全部可执行（simultaneous=冻结水位统一揭示；independent_then_cross=独立首轮+cross 子轮）。
       properties:
         mode:
           type: string
@@ -469,6 +470,11 @@ components:
         reveal_strategy:
           type: string
           enum: [sequential, simultaneous, independent_then_cross]
+        rebuttals:
+          type: integer
+          minimum: 0
+          maximum: 2
+          description: cross 子轮数（Roundtable 默认 1；仅 independent_then_cross 消费）
     CommandResponse:
       type: object
       required: [room_id, event_id, room_version, replayed]

@@ -12,11 +12,11 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 )
 
-// 模式默认参数束（RFC-0003 §3.1.7 表）。两点裁剪如实登记：
-//   - reveal 一律 sequential——引擎执行面本就按 grant rank 顺序生成发布（后续生成
-//     前按新水位重验），M1 恒声明 simultaneous 属"声明名不副实"，本切片纠正；
-//     simultaneous / independent_then_cross 的执行与配置面随 reveal 策略切片开放；
-//   - Roundtable"全员各 1"以数值上限（8）近似，座位数取 min 在引擎内生效。
+// 模式默认参数束（RFC-0003 §3.1.7 表；reveal 默认随 B2 执行面落地对齐：
+// Open Floor=simultaneous、Roundtable=independent_then_cross（rebuttals=1）、
+// Deep Dive/Review/Decision=sequential）。Roundtable"全员各 1"以数值上限（8）
+// 近似，座位数取 min 在引擎内生效；自动续聊参数不随 B2 落地（轮次自驱动
+// 语义，登记至后续切片）。
 func policyDefaults(mode string) protocol.PolicyParams {
 	p := protocol.PolicyParams{
 		Mode:           "open_floor",
@@ -25,7 +25,8 @@ func policyDefaults(mode string) protocol.PolicyParams {
 		Weights:        policyWeightsOf(attention.DefaultWeights),
 		IntentWindow:   "20s",
 		ResponseCap:    500,
-		RevealStrategy: "sequential",
+		RevealStrategy: "simultaneous",
+		Rebuttals:      0,
 	}
 	switch mode {
 	case "roundtable":
@@ -33,20 +34,25 @@ func policyDefaults(mode string) protocol.PolicyParams {
 		p.MaxSpeakers = 8
 		p.IntentWindow = "30s"
 		p.ResponseCap = 600
+		p.RevealStrategy = "independent_then_cross"
+		p.Rebuttals = 1
 	case "deep_dive":
 		p.Mode = "deep_dive"
 		p.MaxSpeakers = 2
 		p.IntentWindow = "15s"
 		p.ResponseCap = 900
+		p.RevealStrategy = "sequential"
 	case "review":
 		p.Mode = "review"
 		p.IntentWindow = "30s"
 		p.ResponseCap = 500
+		p.RevealStrategy = "sequential"
 	case "decision":
 		p.Mode = "decision"
 		p.MaxSpeakers = 2
 		p.IntentWindow = "45s"
 		p.ResponseCap = 400
+		p.RevealStrategy = "sequential"
 	case "open_floor":
 	default:
 		p.Mode = mode // 非法模式由 ValidatePolicyParams 拒
@@ -90,8 +96,13 @@ func ValidatePolicyParams(p protocol.PolicyParams) error {
 	if p.ResponseCap < 100 || p.ResponseCap > 4000 {
 		return fmt.Errorf("response_cap 越界 [100,4000]")
 	}
-	if p.RevealStrategy != "sequential" {
-		return fmt.Errorf("reveal_strategy %q 暂不可配（执行面随 reveal 策略切片开放，当前仅 sequential）", p.RevealStrategy)
+	switch p.RevealStrategy {
+	case "sequential", "simultaneous", "independent_then_cross":
+	default:
+		return fmt.Errorf("reveal_strategy %q 非法", p.RevealStrategy)
+	}
+	if p.Rebuttals < 0 || p.Rebuttals > 2 {
+		return fmt.Errorf("rebuttals 越界 [0,2]（RFC §3.1.7：Roundtable 可配 0-2）")
 	}
 	return nil
 }

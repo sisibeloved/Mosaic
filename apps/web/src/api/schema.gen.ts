@@ -208,7 +208,7 @@ export interface components {
         PauseRoomPayload: {
             reason?: string;
         };
-        /** @description 策略参数束（RFC-0003 §3.1.7；set_policy 命令体与 policy.changed 事件 payload 同构）。reveal_strategy 当前仅 sequential 可配置（其余策略的执行面随 reveal 切片开放）。 */
+        /** @description 策略参数束（RFC-0003 §3.1.7；set_policy 命令体与 policy.changed 事件 payload 同构）。reveal 三策略自 B2 起全部可执行（simultaneous=冻结水位统一揭示；independent_then_cross=独立首轮+cross 子轮）。 */
         PolicyParams: {
             /** @enum {string} */
             mode: "roundtable" | "open_floor" | "deep_dive" | "review" | "decision";
@@ -228,6 +228,8 @@ export interface components {
             response_cap: number;
             /** @enum {string} */
             reveal_strategy: "sequential" | "simultaneous" | "independent_then_cross";
+            /** @description cross 子轮数（Roundtable 默认 1；仅 independent_then_cross 消费） */
+            rebuttals: number;
         };
         CommandResponse: {
             room_id: string;

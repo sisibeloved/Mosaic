@@ -265,15 +265,17 @@ func TestEngineMultiSeatSelection(t *testing.T) {
 	if len(events) == 0 || events[len(events)-1].Type != protocol.EventRoundClosed {
 		t.Fatalf("轮未完成，事件数=%d", len(events))
 	}
-	// 期望：created, human, round.opened, intent×2, grant×2, agent msg×2, round.closed = 10
+	// 期望：created, human, round.opened, intent×2, grant×2（simultaneous：先全部发授）,
+	// agent msg×2, round.closed = 10（B2 起 open_floor 默认 reveal=simultaneous：
+	// 发授集中在生成前，正文在生成后统一揭示）
 	if len(events) != 10 {
 		t.Fatalf("事件数 = %d（期望 10）：%v", len(events), typesOf(events))
 	}
 	want := []string{
 		protocol.EventRoomCreated, protocol.EventMessagePosted, protocol.EventRoundOpened,
 		protocol.EventIntentRecorded, protocol.EventIntentRecorded,
-		protocol.EventFloorGranted, protocol.EventMessagePosted,
-		protocol.EventFloorGranted, protocol.EventMessagePosted,
+		protocol.EventFloorGranted, protocol.EventFloorGranted,
+		protocol.EventMessagePosted, protocol.EventMessagePosted,
 		protocol.EventRoundClosed,
 	}
 	for i, w := range want {

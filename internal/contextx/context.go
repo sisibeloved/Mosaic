@@ -24,6 +24,16 @@ type BudgetState struct {
 	Level           int   `json:"level"` // 0 / 70 / 90 / 100（熔断梯度）
 }
 
+// taskDirectiveOf 任务指令层（cross 子轮标注：回应本轮已揭示发言，RFC-0003 §3.1.8）。
+func taskDirectiveOf(cfg Config) map[string]any {
+	d := map[string]any{"task_id": cfg.TaskID, "note": "任务指令层由适配器提示词承载（M1）"}
+	if cfg.Subround > 0 {
+		d["subround"] = cfg.Subround
+		d["directive"] = "cross-response 子轮：回应本轮已揭示的发言（挑战/补充/收敛），不是新话题"
+	}
+	return d
+}
+
 // Config 组装输入。
 type Config struct {
 	RoomID       string
@@ -32,6 +42,7 @@ type Config struct {
 	Seats        []Seat
 	RecentWindow int // 近期消息窗口（默认 10）
 	Budget       BudgetState
+	Subround     int // >0 = cross 子轮（任务指令层标注：回应本轮已揭示发言）
 }
 
 // Receipt 上下文回执（落库可查：给了什么水位、哪些层、摘要为何）。
@@ -125,7 +136,7 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 		{"recent_messages", recent},
 		{"relations", relations},
 		{"budget_watermark", map[string]any{"watermark": watermark, "budget": cfg.Budget}},
-		{"task_directive", map[string]any{"task_id": cfg.TaskID, "note": "任务指令层由适配器提示词承载（M1）"}},
+		{"task_directive", taskDirectiveOf(cfg)},
 	}
 	layers := make([]Layer, 0, len(layerDefs))
 	digests := make([]string, 0, len(layerDefs))

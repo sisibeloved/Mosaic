@@ -32,7 +32,7 @@ const MODES: { id: string; label: string; desc: string }[] = [
 ];
 
 /** 模式默认参数束（与房间侧 policyDefaults 同源；提交前服务端再校验）。
- * reveal 暂锁定 sequential（执行面随 reveal 策略切片开放）。 */
+ * reveal 三策略自 B2 起全部可执行。 */
 function modeDefaults(mode: string): Schemas["PolicyParams"] {
   const base: Schemas["PolicyParams"] = {
     mode: "open_floor",
@@ -41,10 +41,11 @@ function modeDefaults(mode: string): Schemas["PolicyParams"] {
     weights: { relevance: 0.3, novelty: 0.2, diversity: 0.15, urgency: 0.1, direct_address: 0.15, floor_share: 0.05, repetition: 0.05 },
     intent_window: "20s",
     response_cap: 500,
-    reveal_strategy: "sequential",
+    reveal_strategy: "simultaneous",
+    rebuttals: 0,
   };
-  if (mode === "roundtable") return { ...base, mode, max_speakers: 8, intent_window: "30s", response_cap: 600 };
-  if (mode === "deep_dive") return { ...base, mode, max_speakers: 2, intent_window: "15s", response_cap: 900 };
+  if (mode === "roundtable") return { ...base, mode, max_speakers: 8, intent_window: "30s", response_cap: 600, reveal_strategy: "independent_then_cross", rebuttals: 1 };
+  if (mode === "deep_dive") return { ...base, mode, max_speakers: 2, intent_window: "15s", response_cap: 900, reveal_strategy: "sequential" };
   return base;
 }
 
@@ -239,7 +240,7 @@ export function SettingsView({ roomID }: { roomID: string | null }) {
               {policyMsg && <span className="hint"> {policyMsg}</span>}
             </p>
             <p className="hint">
-              权重/λ/续聊等细参数编辑随记分卡面板开放；reveal 暂锁定 sequential（其余策略随 reveal 切片解禁）。
+              权重/λ/续聊等细参数编辑随记分卡面板开放；reveal 策略随模式默认（Roundtable 含 1 轮 cross 交锋）。
             </p>
           </>
         ) : (
