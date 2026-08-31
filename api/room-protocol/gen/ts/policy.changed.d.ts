@@ -6,7 +6,7 @@
  */
 
 /**
- * 策略变更（RFC-0003 §3.1.7 / R-10；RFC-0001 Control 族）。payload 平铺参数束；policy_version 不入 payload——由投影按 policy.changed 计数派生（事件回放自证）。变更只在 round 边界生效（引擎开轮自历史投影）。reveal_strategy 当前仅 sequential 可执行（simultaneous/independent_then_cross 的执行面随 reveal 策略切片开放后解禁）。
+ * 策略变更（RFC-0003 §3.1.7 / R-10；RFC-0001 Control 族）。payload 平铺参数束；policy_version 不入 payload——由投影按 policy.changed 计数派生（事件回放自证）。变更只在 round 边界生效（引擎开轮自历史投影）。reveal 三策略自 B2 起全部可执行。
  */
 export interface PolicyChangedPayload {
   mode: "roundtable" | "open_floor" | "deep_dive" | "review" | "decision";
@@ -16,6 +16,10 @@ export interface PolicyChangedPayload {
   intent_window: string;
   response_cap: number;
   reveal_strategy: "sequential" | "simultaneous" | "independent_then_cross";
+  /**
+   * cross 子轮数（Roundtable 默认 1；仅 independent_then_cross 消费）
+   */
+  rebuttals: number;
 }
 export interface PolicyWeights {
   relevance: number;

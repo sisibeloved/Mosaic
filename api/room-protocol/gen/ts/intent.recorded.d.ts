@@ -28,4 +28,8 @@ export interface IntentRecordedPayload {
   score_band: "very_low" | "low" | "medium" | "high" | "very_high" | "unranked";
   selected: boolean;
   endorsed: boolean;
+  /**
+   * 记分卡透明（R-08）：未选理由（budget/duplicate_intent/score_out_of_range/…）；获选项缺省
+   */
+  unselected_reason?: string;
 }
