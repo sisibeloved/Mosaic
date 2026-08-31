@@ -1,6 +1,6 @@
-// UT 层：ADR-0007 契约测试回填——api/http-api/openapi.yaml（经 apigen 内嵌
-// spec 读回）驱动的外部契约走查。操作集一致性已由 ServerInterface 编译期保证
-// （漏实现即编译失败）；本测试钉住三件 spec 与装配的运行期一致性：
+// UT 层：ADR-0007 契约测试回填——api/http-api/openapi.yaml（权威源文件直读）
+// 驱动的外部契约走查。操作集一致性已由 ServerInterface 编译期保证（漏实现即
+// 编译失败）；本测试钉住三件 spec 与装配的运行期一致性：
 //  1. spec 每条 path+method 都被路由（命中处理器而非 mux 默认 404）；
 //  2. spec 的 command_kind 枚举与服务端实际受理集一致（漂移即红）；
 //  3. spec 请求例可被受理，响应字段集与 CommandResponse 契约一致。
@@ -11,10 +11,23 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"path/filepath"
 	"testing"
 
-	"github.com/sisibeloved/Mosaic/internal/transport/httpapi/apigen"
+	"github.com/getkin/kin-openapi/openapi3"
 )
+
+// loadSpec 读权威源 openapi.yaml（不经生成产物转手——内嵌 spec 的重序列化
+// 跨环境不稳定，CI 漂移门禁实证过；契约测试只信源文件）。
+func loadSpec(t *testing.T) *openapi3.T {
+	t.Helper()
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromFile(filepath.Join("..", "..", "..", "api", "http-api", "openapi.yaml"))
+	if err != nil {
+		t.Fatalf("加载 openapi.yaml: %v", err)
+	}
+	return doc
+}
 
 // muxUnrouted 判定响应是否为 Go ServeMux 的默认 404（未注册路由的形态：
 // text/plain 的 "404 page not found"——与业务 404 的 JSON 体区分）。
@@ -31,10 +44,7 @@ func muxUnrouted(t *testing.T, resp *http.Response) bool {
 // TestSpecRouteParity：spec 声明的每条操作都必须命中已装配的处理器。
 func TestSpecRouteParity(t *testing.T) {
 	ts, _, _ := newTestServer(t)
-	doc, err := apigen.GetSwagger()
-	if err != nil {
-		t.Fatalf("内嵌 spec 解析失败: %v", err)
-	}
+	doc := loadSpec(t)
 	client := &http.Client{}
 	checked := 0
 	for path, item := range doc.Paths.Map() {
@@ -68,10 +78,7 @@ func TestSpecRouteParity(t *testing.T) {
 
 // TestSpecCommandKindEnum：spec 枚举 == 服务端受理集。
 func TestSpecCommandKindEnum(t *testing.T) {
-	doc, err := apigen.GetSwagger()
-	if err != nil {
-		t.Fatalf("内嵌 spec 解析失败: %v", err)
-	}
+	doc := loadSpec(t)
 	sch, ok := doc.Components.Schemas["RoomCommand"]
 	if !ok || sch.Value == nil {
 		t.Fatal("spec 缺 RoomCommand schema")
@@ -144,10 +151,7 @@ func specExample(t *testing.T, op any) map[string]any {
 // 响应字段集与 CommandResponse 契约一致（不得多键走私/少键）。
 func TestSpecRequestExamplesAccepted(t *testing.T) {
 	ts, _, _ := newTestServer(t)
-	doc, err := apigen.GetSwagger()
-	if err != nil {
-		t.Fatalf("内嵌 spec 解析失败: %v", err)
-	}
+	doc := loadSpec(t)
 
 	post := func(path string, body map[string]any) (int, map[string]any) {
 		raw, _ := json.Marshal(body)
