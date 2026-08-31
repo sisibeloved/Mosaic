@@ -5,6 +5,7 @@ package room
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -17,8 +18,14 @@ type MemStore struct {
 	events   []protocol.Envelope            // 全局提交序
 	byRoom   map[string][]protocol.Envelope // 房间视图
 	receipts map[string]*CommandReceipt     // key: tenant|idem|kind
-	claims   map[string][]byte              // key: room|stimulus → envelope（ClaimStore）
+	claims   map[string]claimEntry          // key: room|stimulus（ClaimStore）
 	nextSeq  map[string]int64
+}
+
+// claimEntry 声明行（信封 + 持久位，重驱动排序依据）。
+type claimEntry struct {
+	envelope []byte
+	position int64
 }
 
 // NewMemStore 构造空存储。
@@ -26,7 +33,7 @@ func NewMemStore() *MemStore {
 	return &MemStore{
 		byRoom:   map[string][]protocol.Envelope{},
 		receipts: map[string]*CommandReceipt{},
-		claims:   map[string][]byte{},
+		claims:   map[string]claimEntry{},
 		nextSeq:  map[string]int64{},
 	}
 }
@@ -34,14 +41,14 @@ func NewMemStore() *MemStore {
 func claimKey(roomID, stimulusID string) string { return roomID + "|" + stimulusID }
 
 // ClaimStimulus 实现 ClaimStore。
-func (m *MemStore) ClaimStimulus(_ context.Context, roomID, stimulusID string, envelope []byte) (bool, error) {
+func (m *MemStore) ClaimStimulus(_ context.Context, roomID, stimulusID string, envelope []byte, position int64) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := claimKey(roomID, stimulusID)
 	if _, exists := m.claims[key]; exists {
 		return false, nil
 	}
-	m.claims[key] = append([]byte(nil), envelope...)
+	m.claims[key] = claimEntry{envelope: append([]byte(nil), envelope...), position: position}
 	return true, nil
 }
 
@@ -53,15 +60,19 @@ func (m *MemStore) DeleteClaim(_ context.Context, roomID, stimulusID string) err
 	return nil
 }
 
-// PendingClaims 实现 ClaimStore。
+// PendingClaims 实现 ClaimStore：按持久位升序（四轮复审 #14：恢复顺序 = 到达顺序）。
 func (m *MemStore) PendingClaims(_ context.Context) ([]StimulusClaim, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]StimulusClaim, 0, len(m.claims))
-	for key, env := range m.claims {
+	for key, c := range m.claims {
 		roomID, stimulusID, _ := strings.Cut(key, "|")
-		out = append(out, StimulusClaim{RoomID: roomID, StimulusEventID: stimulusID, Envelope: append([]byte(nil), env...)})
+		out = append(out, StimulusClaim{
+			RoomID: roomID, StimulusEventID: stimulusID,
+			Envelope: append([]byte(nil), c.envelope...), Position: c.position,
+		})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Position < out[j].Position })
 	return out, nil
 }
 
@@ -119,6 +130,17 @@ func (m *MemStore) appendLocked(envs []protocol.Envelope, rc *CommandReceipt) ([
 func (m *MemStore) AppendEvents(ctx context.Context, envs []protocol.Envelope) ([]protocol.Envelope, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.appendLocked(envs, nil)
+}
+
+// AppendEventsIf 实现 CASStore（四轮复审 #12）：当前版本不符即拒绝（同临界区判定）。
+func (m *MemStore) AppendEventsIf(ctx context.Context, envs []protocol.Envelope, expectedRoomVersion int64) ([]protocol.Envelope, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(envs) > 0 && expectedRoomVersion != m.nextSeq[envs[0].RoomID] {
+		return nil, fmt.Errorf("%w: expected=%d current=%d",
+			ErrVersionConflict, expectedRoomVersion, m.nextSeq[envs[0].RoomID])
+	}
 	return m.appendLocked(envs, nil)
 }
 

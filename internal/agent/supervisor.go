@@ -34,7 +34,9 @@ func (s *Supervisor) Register(a Adapter) error {
 
 // RegisterFor 以 Profile 键登记适配器（复审 #3：同名适配器的多个 executable——
 // 如 native 与 WSL 两份 codex——若只按 Name() 登记，后注册者被拒、座位却照加，
-// 全部流量折叠到首个实例）。同键重登即替换（resync 刷新配置）；空键拒绝。
+// 全部流量折叠到首个实例）。同键重登即替换（resync 刷新配置）并驱逐该 Profile
+// 的既有会话（四轮复审 #9：不驱逐则旧 session 继续吃旧适配器实例与旧 thread，
+// 替换形同虚设）；空键拒绝。
 func (s *Supervisor) RegisterFor(profileKey string, a Adapter) error {
 	if profileKey == "" {
 		return fmt.Errorf("agent: RegisterFor 需要 profile 键")
@@ -42,6 +44,10 @@ func (s *Supervisor) RegisterFor(profileKey string, a Adapter) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.adapters[profileKey] = a
+	if sess, ok := s.sessions[profileKey]; ok {
+		sess.Close() // 换实例：旧会话（旧进程路径/旧 thread 连续性）不再复用
+		delete(s.sessions, profileKey)
+	}
 	return nil
 }
 

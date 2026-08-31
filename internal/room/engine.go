@@ -10,6 +10,7 @@ package room
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -150,13 +151,17 @@ func (e *Engine) Deliver(ctx context.Context, entry outbox.Entry) error {
 	}
 	switch {
 	case env.Type == protocol.EventRoomStarted:
-		e.redriveRoomClaims(env.RoomID)
+		// 复审 #19：重驱动扫描失败退回分发器（resume 条目不确认、按序重投）——
+		// 只告警会让该次 resume 的重驱动静默丢失。
+		if err := e.redriveRoomClaims(env.RoomID); err != nil {
+			return fmt.Errorf("engine: redrive room %s claims: %w", env.RoomID, err)
+		}
 		return nil
 	case env.Type != protocol.EventMessagePosted || env.Actor.Kind != "human":
 		return nil
 	}
 	if e.cfg.Claims != nil {
-		newly, err := e.cfg.Claims.ClaimStimulus(ctx, env.RoomID, env.EventID, entry.Envelope)
+		newly, err := e.cfg.Claims.ClaimStimulus(ctx, env.RoomID, env.EventID, entry.Envelope, entry.GlobalPos)
 		if err != nil {
 			e.warn(env.RoomID, "stimulus 声明落库失败（退回分发器待重投）", "stimulus", env.EventID, "err", err)
 			return fmt.Errorf("engine: claim stimulus %s: %w", env.EventID, err)
@@ -170,16 +175,17 @@ func (e *Engine) Deliver(ctx context.Context, entry outbox.Entry) error {
 	return nil
 }
 
-// redriveRoomClaims resume 后重驱动该房间未开轮的刺激声明（复审 #10）。
+// redriveRoomClaims resume 后重驱动该房间未开轮的刺激声明（复审 #10；
+// 声明按持久位升序返回——四轮复审 #14：重驱动顺序 = 刺激到达顺序）。
 // 双入队竞态（多次 resume / 与 RecoverClaims 并发）由 runRound 的幂等护栏去重。
-func (e *Engine) redriveRoomClaims(roomID string) {
+func (e *Engine) redriveRoomClaims(roomID string) error {
 	if e.cfg.Claims == nil {
-		return
+		return nil
 	}
 	claims, err := e.cfg.Claims.PendingClaims(e.lifecycle)
 	if err != nil {
-		e.warn(roomID, "resume 重驱动扫描失败", "err", err)
-		return
+		e.warn(roomID, "resume 重驱动扫描失败（退回分发器待重投）", "err", err)
+		return err
 	}
 	for _, c := range claims {
 		if c.RoomID != roomID {
@@ -193,6 +199,7 @@ func (e *Engine) redriveRoomClaims(roomID string) {
 		e.warn(roomID, "resume 重驱动未开轮的刺激声明", "stimulus", c.StimulusEventID)
 		e.enqueue(env)
 	}
+	return nil
 }
 
 // RecoverClaims 启动恢复：扫描声明未清的刺激——已开轮的清声明，未开轮的重驱动。
@@ -437,6 +444,13 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 	if stimulus.ThreadID != nil {
 		stimulusThread = *stimulus.ThreadID // 线程归属透传（agent-native：回复不丢线程）
 	}
+	// 相 1：全部评估先跑完（四轮复审 #10——本轮评估消耗要进同一轮的 admission，
+	// 必须先汇总用量再判预算资格；按座位序收集，确定性保持）。
+	type seatEval struct {
+		seat   AgentSeat
+		result agent.Result
+	}
+	var evals []seatEval
 	for _, seat := range e.seatsSnapshot() {
 		intentResult, err := e.runTask(ctx, seat.Profile, seat.ParticipantID, agent.Task{
 			TaskID:        e.cfg.NewID("tsk"),
@@ -455,17 +469,29 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 			continue // agent 失败：跳过该座（M2 补 generation.failed/unavailable 事件语义）
 		}
 		evalUsage[seat.ParticipantID] = intentResult.Usage
-		intent, ok := intentFromData(seat.ParticipantID, intentResult.Data)
+		evals = append(evals, seatEval{seat: seat, result: intentResult})
+	}
+	// 相 1.5：评估消耗入"现在"的账本——BudgetOK 用当下余额判对称预留，
+	// 评估前的旧账本会让本轮 eval 开销绕过同轮 admission（四轮复审 #10）。
+	ledgerNow := ledger
+	for _, u := range evalUsage {
+		if u != nil {
+			ledgerNow.Tokens += u.InputTokens + u.OutputTokens
+		}
+	}
+	// 相 2：结构校验 + 全记录 + 候选构建（座位序）。
+	for _, ev := range evals {
+		intent, ok := intentFromData(ev.seat.ParticipantID, ev.result.Data)
 		if !ok {
 			// 结构校验失败即弃权：不虚构零分参与排序（二轮审校 #8）。
 			// 复审 #12：弃权仍全记录（R-01）且真实 usage 必须入账——畸形输出的
 			// 评估开销不得绕过预算账本（token 已花，事件零痕迹即账本漏记）。
-			e.warn(roomID, "intent 结构非法，该座弃权", "seat", seat.ParticipantID)
+			e.warn(roomID, "intent 结构非法，该座弃权", "seat", ev.seat.ParticipantID)
 			invalid := e.newEnv(roomID, protocol.EventIntentRecorded,
-				protocol.Actor{ParticipantID: seat.ParticipantID, Kind: "agent"}, stimulus.EventID, roundID,
+				protocol.Actor{ParticipantID: ev.seat.ParticipantID, Kind: "agent"}, stimulus.EventID, roundID,
 				protocol.IntentRecordedPayload{
 					IntentID:        e.cfg.NewID("int"),
-					ParticipantID:   seat.ParticipantID,
+					ParticipantID:   ev.seat.ParticipantID,
 					Action:          "silent", // 弃权语义（schema 合法枚举），band=unranked
 					ScoreBand:       "unranked",
 					Selected:        false,
@@ -473,7 +499,7 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 					PublicRationale: "intent 结构非法，弃权",
 				})
 			invalid.Metadata = intentMetadata(
-				attention.Rejection{Reason: "invalid_intent_structure"}, false, intentResult.Usage)
+				attention.Rejection{Reason: "invalid_intent_structure"}, false, ev.result.Usage)
 			if _, err := e.append(ctx, invalid); err != nil {
 				return
 			}
@@ -484,14 +510,14 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 			Intent: intent,
 			Ctx: attention.ContextFeatures{
 				ViewpointDiversity: 0.5, // M1 中性；结构投影 M3 接入（RFC-0006 降级路径）
-				RecentFloorShare:   recentFloorShare(history, seat.ParticipantID),
-				DirectAddress:      directAddress(stimulus, seat.ParticipantID),
+				RecentFloorShare:   recentFloorShare(history, ev.seat.ParticipantID),
+				DirectAddress:      directAddress(stimulus, ev.seat.ParticipantID),
 			},
 			Eligibility: attention.Eligibility{
 				Enabled:        true,
 				CooldownOK:     true,
 				ThreadWritable: true,
-				BudgetOK:       ledger.ReserveOK(e.cfg.Budget, policy.MaxSpeakers, e.cfg.ResponseCap),
+				BudgetOK:       ledgerNow.ReserveOK(e.cfg.Budget, policy.MaxSpeakers, e.cfg.ResponseCap),
 			},
 		})
 	}
@@ -667,7 +693,7 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 			return revealAbort // 引擎关停：不写撤销收尾（事件链由恢复语义接手）
 		}
 		// grant 未消费：撤销收尾（本轮其余获选者继续——AR-008 语义）
-		e.revoke(ctx, roomID, grant.EventID, grantID, roundID, stimulus, "generation_failed")
+		e.revoke(ctx, roomID, grant.EventID, grantID, roundID, stimulus, "generation_failed", nil)
 		e.warn(roomID, "generate 失败，撤销 grant", "seat", sel.ParticipantID, "err", err)
 		return revealRevoked
 	}
@@ -682,8 +708,8 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 		return revealAbort
 	}
 	openedSeq := roundOpenedSeq(fresh, roundID)
-	if roomPaused(fresh) || (openedSeq > 0 && pausedAfter(fresh, openedSeq)) || countRounds(fresh) > epoch {
-		e.revoke(ctx, roomID, grant.EventID, grantID, roundID, stimulus, "room_paused")
+	if e.fenceViolated(fresh, roundID, openedSeq, epoch) {
+		e.revoke(ctx, roomID, grant.EventID, grantID, roundID, stimulus, "room_paused", draftResult.Usage)
 		return revealRevoked
 	}
 
@@ -698,18 +724,68 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 			},
 		}
 	}
-	if _, err := e.append(ctx, msg); err != nil {
-		return revealAbort
+	// 正文落库走 CAS（四轮复审 #12）：以迟到检查读到的版本为期位——检查与落库
+	// 之间插入的事件使 CAS 失败；回读后真迟到（暂停/epoch）→ 撤销，良性交错
+	// （如人类消息）→ 换新期位重试。无 CAS 能力的测试存储退化为普通追加。
+	expected := expectedVersionOf(fresh)
+	for attempt := 0; attempt < 3; attempt++ {
+		if _, err := e.appendCAS(ctx, msg, expected); err == nil {
+			e.debug(roomID, "agent 发言已发布", "round", roundID, "grant", grantID,
+				"participant", sel.ParticipantID, "event", msg.EventID)
+			return revealPublished
+		} else if !errors.Is(err, ErrVersionConflict) {
+			return revealAbort
+		}
+		recheck, err := e.roomHistory(ctx, roomID)
+		if err != nil {
+			return revealAbort
+		}
+		if e.fenceViolated(recheck, roundID, roundOpenedSeq(recheck, roundID), epoch) {
+			e.revoke(ctx, roomID, grant.EventID, grantID, roundID, stimulus, "room_paused", draftResult.Usage)
+			return revealRevoked
+		}
+		expected = expectedVersionOf(recheck) // 良性交错：换新期位重试
 	}
-	e.debug(roomID, "agent 发言已发布", "round", roundID, "grant", grantID,
-		"participant", sel.ParticipantID, "event", msg.EventID)
-	return revealPublished
+	e.warn(roomID, "正文 CAS 重试耗尽，轮中止", "round", roundID, "grant", grantID)
+	return revealAbort
 }
 
-func (e *Engine) revoke(ctx context.Context, roomID, causationEventID, grantID, roundID string, stimulus protocol.Envelope, reason string) {
+// fenceViolated 迟到判定（fresh 重读后复用）：当前暂停 / 本轮开轮后出现过暂停 /
+// 进入更新 epoch。
+func (e *Engine) fenceViolated(events []StoredEvent, roundID string, openedSeq, epoch int64) bool {
+	return roomPaused(events) || (openedSeq > 0 && pausedAfter(events, openedSeq)) || countRounds(events) > epoch
+}
+
+// expectedVersionOf CAS 期位：fresh 历史的最新 seq（EventsAfter 按 seq 序，末元素即最大）。
+func expectedVersionOf(events []StoredEvent) int64 {
+	if len(events) == 0 {
+		return 0
+	}
+	return events[len(events)-1].Envelope.Seq
+}
+
+// appendCAS 条件追加：存储具备 CASStore 能力走乐观并发，否则普通追加（测试存储）。
+func (e *Engine) appendCAS(ctx context.Context, env protocol.Envelope, expected int64) ([]protocol.Envelope, error) {
+	if cas, ok := e.cfg.Store.(CASStore); ok {
+		return cas.AppendEventsIf(ctx, []protocol.Envelope{env}, expected)
+	}
+	return e.append(ctx, env)
+}
+
+func (e *Engine) revoke(ctx context.Context, roomID, causationEventID, grantID, roundID string, stimulus protocol.Envelope, reason string, usage *agent.Usage) {
 	revoked := e.newEnv(roomID, protocol.EventFloorRevoked,
 		protocol.Actor{ParticipantID: "par_system", Kind: "system"}, causationEventID, roundID,
 		protocol.FloorRevokedPayload{GrantID: grantID, Reason: reason})
+	// 四轮复审 #13：被撤销的生成也已消耗 token——usage 入 metadata，
+	// RebuildBudget 汇总 floor.revoked（否则账本永久漏计这批开销）。
+	if usage != nil {
+		revoked.Metadata = map[string]any{
+			"usage": map[string]any{
+				"input_tokens":  usage.InputTokens,
+				"output_tokens": usage.OutputTokens,
+			},
+		}
+	}
 	_, _ = e.append(ctx, revoked)
 }
 

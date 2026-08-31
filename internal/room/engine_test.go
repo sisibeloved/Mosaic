@@ -379,6 +379,10 @@ func (h *gatedHandle) Result() (agent.Result, error) {
 				return agent.Result{}, agent.ErrStale
 			}
 		}
+		gatedMu.Lock()
+		u := genUsage
+		gatedMu.Unlock()
+		return agent.Result{Block: "public_draft", Data: map[string]any{"body": "gated draft"}, Usage: u}, nil
 	}
 	return agent.Result{Block: "public_draft", Data: map[string]any{"body": "gated draft"}}, nil
 }
@@ -391,6 +395,7 @@ var (
 	gate     chan struct{}
 	genFail  bool
 	evalHook func()
+	genUsage *agent.Usage // 四轮复审 #13：gated 生成结果的 usage 注入
 )
 
 func gatedSnapshot() (chan struct{}, bool, func()) {
@@ -414,6 +419,12 @@ func setGenFail(v bool) {
 func setEvalHook(hook func()) {
 	gatedMu.Lock()
 	evalHook = hook
+	gatedMu.Unlock()
+}
+
+func setGenUsage(u *agent.Usage) {
+	gatedMu.Lock()
+	genUsage = u
 	gatedMu.Unlock()
 }
 
@@ -1025,7 +1036,7 @@ func TestEngineRecoverClaimsDrivesLostRound(t *testing.T) {
 	}
 	// 模拟崩溃窗口：声明落盘、事件落库，但轮从未开（未走 Deliver）
 	store.AppendEvents(context.Background(), []protocol.Envelope{lost})
-	if _, err := store.ClaimStimulus(context.Background(), "room_rc", "rc1", mustRawJSON(lost)); err != nil {
+	if _, err := store.ClaimStimulus(context.Background(), "room_rc", "rc1", mustRawJSON(lost), 1); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	eng.RecoverClaims()
@@ -1328,7 +1339,7 @@ func TestEnginePauseDuringEvalRevokesBeforeGrant(t *testing.T) {
 // failClaimStore 复审 #15：声明落库恒失败（模拟存储故障）。
 type failClaimStore struct{ *MemStore }
 
-func (f failClaimStore) ClaimStimulus(ctx context.Context, roomID, stimulusEventID string, envelope []byte) (bool, error) {
+func (f failClaimStore) ClaimStimulus(ctx context.Context, roomID, stimulusEventID string, envelope []byte, position int64) (bool, error) {
 	return false, fmt.Errorf("claim store down")
 }
 
@@ -1427,5 +1438,224 @@ func TestEngineStimulusOrderPreserved(t *testing.T) {
 	}
 	if len(order) != 2 || order[0] != "so1" || order[1] != "so2" {
 		t.Fatalf("开轮序必须等于到达序：%v", order)
+	}
+}
+
+// ---- 四轮复审（2026-08-30）----
+
+// 四轮复审 #10：本轮评估消耗计入同轮 admission——BudgetOK 用"现在"的账本。
+// MaxTokens=1000、MaxSpeakers=1、cap=600：评估花费 500 后 500+600>1000 → 失格。
+func TestEngineEvalUsageCountsTowardAdmission(t *testing.T) {
+	run := func(evalUsage *agent.Usage) bool {
+		store := NewMemStore()
+		sup := agent.NewSupervisor()
+		stubIntentData = map[string]any{"action": "speak", "type": "extend",
+			"scores": map[string]any{"relevance": .8, "novelty": .5, "urgency": .5, "confidence": .5}}
+		stubIntentUsage = evalUsage
+		_ = sup.Register(intentStubAdapter{})
+		defer sup.Shutdown()
+		defer func() { stubIntentData = nil; stubIntentUsage = nil }()
+		eng := NewEngine(EngineConfig{
+			Store: store, Reader: store, Agents: sup,
+			Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "stub_intent"}}},
+			Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 1, Lambda: 0.30, Weights: attention.DefaultWeights},
+			Budget: contextx.Limits{MaxTokens: 1000},
+			Clock:  testClock, Now: time.Now,
+			NewID: counterNewID(), Tenant: "ten_local",
+		})
+		store.AppendEvents(context.Background(), []protocol.Envelope{
+			{EventID: "eu0", TenantID: "ten_local", RoomID: "room_eu", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+		})
+		deliverHuman(t, store, eng, "room_eu")
+		waitRoundClosed(t, store, "room_eu")
+		return hasType(store.RoomEvents("room_eu"), protocol.EventFloorGranted)
+	}
+	if !run(nil) {
+		t.Fatal("零评估消耗时对称预留应通过（600<=1000），对照失败")
+	}
+	if run(&agent.Usage{InputTokens: 500, OutputTokens: 0}) {
+		t.Fatal("评估消耗 500 后同轮 admission 应失格（500+600>1000）——同轮 eval 用量不得绕过预算")
+	}
+}
+
+// casHookStore 四轮复审 #12：在正文 CAS 落库前注入并发事件（复现检查与落库间的窗口）。
+type casHookStore struct {
+	*MemStore
+	inject func(roomID string)
+	hooked bool
+}
+
+func (c *casHookStore) AppendEventsIf(ctx context.Context, envs []protocol.Envelope, expected int64) ([]protocol.Envelope, error) {
+	if !c.hooked && len(envs) > 0 && envs[0].Type == protocol.EventMessagePosted && envs[0].Actor.Kind == "agent" {
+		c.hooked = true
+		c.inject(envs[0].RoomID) // 检查后、落库前：并发事件先落库
+		return nil, ErrVersionConflict
+	}
+	return c.MemStore.AppendEventsIf(ctx, envs, expected)
+}
+
+func newCasEngine(t *testing.T, store *casHookStore) *Engine {
+	t.Helper()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(echo.Adapter{})
+	t.Cleanup(sup.Shutdown)
+	return NewEngine(EngineConfig{
+		Store: store, Reader: store, Agents: sup,
+		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
+		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
+		Clock:  testClock, Now: time.Now,
+		NewID: counterNewID(), Tenant: "ten_local",
+	})
+}
+
+// 四轮复审 #12：窗口内到达 pause → CAS 失败 → 回读判真迟到 → 撤销，正文零发布。
+func TestEngineLatePauseInAppendWindowRevoked(t *testing.T) {
+	store := &casHookStore{MemStore: NewMemStore()}
+	store.inject = func(roomID string) {
+		store.MemStore.AppendEvents(context.Background(), []protocol.Envelope{
+			{EventID: "cw_pause", TenantID: "ten_local", RoomID: roomID, Type: protocol.EventRoomPaused,
+				Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+		})
+	}
+	eng := newCasEngine(t, store)
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "cw0", TenantID: "ten_local", RoomID: "room_cw", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	deliverHuman(t, store.MemStore, eng, "room_cw")
+	waitRoundClosed(t, store.MemStore, "room_cw")
+	events := store.RoomEvents("room_cw")
+	if !hasType(events, protocol.EventFloorRevoked) {
+		t.Fatalf("窗口内 pause 必须撤销：%v", typesOf(events))
+	}
+	for _, ev := range events {
+		if ev.Type == protocol.EventMessagePosted && ev.Actor.Kind == "agent" {
+			t.Fatalf("竞态窗口的正文不得发布：%v", typesOf(events))
+		}
+	}
+}
+
+// 四轮复审 #12 对照：窗口内到达的是良性交错（人类消息）→ 换期位重试后正常发布。
+func TestEngineBenignInterleaveRetriesAppend(t *testing.T) {
+	store := &casHookStore{MemStore: NewMemStore()}
+	store.inject = func(roomID string) {
+		store.MemStore.AppendEvents(context.Background(), []protocol.Envelope{
+			{EventID: "cw_benign", TenantID: "ten_local", RoomID: roomID, Type: protocol.EventMessagePosted,
+				Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{"body":"mid-round"}`), Metadata: map[string]any{}},
+		})
+	}
+	eng := newCasEngine(t, store)
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "cb0", TenantID: "ten_local", RoomID: "room_cb", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	deliverHuman(t, store.MemStore, eng, "room_cb")
+	waitRoundClosed(t, store.MemStore, "room_cb")
+	events := store.RoomEvents("room_cb")
+	published := false
+	for _, ev := range events {
+		if ev.Type == protocol.EventMessagePosted && ev.Actor.Kind == "agent" {
+			published = true
+		}
+	}
+	if !published {
+		t.Fatalf("良性交错应换期位重试并发布：%v", typesOf(events))
+	}
+}
+
+// 四轮复审 #13：被 pause 撤销的生成 usage 入 floor.revoked metadata 且进账本。
+func TestEngineRevokedUsageEntersLedger(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(gatedAdapter{})
+	defer sup.Shutdown()
+	setGate(make(chan struct{}))
+	defer setGate(nil)
+	setGenUsage(&agent.Usage{InputTokens: 40, OutputTokens: 2})
+	defer setGenUsage(nil)
+	eng := newEchoEngine(store, sup, contextx.Limits{}, "gated")
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "ru0", TenantID: "ten_local", RoomID: "room_ru", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	deliverHuman(t, store, eng, "room_ru")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !hasType(store.RoomEvents("room_ru"), protocol.EventFloorGranted) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "ru1", TenantID: "ten_local", RoomID: "room_ru", Type: protocol.EventRoomPaused, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	if ch, _, _ := gatedSnapshot(); ch != nil {
+		close(ch) // 放行 generate（channel 关闭后所有等待者直接通过）
+	}
+	waitRoundClosed(t, store, "room_ru")
+	events := store.RoomEvents("room_ru")
+	found := false
+	for _, ev := range events {
+		if ev.Type != protocol.EventFloorRevoked {
+			continue
+		}
+		usage, _ := ev.Metadata["usage"].(map[string]any)
+		if usage == nil || num(usage["input_tokens"]) != 40 {
+			t.Fatalf("撤销事件应携带生成 usage：%v", ev.Metadata)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatalf("应存在 floor.revoked：%v", typesOf(events))
+	}
+	envs := make([]protocol.Envelope, len(events))
+	for i := range events {
+		envs[i] = events[i]
+	}
+	if tokens := contextx.RebuildBudget(envs).Tokens; tokens < 42 {
+		t.Fatalf("撤销的生成开销必须入账（>=42，got %d）", tokens)
+	}
+}
+
+// failPendingClaims 四轮复审 #19：声明扫描恒失败（模拟存储故障）。
+type failPendingClaims struct{ *MemStore }
+
+func (f failPendingClaims) PendingClaims(ctx context.Context) ([]StimulusClaim, error) {
+	return nil, fmt.Errorf("claims scan down")
+}
+
+// 四轮复审 #19：resume 重驱动扫描失败必须退回分发器（返回错误），不得只告警后确认。
+func TestEngineResumeScanErrorPropagates(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(echo.Adapter{})
+	defer sup.Shutdown()
+	eng := NewEngine(EngineConfig{
+		Store: store, Reader: store, Agents: sup, Claims: failPendingClaims{store},
+		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
+		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
+		Clock:  testClock, Now: time.Now,
+		NewID: counterNewID(), Tenant: "ten_local",
+	})
+	resume := protocol.Envelope{
+		EventID: "rs1", TenantID: "ten_local", RoomID: "room_rs",
+		Type: protocol.EventRoomStarted, SchemaVersion: 1, OccurredAt: testClock(),
+		Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{},
+	}
+	if err := eng.Deliver(context.Background(), outbox.Entry{RoomID: "room_rs", Envelope: mustRawJSON(resume)}); err == nil {
+		t.Fatal("resume 扫描失败必须返回错误（分发器不确认、按序重投）")
+	}
+}
+
+// 四轮复审 #14：声明按持久位升序返回（恢复顺序 = 到达顺序）。
+func TestClaimOrderingByPosition(t *testing.T) {
+	store := NewMemStore()
+	ctx := context.Background()
+	if _, err := store.ClaimStimulus(ctx, "room_o", "late", mustRawJSON(protocol.Envelope{EventID: "late"}), 5); err != nil {
+		t.Fatalf("claim late: %v", err)
+	}
+	if _, err := store.ClaimStimulus(ctx, "room_o", "early", mustRawJSON(protocol.Envelope{EventID: "early"}), 3); err != nil {
+		t.Fatalf("claim early: %v", err)
+	}
+	claims, err := store.PendingClaims(ctx)
+	if err != nil || len(claims) != 2 {
+		t.Fatalf("pending: %v %v", claims, err)
+	}
+	if claims[0].StimulusEventID != "early" || claims[1].StimulusEventID != "late" {
+		t.Fatalf("应按 position 升序：[%s %s]", claims[0].StimulusEventID, claims[1].StimulusEventID)
 	}
 }

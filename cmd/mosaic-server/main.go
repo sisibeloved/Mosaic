@@ -37,6 +37,9 @@ import (
 func main() {
 	addr := flag.String("addr", "127.0.0.1:7420", "listen address")
 	dataDir := flag.String("data", "./data", "data directory (SQLite + runtime files)")
+	// 四轮复审 #2：agent 工作根独立于数据目录（read-only 沙箱不限制读取——
+	// 工作目录在 dataDir 内意味着 ../mosaic.db 是邻位可达路径）。
+	agentWork := flag.String("agent-work", "", "agent work root (default: user cache dir; kept OUTSIDE -data)")
 	// 二轮审校 #17：owner 级 API（命令/SSE/宿主注册表）无认证——非回环监听必须显式豁免
 	allowRemote := flag.Bool("allow-remote", false, "allow non-loopback listen (owner APIs are unauthenticated)")
 	// 开发者模式（M1 v1.8）：debug 日志级别 + /v1/debug 只读端点 + UI 调试面板。
@@ -77,9 +80,12 @@ func main() {
 		logger.Error("mkdir data failed", "dir", *dataDir, "err", err)
 		os.Exit(1)
 	}
-	// 复审 #17：既有目录权限补收紧（MkdirAll 只在新建时生效；忽略不支持的平台）
+	// 复审 #17：既有目录权限补收紧（MkdirAll 只在新建时生效）。
+	// 四轮复审 #6：收紧失败 fail closed——安全边界建立不起来就不承载事件日志
+	//（Windows 无 POSIX 权限语义，Chmod 为无害 no-op，不触发此分支）。
 	if err := os.Chmod(*dataDir, 0o700); err != nil {
-		logger.Warn("数据目录权限收紧失败（POSIX 语义平台外为 no-op）", "dir", *dataDir, "err", err)
+		logger.Error("数据目录权限收紧失败（fail closed：owner-only 边界不可妥协）", "dir", *dataDir, "err", err)
+		os.Exit(1)
 	}
 	store, err := sqlite.Open(filepath.Join(*dataDir, "mosaic.db"))
 	if err != nil {
@@ -144,6 +150,14 @@ func main() {
 	// （引擎在宿主扫描完成后才构造，调试端点不得阻塞启动序）。
 	var enginePtr atomic.Pointer[room.Engine]
 
+	// 先 Listen 再 Serve：暴露实际绑定地址（支持 -addr 127.0.0.1:0；裸 ":port"
+	// 是全接口监听，须经 -allow-remote 豁免——复审 #4）。
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		logger.Error("listen failed", "addr", *addr, "err", err)
+		os.Exit(1)
+	}
+
 	mux := httpapi.New(httpapi.Deps{
 		SVC:         svc,
 		Reader:      store,
@@ -155,6 +169,9 @@ func main() {
 		Dev:         *dev,
 		Budget:      budgetLimits,
 		Outbox:      store,
+		// 四轮复审 #15：跨源写门对"配置的回环 authority"判定，不信请求自带的
+		// Host（DNS rebinding 后二者仍相等）——真实绑定地址在此注入。
+		Authority: ln.Addr().String(),
 		Seats: func() []room.AgentSeat {
 			if engine := enginePtr.Load(); engine != nil {
 				return engine.Seats()
@@ -163,13 +180,6 @@ func main() {
 		},
 	})
 
-	// 先 Listen 再 Serve：暴露实际绑定地址（支持 -addr 127.0.0.1:0；裸 ":port"
-	// 是全接口监听，须经 -allow-remote 豁免——复审 #4）。
-	ln, err := net.Listen("tcp", *addr)
-	if err != nil {
-		logger.Error("listen failed", "addr", *addr, "err", err)
-		os.Exit(1)
-	}
 	logger.Info("mosaic-server listening", "addr", ln.Addr().String())
 	if *dev {
 		logger.Info("开发者模式已启用", "debug日志", "已放开", "调试端点", "/v1/debug/rooms/{room_id}/state|events", "UI面板", "已注入")
@@ -183,9 +193,18 @@ func main() {
 		<-scanDone
 		hostRunner := harness.NewHostRunner()
 		// agent 工作目录隔离（二轮审校 #18）：不给服务工作目录与 owner 文件——
-		// 专用空目录 + -C + read-only 沙箱三层约束。
+		// 专用空目录 + -C + read-only 沙箱三层约束；四轮复审 #2：工作根在数据目录
+		// 之外（沙箱不限制读取，dataDir 内的工作目录使 ../mosaic.db 邻位可达；
+		// 同用户 exec 模型的读取隔离边界见计划 v1.10 登记——低权限身份/allowlist 属 M2+）。
 		// 复审 #1：准备失败 fail closed（不再回退服务器 cwd——隔离失效胜过静默降级）。
-		workRoot := filepath.Join(*dataDir, "agent-work")
+		workRoot := *agentWork
+		if workRoot == "" {
+			if cache, err := os.UserCacheDir(); err == nil {
+				workRoot = filepath.Join(cache, "mosaic", "agent-work")
+			} else {
+				workRoot = filepath.Join(os.TempDir(), "mosaic-agent-work")
+			}
+		}
 		if err := os.MkdirAll(workRoot, 0o700); err != nil {
 			logger.Error("agent work root 准备失败：codex 座位不注册（fail closed）", "dir", workRoot, "err", err)
 			workRoot = ""
@@ -199,19 +218,26 @@ func main() {
 			for _, exe := range harnessRegistry.EnabledList() {
 				switch exe.Adapter {
 				case "codex":
-					profileID := "prof_codex_" + exe.Runtime
-					if exe.Distro != "" {
-						profileID += "_" + strings.ReplaceAll(exe.Distro, ".", "_")
-					}
+					// 四轮复审 #3：身份基于注册表唯一 ID 派生——runtime+distro 派生会让
+					// 两个 native executable 折叠成一个 profile（后者替换前者、座位却同名）。
+					exeKey := sanitizeProfileKey(exe.ID)
+					profileID := "prof_codex_" + exeKey
 					cfg := codexadapter.Config{CodexPath: exe.Path, Timeout: 180 * time.Second}
 					if harness.Runtime(exe.Runtime) == harness.RuntimeWSL {
 						// WSL 运行面（复审 #2）：工作目录必须是发行版内 Linux 路径——
 						// Windows 路径交给发行版内的 codex 即坏；HOME 同理在发行版内解析。
+						// 四轮复审 #4：HOME 非空且为绝对路径才可用——空值缓存会把
+						// 相对路径送进 -C（静默指向错位目录）；无效即跳过座位，不缓存。
 						home, ok := wslHomeCache[exe.Distro]
 						if !ok {
 							home = hostRunner.Home(ctx, harness.RuntimeWSL, exe.Distro)
-							wslHomeCache[exe.Distro] = home
 						}
+						if home == "" || !strings.HasPrefix(home, "/") {
+							logger.Error("codex WSL HOME 解析无效（座位不注册，fail closed）",
+								"distro", exe.Distro, "home", home)
+							continue
+						}
+						wslHomeCache[exe.Distro] = home
 						cfg.WSLDistro = exe.Distro
 						cfg.WSLHome = home
 						dir := path.Join(strings.TrimSuffix(home, "/"), ".mosaic", "agent-work", profileID)
@@ -232,14 +258,14 @@ func main() {
 						}
 						cfg.WorkDir = dir
 					}
-					// 复审 #3：按 Profile 键登记——多 executable（native + WSL 两份 codex）
-					// 各自成适配器实例，不再折叠到首个 "codex"。
+					// 复审 #3：按 Profile 键登记——多 executable 各自成适配器实例；
+					// 四轮复审 #9：重登驱逐旧会话（换实例后旧进程/旧 thread 不复用）。
 					if err := supervisor.RegisterFor(profileID, codexadapter.New(cfg)); err != nil {
 						logger.Warn("codex adapter register failed", "profile", profileID, "err", err)
 						continue
 					}
 					seats = append(seats, room.AgentSeat{
-						ParticipantID: "par_" + strings.TrimPrefix(profileID, "prof_"),
+						ParticipantID: "par_codex_" + exeKey,
 						Profile:       agent.Profile{ProfileID: profileID, Adapter: "codex", DisplayName: "Codex"},
 					})
 				}
@@ -316,4 +342,22 @@ func main() {
 	}
 	supervisor.Shutdown()
 	logger.Info("mosaic-server stopped")
+}
+
+// sanitizeProfileKey 注册表 ID → 身份/目录名安全字符（四轮复审 #3：身份基于
+// exe.ID 派生，ID 中的路径分隔符等不得进入 profileID 或目录名）。
+func sanitizeProfileKey(id string) string {
+	var b strings.Builder
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	if out := b.String(); out != "" {
+		return out
+	}
+	return "x"
 }

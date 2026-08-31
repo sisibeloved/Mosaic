@@ -612,3 +612,53 @@ func TestAddExecutableBodyLimit(t *testing.T) {
 		t.Fatalf("登记体超限应 413，got %d", resp.StatusCode)
 	}
 }
+
+// 四轮复审 #15：Origin 门对"配置的回环 authority"判定——不信请求自带的 Host
+// （DNS rebinding 后 Origin 与 Host 同时指向攻击者域名而相等，旧比对放行）。
+func TestWriteOriginAuthorityGuard(t *testing.T) {
+	store := room.NewMemStore()
+	svc := room.NewService(room.Config{
+		Store: store, Clock: func() string { return "2026-08-30T00:00:00.000Z" },
+		NewID: func(p string) string { return p + "_auth" }, Tenant: "ten_local",
+	})
+	ts := httptest.NewServer(New(Deps{
+		SVC: svc, Reader: store, Hub: sse.NewHub(),
+		Actor:     room.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Authority: "127.0.0.1:7420",
+	}))
+	t.Cleanup(ts.Close)
+	raw, _ := json.Marshal(map[string]any{
+		"command_kind": "create_room", "expected_room_version": 0,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d8002", "issued_at": "2026-08-30T12:00:00.000Z",
+		"payload": map[string]any{"display_name": "auth"},
+	})
+	post := func(origin, host string) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/rooms", bytes.NewReader(raw))
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if host != "" {
+			req.Host = host // 模拟 rebinding 后随攻击者域名走的 Host
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := (&http.Client{}).Do(req)
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	// rebinding 场景：Origin 与 Host 同为攻击者域——旧"Origin==Host"比对会放行
+	if code := post("http://evil.example:7420", "evil.example:7420"); code != http.StatusForbidden {
+		t.Fatalf("rebinding 场景必须拒绝（got %d）", code)
+	}
+	// 非配置端口的回环 Origin → 拒
+	if code := post("http://127.0.0.1:9999", ""); code != http.StatusForbidden {
+		t.Fatalf("端口不匹配的回环 Origin 应拒绝（got %d）", code)
+	}
+	// 配置 authority 端口的回环 Origin（localhost 变体）→ 放行
+	if code := post("http://localhost:7420", ""); code != http.StatusOK {
+		t.Fatalf("同 authority 的回环 Origin 应放行（got %d）", code)
+	}
+}

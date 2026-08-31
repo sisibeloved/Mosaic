@@ -201,6 +201,47 @@ func TestErrStaleIsSentinel(t *testing.T) {
 // 复审 #3：同名适配器的多个 executable（native + WSL 两份 codex）各自成实例——
 // RegisterFor 按 Profile 键登记，Submit 按 ProfileID 精确解析；单实例适配器
 // （如 echo）仍走名字回退路径。
+// 四轮复审 #9：RegisterFor 替换适配器时必须驱逐旧会话——否则旧 session 继续
+// 吃旧实例（旧进程路径/旧 thread 连续性），替换形同虚设。
+func TestRegisterForEvictsOldSession(t *testing.T) {
+	a1 := &fakeAdapter{name: "codex"}
+	a2 := &fakeAdapter{name: "codex"}
+	sup := NewSupervisor()
+	_ = sup.RegisterFor("prof_x", a1)
+
+	h, err := sup.Submit(context.Background(), Profile{ProfileID: "prof_x", Adapter: "codex"}, Task{TaskID: "t1", Kind: KindEvaluateIntent})
+	if err != nil {
+		t.Fatalf("submit1: %v", err)
+	}
+	if _, err := h.Result(); err != nil {
+		t.Fatalf("result1: %v", err)
+	}
+	sup.mu.Lock()
+	oldSess := sup.sessions["prof_x"]
+	sup.mu.Unlock()
+
+	if err := sup.RegisterFor("prof_x", a2); err != nil {
+		t.Fatalf("registerFor replace: %v", err)
+	}
+	fs := oldSess.(*fakeSession)
+	fs.mu.Lock()
+	closed := fs.closed
+	fs.mu.Unlock()
+	if !closed {
+		t.Fatal("替换适配器后旧会话必须被关闭")
+	}
+	h2, err := sup.Submit(context.Background(), Profile{ProfileID: "prof_x", Adapter: "codex"}, Task{TaskID: "t2", Kind: KindEvaluateIntent})
+	if err != nil {
+		t.Fatalf("submit2: %v", err)
+	}
+	if _, err := h2.Result(); err != nil {
+		t.Fatalf("result2: %v", err)
+	}
+	if a1.bootCount.Load() != 1 || a2.bootCount.Load() != 1 {
+		t.Fatalf("替换后应各 Boot 一次（a1=%d a2=%d）", a1.bootCount.Load(), a2.bootCount.Load())
+	}
+}
+
 func TestSupervisorResolvesPerProfileAdapter(t *testing.T) {
 	a1 := &fakeAdapter{name: "codex"}
 	a2 := &fakeAdapter{name: "codex"} // 同名第二个 executable

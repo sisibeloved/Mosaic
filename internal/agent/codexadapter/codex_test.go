@@ -421,6 +421,39 @@ func TestGeneratePublishRedactsSecrets(t *testing.T) {
 	}
 }
 
+// 四轮复审 #7：declared_relations 过正文同款安全门——非字符串项丢弃、
+// DLP 秘密剔除、空项丢弃、至多 8 项。
+func TestGenerateRelationsGate(t *testing.T) {
+	stream := `{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"{\"body\":\"ok\",\"declared_relations\":[\"ref-1\",42,\"key sk-abcdefghijklmnopqrst\",{\"smuggle\":true},\"   \",\"r3\", \"r4\", \"r5\", \"r6\", \"r7\", \"r8\", \"r9\", \"r10\", \"r11\"]}"}}` + "\n" + `{"type":"turn.completed"}`
+	exec := &fakeExecer{outputs: []string{stream}}
+	adapter := newTestAdapter(exec)
+	session, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "codex"})
+	defer session.Close()
+	h, _ := session.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+	res, err := h.Result()
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	rels, ok := res.Data["declared_relations"].([]any)
+	if !ok {
+		t.Fatalf("relations 应为数组：%T", res.Data["declared_relations"])
+	}
+	if len(rels) != 8 {
+		t.Fatalf("应保留 ref-1 + [REDACTED] + r3..r8 共 8 项，got %d: %v", len(rels), rels)
+	}
+	if rels[0] != "ref-1" {
+		t.Fatalf("首项应保留：%v", rels[0])
+	}
+	if !strings.Contains(rels[1].(string), "[REDACTED]") || strings.Contains(rels[1].(string), "sk-") {
+		t.Fatalf("秘密形状必须被剔除：%v", rels[1])
+	}
+	for _, r := range rels {
+		if _, isStr := r.(string); !isStr {
+			t.Fatalf("非字符串项不得保留：%v", rels)
+		}
+	}
+}
+
 func TestCancelYieldsStale(t *testing.T) {
 	blocking := &blockingExecer{}
 	adapter := newTestAdapter(blocking)

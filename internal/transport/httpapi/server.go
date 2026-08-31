@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -37,6 +38,10 @@ type Deps struct {
 	Budget contextx.Limits         // 预算上限（状态端点的水位/梯度计算基准）
 	Seats  func() []room.AgentSeat // 引擎座位快照（引擎未就绪时返回空）
 	Outbox outbox.Store            // outbox 积压检视（nil 时状态端点该节为 0）
+	// Authority 配置的服务监听地址（host:port；四轮复审 #15）：跨源写门据此判定
+	// Origin——不信请求自带的 Host（DNS rebinding 后 Origin 与 Host 会同时指向
+	// 攻击者域名而相等）。空 = 测试装配退回"请求 Host + 回环 host"判定（host 仍须回环）。
+	Authority string
 }
 
 // New 构造路由（含 healthz）。
@@ -278,15 +283,17 @@ func writeSSE(w http.ResponseWriter, event, id string, data []byte) {
 	fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", id, event, data)
 }
 
-// guardWrite 变更端点的写防护（复审 #18）：loopback owner API 无认证，恶意网页可用
-// text/plain JSON 发起无预检的跨站写（简单请求直达）。双层：
-//  1. Origin 头存在时必须与请求 Host 同源（同源 UI 恒匹配；跨站 fetch/form 必带
-//     攻击者 Origin → 403；非浏览器客户端无 Origin，放行）。
+// guardWrite 变更端点的写防护（复审 #18；四轮复审 #15 收紧）。双层：
+//  1. Origin 头存在时必须通过 originAllowed——host 必须是回环（localhost/127.x/::1；
+//     DNS rebinding 把域名解析到 127.0.0.1 时 Origin host 是攻击者域名，非回环即拒），
+//     端口必须与配置 Authority（真实监听地址）一致；Authority 未配置（测试装配）时
+//     与请求 Host 的端口比对（host 回环判定已先行，rebinding 不受影响）。
+//     非浏览器客户端无 Origin，放行。
 //  2. 带 body 的端点要求 Content-Type: application/json（跨站自定义头触发预检，
 //     本服务无 CORS 应答 → 预检即拒；同时挡掉跨站表单的默认类型）。
 func (s *server) guardWrite(w http.ResponseWriter, r *http.Request, requireJSON bool) bool {
 	if origin := r.Header.Get("Origin"); origin != "" {
-		if u, err := url.Parse(origin); err != nil || !strings.EqualFold(u.Host, r.Host) {
+		if u, err := url.Parse(origin); err != nil || !s.originAllowed(u, r.Host) {
 			writeError(w, http.StatusForbidden, "origin_rejected", "跨源写被拒绝（本地 owner API）")
 			return false
 		}
@@ -296,6 +303,25 @@ func (s *server) guardWrite(w http.ResponseWriter, r *http.Request, requireJSON 
 		return false
 	}
 	return true
+}
+
+// originAllowed 跨源判定：host 侧恒要求回环（配置 authority 的 host 或通用回环名）；
+// 端口侧与配置 Authority 对齐（rebinding 后请求 Host 会随攻击者域名走，不可作准）。
+func (s *server) originAllowed(u *url.URL, requestHost string) bool {
+	host := u.Hostname()
+	ip := net.ParseIP(host)
+	hostLoop := host == "localhost" || (ip != nil && ip.IsLoopback())
+	if !hostLoop {
+		return false
+	}
+	port := u.Port()
+	if s.deps.Authority != "" {
+		_, authPort, _ := net.SplitHostPort(s.deps.Authority)
+		return port == authPort
+	}
+	// 测试装配（无 Authority）：与请求 Host 的端口比对——host 回环判定已排除 rebinding
+	_, reqPort, _ := net.SplitHostPort(requestHost)
+	return port == reqPort
 }
 
 func mustMarshalJSON(v any) []byte {

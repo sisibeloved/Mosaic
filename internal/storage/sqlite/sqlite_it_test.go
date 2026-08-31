@@ -6,6 +6,7 @@ package sqlite
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -299,5 +300,29 @@ func TestSQLiteConcurrentAppendSerialization_IT(t *testing.T) {
 		if !seqs[want] {
 			t.Fatalf("seq %d 缺失：并发追加出现空洞", want)
 		}
+	}
+}
+
+// 四轮复审 #14：声明按持久位升序返回——恢复重驱动顺序 = 刺激到达顺序。
+func TestPendingClaimsOrderedByPosition(t *testing.T) {
+	store, _ := openTempStore(t)
+	ctx := context.Background()
+	mk := func(id string) []byte {
+		env := envelope(id, "room_ord", 0)
+		raw, _ := json.Marshal(env)
+		return raw
+	}
+	if _, err := store.ClaimStimulus(ctx, "room_ord", "late", mk("late"), 9); err != nil {
+		t.Fatalf("claim late: %v", err)
+	}
+	if _, err := store.ClaimStimulus(ctx, "room_ord", "early", mk("early"), 4); err != nil {
+		t.Fatalf("claim early: %v", err)
+	}
+	claims, err := store.PendingClaims(ctx)
+	if err != nil || len(claims) != 2 {
+		t.Fatalf("pending: %v %v", claims, err)
+	}
+	if claims[0].StimulusEventID != "early" || claims[1].StimulusEventID != "late" {
+		t.Fatalf("应按 position 升序：[%s %s]", claims[0].StimulusEventID, claims[1].StimulusEventID)
 	}
 }

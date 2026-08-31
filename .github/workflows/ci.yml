@@ -64,9 +64,12 @@ jobs:
           GOOS=windows GOARCH=arm64 go build ./cmd/mosaic-server
       # 复审 #19：漂移门禁须覆盖新增/删除产物——git diff 不看未跟踪文件，
       # 陈旧产物（生成器已不再输出）也测不出来；staged 比对全状态。
+      # 四轮复审 #17：先清空 gen 树再重生——删除 schema 后遗留的旧声明此时会以
+      # 删除差异出现（不清树则旧文件原样保留，staged 比对也看不见）。
       - name: gen-ts drift gate (Schema → TS 产物新鲜度)
         if: matrix.os == 'ubuntu-latest'
         run: |
+          git rm -rq api/room-protocol/gen/
           bash tools/scripts/gen-ts.sh
           git add -A api/room-protocol/gen/
           if ! git diff --cached --quiet -- api/room-protocol/gen/; then

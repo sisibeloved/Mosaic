@@ -165,10 +165,11 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 	}
 }
 
-// sanitizePublish 发布边界（二轮审校 #4；复审 #6/#9）：不可信模型文本在进入
-// 事件日志前过安全门——控制字符剔除（保留 \n\t）、DLP 秘密形状剔除、去首尾空白、
-// 空正文判任务失败、超限截断并显式标注（上限取 grant 宣告的 ResponseCap 与
-// 适配器自身上限的较小者——宣告值必须真实约束发布，不得脱节）。
+// sanitizePublish 发布边界（二轮审校 #4；复审 #6/#9；四轮复审 #7）：不可信模型
+// 输出在进入事件日志前过安全门——控制字符剔除（保留 \n\t）、DLP 秘密形状剔除、
+// 去首尾空白、空正文判任务失败、超限截断并显式标注（上限取 grant 宣告的
+// ResponseCap 与适配器自身上限的较小者）；declared_relations 逐项过同一套门
+// （非字符串项丢弃、项数/单项字长上限——模型不得经 relations 侧漏私货）。
 func (h *handle) sanitizePublish() {
 	body, _ := h.result.Data["body"].(string)
 	body = sanitizeBody(body)
@@ -182,6 +183,32 @@ func (h *handle) sanitizePublish() {
 		body = cut + "\n[Mosaic: 输出超限已截断]"
 	}
 	h.result.Data["body"] = body
+	h.result.Data["declared_relations"] = sanitizeRelations(h.result.Data["declared_relations"])
+}
+
+// sanitizeRelations 关系引用白名单化（四轮复审 #7）：只保留经过正文同款安全门的
+// 字符串项（控制字符剔除 + DLP + 单项 200 runes），非字符串项丢弃，至多 8 项。
+func sanitizeRelations(v any) []any {
+	rels, _ := v.([]any)
+	cleaned := make([]any, 0, len(rels))
+	for _, item := range rels {
+		s, ok := item.(string)
+		if !ok {
+			continue // 非字符串项（对象/数字等）不得混入事件载荷
+		}
+		s = redactSecrets(sanitizeBody(s))
+		if s == "" {
+			continue
+		}
+		if runes := []rune(s); len(runes) > 200 {
+			s = string(runes[:200])
+		}
+		cleaned = append(cleaned, s)
+		if len(cleaned) >= 8 {
+			break
+		}
+	}
+	return cleaned
 }
 
 // sanitizeBody 剔除控制字符（保留换行/制表）并去首尾空白。

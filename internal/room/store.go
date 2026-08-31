@@ -75,14 +75,26 @@ type StimulusClaim struct {
 	RoomID          string
 	StimulusEventID string
 	Envelope        []byte // 人类消息信封 JSON（恢复时重驱动一轮）
+	// Position 刺激的持久全局位（outbox global_pos；四轮复审 #14）：
+	// 恢复/重驱动必须按刺激的持久顺序进行——无序重放会反转同房间人类消息顺序。
+	Position int64
 }
 
 // ClaimStore 轮次交接声明端口（MemStore/SQLite 双实现）。
 type ClaimStore interface {
 	// ClaimStimulus 声明刺激（INSERT OR IGNORE 语义）：true = 首次声明（本方负责开轮）。
-	ClaimStimulus(ctx context.Context, roomID, stimulusEventID string, envelope []byte) (bool, error)
+	// position 为刺激的持久全局位（重驱动排序依据）。
+	ClaimStimulus(ctx context.Context, roomID, stimulusEventID string, envelope []byte, position int64) (bool, error)
 	// DeleteClaim round.opened 已落库后删除声明（声明只覆盖"认领但未开轮"窗口）。
 	DeleteClaim(ctx context.Context, roomID, stimulusEventID string) error
-	// PendingClaims 未清除的声明（启动恢复扫描输入）。
+	// PendingClaims 未清除的声明，按 Position 升序（持久顺序即重驱动顺序）。
 	PendingClaims(ctx context.Context) ([]StimulusClaim, error)
+}
+
+// CASStore 乐观并发追加（可选能力；四轮复审 #12：迟到检查与正文落库之间的窗口——
+// 检查之后、落库之前插入的事件使 CAS 失败，调用方回读判别真迟到与良性交错）。
+type CASStore interface {
+	// AppendEventsIf 当前房间版本 == expectedRoomVersion 才追加（同事务判定，
+	// 不符返回 ErrVersionConflict，整批回滚）。
+	AppendEventsIf(ctx context.Context, envelopes []protocol.Envelope, expectedRoomVersion int64) ([]protocol.Envelope, error)
 }

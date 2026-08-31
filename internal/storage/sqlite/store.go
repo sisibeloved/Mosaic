@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS engine_claims (
 	room_id           TEXT NOT NULL,
 	stimulus_event_id TEXT NOT NULL,
 	envelope          TEXT NOT NULL,
+	position          INTEGER NOT NULL DEFAULT 0,
 	claimed_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
 	PRIMARY KEY (room_id, stimulus_event_id)
 );
@@ -79,8 +80,13 @@ CREATE TABLE IF NOT EXISTS migrations (
 	applied_at TEXT NOT NULL
 );
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox(id) WHERE dispatched_at IS NULL;
 `
+
+// migrationV2 既有库补 engine_claims.position 列（四轮复审 #14：恢复重驱动需按
+// 持久顺序）。CREATE TABLE 只对新建库生效；ALTER 幂等（duplicate column 忽略）。
+const migrationV2 = `ALTER TABLE engine_claims ADD COLUMN position INTEGER NOT NULL DEFAULT 0`
 
 // Store 持有单个 SQLite 文件的连接池。个人版单进程内使用。
 type Store struct {
@@ -107,6 +113,11 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: ensure schema: %w", err)
 	}
+	// v2 迁移（四轮复审 #14）：既有库补 engine_claims.position；duplicate column 忽略
+	if _, err := db.Exec(migrationV2); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("sqlite: migration v2: %w", err)
+	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
 		db.Close()
@@ -132,17 +143,23 @@ func (s *Store) JournalMode(ctx context.Context) (string, error) {
 // seq 由存储按房间分配（调用方不指定）；任一 event_id 重复则整批回滚。
 // 返回落库后的信封（含分配的 seq），顺序与入参一致。
 func (s *Store) AppendEvents(ctx context.Context, envelopes []protocol.Envelope) ([]protocol.Envelope, error) {
-	return s.appendTx(ctx, envelopes, nil)
+	return s.appendTx(ctx, envelopes, nil, nil)
 }
 
 // AppendWithReceipt 实现 room.AtomicStore：事件 + 幂等回执同事务原子落库；
 // 事件 ID 或回执键冲突（并发同命令竞态的后到者）返回 room.ErrDuplicateReceipt，整批回滚。
 func (s *Store) AppendWithReceipt(ctx context.Context, envelopes []protocol.Envelope, receipt room.CommandReceipt) ([]protocol.Envelope, error) {
-	return s.appendTx(ctx, envelopes, &receipt)
+	return s.appendTx(ctx, envelopes, &receipt, nil)
+}
+
+// AppendEventsIf 实现 room.CASStore（四轮复审 #12）：当前房间版本 != expected 即
+// ErrVersionConflict（BEGIN IMMEDIATE 临界区内判定），整批回滚。
+func (s *Store) AppendEventsIf(ctx context.Context, envelopes []protocol.Envelope, expectedRoomVersion int64) ([]protocol.Envelope, error) {
+	return s.appendTx(ctx, envelopes, nil, &expectedRoomVersion)
 }
 
 // appendTx 共享事务体：BEGIN IMMEDIATE → 分配 seq → 写 room_events + outbox（+ 可选回执）→ COMMIT。
-func (s *Store) appendTx(ctx context.Context, envelopes []protocol.Envelope, receipt *room.CommandReceipt) ([]protocol.Envelope, error) {
+func (s *Store) appendTx(ctx context.Context, envelopes []protocol.Envelope, receipt *room.CommandReceipt, expectedVersion *int64) ([]protocol.Envelope, error) {
 	if len(envelopes) == 0 && receipt == nil {
 		return nil, nil
 	}
@@ -179,6 +196,12 @@ func (s *Store) appendTx(ctx context.Context, envelopes []protocol.Envelope, rec
 		).Scan(&maxSeq); err != nil {
 			return nil, fmt.Errorf("sqlite: read max seq: %w", err)
 		}
+	}
+
+	// CAS 期望版本（四轮复审 #12）：与回执的乐观并发同在 BEGIN IMMEDIATE 临界区内判定
+	if expectedVersion != nil && roomID != "" && *expectedVersion != maxSeq {
+		return nil, fmt.Errorf("%w: expected=%d current=%d",
+			room.ErrVersionConflict, *expectedVersion, maxSeq)
 	}
 
 	if receipt != nil && roomID != "" {
@@ -403,10 +426,10 @@ func isUniqueViolation(err error) bool {
 // ---- ClaimStore：轮次交接声明（二轮审校 #9，room.ClaimStore 端口）----
 
 // ClaimStimulus 实现 room.ClaimStore：INSERT OR IGNORE，true = 首次声明。
-func (s *Store) ClaimStimulus(ctx context.Context, roomID, stimulusEventID string, envelope []byte) (bool, error) {
+func (s *Store) ClaimStimulus(ctx context.Context, roomID, stimulusEventID string, envelope []byte, position int64) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO engine_claims (room_id, stimulus_event_id, envelope) VALUES (?, ?, ?)`,
-		roomID, stimulusEventID, string(envelope))
+		INSERT OR IGNORE INTO engine_claims (room_id, stimulus_event_id, envelope, position) VALUES (?, ?, ?, ?)`,
+		roomID, stimulusEventID, string(envelope), position)
 	if err != nil {
 		return false, fmt.Errorf("sqlite: claim stimulus: %w", err)
 	}
@@ -427,10 +450,11 @@ func (s *Store) DeleteClaim(ctx context.Context, roomID, stimulusEventID string)
 	return nil
 }
 
-// PendingClaims 实现 room.ClaimStore。
+// PendingClaims 实现 room.ClaimStore：按持久位升序（四轮复审 #14——
+// 恢复重驱动顺序 = 刺激到达顺序，无序查询会反转同房间人类消息顺序）。
 func (s *Store) PendingClaims(ctx context.Context) ([]room.StimulusClaim, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT room_id, stimulus_event_id, envelope FROM engine_claims")
+		"SELECT room_id, stimulus_event_id, envelope, position FROM engine_claims ORDER BY position ASC, room_id ASC")
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: query claims: %w", err)
 	}
@@ -439,7 +463,7 @@ func (s *Store) PendingClaims(ctx context.Context) ([]room.StimulusClaim, error)
 	for rows.Next() {
 		var c room.StimulusClaim
 		var raw string
-		if err := rows.Scan(&c.RoomID, &c.StimulusEventID, &raw); err != nil {
+		if err := rows.Scan(&c.RoomID, &c.StimulusEventID, &raw, &c.Position); err != nil {
 			return nil, fmt.Errorf("sqlite: scan claim: %w", err)
 		}
 		c.Envelope = []byte(raw)

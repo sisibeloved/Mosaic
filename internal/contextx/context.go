@@ -199,8 +199,10 @@ type Ledger struct {
 }
 
 // RebuildBudget 从房间事件重建账本：round.opened 计轮、agent message 计发言、
-// metadata.usage 计 token——评估（intent.recorded）与生成（agent message）两侧都入账，
-// 三维账本缺评估侧会系统性低估（人类发言不计入 agent 预算——熔断只停自动续聊）。
+// metadata.usage 计 token——评估（intent.recorded）、生成（agent message）与
+// 撤销收尾（floor.revoked：被 pause/失败撤销的生成也已消耗 token，四轮复审 #13——
+// 不入账则账本永久漏计）三侧都入账，三维账本缺任何一侧都会系统性低估
+// （人类发言不计入 agent 预算——熔断只停自动续聊）。
 func RebuildBudget(events []protocol.Envelope) Ledger {
 	var l Ledger
 	for _, e := range events {
@@ -216,6 +218,10 @@ func RebuildBudget(events []protocol.Envelope) Ledger {
 				continue
 			}
 			l.Utterances++
+			if usage, ok := e.Metadata["usage"].(map[string]any); ok {
+				l.Tokens += int64Of(usage["output_tokens"]) + int64Of(usage["input_tokens"])
+			}
+		case protocol.EventFloorRevoked:
 			if usage, ok := e.Metadata["usage"].(map[string]any); ok {
 				l.Tokens += int64Of(usage["output_tokens"]) + int64Of(usage["input_tokens"])
 			}
