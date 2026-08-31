@@ -74,3 +74,26 @@ func TestSnapshotJSONHasNoSeq(t *testing.T) {
 		t.Fatal("快照顶层不得含 seq")
 	}
 }
+
+// 房间名投影（UI 重设计切片 1）：room.created 命名、room.renamed 覆盖；
+// participants 为装配层注入位——投影恒为空数组（ADR-0011 注记）。
+func TestProjectSnapshotDisplayName(t *testing.T) {
+	events := []StoredEvent{
+		{Envelope: protocol.Envelope{EventID: "e1", RoomID: "r", Seq: 1, Type: protocol.EventRoomCreated,
+			Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, OccurredAt: "t1",
+			Payload: []byte(`{"display_name":"旧名","thread_id":"thr_root"}`)}, Cursor: "c1"},
+		{Envelope: protocol.Envelope{EventID: "e2", RoomID: "r", Seq: 2, Type: protocol.EventRoomRenamed,
+			Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, OccurredAt: "t2",
+			Payload: []byte(`{"display_name":"新名"}`)}, Cursor: "c2"},
+	}
+	snap := ProjectSnapshot("r", events)
+	if snap.DisplayName != "新名" {
+		t.Fatalf("display_name = %q（room.renamed 应覆盖 room.created）", snap.DisplayName)
+	}
+	raw, _ := json.Marshal(snap)
+	var doc map[string]any
+	_ = json.Unmarshal(raw, &doc)
+	if parts, ok := doc["participants"].([]any); !ok || len(parts) != 0 {
+		t.Fatalf("投影产物的 participants 应为空数组（装配层注入位）：%s", raw)
+	}
+}

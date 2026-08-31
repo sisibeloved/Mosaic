@@ -48,6 +48,7 @@ type CommandResult struct {
 type Config struct {
 	Store  AtomicStore
 	Reader EventReader                // 可选：endorse_intent 的目标存在性检查（MemStore/SQLite 双实现）
+	Lister RoomLister                 // 可选：GET /v1/rooms 房间列表读路径（nil 时该端点 500）
 	Clock  func() string              // RFC3339
 	NewID  func(prefix string) string // 事件/房间 ID 生成（前缀 evt_/room_）
 	Tenant string
@@ -88,6 +89,8 @@ func (s *Service) ExecuteCommand(ctx context.Context, actor Actor, cmd Command) 
 		return s.roomLifecycle(ctx, actor, cmd, protocol.EventRoomPaused, "pause_room payload")
 	case "resume_room":
 		return s.roomLifecycle(ctx, actor, cmd, protocol.EventRoomStarted, "resume_room payload")
+	case "rename_room":
+		return s.renameRoom(ctx, actor, cmd)
 	case "set_policy":
 		return s.setPolicy(ctx, actor, cmd)
 	case "endorse_intent":
@@ -536,4 +539,73 @@ func (s *Service) roomLifecycle(ctx context.Context, actor Actor, cmd Command, e
 		ExecutedAt:          s.cfg.Clock(),
 	}
 	return s.commit(ctx, env, receipt)
+}
+
+// renameRoom 房间改名命令链（UI 重设计切片 1）：与 pause/resume 同一纪律——
+// 幂等回放优先、版本并发预检（提交事务内再强制）、事件落日志（room.renamed）。
+// display_name 必填 1..120 字（上限同 create_room；改名不接受置空/纯空白）。
+func (s *Service) renameRoom(ctx context.Context, actor Actor, cmd Command) (*CommandResult, error) {
+	if res, err := s.replayIfReceived(ctx, cmd, actor); res != nil || err != nil {
+		return res, err
+	}
+	exists, err := s.cfg.Store.RoomExists(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room exists: %w", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrRoomNotFound, cmd.RoomID)
+	}
+	version, err := s.cfg.Store.RoomVersion(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room version: %w", err)
+	}
+	if cmd.ExpectedRoomVersion != version {
+		// 复审 #22：同 post_message——并发同键竞态先重查回放再判冲突
+		if res, rerr := s.replayIfReceived(ctx, cmd, actor); res != nil || rerr != nil {
+			return res, rerr
+		}
+		return nil, fmt.Errorf("%w: expected=%d current=%d", ErrVersionConflict, cmd.ExpectedRoomVersion, version)
+	}
+	var payload struct {
+		DisplayName string `json:"display_name"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(cmd.Payload)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("%w: rename_room payload: %v", ErrInvalidCommand, err)
+	}
+	if len([]rune(strings.TrimSpace(payload.DisplayName))) < 1 || len([]rune(payload.DisplayName)) > 120 {
+		return nil, fmt.Errorf("%w: display_name 必填 1..120 字", ErrInvalidCommand)
+	}
+	env := protocol.Envelope{
+		EventID:       s.cfg.NewID("evt"),
+		TenantID:      s.cfg.Tenant,
+		RoomID:        cmd.RoomID,
+		Type:          protocol.EventRoomRenamed,
+		SchemaVersion: 1,
+		OccurredAt:    s.cfg.Clock(),
+		Actor:         protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
+		Visibility:    protocol.Visibility{Kind: "public"},
+		Payload:       mustJSON(map[string]any{"display_name": payload.DisplayName}),
+		Metadata:      map[string]any{},
+	}
+	receipt := CommandReceipt{
+		TenantID:            s.cfg.Tenant,
+		RoomID:              cmd.RoomID,
+		IdempotencyKey:      cmd.IdempotencyKey,
+		CommandKind:         cmd.CommandKind,
+		RequestFingerprint:  fingerprint(cmd, actor),
+		EventID:             env.EventID,
+		ExpectedRoomVersion: cmd.ExpectedRoomVersion,
+		ExecutedAt:          s.cfg.Clock(),
+	}
+	return s.commit(ctx, env, receipt)
+}
+
+// ListRooms 房间列表只读路径（GET /v1/rooms）：存储聚合直传，服务层不做改写。
+func (s *Service) ListRooms(ctx context.Context) ([]RoomSummary, error) {
+	if s.cfg.Lister == nil {
+		return nil, fmt.Errorf("room: 未装配 RoomLister")
+	}
+	return s.cfg.Lister.ListRooms(ctx)
 }

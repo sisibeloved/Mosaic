@@ -63,6 +63,25 @@ type StoredEvent struct {
 	Cursor   string
 }
 
+// RoomSummary 房间列表项（GET /v1/rooms 读路径 DTO；存储层聚合产出）。
+// LastEventAt 取该房间最新事件时间（无事件则等于 CreatedAt——房间由 room.created 开启，
+// 故任何在列房间必有 CreatedAt）；MessageCount 计 message.posted 类事件数。
+type RoomSummary struct {
+	RoomID       string `json:"room_id"`
+	DisplayName  string `json:"display_name"`
+	CreatedAt    string `json:"created_at"`
+	LastEventAt  string `json:"last_event_at"`
+	Paused       bool   `json:"paused"`
+	MessageCount int64  `json:"message_count"`
+}
+
+// RoomLister 房间列表读端口（MemStore/SQLite 双实现；UI 重设计切片 1）。
+type RoomLister interface {
+	// ListRooms 全量房间摘要（仅含已见 room.created 的房间），按 last_event_at 倒序
+	// （同刻 room_id 升序兜底——排序必须确定性，UI 列表不可抖动）。
+	ListRooms(ctx context.Context) ([]RoomSummary, error)
+}
+
 // EventReader 读端口（transport 层消费；SQLite 实现于 internal/storage/sqlite）。
 type EventReader interface {
 	// EventsAfter 从 cursor 之后按全局位续读；next 为空串表示已追平。

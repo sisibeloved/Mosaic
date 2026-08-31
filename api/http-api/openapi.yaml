@@ -41,6 +41,20 @@ paths:
                     type: string
                     const: ok
   /v1/rooms:
+    get:
+      operationId: listRooms
+      summary: 房间列表（UI 重设计切片 1）
+      description: |
+        全量房间摘要，按 last_event_at 倒序（无事件的房间 last_event_at = created_at）。
+        只读端点：与既有读面一致，不设 owner token 门（见本文档顶部形态约束）。
+      responses:
+        "200":
+          description: 房间列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoomList"
+        "500": { $ref: "#/components/responses/Internal" }
     post:
       operationId: createRoom
       summary: 创建房间（create_room 命令）
@@ -73,7 +87,7 @@ paths:
   /v1/rooms/{room_id}/commands:
     post:
       operationId: submitRoomCommand
-      summary: 提交房间命令（post_message / pause_room / resume_room）
+      summary: 提交房间命令（post_message / pause_room / resume_room / rename_room 等）
       security: [{ OwnerToken: [] }]
       parameters:
         - $ref: "#/components/parameters/RoomID"
@@ -104,6 +118,14 @@ paths:
                   issued_at: "2026-08-30T09:31:00.000Z"
                   payload:
                     reason: 暂停一下
+              rename_room:
+                value:
+                  command_kind: rename_room
+                  expected_room_version: 11
+                  idempotency_key: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d9005"
+                  issued_at: "2026-08-31T09:05:00.000Z"
+                  payload:
+                    display_name: 新房间名
               set_policy:
                 value:
                   command_kind: set_policy
@@ -158,7 +180,7 @@ paths:
   /v1/rooms/{room_id}/snapshot:
     get:
       operationId: getRoomSnapshot
-      summary: 快照四元组（版本 + 水位 + 投影/算法版本 + Timeline 投影）
+      summary: 快照（版本 + 水位 + 投影/算法版本 + Timeline 投影 + 房间名/参与者视图）
       parameters:
         - $ref: "#/components/parameters/RoomID"
       responses:
@@ -360,6 +382,7 @@ components:
         命令信封（RFC-0001）。payload 按 command_kind 严格校验（未知字段拒绝）：
         create_room → CreateRoomPayload；post_message → PostMessagePayload；
         pause_room → PauseRoomPayload；resume_room → 空 payload；
+        rename_room → RenameRoomPayload（UI 重设计切片 1；room.renamed 事件）；
         set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）；
         endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）；
         fork/pause/resume/close/reopen/merge_thread → ThreadLifecyclePayload（RFC-0004 线程生命周期，
@@ -367,7 +390,7 @@ components:
       properties:
         command_kind:
           type: string
-          enum: [create_room, post_message, pause_room, resume_room, set_policy, endorse_intent, fork_thread, pause_thread, resume_thread, close_thread, reopen_thread, merge_thread]
+          enum: [create_room, post_message, pause_room, resume_room, rename_room, set_policy, endorse_intent, fork_thread, pause_thread, resume_thread, close_thread, reopen_thread, merge_thread]
         expected_room_version:
           type: integer
           minimum: 0
@@ -387,6 +410,37 @@ components:
         display_name:
           type: string
           maxLength: 120
+    RenameRoomPayload:
+      type: object
+      required: [display_name]
+      additionalProperties: false
+      description: 房间改名载荷（room.renamed 事件载荷同构）；改名不接受置空/纯空白。
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 120
+    RoomList:
+      type: object
+      required: [rooms]
+      properties:
+        rooms:
+          type: array
+          items:
+            $ref: "#/components/schemas/RoomSummary"
+    RoomSummary:
+      type: object
+      required: [room_id, display_name, created_at, last_event_at, paused, message_count]
+      properties:
+        room_id: { type: string }
+        display_name: { type: string, description: 最新 room.created/room.renamed 投影 }
+        created_at: { type: string, format: date-time }
+        last_event_at:
+          type: string
+          format: date-time
+          description: 该房间最新事件时间（无事件则等于 created_at）；列表按此倒序
+        paused: { type: boolean, description: 最新生命周期事件为 room.paused }
+        message_count: { type: integer, format: int64, minimum: 0, description: message.posted 类事件数 }
     PostMessagePayload:
       type: object
       required: [body]
@@ -564,13 +618,19 @@ components:
           description: opaque cursor（续传位点）
     Snapshot:
       type: object
-      required: [room_id, room_version, watermark, projection_version, algorithm_version, timeline, policy, scorecard, threads, graph]
+      required: [room_id, room_version, watermark, projection_version, algorithm_version, display_name, timeline, policy, scorecard, threads, graph, participants]
       properties:
         room_id: { type: string }
         room_version: { type: integer, format: int64 }
         watermark: { type: string }
         projection_version: { type: integer, format: int64 }
         algorithm_version: { type: integer, format: int64 }
+        display_name: { type: string, description: 房间名（room.created/room.renamed 投影产物） }
+        participants:
+          type: array
+          description: 参与者视图（装配层注入：本地 owner + 引擎座位；非投影产物——ADR-0011 注记，不进 room_version/水位语义）。
+          items:
+            $ref: "#/components/schemas/ParticipantView"
         policy:
           type: object
           required: [policy_version]
@@ -630,6 +690,16 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/TimelineItem"
+    ParticipantView:
+      type: object
+      required: [participant_id, kind, display_name, seat_status]
+      properties:
+        participant_id: { type: string }
+        kind: { type: string, enum: [human, agent, system] }
+        display_name: { type: string, description: 引擎已知名字（Owner/Echo/Codex/Kimi 等） }
+        adapter: { type: string, description: agent 座位的适配器名（human 无此键） }
+        channel: { type: string, description: harness 渠道标签（cli/app:codex-desktop 等；无则省略） }
+        seat_status: { type: string, description: seated（在座；离座语义随 UI 重设计后续切片定稿） }
     TimelineItem:
       type: object
       required: [position, event_id, type, actor_id, actor_kind, occurred_at]

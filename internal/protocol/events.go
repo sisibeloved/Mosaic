@@ -25,6 +25,7 @@ const (
 	EventRoomCreated    = "room.created"
 	EventRoomPaused     = "room.paused"
 	EventRoomStarted    = "room.started"
+	EventRoomRenamed    = "room.renamed"
 )
 
 // Envelope 是 room_events 的权威/内部形态（RFC-0001 v0.4）。

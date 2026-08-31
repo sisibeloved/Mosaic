@@ -29,8 +29,9 @@ func newTestServer(t *testing.T) (*httptest.Server, *room.MemStore, *sse.Hub) {
 	var mu sync.Mutex
 	var n int64
 	svc := room.NewService(room.Config{
-		Store: store,
-		Clock: func() string { return "2026-08-28T11:00:00.000Z" },
+		Store:  store,
+		Lister: store,
+		Clock:  func() string { return "2026-08-28T11:00:00.000Z" },
 		NewID: func(prefix string) string {
 			mu.Lock()
 			defer mu.Unlock()

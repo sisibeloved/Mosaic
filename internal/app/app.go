@@ -124,6 +124,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 
 	svc := room.NewService(room.Config{
 		Store:  store,
+		Lister: store, // GET /v1/rooms 房间列表读路径
 		Clock:  clock,
 		NewID:  newID,
 		Tenant: "ten_local", // 个人版单租户常量（ADR-0008 机制映射）
@@ -266,6 +267,11 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 				// 四轮复审 #3：身份基于注册表唯一 ID 派生；C 轨多实例并存不折叠。
 				exeKey := sanitizeProfileKey(exe.ID)
 				profileID := "prof_" + exe.Adapter + "_" + exeKey
+				// 渠道标签随座位进 Profile（快照参与者视图展示用）；注册表口径：空值按 cli 处理。
+				channel := exe.Channel
+				if channel == "" {
+					channel = harness.ChannelCLI
+				}
 				dir, wslHome, ok := resolveWorkDir(exe, profileID)
 				if !ok {
 					continue
@@ -284,7 +290,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 					}
 					seats = append(seats, room.AgentSeat{
 						ParticipantID: "par_codex_" + exeKey,
-						Profile:       agent.Profile{ProfileID: profileID, Adapter: "codex", DisplayName: "Codex"},
+						Profile:       agent.Profile{ProfileID: profileID, Adapter: "codex", DisplayName: "Codex", Channel: channel},
 					})
 				case "kimi":
 					// C 轨：第二个真实适配器（kimi -p stream-json + -S 会话恢复）。
@@ -299,7 +305,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 					}
 					seats = append(seats, room.AgentSeat{
 						ParticipantID: "par_kimi_" + exeKey,
-						Profile:       agent.Profile{ProfileID: profileID, Adapter: "kimi", DisplayName: "Kimi"},
+						Profile:       agent.Profile{ProfileID: profileID, Adapter: "kimi", DisplayName: "Kimi", Channel: channel},
 					})
 				}
 			}

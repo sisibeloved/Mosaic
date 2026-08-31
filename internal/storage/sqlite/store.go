@@ -326,6 +326,49 @@ func (s *Store) RoomExists(ctx context.Context, roomID string) (bool, error) {
 	return exists, nil
 }
 
+// ListRooms 实现 room.RoomLister：单查询聚合（个人版房间/事件规模，相关子查询足够）。
+// display_name 取序内最新 room.created/room.renamed 载荷；paused = 最新生命周期事件为
+// room.paused；message_count 计 message.posted。按 last_event_at 倒序（同刻 room_id
+// 升序兜底，排序确定性——与 MemStore 实现同规则）。
+func (s *Store) ListRooms(ctx context.Context) ([]room.RoomSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			r.room_id,
+			COALESCE((SELECT json_extract(e.envelope, '$.payload.display_name') FROM room_events e
+				WHERE e.room_id = r.room_id AND e.type IN ('room.created', 'room.renamed')
+				ORDER BY e.seq DESC LIMIT 1), '') AS display_name,
+			(SELECT e.occurred_at FROM room_events e
+				WHERE e.room_id = r.room_id AND e.type = 'room.created'
+				ORDER BY e.seq ASC LIMIT 1) AS created_at,
+			(SELECT e.occurred_at FROM room_events e
+				WHERE e.room_id = r.room_id
+				ORDER BY e.seq DESC LIMIT 1) AS last_event_at,
+			COALESCE((SELECT e.type = 'room.paused' FROM room_events e
+				WHERE e.room_id = r.room_id AND e.type IN ('room.paused', 'room.started')
+				ORDER BY e.seq DESC LIMIT 1), 0) AS paused,
+			(SELECT COUNT(*) FROM room_events e
+				WHERE e.room_id = r.room_id AND e.type = 'message.posted') AS message_count
+		FROM (SELECT DISTINCT room_id FROM room_events WHERE type = 'room.created') r
+		ORDER BY last_event_at DESC, r.room_id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list rooms: %w", err)
+	}
+	defer rows.Close()
+	out := []room.RoomSummary{}
+	for rows.Next() {
+		var sum room.RoomSummary
+		if err := rows.Scan(&sum.RoomID, &sum.DisplayName, &sum.CreatedAt, &sum.LastEventAt,
+			&sum.Paused, &sum.MessageCount); err != nil {
+			return nil, fmt.Errorf("sqlite: scan room summary: %w", err)
+		}
+		out = append(out, sum)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: rows: %w", err)
+	}
+	return out, nil
+}
+
 // EventsAfter 实现 room.EventReader：从 cursor 之后按全局位续读某房间的事件
 // （订阅续传与历史读共用）。limit ≤0 时取 100。返回下一游标；无更多事件时 next 为空串。
 func (s *Store) EventsAfter(ctx context.Context, roomID, cursor string, limit int) (events []room.StoredEvent, next string, err error) {

@@ -486,6 +486,7 @@ func (s *server) setEnabled(w http.ResponseWriter, r *http.Request, id string, e
 }
 
 // GetRoomSnapshot：快照四元组（room_version + opaque watermark + 投影/算法版本 + Timeline）。
+// participants 在装配层注入（本地 owner + 引擎座位；非投影产物——ADR-0011 注记）。
 func (s *server) GetRoomSnapshot(w http.ResponseWriter, r *http.Request, roomID apigen.RoomID) {
 	events, err := s.readAllEvents(r, roomID)
 	if err != nil {
@@ -496,7 +497,49 @@ func (s *server) GetRoomSnapshot(w http.ResponseWriter, r *http.Request, roomID 
 		writeError(w, http.StatusNotFound, "room_not_found", "房间不存在或尚无事件")
 		return
 	}
-	writeJSON(w, http.StatusOK, room.ProjectSnapshot(roomID, events))
+	snap := room.ProjectSnapshot(roomID, events)
+	snap.Participants = s.snapshotParticipants()
+	writeJSON(w, http.StatusOK, snap)
+}
+
+// snapshotParticipants 快照参与者装配（UI 重设计切片 1）：本地 owner（human）+ 引擎
+// 当前座位（agent，含 harness 渠道标签）。display_name 取引擎已知名字（Owner/Echo/Codex/
+// Kimi），缺省回退 participant_id。本切片 seat_status 恒 seated。
+func (s *server) snapshotParticipants() []room.ParticipantView {
+	parts := []room.ParticipantView{{
+		ParticipantID: s.deps.Actor.ParticipantID,
+		Kind:          s.deps.Actor.Kind,
+		DisplayName:   "Owner",
+		SeatStatus:    "seated",
+	}}
+	if s.deps.Seats != nil {
+		for _, seat := range s.deps.Seats() {
+			name := seat.Profile.DisplayName
+			if name == "" {
+				name = seat.ParticipantID
+			}
+			parts = append(parts, room.ParticipantView{
+				ParticipantID: seat.ParticipantID,
+				Kind:          "agent",
+				DisplayName:   name,
+				Adapter:       seat.Profile.Adapter,
+				Channel:       seat.Profile.Channel,
+				SeatStatus:    "seated",
+			})
+		}
+	}
+	return parts
+}
+
+// ListRooms 房间列表（apigen.ServerInterface；UI 重设计切片 1）。只读 GET——
+// 与既有读端点一致：不设 owner token 门（形态约束见 spec 顶部说明）。
+func (s *server) ListRooms(w http.ResponseWriter, r *http.Request) {
+	rooms, err := s.deps.SVC.ListRooms(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rooms": rooms})
 }
 
 // handleUI：GET 兜底——SPA 静态产物 + 前端路由回退（M2 真实界面，v1.7 制度化）。

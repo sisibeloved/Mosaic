@@ -40,17 +40,33 @@ type PolicyView struct {
 }
 
 // Snapshot 快照载体：版本三元组 + 水位（opaque cursor）+ Timeline + 策略区。
+// DisplayName 为投影产物（room.created/room.renamed）；Participants 由装配层注入
+// （ADR-0011 注记：非投影产物，不进 room_version/水位语义，投影恒为空切片）。
 type Snapshot struct {
-	RoomID            string          `json:"room_id"`
-	RoomVersion       int64           `json:"room_version"`
-	Watermark         string          `json:"watermark"`
-	ProjectionVersion int             `json:"projection_version"`
-	AlgorithmVersion  int             `json:"algorithm_version"`
-	Timeline          []TimelineItem  `json:"timeline"`
-	Policy            PolicyView      `json:"policy"`
-	Scorecard         []ScorecardItem `json:"scorecard"`
-	Threads           []ThreadView    `json:"threads"`
-	Graph             []GraphEdge     `json:"graph"`
+	RoomID            string            `json:"room_id"`
+	RoomVersion       int64             `json:"room_version"`
+	Watermark         string            `json:"watermark"`
+	ProjectionVersion int               `json:"projection_version"`
+	AlgorithmVersion  int               `json:"algorithm_version"`
+	DisplayName       string            `json:"display_name"`
+	Timeline          []TimelineItem    `json:"timeline"`
+	Policy            PolicyView        `json:"policy"`
+	Scorecard         []ScorecardItem   `json:"scorecard"`
+	Threads           []ThreadView      `json:"threads"`
+	Graph             []GraphEdge       `json:"graph"`
+	Participants      []ParticipantView `json:"participants"`
+}
+
+// ParticipantView 快照参与者视图项（装配层注入：本地 owner + 引擎座位）。
+// Adapter/Channel 仅 agent 座位携带（channel 为 harness 渠道标签，空则省略）；
+// SeatStatus 本切片恒为 seated（离座语义随 UI 重设计后续切片定稿）。
+type ParticipantView struct {
+	ParticipantID string `json:"participant_id"`
+	Kind          string `json:"kind"` // human | agent | system
+	DisplayName   string `json:"display_name"`
+	Adapter       string `json:"adapter,omitempty"`
+	Channel       string `json:"channel,omitempty"`
+	SeatStatus    string `json:"seat_status"`
 }
 
 // ScorecardItem 记分卡视图项（R-08/OQ-17：band + 未选理由 + 保送状态对成员可查）。
@@ -78,6 +94,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 		AlgorithmVersion:  AlgorithmVersion,
 		Timeline:          []TimelineItem{},
 		Scorecard:         []ScorecardItem{},
+		Participants:      []ParticipantView{}, // 装配层注入位：投影恒空（ADR-0011 注记）
 	}
 	endorsedSet := map[string]bool{} // intent.endorsed 合并键
 	for _, ev := range events {
@@ -137,6 +154,16 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 					item.RoundID = *ev.Envelope.CorrelationID
 				}
 				snap.Scorecard = append(snap.Scorecard, item)
+			}
+			continue
+		}
+		// 房间名投影：room.created 命名、room.renamed 覆盖（序内后者胜）。
+		if ev.Envelope.Type == protocol.EventRoomCreated || ev.Envelope.Type == protocol.EventRoomRenamed {
+			var p struct {
+				DisplayName string `json:"display_name"`
+			}
+			if json.Unmarshal(ev.Envelope.Payload, &p) == nil {
+				snap.DisplayName = p.DisplayName
 			}
 			continue
 		}

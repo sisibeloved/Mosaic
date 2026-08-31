@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/sisibeloved/Mosaic/internal/protocol"
+	"github.com/sisibeloved/Mosaic/internal/room"
 )
 
 func openTempStore(t *testing.T) (*Store, string) {
@@ -324,5 +325,61 @@ func TestPendingClaimsOrderedByPosition(t *testing.T) {
 	}
 	if claims[0].StimulusEventID != "early" || claims[1].StimulusEventID != "late" {
 		t.Fatalf("应按 position 升序：[%s %s]", claims[0].StimulusEventID, claims[1].StimulusEventID)
+	}
+}
+
+// ListRooms 聚合查询（UI 重设计切片 1）：display_name 取最新命名事件载荷、
+// last_event_at/created_at/message_count/paused 位与倒序排列的 SQL 正确性。
+func TestListRooms_IT(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openTempStore(t)
+
+	// 空库：空列表
+	rooms, err := store.ListRooms(ctx)
+	if err != nil || len(rooms) != 0 {
+		t.Fatalf("空库应为空列表：%v %+v", err, rooms)
+	}
+
+	mk := func(id, roomID, typ, occurredAt, payload string) protocol.Envelope {
+		return protocol.Envelope{
+			EventID: id, TenantID: "ten_local", RoomID: roomID, Type: typ, SchemaVersion: 1,
+			OccurredAt: occurredAt,
+			Actor:      protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+			Visibility: protocol.Visibility{Kind: "public"},
+			Payload:    []byte(payload), Metadata: map[string]any{},
+		}
+	}
+	seed := []protocol.Envelope{
+		mk("evt_a1", "room_a", protocol.EventRoomCreated, "2026-08-31T09:00:00.000Z", `{"display_name":"甲房","thread_id":"thr_a"}`),
+		mk("evt_b1", "room_b", protocol.EventRoomCreated, "2026-08-31T09:01:00.000Z", `{"display_name":"乙房","thread_id":"thr_b"}`),
+		mk("evt_a2", "room_a", protocol.EventMessagePosted, "2026-08-31T09:02:00.000Z", `{"body":"hi"}`),
+		mk("evt_a3", "room_a", protocol.EventRoomPaused, "2026-08-31T09:03:00.000Z", `{"reason":"停"}`),
+		mk("evt_b2", "room_b", protocol.EventRoomRenamed, "2026-08-31T09:04:00.000Z", `{"display_name":"乙房·改"}`),
+	}
+	for _, env := range seed {
+		if _, err := store.AppendEvents(ctx, []protocol.Envelope{env}); err != nil {
+			t.Fatalf("append %s: %v", env.EventID, err)
+		}
+	}
+
+	rooms, err = store.ListRooms(ctx)
+	if err != nil || len(rooms) != 2 {
+		t.Fatalf("两房间：%v %+v", err, rooms)
+	}
+	byID := map[string]room.RoomSummary{}
+	for _, r := range rooms {
+		byID[r.RoomID] = r
+	}
+	a, b := byID["room_a"], byID["room_b"]
+	if a.DisplayName != "甲房" || a.CreatedAt != "2026-08-31T09:00:00.000Z" ||
+		a.LastEventAt != "2026-08-31T09:03:00.000Z" || !a.Paused || a.MessageCount != 1 {
+		t.Fatalf("room_a 摘要不符：%+v", a)
+	}
+	if b.DisplayName != "乙房·改" || b.LastEventAt != "2026-08-31T09:04:00.000Z" || b.Paused || b.MessageCount != 0 {
+		t.Fatalf("room_b 摘要（rename 投影）不符：%+v", b)
+	}
+	// 倒序：room_b 的 last_event_at 更新，应居首
+	if rooms[0].RoomID != "room_b" || rooms[1].RoomID != "room_a" {
+		t.Fatalf("应按 last_event_at 倒序：[%s %s]", rooms[0].RoomID, rooms[1].RoomID)
 	}
 }

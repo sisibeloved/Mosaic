@@ -116,4 +116,7 @@ type Profile struct {
 	Adapter       string `json:"adapter"`
 	ExecutableRef string `json:"executable_ref"`
 	DisplayName   string `json:"display_name"`
+	// Channel harness 渠道标签（cli/app:codex-desktop 等；内置适配器为空——
+	// 快照参与者视图对空值省略）。
+	Channel string `json:"channel,omitempty"`
 }

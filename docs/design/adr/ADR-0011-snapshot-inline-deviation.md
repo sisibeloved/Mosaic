@@ -29,3 +29,4 @@ M1 实现（`internal/room/projection.go` + `GET /v1/rooms/{id}/snapshot`）返�
 
 - 对外契约与 RFC-0001 全量形态不一致——本 ADR 是唯一的偏离登记点，交付计划 v1.5 同步引用；
 - `algorithm_version`/`projection_version` 双版本位已就位，对齐时无需破坏 envelope 层。
+- 2026-08-31 注记（UI 重设计切片 1）：快照新增 `display_name`（room.created/room.renamed 投影产物）与 `participants`（装配层注入——本地 owner + 引擎座位快照，**非投影产物**；不进 room_version/水位语义，回放一致性不受影响，`projection_version` 不递增）。

@@ -28,7 +28,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * 房间列表（UI 重设计切片 1）
+         * @description 全量房间摘要，按 last_event_at 倒序（无事件的房间 last_event_at = created_at）。
+         *     只读端点：与既有读面一致，不设 owner token 门（见本文档顶部形态约束）。
+         */
+        get: operations["listRooms"];
         put?: never;
         /** 创建房间（create_room 命令） */
         post: operations["createRoom"];
@@ -47,7 +52,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 提交房间命令（post_message / pause_room / resume_room） */
+        /** 提交房间命令（post_message / pause_room / resume_room / rename_room 等） */
         post: operations["submitRoomCommand"];
         delete?: never;
         options?: never;
@@ -84,7 +89,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 快照四元组（版本 + 水位 + 投影/算法版本 + Timeline 投影） */
+        /** 快照（版本 + 水位 + 投影/算法版本 + Timeline 投影 + 房间名/参与者视图） */
         get: operations["getRoomSnapshot"];
         put?: never;
         post?: never;
@@ -177,6 +182,7 @@ export interface components {
          * @description 命令信封（RFC-0001）。payload 按 command_kind 严格校验（未知字段拒绝）：
          *     create_room → CreateRoomPayload；post_message → PostMessagePayload；
          *     pause_room → PauseRoomPayload；resume_room → 空 payload；
+         *     rename_room → RenameRoomPayload（UI 重设计切片 1；room.renamed 事件）；
          *     set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）；
          *     endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）；
          *     fork/pause/resume/close/reopen/merge_thread → ThreadLifecyclePayload（RFC-0004 线程生命周期，
@@ -184,7 +190,7 @@ export interface components {
          */
         RoomCommand: {
             /** @enum {string} */
-            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "set_policy" | "endorse_intent" | "fork_thread" | "pause_thread" | "resume_thread" | "close_thread" | "reopen_thread" | "merge_thread";
+            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "rename_room" | "set_policy" | "endorse_intent" | "fork_thread" | "pause_thread" | "resume_thread" | "close_thread" | "reopen_thread" | "merge_thread";
             expected_room_version: number;
             /** @description UUIDv7（服务端按 tenant+key+kind 去重；同键异指纹 409） */
             idempotency_key: string;
@@ -194,6 +200,32 @@ export interface components {
         };
         CreateRoomPayload: {
             display_name?: string;
+        };
+        /** @description 房间改名载荷（room.renamed 事件载荷同构）；改名不接受置空/纯空白。 */
+        RenameRoomPayload: {
+            display_name: string;
+        };
+        RoomList: {
+            rooms: components["schemas"]["RoomSummary"][];
+        };
+        RoomSummary: {
+            room_id: string;
+            /** @description 最新 room.created/room.renamed 投影 */
+            display_name: string;
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * Format: date-time
+             * @description 该房间最新事件时间（无事件则等于 created_at）；列表按此倒序
+             */
+            last_event_at: string;
+            /** @description 最新生命周期事件为 room.paused */
+            paused: boolean;
+            /**
+             * Format: int64
+             * @description message.posted 类事件数
+             */
+            message_count: number;
         };
         /** @description 字段集与 events/message.posted.schema.json 对齐（M2 定稿）；relations 项不收 provenance（系统固化 explicit）。 */
         PostMessagePayload: {
@@ -297,6 +329,10 @@ export interface components {
             projection_version: number;
             /** Format: int64 */
             algorithm_version: number;
+            /** @description 房间名（room.created/room.renamed 投影产物） */
+            display_name: string;
+            /** @description 参与者视图（装配层注入：本地 owner + 引擎座位；非投影产物——ADR-0011 注记，不进 room_version/水位语义）。 */
+            participants: components["schemas"]["ParticipantView"][];
             /** @description 当前策略区（记分卡透明 OQ-17——权重/模式参数对成员可见、版本化）。 */
             policy: {
                 policy_version: string;
@@ -342,6 +378,19 @@ export interface components {
                 occurred_at?: string;
             }[];
             timeline: components["schemas"]["TimelineItem"][];
+        };
+        ParticipantView: {
+            participant_id: string;
+            /** @enum {string} */
+            kind: "human" | "agent" | "system";
+            /** @description 引擎已知名字（Owner/Echo/Codex/Kimi 等） */
+            display_name: string;
+            /** @description agent 座位的适配器名（human 无此键） */
+            adapter?: string;
+            /** @description harness 渠道标签（cli/app:codex-desktop 等；无则省略） */
+            channel?: string;
+            /** @description seated（在座；离座语义随 UI 重设计后续切片定稿） */
+            seat_status: string;
         };
         TimelineItem: {
             position: string;
@@ -497,6 +546,27 @@ export interface operations {
                     };
                 };
             };
+        };
+    };
+    listRooms: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 房间列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoomList"];
+                };
+            };
+            500: components["responses"]["Internal"];
         };
     };
     createRoom: {

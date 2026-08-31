@@ -14,6 +14,27 @@ import (
 	"github.com/oapi-codegen/runtime"
 )
 
+// Defines values for ParticipantViewKind.
+const (
+	Agent  ParticipantViewKind = "agent"
+	Human  ParticipantViewKind = "human"
+	System ParticipantViewKind = "system"
+)
+
+// Valid indicates whether the value is a known member of the ParticipantViewKind enum.
+func (e ParticipantViewKind) Valid() bool {
+	switch e {
+	case Agent:
+		return true
+	case Human:
+		return true
+	case System:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for RoomCommandCommandKind.
 const (
 	CloseThread   RoomCommandCommandKind = "close_thread"
@@ -24,6 +45,7 @@ const (
 	PauseRoom     RoomCommandCommandKind = "pause_room"
 	PauseThread   RoomCommandCommandKind = "pause_thread"
 	PostMessage   RoomCommandCommandKind = "post_message"
+	RenameRoom    RoomCommandCommandKind = "rename_room"
 	ReopenThread  RoomCommandCommandKind = "reopen_thread"
 	ResumeRoom    RoomCommandCommandKind = "resume_room"
 	ResumeThread  RoomCommandCommandKind = "resume_thread"
@@ -48,6 +70,8 @@ func (e RoomCommandCommandKind) Valid() bool {
 	case PauseThread:
 		return true
 	case PostMessage:
+		return true
+	case RenameRoom:
 		return true
 	case ReopenThread:
 		return true
@@ -199,9 +223,30 @@ type ManualExecutableRequest struct {
 	Version *string `json:"version,omitempty"`
 }
 
+// ParticipantView defines model for ParticipantView.
+type ParticipantView struct {
+	// Adapter agent 座位的适配器名（human 无此键）
+	Adapter *string `json:"adapter,omitempty"`
+
+	// Channel harness 渠道标签（cli/app:codex-desktop 等；无则省略）
+	Channel *string `json:"channel,omitempty"`
+
+	// DisplayName 引擎已知名字（Owner/Echo/Codex/Kimi 等）
+	DisplayName   string              `json:"display_name"`
+	Kind          ParticipantViewKind `json:"kind"`
+	ParticipantId string              `json:"participant_id"`
+
+	// SeatStatus seated（在座；离座语义随 UI 重设计后续切片定稿）
+	SeatStatus string `json:"seat_status"`
+}
+
+// ParticipantViewKind defines model for ParticipantView.Kind.
+type ParticipantViewKind string
+
 // RoomCommand 命令信封（RFC-0001）。payload 按 command_kind 严格校验（未知字段拒绝）：
 // create_room → CreateRoomPayload；post_message → PostMessagePayload；
 // pause_room → PauseRoomPayload；resume_room → 空 payload；
+// rename_room → RenameRoomPayload（UI 重设计切片 1；room.renamed 事件）；
 // set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）；
 // endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）；
 // fork/pause/resume/close/reopen/merge_thread → ThreadLifecyclePayload（RFC-0004 线程生命周期，
@@ -219,9 +264,35 @@ type RoomCommand struct {
 // RoomCommandCommandKind defines model for RoomCommand.CommandKind.
 type RoomCommandCommandKind string
 
+// RoomList defines model for RoomList.
+type RoomList struct {
+	Rooms []RoomSummary `json:"rooms"`
+}
+
+// RoomSummary defines model for RoomSummary.
+type RoomSummary struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// DisplayName 最新 room.created/room.renamed 投影
+	DisplayName string `json:"display_name"`
+
+	// LastEventAt 该房间最新事件时间（无事件则等于 created_at）；列表按此倒序
+	LastEventAt time.Time `json:"last_event_at"`
+
+	// MessageCount message.posted 类事件数
+	MessageCount int64 `json:"message_count"`
+
+	// Paused 最新生命周期事件为 room.paused
+	Paused bool   `json:"paused"`
+	RoomId string `json:"room_id"`
+}
+
 // Snapshot defines model for Snapshot.
 type Snapshot struct {
 	AlgorithmVersion int64 `json:"algorithm_version"`
+
+	// DisplayName 房间名（room.created/room.renamed 投影产物）
+	DisplayName string `json:"display_name"`
 
 	// Graph 显式关系边（forked_from/responds_to/merged_into + relations 类型化边）。推断边属结构投影（M3），接入后标 inferred=true——双视图显式与推断区分。
 	Graph []struct {
@@ -230,6 +301,9 @@ type Snapshot struct {
 		Kind     string `json:"kind"`
 		To       string `json:"to"`
 	} `json:"graph"`
+
+	// Participants 参与者视图（装配层注入：本地 owner + 引擎座位；非投影产物——ADR-0011 注记，不进 room_version/水位语义）。
+	Participants []ParticipantView `json:"participants"`
 
 	// Policy 当前策略区（记分卡透明 OQ-17——权重/模式参数对成员可见、版本化）。
 	Policy struct {
@@ -369,16 +443,19 @@ type ServerInterface interface {
 	// GetOwnerBootstrap 第一方客户端引导：返回 owner token（跨源门保护）
 	// (GET /v1/owner/bootstrap)
 	GetOwnerBootstrap(w http.ResponseWriter, r *http.Request)
+	// ListRooms 房间列表（UI 重设计切片 1）
+	// (GET /v1/rooms)
+	ListRooms(w http.ResponseWriter, r *http.Request)
 	// CreateRoom 创建房间（create_room 命令）
 	// (POST /v1/rooms)
 	CreateRoom(w http.ResponseWriter, r *http.Request)
-	// SubmitRoomCommand 提交房间命令（post_message / pause_room / resume_room）
+	// SubmitRoomCommand 提交房间命令（post_message / pause_room / resume_room / rename_room 等）
 	// (POST /v1/rooms/{room_id}/commands)
 	SubmitRoomCommand(w http.ResponseWriter, r *http.Request, roomId RoomID)
 	// SubscribeRoomEvents SSE 订阅房间事件流（opaque cursor 续传）
 	// (GET /v1/rooms/{room_id}/events)
 	SubscribeRoomEvents(w http.ResponseWriter, r *http.Request, roomId RoomID, params SubscribeRoomEventsParams)
-	// GetRoomSnapshot 快照四元组（版本 + 水位 + 投影/算法版本 + Timeline 投影）
+	// GetRoomSnapshot 快照（版本 + 水位 + 投影/算法版本 + Timeline 投影 + 房间名/参与者视图）
 	// (GET /v1/rooms/{room_id}/snapshot)
 	GetRoomSnapshot(w http.ResponseWriter, r *http.Request, roomId RoomID)
 }
@@ -491,6 +568,20 @@ func (siw *ServerInterfaceWrapper) GetOwnerBootstrap(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetOwnerBootstrap(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListRooms operation middleware
+func (siw *ServerInterfaceWrapper) ListRooms(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListRooms(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -729,6 +820,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	}
 
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/healthz", wrapper.GetHealthz)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms", wrapper.ListRooms)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/rooms", wrapper.CreateRoom)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/rooms/{room_id}/commands", wrapper.SubmitRoomCommand)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/events", wrapper.SubscribeRoomEvents)

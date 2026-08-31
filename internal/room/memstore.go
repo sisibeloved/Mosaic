@@ -4,6 +4,7 @@ package room
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -184,6 +185,52 @@ func (m *MemStore) RoomExists(ctx context.Context, roomID string) (bool, error) 
 		}
 	}
 	return false, nil
+}
+
+// ListRooms 实现 RoomLister：房间视图按提交序遍历（byRoom 追加序即 seq 序）；
+// 未见 room.created 的房间不列（与 RoomExists 同口径）。
+func (m *MemStore) ListRooms(_ context.Context) ([]RoomSummary, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []RoomSummary{}
+	for roomID, events := range m.byRoom {
+		var sum RoomSummary
+		sum.RoomID = roomID
+		created := false
+		for _, e := range events {
+			sum.LastEventAt = e.OccurredAt
+			switch e.Type {
+			case protocol.EventRoomCreated, protocol.EventRoomRenamed:
+				var p struct {
+					DisplayName string `json:"display_name"`
+				}
+				if json.Unmarshal(e.Payload, &p) == nil {
+					sum.DisplayName = p.DisplayName
+				}
+				if e.Type == protocol.EventRoomCreated {
+					created = true
+					sum.CreatedAt = e.OccurredAt
+				}
+			case protocol.EventRoomPaused:
+				sum.Paused = true
+			case protocol.EventRoomStarted:
+				sum.Paused = false
+			case protocol.EventMessagePosted:
+				sum.MessageCount++
+			}
+		}
+		if !created {
+			continue
+		}
+		out = append(out, sum)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].LastEventAt != out[j].LastEventAt {
+			return out[i].LastEventAt > out[j].LastEventAt
+		}
+		return out[i].RoomID < out[j].RoomID
+	})
+	return out, nil
 }
 
 // RoomEvents 房间事件快照（测试与投影消费；返回副本）。
