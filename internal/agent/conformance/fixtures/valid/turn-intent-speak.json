@@ -1,0 +1,1 @@
+{"block":"turn_intent","data":{"action":"speak","type":"extend","public_rationale":"stimulus 与我的专长直接相关","scores":{"relevance":0.8,"novelty":0.6,"urgency":0.4,"confidence":0.9},"estimated_tokens":128}}

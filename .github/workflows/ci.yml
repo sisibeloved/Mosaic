@@ -52,6 +52,30 @@ jobs:
           STUB
           chmod +x "$stub_dir/codex"
           MOSAIC_ST_CODEX_STUB="$stub_dir/codex" go test -race -tags st ./cmd/mosaic-server/ -run TestCodexProductionPath_ST -v
+      # M2 C 轨：生产 kimi 路径同制门禁（真二进制+真适配器+真子进程+真发布门）。
+      - name: Production kimi path ST (stub CLI)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          stub_dir="$(mktemp -d)"
+          cat > "$stub_dir/kimi" <<'STUB'
+          #!/usr/bin/env bash
+          # kimi CLI 桩：仅实现 -p <prompt> --output-format stream-json 的最小行流契约
+          # （提示词走 argv——实证 kimi -p 不读 stdin；行流形状钉 0.39.1 fixtures）。
+          prompt=""
+          while [ $# -gt 0 ]; do
+            if [ "$1" = "-p" ]; then prompt="$2"; shift 2; continue; fi
+            shift
+          done
+          printf '%s\n' '{"role":"meta","type":"system.version","version":"0.39.1-stub"}'
+          if printf '%s' "$prompt" | grep -q '"scores"'; then
+            printf '%s\n' '{"role":"assistant","content":"{\"action\":\"speak\",\"type\":\"answer\",\"public_rationale\":\"stub intent\",\"scores\":{\"relevance\":0.9,\"novelty\":0.5,\"urgency\":0.7,\"confidence\":0.8}}"}'
+          else
+            printf '%s\n' '{"role":"assistant","content":"{\"body\":\"stub 回答：1+1=2\",\"declared_relations\":[]}"}'
+          fi
+          printf '%s\n' '{"role":"meta","type":"session.resume_hint","session_id":"session_stub_1","command":"kimi -r session_stub_1"}'
+          STUB
+          chmod +x "$stub_dir/kimi"
+          MOSAIC_ST_KIMI_STUB="$stub_dir/kimi" go test -race -tags st ./cmd/mosaic-server/ -run TestKimiProductionPath_ST -v
       - name: Build mosaic-server
         run: go build ./cmd/mosaic-server
       - name: Cross-compile gate (darwin amd64/arm64 + windows amd64)

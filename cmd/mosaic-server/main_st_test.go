@@ -658,6 +658,87 @@ func TestCodexProductionPath_ST(t *testing.T) {
 	t.Fatal("codex 座位未在时限内发布消息（检查登录态/网络/预算）")
 }
 
+// TestKimiProductionPath_ST（M2 C 轨）：生产 kimi 路径的端到端门禁——
+// 真实 kimi 座位参与完整轮（评估→生成→发布）。两种 opt-in（与 codex 同制）：
+//   - MOSAIC_ST_KIMI：真 kimi 可执行文件（负责人真机演练与本用例同路径）；
+//   - MOSAIC_ST_KIMI_STUB：桩 CLI（CI 必跑腿——真二进制+真适配器+真子进程+真发布门，
+//     模型面以确定性脚本代理）。
+func TestKimiProductionPath_ST(t *testing.T) {
+	kimiPath := os.Getenv("MOSAIC_ST_KIMI")
+	stub := kimiPath == ""
+	if stub {
+		kimiPath = os.Getenv("MOSAIC_ST_KIMI_STUB")
+	}
+	if kimiPath == "" {
+		t.Skip("未设 MOSAIC_ST_KIMI / MOSAIC_ST_KIMI_STUB（生产 kimi 路径 ST 为显式 opt-in）")
+	}
+	if !stub {
+		// 与 harness 探测口径一致：凭证文件存在即已登录
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Skipf("家目录解析失败（skip）: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(home, ".kimi-code", "credentials", "kimi-code.json")); err != nil {
+			t.Skipf("kimi 凭证文件不存在（未登录，skip）: %v", err)
+		}
+	}
+
+	bin := buildServer(t)
+	dataDir := t.TempDir()
+	// 预置已启用的 manual kimi 登记：启动扫描按 ID 合并（enabled 保留）
+	registry := `{"executables":[{"id":"st-kimi","adapter":"kimi","runtime":"native","path":` +
+		strings.TrimSpace(mustMarshalString(kimiPath)) + `,"login_state":"logged_in","source":"manual","enabled":true}]}`
+	if err := os.WriteFile(filepath.Join(dataDir, "harness-registry.json"), []byte(registry), 0o600); err != nil {
+		t.Fatalf("预置注册表: %v", err)
+	}
+
+	cmd := exec.Command(bin, "-addr", "127.0.0.1:0", "-data", dataDir)
+	stdout, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
+	base := "http://" + waitListening(t, stdout)
+
+	created := postJSONST(t, base, "/v1/rooms", map[string]any{
+		"command_kind": "create_room", "expected_room_version": 0,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d9001", "issued_at": "2026-08-31T12:00:00.000Z",
+		"payload": map[string]any{"display_name": "kimi st"},
+	})
+	roomID, _ := created["room_id"].(string)
+	postJSONST(t, base, "/v1/rooms/"+roomID+"/commands", map[string]any{
+		"command_kind": "post_message", "expected_room_version": 1,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d9002", "issued_at": "2026-08-31T12:00:01.000Z",
+		"payload": map[string]any{"body": "用一句话回答：1+1 等于几？", "reply_to": nil, "addressed_to": []any{}, "relations": []any{}},
+	})
+
+	// kimi 评估+生成可能耗时分钟级：轮询快照直至出现 par_kimi 的 agent 消息
+	deadline := time.Now().Add(6 * time.Minute)
+	for time.Now().Before(deadline) {
+		resp, err := (&http.Client{Timeout: 5 * time.Second}).Get(base + "/v1/rooms/" + roomID + "/snapshot")
+		if err == nil {
+			var snap struct {
+				Timeline []struct {
+					ActorID   string `json:"actor_id"`
+					ActorKind string `json:"actor_kind"`
+					Body      string `json:"body"`
+				} `json:"timeline"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&snap) == nil {
+				for _, item := range snap.Timeline {
+					if item.ActorKind == "agent" && strings.HasPrefix(item.ActorID, "par_kimi") && item.Body != "" {
+						t.Logf("kimi 生产路径闭环：par_kimi 发布 %q", truncateStr(item.Body, 80))
+						return
+					}
+				}
+			}
+			resp.Body.Close()
+		}
+		time.Sleep(3 * time.Second)
+	}
+	t.Fatal("kimi 座位未在时限内发布消息（检查登录态/网络/预算）")
+}
+
 func mustMarshalString(s string) string {
 	raw, _ := json.Marshal(s)
 	return string(raw)

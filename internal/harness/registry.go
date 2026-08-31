@@ -6,6 +6,8 @@ package harness
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -32,6 +34,8 @@ const (
 )
 
 // Executable 宿主登记的一个可执行程序（tenant 侧 Profile 从中选取实例化）。
+// 同一家族可多实例共存（多安装位置 / 桌面应用 bundled 面），实例间配置与会话独立，
+// 以 Channel 区分渠道、Priority 表达家族裁定优先级（负责人 2026-08-31）。
 type Executable struct {
 	ID           string `json:"id"`
 	Adapter      string `json:"adapter"` // codex | kimi | zcode
@@ -42,6 +46,8 @@ type Executable struct {
 	Digest       string `json:"digest,omitempty"` // 二进制摘要（RFC-0002 宿主层登记）
 	Login        string `json:"login_state"`      // logged_in | logged_out | unknown
 	Source       string `json:"source"`           // auto_scan | manual
+	Channel      string `json:"channel"`          // cli | app:codex-desktop | app:kimi-work（空值按 cli 处理）
+	Priority     int    `json:"priority"`         // PriorityFor 计算；数值小者优先
 	DiscoveredAt string `json:"discovered_at"`
 	Enabled      bool   `json:"enabled"`
 }
@@ -83,6 +89,9 @@ type ProbeSpec struct {
 	// KnownDirGlobs：常见安装位置（相对家目录的 glob 模式，展开后拼 /binary）。
 	// 文件系统事实驱动，不依赖 shell 初始化——nvm/fnm/volta 等版本管理器的唯一可靠发现面。
 	KnownDirGlobs []string
+	// AppGlobs：桌面应用内 bundled CLI 的发现位置（绝对 glob，仅 native 面展开）。
+	// 命中实例带渠道标签，参与家族优先级（PriorityFor）。
+	AppGlobs []AppGlob
 }
 
 // ScanOptions 扫描选项。
@@ -267,38 +276,63 @@ func (r *Registry) saveLocked() error {
 	return osRename(tmp, r.path)
 }
 
-// List 返回登记快照（副本）。
+// sortByPriority 规范排序：(adapter, priority, path)——设置页展示顺序与座位顺序
+// 共用同一事实源；家族优先级高者在前，同优先级按路径定序（确定性）。
+func sortByPriority(exes []Executable) {
+	sort.SliceStable(exes, func(i, j int) bool {
+		if exes[i].Adapter != exes[j].Adapter {
+			return exes[i].Adapter < exes[j].Adapter
+		}
+		if exes[i].Priority != exes[j].Priority {
+			return exes[i].Priority < exes[j].Priority
+		}
+		return exes[i].Path < exes[j].Path
+	})
+}
+
+// List 返回登记快照（副本，按 adapter/优先级/路径排序）。
 func (r *Registry) List() []Executable {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]Executable(nil), r.exes...)
+	out := append([]Executable(nil), r.exes...)
+	sortByPriority(out)
+	return out
 }
 
-// upsertLocked 按 ID 合并：auto 刷新探测字段；manual 保留来源但刷新登录/版本/摘要。
+// upsertLocked 按 ID 合并：auto 刷新探测字段；manual 保留来源与渠道覆盖，但刷新
+// 登录/版本/摘要。优先级每次入库重算（PriorityFor），家族裁定调整即刻生效。
 func (r *Registry) upsertLocked(exe Executable) {
+	if exe.Channel == "" {
+		exe.Channel = ChannelCLI
+	}
 	for i := range r.exes {
 		if r.exes[i].ID == exe.ID {
 			prev := r.exes[i]
 			exe.Enabled = prev.Enabled // 启用状态跨扫描保留（登录门控在 SetEnabled 把关）
 			if prev.Source == SourceManual {
 				exe.Source = SourceManual
+				if prev.Channel != "" {
+					exe.Channel = prev.Channel // 手动项的渠道覆盖不被扫描冲掉
+				}
 			}
+			exe.Priority = PriorityFor(exe.Adapter, exe.Channel)
 			r.exes[i] = exe
 			return
 		}
 	}
+	exe.Priority = PriorityFor(exe.Adapter, exe.Channel)
 	r.exes = append(r.exes, exe)
 }
 
 // Scan 自动扫描：native 全部探测规格 + （开启时）各 WSL 发行版。
-// 发现顺序：PATH 解析 → 已知安装位置 glob 展开（文件系统事实，不依赖 shell 初始化）。
+// 发现顺序：PATH 解析 → 已知安装位置 glob → 桌面应用 bundled 位置（native 面）；
+// 同规格枚举全部实例（多实例并存，配置/会话独立——负责人裁定 2026-08-31）。
 // 扫描失败的单项跳过（探测命令超时/缺失不是致命错误）。
 func (r *Registry) Scan(ctx context.Context, runner Runner, probes []ProbeSpec, opts ScanOptions) error {
 	scanRuntime := func(runtime Runtime, distro string) {
 		home := runner.Home(ctx, runtime, distro)
 		for _, spec := range probes {
-			exe, ok := discoverExecutable(ctx, runner, spec, runtime, distro, home)
-			if ok {
+			for _, exe := range discoverExecutables(ctx, runner, spec, runtime, distro, home) {
 				exe.Source = SourceAuto
 				r.mu.Lock()
 				r.upsertLocked(exe)
@@ -319,32 +353,88 @@ func (r *Registry) Scan(ctx context.Context, runner Runner, probes []ProbeSpec, 
 	return r.saveLocked()
 }
 
-// discoverExecutable 单规格发现：PATH → 已知目录 glob；命中即完整探测。
-func discoverExecutable(ctx context.Context, runner Runner, spec ProbeSpec, runtime Runtime, distro, home string) (Executable, bool) {
+// discoverExecutables 单规格枚举全部实例：PATH + 已知目录 glob +（native 面）App 位置；
+// 按路径去重，命中即完整探测。渠道：PATH/目录发现为 cli，App 位置带各自渠道标签。
+func discoverExecutables(ctx context.Context, runner Runner, spec ProbeSpec, runtime Runtime, distro, home string) []Executable {
+	var out []Executable
+	seen := map[string]bool{}
+	add := func(path, channel string) {
+		if path == "" || seen[path] {
+			return
+		}
+		seen[path] = true
+		exe := probeExecutable(ctx, runner, spec, runtime, distro, path)
+		exe.Channel = channel
+		out = append(out, exe)
+	}
+
 	if path, ok := runner.LookPath(ctx, runtime, distro, spec.Binary); ok {
-		return probeExecutable(ctx, runner, spec, runtime, distro, path), true
+		add(path, ChannelCLI)
 	}
-	if home == "" {
-		return Executable{}, false
-	}
-	for _, pattern := range spec.KnownDirGlobs {
-		for _, dir := range runner.Glob(ctx, runtime, distro, home+"/"+pattern) {
-			candidate := dir + "/" + spec.Binary
-			if runner.Exists(ctx, runtime, distro, candidate) {
-				return probeExecutable(ctx, runner, spec, runtime, distro, candidate), true
+	if home != "" {
+		for _, pattern := range spec.KnownDirGlobs {
+			for _, dir := range runner.Glob(ctx, runtime, distro, home+"/"+pattern) {
+				if candidate, ok := firstExistingBinary(ctx, runner, runtime, distro, dir, spec.Binary); ok {
+					add(candidate, ChannelCLI)
+				}
 			}
 		}
 	}
-	return Executable{}, false
+	if runtime == RuntimeNative {
+		// 桌面应用 bundled 面只在宿主原生运行面存在（WSL 发行版内无 Windows 应用）
+		for _, ag := range spec.AppGlobs {
+			for _, pattern := range ag.Patterns {
+				for _, dir := range runner.Glob(ctx, runtime, distro, expandAppPattern(pattern, home)) {
+					if candidate, ok := firstExistingBinary(ctx, runner, runtime, distro, dir, spec.Binary); ok {
+						add(candidate, ag.Channel)
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// firstExistingBinary 目录内二进制存在性探测：裸名优先，其次 .exe（Windows 应用/安装
+// 形态的真实可执行文件；npm 目录的扩展名 shim 维持既有 LookPath 行为不改）。
+func firstExistingBinary(ctx context.Context, runner Runner, runtime Runtime, distro, dir, binary string) (string, bool) {
+	for _, name := range []string{binary, binary + ".exe"} {
+		candidate := dir + "/" + name
+		if runner.Exists(ctx, runtime, distro, candidate) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+// expandAppPattern 展开 App 位置占位：{LOCALAPPDATA} 按宿主家目录推导，{PROGRAMFILES}
+// 取 Windows 约定常量（被企业策略改写的情形归手动登记——探测失败不致命）。
+func expandAppPattern(pattern, home string) string {
+	if strings.Contains(pattern, "{LOCALAPPDATA}") {
+		pattern = strings.ReplaceAll(pattern, "{LOCALAPPDATA}", strings.TrimSuffix(home, "/")+"/AppData/Local")
+	}
+	if strings.Contains(pattern, "{PROGRAMFILES}") {
+		pattern = strings.ReplaceAll(pattern, "{PROGRAMFILES}", "C:/Program Files")
+	}
+	return pattern
 }
 
 // AddManual 手动登记（负责人要求 2）：校验必填与已知家族，随后做完整探测。
+// entry.Channel 可显式指定实例渠道（App 形态在自动扫描位置未实证前的进入路径），
+// 空值按 cli；非法渠道串拒绝。
 func (r *Registry) AddManual(ctx context.Context, runner Runner, entry Executable) error {
 	if entry.Adapter == "" || entry.Runtime == "" || entry.Path == "" {
 		return fmt.Errorf("%w: adapter/runtime/path 必填", ErrInvalidEntry)
 	}
 	if entry.Runtime != string(RuntimeNative) && entry.Runtime != string(RuntimeWSL) {
 		return fmt.Errorf("%w: runtime 必须为 native|wsl", ErrInvalidEntry)
+	}
+	channel := entry.Channel
+	if channel == "" {
+		channel = ChannelCLI
+	}
+	if !validChannel(channel) {
+		return fmt.Errorf("%w: channel 必须为 cli 或 app:<name>，got %q", ErrInvalidEntry, entry.Channel)
 	}
 	var spec *ProbeSpec
 	for i := range BuiltinProbes {
@@ -357,6 +447,7 @@ func (r *Registry) AddManual(ctx context.Context, runner Runner, entry Executabl
 	}
 	exe := probeExecutable(ctx, runner, *spec, Runtime(entry.Runtime), entry.Distro, entry.Path)
 	exe.Source = SourceManual
+	exe.Channel = channel
 	if entry.Version != "" {
 		exe.Version = entry.Version // 手动项允许显式版本覆盖（探测失败时）
 	}
@@ -364,6 +455,23 @@ func (r *Registry) AddManual(ctx context.Context, runner Runner, entry Executabl
 	defer r.mu.Unlock()
 	r.upsertLocked(exe)
 	return r.saveLocked()
+}
+
+// validChannel 渠道串形态：cli 或 app:<小写字母/数字/连字符>。
+func validChannel(c string) bool {
+	if c == ChannelCLI {
+		return true
+	}
+	rest, ok := strings.CutPrefix(c, "app:")
+	if !ok || rest == "" {
+		return false
+	}
+	for _, r := range rest {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // SetEnabled 启用门控（负责人要求 3）：仅 logged_in 可启用；禁用不设限。
@@ -382,7 +490,8 @@ func (r *Registry) SetEnabled(id string, enabled bool) error {
 	return ErrNotFound
 }
 
-// EnabledList 已启用的可执行程序（agent 座位候选）。
+// EnabledList 已启用的可执行程序（agent 座位候选；排序口径同 List——
+// 优先级高者优先入座，同分平局的确定性由路径序保证）。
 func (r *Registry) EnabledList() []Executable {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -392,5 +501,6 @@ func (r *Registry) EnabledList() []Executable {
 			out = append(out, e)
 		}
 	}
+	sortByPriority(out)
 	return out
 }

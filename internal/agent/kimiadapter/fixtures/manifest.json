@@ -1,0 +1,10 @@
+{
+  "cli_version": "0.39.1",
+  "captured_at": "2026-08-31",
+  "note": "kimi -p --output-format stream-json 行流：官方命令参考钉住 -p/--output-format 语义，但事件 schema 无上游稳定性承诺——conformance 以本 manifest 钉住捕获版本与文件哈希，重捕获必须更新本文件（fixture_gate 测试机器可检，漂移即红）。stream-no-assistant.jsonl 为手工构造的反例（无 assistant 行的合法流）。",
+  "files": {
+    "stream-intent.jsonl": "sha256:a79a42d050aada3263408ee91255289bdbc320c90f797736e2742cc011b0a085",
+    "stream-generate.jsonl": "sha256:3936f555fb166833550d5e8789c59594cc6251059bcb9510c831933710f1dd39",
+    "stream-no-assistant.jsonl": "sha256:ede37471894483ffbb40d55a3d99f0075c97856b94cd0bbbb0274bec71b37374"
+  }
+}
