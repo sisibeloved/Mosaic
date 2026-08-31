@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -439,7 +440,10 @@ func TestSnapshotEndpoint_ST(t *testing.T) {
 	}
 }
 
-// TestIndexUI_ST：内嵌 Timeline 最小 UI 可达。
+// TestIndexUI_ST：SPA 界面可达且命令契约标记在位。
+// M1 收口补课（审校 2026-08-28）的原始意图沿用：UI 幂等键必须合法 UUIDv7
+// （crypto.getRandomValues）、发命令前经快照校准版本——M2 起界面为编译产物
+// （esbuild 压缩改写函数名），稳定表面是属性名与字符串字面量。
 func TestIndexUI_ST(t *testing.T) {
 	bin := buildServer(t)
 	cmd := exec.Command(bin, "-addr", "127.0.0.1:0", "-data", t.TempDir())
@@ -447,20 +451,35 @@ func TestIndexUI_ST(t *testing.T) {
 	_ = cmd.Start()
 	defer func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
 	base := "http://" + waitListening(t, stdout)
-	resp, err := (&http.Client{Timeout: 5 * time.Second}).Get(base + "/")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(base + "/")
 	if err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
 	if resp.StatusCode != 200 || !bytes.Contains(body, []byte("Mosaic")) {
 		t.Fatalf("UI 不可达：status=%d", resp.StatusCode)
 	}
-	// M1 收口补课（审校 2026-08-28）：UI 幂等键必须是合法 UUIDv7（uuidv7() + crypto.getRandomValues），
-	// 且发命令前必须经快照端点校准版本（syncVersion）——旧实现 40 字符键全量 400、版本必 409。
-	for _, marker := range []string{"function uuidv7()", "crypto.getRandomValues", "syncVersion", "/snapshot"} {
-		if !bytes.Contains(body, []byte(marker)) {
-			t.Fatalf("UI 缺少契约标记 %q（幂等键/版本同步回归）", marker)
+	re := regexp.MustCompile(`src="(/assets/[^"]+\.js)"`)
+	m := re.FindStringSubmatch(string(body))
+	if m == nil {
+		t.Fatalf("SPA index 缺少模块入口：%s", body)
+	}
+	asset, err := client.Get(base + m[1])
+	if err != nil {
+		t.Fatalf("asset: %v", err)
+	}
+	js, _ := io.ReadAll(asset.Body)
+	asset.Body.Close()
+	for _, marker := range []string{
+		"idempotency_key",         // 幂等键契约字段（uuidv7 生成，crypto.getRandomValues）
+		"crypto.getRandomValues",  // 键随机位（非 Math.random 弱随机）
+		"expected_room_version",   // 乐观并发版本位
+		"/snapshot",              // 发命令前的版本校准通道
+	} {
+		if !bytes.Contains(js, []byte(marker)) {
+			t.Fatalf("UI 产物缺少契约标记 %q（幂等键/版本同步回归）", marker)
 		}
 	}
 }

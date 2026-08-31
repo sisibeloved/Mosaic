@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mosaic</title>
+<!-- 开发者模式注入位（M1 v1.8 机制沿用）：服务端 -dev 时将 false 替换为 true。
+     顶层 const 位于全局词法环境，模块脚本可直接读取。 -->
+<script>const MOSAIC_DEV = false;</script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

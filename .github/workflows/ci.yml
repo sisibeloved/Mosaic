@@ -113,3 +113,19 @@ jobs:
             echo "::error::gen-api 产物漂移（spec 改动未重生成）"
             exit 1
           fi
+      # M2 真实界面（v1.7 制度化）：SPA 源码 → dist / API 类型产物新鲜度
+      # （依赖版本经 package-lock.json 锁定；node 为 runner 预装）。
+      - name: SPA build gate (apps/web → dist + API 类型新鲜度)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cd apps/web
+          npm ci
+          npm run gen:api
+          npm run build
+          cd ../..
+          git add -A apps/web/
+          if ! git diff --cached --quiet -- apps/web/; then
+            git diff --cached -- apps/web/
+            echo "::error::SPA 产物漂移（源码/契约改动未重建或未重生成）"
+            exit 1
+          fi

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -43,6 +44,9 @@ type Deps struct {
 	// Origin——不信请求自带的 Host（DNS rebinding 后 Origin 与 Host 会同时指向
 	// 攻击者域名而相等）。空 = 测试装配退回"请求 Host + 回环 host"判定（host 仍须回环）。
 	Authority string
+	// UI 前端产物根（index.html 位于根；M2 SPA 经 apps/web 构建）。nil = 退回
+	// M1 内嵌最小 webui（测试装配 / 未装配 SPA 的兜底形态）。
+	UI fs.FS
 }
 
 // New 构造路由。对外契约面（ADR-0007）由 apigen 生成的 ServerInterface +
@@ -51,7 +55,9 @@ type Deps struct {
 func New(deps Deps) http.Handler {
 	s := &server{deps: deps}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", s.handleIndex)
+	// GET 兜底走 UI（SPA 静态产物 + 前端路由回退）；/v1/* 未匹配路径显式 404，
+	// 不被 SPA 回退吞掉（非 dev 的 debug 端点 404 语义由此保持）。
+	mux.HandleFunc("GET /", s.handleUI)
 	if deps.Dev {
 		// 开发者模式（M1 v1.8）：只读调试面——非 dev 不注册（404 而非 403，不暴露面）
 		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/state", s.handleDebugState)
@@ -447,15 +453,49 @@ func (s *server) GetRoomSnapshot(w http.ResponseWriter, r *http.Request, roomID 
 	writeJSON(w, http.StatusOK, room.ProjectSnapshot(roomID, events))
 }
 
-// handleIndex：Timeline 最小 UI（内嵌单页；React/Vite SPA 随 M2 接入）。
-// 开发者模式（M1 v1.8）注入 MOSAIC_DEV=true——UI 据此展开调试面板。
-func (s *server) handleIndex(w http.ResponseWriter, _ *http.Request) {
-	html := indexHTML
+// handleUI：GET 兜底——SPA 静态产物 + 前端路由回退（M2 真实界面，v1.7 制度化）。
+// /v1/* 未匹配路径显式 404：API 命名空间不被 SPA 回退吞掉（非 dev 的 debug
+// 端点"未注册即 404 不暴露面"语义由此保持）。UI 未装配（测试/兜底）时回退
+// M1 内嵌最小 webui。开发者模式注入沿用 M1 机制：MOSAIC_DEV=false → true。
+func (s *server) handleUI(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/v1/") {
+		writeError(w, http.StatusNotFound, "not_found", "未知 API 路径")
+		return
+	}
+	if s.deps.UI == nil {
+		html := indexHTML
+		if s.deps.Dev {
+			html = strings.Replace(html, "const MOSAIC_DEV = false;", "const MOSAIC_DEV = true;", 1)
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(html))
+		return
+	}
+	upath := strings.TrimPrefix(r.URL.Path, "/")
+	if upath != "" {
+		if f, err := s.deps.UI.Open(upath); err == nil {
+			_ = f.Close()
+			http.FileServerFS(s.deps.UI).ServeHTTP(w, r)
+			return
+		}
+		// 前端路由回退：非资产路径一律 index.html
+	}
+	s.serveSpaIndex(w)
+}
+
+// serveSpaIndex 输出（按 dev 注入后的）SPA index.html。每次读取——本地单用户
+// 面板频次极低，不值得为它建缓存。
+func (s *server) serveSpaIndex(w http.ResponseWriter) {
+	raw, err := fs.ReadFile(s.deps.UI, "index.html")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ui_missing", "SPA index 缺失")
+		return
+	}
 	if s.deps.Dev {
-		html = strings.Replace(indexHTML, "const MOSAIC_DEV = false;", "const MOSAIC_DEV = true;", 1)
+		raw = []byte(strings.Replace(string(raw), "const MOSAIC_DEV = false;", "const MOSAIC_DEV = true;", 1))
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(html))
+	_, _ = w.Write(raw)
 }
 
 // DraftConsumer 把引擎草稿流桥到 SSE（draft.update 瞬态帧：无 id、不入事件日志、

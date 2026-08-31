@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sisibeloved/Mosaic/apps/web"
 	"github.com/sisibeloved/Mosaic/internal/agent"
 	"github.com/sisibeloved/Mosaic/internal/agent/codexadapter"
 	"github.com/sisibeloved/Mosaic/internal/agent/echo"
@@ -173,6 +174,9 @@ func main() {
 		// 四轮复审 #15：跨源写门对"配置的回环 authority"判定，不信请求自带的
 		// Host（DNS rebinding 后二者仍相等）——真实绑定地址在此注入。
 		Authority: ln.Addr().String(),
+		// M2 真实界面（v1.7 制度化）：SPA 构建产物经 go:embed 服务；
+		// 新鲜度由 CI 构建门禁把守（apps/web 源码改动未重建即红）。
+		UI: web.Dist(),
 		Seats: func() []room.AgentSeat {
 			if engine := enginePtr.Load(); engine != nil {
 				return engine.Seats()

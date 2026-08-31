@@ -28,3 +28,6 @@ tmp/
 .DS_Store
 Thumbs.db
 
+
+# 前端构建产物入库（go:embed 服务 + CI 新鲜度门禁），不受全局 dist/ 忽略影响
+!apps/web/dist/
