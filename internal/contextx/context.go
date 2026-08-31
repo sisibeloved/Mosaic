@@ -31,6 +31,9 @@ func taskDirectiveOf(cfg Config) map[string]any {
 		d["subround"] = cfg.Subround
 		d["directive"] = "cross-response 子轮：回应本轮已揭示的发言（挑战/补充/收敛），不是新话题"
 	}
+	if cfg.Endorse {
+		d["directive"] = "owner 保送（OQ-17）：人类指定你发言——就此前的意向与语境给出公开回应"
+	}
 	return d
 }
 
@@ -42,7 +45,8 @@ type Config struct {
 	Seats        []Seat
 	RecentWindow int // 近期消息窗口（默认 10）
 	Budget       BudgetState
-	Subround     int // >0 = cross 子轮（任务指令层标注：回应本轮已揭示发言）
+	Subround     int  // >0 = cross 子轮（任务指令层标注：回应本轮已揭示发言）
+	Endorse      bool // 人类保送（OQ-17）：owner 指定发言（非仲裁获选）
 }
 
 // Receipt 上下文回执（落库可查：给了什么水位、哪些层、摘要为何）。

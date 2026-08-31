@@ -64,18 +64,19 @@ type RoundOpenedPayload struct {
 }
 
 // IntentRecordedPayload intent.recorded：TurnIntent 的用户可见投影（公开 band，不公开精确分）。
-// R-01 全记录：失格/越界/silent 意图也落事件（ScoreBand="unranked"，Type 可空，理由进 metadata）。
+// R-01 全记录：失格/越界/silent 意图也落事件（ScoreBand="unranked"，Type 可空，理由入 payload——记分卡可查 R-08）。
 type IntentRecordedPayload struct {
-	IntentID        string   `json:"intent_id"`
-	ParticipantID   string   `json:"participant_id"`
-	Action          string   `json:"action"` // speak | react | fork | summarize | silent
-	Type            string   `json:"type"`   // answer | extend | challenge | support | question | redirect | synthesize | ""（silent 可省）
-	ReplyTo         *string  `json:"reply_to"`
-	AddressedTo     []string `json:"addressed_to,omitempty"`
-	PublicRationale string   `json:"public_rationale"`
-	ScoreBand       string   `json:"score_band"` // very_low | low | medium | high | very_high | unranked（未进入记分）
-	Selected        bool     `json:"selected"`
-	Endorsed        bool     `json:"endorsed"`
+	IntentID         string   `json:"intent_id"`
+	ParticipantID    string   `json:"participant_id"`
+	Action           string   `json:"action"` // speak | react | fork | summarize | silent
+	Type             string   `json:"type"`   // answer | extend | challenge | support | question | redirect | synthesize | ""（silent 可省）
+	ReplyTo          *string  `json:"reply_to"`
+	AddressedTo      []string `json:"addressed_to,omitempty"`
+	PublicRationale  string   `json:"public_rationale"`
+	ScoreBand        string   `json:"score_band"` // very_low | low | medium | high | very_high | unranked（未进入记分）
+	Selected         bool     `json:"selected"`
+	Endorsed         bool     `json:"endorsed"`
+	UnselectedReason string   `json:"unselected_reason,omitempty"` // 记分卡透明（R-08）：未选理由（budget/duplicate/…）
 }
 
 // PolicyParams 策略参数束（RFC-0003 §3.1.7；set_policy 命令体与 policy.changed

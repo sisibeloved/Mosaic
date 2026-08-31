@@ -177,11 +177,12 @@ export interface components {
          * @description 命令信封（RFC-0001）。payload 按 command_kind 严格校验（未知字段拒绝）：
          *     create_room → CreateRoomPayload；post_message → PostMessagePayload；
          *     pause_room → PauseRoomPayload；resume_room → 空 payload；
-         *     set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）。
+         *     set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）；
+         *     endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）。
          */
         RoomCommand: {
             /** @enum {string} */
-            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "set_policy";
+            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "set_policy" | "endorse_intent";
             expected_room_version: number;
             /** @description UUIDv7（服务端按 tenant+key+kind 去重；同键异指纹 409） */
             idempotency_key: string;
@@ -207,6 +208,12 @@ export interface components {
         };
         PauseRoomPayload: {
             reason?: string;
+        };
+        /** @description 人类保送（RFC-0003 §3.1.11 / OQ-17）。effect=grant 直接授予 Floor（默认）；boost 随 Policy 加权参数定稿开放。不绕过预算/硬资格/安全；对全体可见。 */
+        EndorseIntentPayload: {
+            intent_id: string;
+            /** @enum {string} */
+            effect: "grant";
         };
         /** @description 策略参数束（RFC-0003 §3.1.7；set_policy 命令体与 policy.changed 事件 payload 同构）。reveal 三策略自 B2 起全部可执行（simultaneous=冻结水位统一揭示；independent_then_cross=独立首轮+cross 子轮）。 */
         PolicyParams: {
@@ -291,6 +298,21 @@ export interface components {
                 response_cap?: number;
                 reveal_strategy?: string;
             };
+            /** @description 记分卡（R-08/OQ-17：intent 全量投影，band + 未选理由 + 保送状态）。 */
+            scorecard: {
+                intent_id: string;
+                participant_id: string;
+                type?: string;
+                action?: string;
+                score_band: string;
+                selected: boolean;
+                endorsed: boolean;
+                public_rationale?: string;
+                unselected_reason?: string;
+                round_id?: string;
+                /** Format: date-time */
+                occurred_at?: string;
+            }[];
             timeline: components["schemas"]["TimelineItem"][];
         };
         TimelineItem: {

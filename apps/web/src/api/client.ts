@@ -134,6 +134,12 @@ export const api = {
       commandBody("set_policy", version, params),
     );
   },
+  endorseIntent(roomID: string, version: number, intentID: string): Promise<CommandResponse> {
+    return post(
+      `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
+      commandBody("endorse_intent", version, { intent_id: intentID, effect: "grant" }),
+    );
+  },
   snapshot(roomID: string): Promise<Snapshot> {
     return request<Snapshot>(`/v1/rooms/${encodeURIComponent(roomID)}/snapshot`);
   },

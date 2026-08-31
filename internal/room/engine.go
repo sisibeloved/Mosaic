@@ -152,6 +152,11 @@ func (e *Engine) Deliver(ctx context.Context, entry outbox.Entry) error {
 			return fmt.Errorf("engine: redrive room %s claims: %w", env.RoomID, err)
 		}
 		return nil
+	case env.Type == protocol.EventIntentEndorsed:
+		// 人类保送执行面（B4/OQ-17）：intent.endorsed → 发授/生成/发布。
+		// 不绕过预算/硬资格；grant causation=该 endorsed 事件（人类可追溯）。
+		e.runEndorse(ctx, env)
+		return nil
 	case env.Type != protocol.EventMessagePosted || env.Actor.Kind != "human":
 		return nil
 	}
@@ -642,19 +647,21 @@ func (e *Engine) evaluateAndSelect(ctx context.Context, roomID, roundID string,
 		if band == "" {
 			band = "unranked" // 未进入记分（硬失格/silent/越界）：零痕迹违反 R-01 全记录
 		}
+		rej := rejectionOf(selection, c.Intent.IntentID)
 		recorded := e.newEnv(roomID, protocol.EventIntentRecorded,
 			protocol.Actor{ParticipantID: c.Intent.ParticipantID, Kind: "agent"}, stimulus.EventID, roundID,
 			protocol.IntentRecordedPayload{
-				IntentID:        c.Intent.IntentID,
-				ParticipantID:   c.Intent.ParticipantID,
-				Action:          c.Intent.Action,
-				Type:            c.Intent.Type,
-				PublicRationale: truncate(c.Intent.PublicRationale, 280),
-				ScoreBand:       band,
-				Selected:        selected,
-				Endorsed:        false,
+				IntentID:         c.Intent.IntentID,
+				ParticipantID:    c.Intent.ParticipantID,
+				Action:           c.Intent.Action,
+				Type:             c.Intent.Type,
+				PublicRationale:  truncate(c.Intent.PublicRationale, 280),
+				ScoreBand:        band,
+				Selected:         selected,
+				Endorsed:         false,
+				UnselectedReason: truncate(rej.Reason, 120), // 记分卡透明（R-08）
 			})
-		recorded.Metadata = intentMetadata(rejectionOf(selection, c.Intent.IntentID), selected, evalUsage[c.Intent.ParticipantID])
+		recorded.Metadata = intentMetadata(rej, selected, evalUsage[c.Intent.ParticipantID])
 		if subround > 0 {
 			recorded.Metadata["subround"] = subround
 		}

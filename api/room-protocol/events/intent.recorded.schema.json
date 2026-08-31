@@ -5,35 +5,91 @@
   "description": "TurnIntent 的用户可见投影：公开五档 band，不公开精确分（反 Goodhart）；私有原始 Intent 不经本事件暴露。",
   "type": "object",
   "required": [
-    "intent_id", "participant_id", "action", "type",
-    "public_rationale", "score_band", "selected", "endorsed"
+    "intent_id",
+    "participant_id",
+    "action",
+    "type",
+    "public_rationale",
+    "score_band",
+    "selected",
+    "endorsed"
   ],
   "additionalProperties": false,
   "properties": {
-    "intent_id": { "type": "string", "pattern": "^int_[0-9A-Za-z_-]+$" },
-    "participant_id": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" },
+    "intent_id": {
+      "type": "string",
+      "pattern": "^int_[0-9A-Za-z_-]+$"
+    },
+    "participant_id": {
+      "type": "string",
+      "pattern": "^par_[0-9A-Za-z_-]+$"
+    },
     "action": {
       "type": "string",
-      "enum": ["speak", "react", "fork", "summarize", "silent"]
+      "enum": [
+        "speak",
+        "react",
+        "fork",
+        "summarize",
+        "silent"
+      ]
     },
     "type": {
       "type": "string",
-      "enum": ["answer", "extend", "challenge", "support", "question", "redirect", "synthesize", ""],
+      "enum": [
+        "answer",
+        "extend",
+        "challenge",
+        "support",
+        "question",
+        "redirect",
+        "synthesize",
+        ""
+      ],
       "description": "silent 意图可省略 type（空串）；R-01 全记录后 silent 也落 intent.recorded"
     },
-    "reply_to": { "type": ["string", "null"], "pattern": "^evt_[0-9A-Za-z_-]+$" },
+    "reply_to": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^evt_[0-9A-Za-z_-]+$"
+    },
     "addressed_to": {
       "type": "array",
       "maxItems": 3,
-      "items": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" }
+      "items": {
+        "type": "string",
+        "pattern": "^par_[0-9A-Za-z_-]+$"
+      }
     },
-    "public_rationale": { "type": "string", "minLength": 0, "maxLength": 280 },
+    "public_rationale": {
+      "type": "string",
+      "minLength": 0,
+      "maxLength": 280
+    },
     "score_band": {
       "type": "string",
-      "enum": ["very_low", "low", "medium", "high", "very_high", "unranked"],
+      "enum": [
+        "very_low",
+        "low",
+        "medium",
+        "high",
+        "very_high",
+        "unranked"
+      ],
       "description": "五档：&lt;0.2 / 0.2–0.4 / 0.4–0.6 / 0.6–0.8 / ≥0.8；unranked = 未进入记分（硬失格/silent/越界，R-01 全记录仍落事件）；精确分仅入内部评测（RFC-0011）"
     },
-    "selected": { "type": "boolean" },
-    "endorsed": { "type": "boolean" }
+    "selected": {
+      "type": "boolean"
+    },
+    "endorsed": {
+      "type": "boolean"
+    },
+    "unselected_reason": {
+      "type": "string",
+      "maxLength": 120,
+      "description": "记分卡透明（R-08）：未选理由（budget/duplicate_intent/score_out_of_range/…）；获选项缺省"
+    }
   }
 }

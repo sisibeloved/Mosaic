@@ -47,6 +47,7 @@ type CommandResult struct {
 // Config 服务依赖注入。
 type Config struct {
 	Store  AtomicStore
+	Reader EventReader                // 可选：endorse_intent 的目标存在性检查（MemStore/SQLite 双实现）
 	Clock  func() string              // RFC3339
 	NewID  func(prefix string) string // 事件/房间 ID 生成（前缀 evt_/room_）
 	Tenant string
@@ -89,6 +90,8 @@ func (s *Service) ExecuteCommand(ctx context.Context, actor Actor, cmd Command) 
 		return s.roomLifecycle(ctx, actor, cmd, protocol.EventRoomStarted, "resume_room payload")
 	case "set_policy":
 		return s.setPolicy(ctx, actor, cmd)
+	case "endorse_intent":
+		return s.endorseIntent(ctx, actor, cmd)
 	default:
 		return nil, fmt.Errorf("%w: 未知命令 %q", ErrInvalidCommand, cmd.CommandKind)
 	}
@@ -249,6 +252,7 @@ var relationKinds = map[string]bool{
 var (
 	threadIDPattern = regexp.MustCompile(`^thr_[0-9A-Za-z_-]+$`)
 	eventIDPattern  = regexp.MustCompile(`^evt_[0-9A-Za-z_-]+$`)
+	intentIDPattern = regexp.MustCompile(`^int_[0-9A-Za-z_-]+$`)
 )
 
 // commit 原子落库 + 回执；回执竞态时重查回放（并发同键后到者）。
@@ -363,6 +367,97 @@ func (s *Service) setPolicy(ctx context.Context, actor Actor, cmd Command) (*Com
 		Visibility:    protocol.Visibility{Kind: "public"}, // 记分卡透明（OQ-17）
 		Payload:       mustJSON(params),
 		Metadata:      map[string]any{},
+	}
+	receipt := CommandReceipt{
+		TenantID:            s.cfg.Tenant,
+		RoomID:              cmd.RoomID,
+		IdempotencyKey:      cmd.IdempotencyKey,
+		CommandKind:         cmd.CommandKind,
+		RequestFingerprint:  fingerprint(cmd, actor),
+		EventID:             env.EventID,
+		ExpectedRoomVersion: cmd.ExpectedRoomVersion,
+		ExecutedAt:          s.cfg.Clock(),
+	}
+	return s.commit(ctx, env, receipt)
+}
+
+// endorseIntent 人类保送命令链（RFC-0003 §3.1.11 / OQ-17）：intent.endorsed 事件
+// （对全体可见；Agent 不能保送 Agent——外部命令 actor 恒 human）。effect 本切片
+// 只受理 grant（直接授予 Floor；boost 语义依赖 Policy 加权参数定稿，未定不收）。
+// 执行面（发授/生成/发布）由引擎消费 intent.endorsed 驱动——不绕过预算/硬资格。
+func (s *Service) endorseIntent(ctx context.Context, actor Actor, cmd Command) (*CommandResult, error) {
+	if res, err := s.replayIfReceived(ctx, cmd, actor); res != nil || err != nil {
+		return res, err
+	}
+	exists, err := s.cfg.Store.RoomExists(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room exists: %w", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrRoomNotFound, cmd.RoomID)
+	}
+	version, err := s.cfg.Store.RoomVersion(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room version: %w", err)
+	}
+	if cmd.ExpectedRoomVersion != version {
+		if res, rerr := s.replayIfReceived(ctx, cmd, actor); res != nil || rerr != nil {
+			return res, rerr
+		}
+		return nil, fmt.Errorf("%w: expected=%d current=%d", ErrVersionConflict, cmd.ExpectedRoomVersion, version)
+	}
+	var payload struct {
+		IntentID string `json:"intent_id"`
+		Effect   string `json:"effect"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(cmd.Payload)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("%w: endorse_intent payload: %v", ErrInvalidCommand, err)
+	}
+	if !intentIDPattern.MatchString(payload.IntentID) {
+		return nil, fmt.Errorf("%w: intent_id 形如 int_*", ErrInvalidCommand)
+	}
+	if payload.Effect != "grant" {
+		return nil, fmt.Errorf("%w: effect %q 暂不可用（本切片仅 grant；boost 随 Policy 加权参数定稿开放）", ErrInvalidCommand, payload.Effect)
+	}
+	// 目标 Intent 必须已记录（保送的是已评估的意向——不虚构发言资格）
+	if s.cfg.Reader != nil {
+		events, _, err := s.cfg.Reader.EventsAfter(ctx, cmd.RoomID, "", 1000)
+		if err == nil {
+			found := false
+			for _, ev := range events {
+				if ev.Envelope.Type != protocol.EventIntentRecorded {
+					continue
+				}
+				var p struct {
+					IntentID string `json:"intent_id"`
+				}
+				if json.Unmarshal(ev.Envelope.Payload, &p) == nil && p.IntentID == payload.IntentID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("%w: intent %s 不存在", ErrInvalidCommand, payload.IntentID)
+			}
+		}
+	}
+	env := protocol.Envelope{
+		EventID:       s.cfg.NewID("evt"),
+		TenantID:      s.cfg.Tenant,
+		RoomID:        cmd.RoomID,
+		Type:          protocol.EventIntentEndorsed,
+		SchemaVersion: 1,
+		OccurredAt:    s.cfg.Clock(),
+		Actor:         protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
+		Visibility:    protocol.Visibility{Kind: "public"}, // 对全体可见（OQ-17）
+		Payload: mustJSON(protocol.IntentEndorsedPayload{
+			IntentID:   payload.IntentID,
+			EndorsedBy: actor.ParticipantID,
+			Effect:     payload.Effect,
+		}),
+		Metadata: map[string]any{},
 	}
 	receipt := CommandReceipt{
 		TenantID:            s.cfg.Tenant,

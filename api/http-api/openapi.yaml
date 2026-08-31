@@ -360,11 +360,12 @@ components:
         命令信封（RFC-0001）。payload 按 command_kind 严格校验（未知字段拒绝）：
         create_room → CreateRoomPayload；post_message → PostMessagePayload；
         pause_room → PauseRoomPayload；resume_room → 空 payload；
-        set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）。
+        set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）；
+        endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）。
       properties:
         command_kind:
           type: string
-          enum: [create_room, post_message, pause_room, resume_room, set_policy]
+          enum: [create_room, post_message, pause_room, resume_room, set_policy, endorse_intent]
         expected_room_version:
           type: integer
           minimum: 0
@@ -430,6 +431,18 @@ components:
         reason:
           type: string
           maxLength: 280
+    EndorseIntentPayload:
+      type: object
+      required: [intent_id, effect]
+      additionalProperties: false
+      description: 人类保送（RFC-0003 §3.1.11 / OQ-17）。effect=grant 直接授予 Floor（默认）；boost 随 Policy 加权参数定稿开放。不绕过预算/硬资格/安全；对全体可见。
+      properties:
+        intent_id:
+          type: string
+          pattern: "^int_[0-9A-Za-z_-]+$"
+        effect:
+          type: string
+          enum: [grant]
     PolicyParams:
       type: object
       required: [mode, max_speakers, lambda, weights, intent_window, response_cap, reveal_strategy, rebuttals]
@@ -538,7 +551,7 @@ components:
           description: opaque cursor（续传位点）
     Snapshot:
       type: object
-      required: [room_id, room_version, watermark, projection_version, algorithm_version, timeline, policy]
+      required: [room_id, room_version, watermark, projection_version, algorithm_version, timeline, policy, scorecard]
       properties:
         room_id: { type: string }
         room_version: { type: integer, format: int64 }
@@ -558,6 +571,24 @@ components:
             intent_window: { type: string }
             response_cap: { type: integer, format: int64 }
             reveal_strategy: { type: string }
+        scorecard:
+          type: array
+          description: 记分卡（R-08/OQ-17：intent 全量投影，band + 未选理由 + 保送状态）。
+          items:
+            type: object
+            required: [intent_id, participant_id, score_band, selected, endorsed]
+            properties:
+              intent_id: { type: string }
+              participant_id: { type: string }
+              type: { type: string }
+              action: { type: string }
+              score_band: { type: string }
+              selected: { type: boolean }
+              endorsed: { type: boolean }
+              public_rationale: { type: string }
+              unselected_reason: { type: string }
+              round_id: { type: string }
+              occurred_at: { type: string, format: date-time }
         timeline:
           type: array
           items:

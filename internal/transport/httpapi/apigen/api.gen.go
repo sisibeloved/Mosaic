@@ -16,17 +16,20 @@ import (
 
 // Defines values for RoomCommandCommandKind.
 const (
-	CreateRoom  RoomCommandCommandKind = "create_room"
-	PauseRoom   RoomCommandCommandKind = "pause_room"
-	PostMessage RoomCommandCommandKind = "post_message"
-	ResumeRoom  RoomCommandCommandKind = "resume_room"
-	SetPolicy   RoomCommandCommandKind = "set_policy"
+	CreateRoom    RoomCommandCommandKind = "create_room"
+	EndorseIntent RoomCommandCommandKind = "endorse_intent"
+	PauseRoom     RoomCommandCommandKind = "pause_room"
+	PostMessage   RoomCommandCommandKind = "post_message"
+	ResumeRoom    RoomCommandCommandKind = "resume_room"
+	SetPolicy     RoomCommandCommandKind = "set_policy"
 )
 
 // Valid indicates whether the value is a known member of the RoomCommandCommandKind enum.
 func (e RoomCommandCommandKind) Valid() bool {
 	switch e {
 	case CreateRoom:
+		return true
+	case EndorseIntent:
 		return true
 	case PauseRoom:
 		return true
@@ -157,7 +160,8 @@ type ManualExecutableRequest struct {
 // RoomCommand 命令信封（RFC-0001）。payload 按 command_kind 严格校验（未知字段拒绝）：
 // create_room → CreateRoomPayload；post_message → PostMessagePayload；
 // pause_room → PauseRoomPayload；resume_room → 空 payload；
-// set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）。
+// set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）；
+// endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）。
 type RoomCommand struct {
 	CommandKind         RoomCommandCommandKind `json:"command_kind"`
 	ExpectedRoomVersion int                    `json:"expected_room_version"`
@@ -186,11 +190,26 @@ type Snapshot struct {
 		RevealStrategy *string                 `json:"reveal_strategy,omitempty"`
 		Weights        *map[string]interface{} `json:"weights,omitempty"`
 	} `json:"policy"`
-	ProjectionVersion int64          `json:"projection_version"`
-	RoomId            string         `json:"room_id"`
-	RoomVersion       int64          `json:"room_version"`
-	Timeline          []TimelineItem `json:"timeline"`
-	Watermark         string         `json:"watermark"`
+	ProjectionVersion int64  `json:"projection_version"`
+	RoomId            string `json:"room_id"`
+	RoomVersion       int64  `json:"room_version"`
+
+	// Scorecard 记分卡（R-08/OQ-17：intent 全量投影，band + 未选理由 + 保送状态）。
+	Scorecard []struct {
+		Action           *string    `json:"action,omitempty"`
+		Endorsed         bool       `json:"endorsed"`
+		IntentId         string     `json:"intent_id"`
+		OccurredAt       *time.Time `json:"occurred_at,omitempty"`
+		ParticipantId    string     `json:"participant_id"`
+		PublicRationale  *string    `json:"public_rationale,omitempty"`
+		RoundId          *string    `json:"round_id,omitempty"`
+		ScoreBand        string     `json:"score_band"`
+		Selected         bool       `json:"selected"`
+		Type             *string    `json:"type,omitempty"`
+		UnselectedReason *string    `json:"unselected_reason,omitempty"`
+	} `json:"scorecard"`
+	Timeline  []TimelineItem `json:"timeline"`
+	Watermark string         `json:"watermark"`
 }
 
 // TimelineItem defines model for TimelineItem.
