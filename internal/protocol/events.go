@@ -15,6 +15,7 @@ const (
 	EventFloorRevoked   = "floor.revoked"
 	EventRoundClosed    = "round.closed"
 	EventMessagePosted  = "message.posted"
+	EventPolicyChanged  = "policy.changed"
 	EventRoomCreated    = "room.created"
 	EventRoomPaused     = "room.paused"
 	EventRoomStarted    = "room.started"
@@ -75,6 +76,29 @@ type IntentRecordedPayload struct {
 	ScoreBand       string   `json:"score_band"` // very_low | low | medium | high | very_high | unranked（未进入记分）
 	Selected        bool     `json:"selected"`
 	Endorsed        bool     `json:"endorsed"`
+}
+
+// PolicyParams 策略参数束（RFC-0003 §3.1.7；set_policy 命令体与 policy.changed
+// 事件共用。模式 = 参数束，不改变协议与对象模型）。
+type PolicyParams struct {
+	Mode           string        `json:"mode"`
+	MaxSpeakers    int           `json:"max_speakers"`
+	Lambda         float64       `json:"lambda"`
+	Weights        PolicyWeights `json:"weights"`
+	IntentWindow   string        `json:"intent_window"`
+	ResponseCap    int64         `json:"response_cap"`
+	RevealStrategy string        `json:"reveal_strategy"`
+}
+
+// PolicyWeights 记分卡权重 wire 形态（七项；正项之和 >1 由投影端归一化）。
+type PolicyWeights struct {
+	Relevance     float64 `json:"relevance"`
+	Novelty       float64 `json:"novelty"`
+	Diversity     float64 `json:"diversity"`
+	Urgency       float64 `json:"urgency"`
+	DirectAddress float64 `json:"direct_address"`
+	FloorShare    float64 `json:"floor_share"`
+	Repetition    float64 `json:"repetition"`
 }
 
 // IntentEndorsedPayload intent.endorsed：人类保送（OQ-17；Agent 不能保送 Agent）。

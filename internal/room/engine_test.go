@@ -40,7 +40,6 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 		Reader: store,
 		Agents: sup,
 		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "prof_echo", Adapter: "echo"}}},
-		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
 		Clock:  testClock,
 		Now:    func() time.Time { return time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC) },
 		NewID:  newID,
@@ -163,9 +162,8 @@ func TestEngineIgnoresNonHumanAndOtherRooms(t *testing.T) {
 	defer sup.Shutdown()
 	eng := NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup,
-		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
-		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
-		Clock:  testClock, Now: time.Now, NewID: func(p string) string { return p + "_x" },
+		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
+		Clock: testClock, Now: time.Now, NewID: func(p string) string { return p + "_x" },
 		Tenant: "ten_local", RoomID: "room_eng",
 	})
 
@@ -228,7 +226,6 @@ func TestEngineMultiSeatSelection(t *testing.T) {
 			{ParticipantID: "par_echo_b", Profile: agent.Profile{ProfileID: "prof_b", Adapter: "echo"}},
 			{ParticipantID: "par_echo_a", Profile: agent.Profile{ProfileID: "prof_a", Adapter: "echo"}},
 		},
-		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
 		Clock:  testClock,
 		Now:    func() time.Time { return time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC) },
 		NewID:  newID,
@@ -762,8 +759,7 @@ func TestEngineReceiptCreatedAt(t *testing.T) {
 	var captured []contextx.Receipt
 	eng := NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup,
-		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
-		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
+		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
 		Receipts: receiptSink(func(ctx context.Context, r contextx.Receipt) error {
 			captured = append(captured, r)
 			return nil
@@ -976,9 +972,8 @@ func TestEngineDurableHandoffClaim(t *testing.T) {
 	defer setGate(nil)
 	eng := NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup, Claims: store,
-		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "gated"}}},
-		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
-		Clock:  testClock, Now: time.Now,
+		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "gated"}}},
+		Clock: testClock, Now: time.Now,
 		NewID: counterNewID(), Tenant: "ten_local",
 	})
 	store.AppendEvents(context.Background(), []protocol.Envelope{
@@ -1020,9 +1015,8 @@ func TestEngineRecoverClaimsDrivesLostRound(t *testing.T) {
 	defer sup.Shutdown()
 	eng := NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup, Claims: store,
-		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
-		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
-		Clock:  testClock, Now: time.Now,
+		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
+		Clock: testClock, Now: time.Now,
 		NewID: counterNewID(), Tenant: "ten_local",
 	})
 	store.AppendEvents(context.Background(), []protocol.Envelope{
@@ -1200,7 +1194,6 @@ func newEchoEngine(store *MemStore, sup *agent.Supervisor, limits contextx.Limit
 	return NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup,
 		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: adapterName}}},
-		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
 		Budget: limits,
 		Clock:  testClock, Now: time.Now,
 		NewID: func(p string) string {
@@ -1253,9 +1246,8 @@ func TestEngineResumeRedrivesPausedStimulus(t *testing.T) {
 	defer sup.Shutdown()
 	eng := NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup, Claims: store,
-		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
-		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
-		Clock:  testClock, Now: time.Now,
+		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
+		Clock: testClock, Now: time.Now,
 		NewID: counterNewID(), Tenant: "ten_local",
 	})
 	store.AppendEvents(context.Background(), []protocol.Envelope{
@@ -1352,9 +1344,8 @@ func TestEngineDeliverClaimErrorFailsClosed(t *testing.T) {
 	defer sup.Shutdown()
 	eng := NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup, Claims: failClaimStore{store},
-		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
-		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
-		Clock:  testClock, Now: time.Now,
+		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
+		Clock: testClock, Now: time.Now,
 		NewID: counterNewID(), Tenant: "ten_local",
 	})
 	store.AppendEvents(context.Background(), []protocol.Envelope{
@@ -1458,13 +1449,21 @@ func TestEngineEvalUsageCountsTowardAdmission(t *testing.T) {
 		eng := NewEngine(EngineConfig{
 			Store: store, Reader: store, Agents: sup,
 			Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "stub_intent"}}},
-			Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 1, Lambda: 0.30, Weights: attention.DefaultWeights},
 			Budget: contextx.Limits{MaxTokens: 1000},
 			Clock:  testClock, Now: time.Now,
 			NewID: counterNewID(), Tenant: "ten_local",
 		})
+		// 策略投影（max=1/cap=600 的算术前提）以 policy.changed 入历史——引擎开轮自历史重建。
+		policyParams := func(max int, cap int64) protocol.PolicyParams {
+			return protocol.PolicyParams{Mode: "open_floor", MaxSpeakers: max, Lambda: 0.30,
+				Weights:      protocol.PolicyWeights(attention.DefaultWeights),
+				IntentWindow: "20s", ResponseCap: cap, RevealStrategy: "sequential"}
+		}
 		store.AppendEvents(context.Background(), []protocol.Envelope{
 			{EventID: "eu0", TenantID: "ten_local", RoomID: "room_eu", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+			{EventID: "eu_pol", TenantID: "ten_local", RoomID: "room_eu", Type: protocol.EventPolicyChanged,
+				Actor:   protocol.Actor{ParticipantID: "o", Kind: "human"},
+				Payload: mustMarshalForTest(policyParams(1, 600)), Metadata: map[string]any{}},
 		})
 		deliverHuman(t, store, eng, "room_eu")
 		waitRoundClosed(t, store, "room_eu")
@@ -1476,6 +1475,14 @@ func TestEngineEvalUsageCountsTowardAdmission(t *testing.T) {
 	if run(&agent.Usage{InputTokens: 500, OutputTokens: 0}) {
 		t.Fatal("评估消耗 500 后同轮 admission 应失格（500+600>1000）——同轮 eval 用量不得绕过预算")
 	}
+}
+
+func mustMarshalForTest(v any) []byte {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return raw
 }
 
 // casHookStore 四轮复审 #12：在正文 CAS 落库前注入并发事件（复现检查与落库间的窗口）。
@@ -1501,9 +1508,8 @@ func newCasEngine(t *testing.T, store *casHookStore) *Engine {
 	t.Cleanup(sup.Shutdown)
 	return NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup,
-		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
-		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
-		Clock:  testClock, Now: time.Now,
+		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
+		Clock: testClock, Now: time.Now,
 		NewID: counterNewID(), Tenant: "ten_local",
 	})
 }
@@ -1626,9 +1632,8 @@ func TestEngineResumeScanErrorPropagates(t *testing.T) {
 	defer sup.Shutdown()
 	eng := NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup, Claims: failPendingClaims{store},
-		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
-		Policy: attention.Policy{Mode: "open_floor", MaxSpeakers: 3, Lambda: 0.30, Weights: attention.DefaultWeights},
-		Clock:  testClock, Now: time.Now,
+		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
+		Clock: testClock, Now: time.Now,
 		NewID: counterNewID(), Tenant: "ten_local",
 	})
 	resume := protocol.Envelope{

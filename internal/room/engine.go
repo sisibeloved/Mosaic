@@ -39,22 +39,20 @@ type DraftSink func(roomID, participantID string, update agent.DraftUpdate)
 
 // EngineConfig 引擎依赖。
 type EngineConfig struct {
-	Store       AtomicStore
-	Reader      EventReader // 历史读取（floor share / epoch / 预算账本重建）
-	Agents      *agent.Supervisor
-	Seats       []AgentSeat
-	Policy      attention.Policy // open_floor 默认参数（模式参数面随 M2 Policy 配置）
-	Budget      contextx.Limits  // 预算上限（0 = 不限；M1 默认宽裕，防失控而非精确计费）
-	Receipts    ReceiptStore     // 可选
-	OnDraft     DraftSink        // 可选：草稿流出口
-	Logger      *slog.Logger     // 可选：缺省 slog.Default()（轮中止/门控不再静默）
-	Claims      ClaimStore       // 可选：durable handoff（二轮审校 #9；nil = 无声明直驱，测试场景）
-	ResponseCap int64            // 对称预留的单发言 token 上限（默认 600）
-	Clock       func() string    // occurred_at（RFC3339）
-	Now         func() time.Time // 过期时刻计算
-	NewID       func(prefix string) string
-	Tenant      string
-	RoomID      string // 非空 = 只处理该房间；空 = 全部房间（M1 默认）
+	Store    AtomicStore
+	Reader   EventReader // 历史读取（floor share / epoch / 预算账本/策略投影重建）
+	Agents   *agent.Supervisor
+	Seats    []AgentSeat
+	Budget   contextx.Limits  // 预算上限（0 = 不限；M1 默认宽裕，防失控而非精确计费）
+	Receipts ReceiptStore     // 可选
+	OnDraft  DraftSink        // 可选：草稿流出口
+	Logger   *slog.Logger     // 可选：缺省 slog.Default()（轮中止/门控不再静默）
+	Claims   ClaimStore       // 可选：durable handoff（二轮审校 #9；nil = 无声明直驱，测试场景）
+	Clock    func() string    // occurred_at（RFC3339）
+	Now      func() time.Time // 过期时刻计算
+	NewID    func(prefix string) string
+	Tenant   string
+	RoomID   string // 非空 = 只处理该房间；空 = 全部房间（M1 默认）
 }
 
 // Engine 消费 outbox 条目，对人类消息驱动一轮讨论。
@@ -104,11 +102,8 @@ func (e *Engine) roomWorker(q *roomQueue) {
 	}
 }
 
-// NewEngine 构造。
+// NewEngine 构造。策略不再静态注入：开轮时自事件链投影（R-10 round 边界生效）。
 func NewEngine(cfg EngineConfig) *Engine {
-	if cfg.ResponseCap <= 0 {
-		cfg.ResponseCap = 600
-	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
@@ -379,26 +374,32 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 			"rounds", ledger.Rounds, "utterances", ledger.Utterances, "tokens", ledger.Tokens)
 		return
 	}
-	policy := e.cfg.Policy
-	policy.MaxSpeakers = ledger.ReducedSpeakers(e.cfg.Budget, policy.MaxSpeakers)
-	if policy.MaxSpeakers <= 0 {
+	// 策略自事件链投影（R-10：policy.changed 只在 round 边界生效——开轮时重建，
+	// 不做热调）。Roundtable"全员各 1"以座位数取 min；预算 90% 梯度在此降 speaker。
+	policy := RebuildPolicy(envs)
+	maxSpeakers := policy.EffectiveMaxSpeakers(len(e.seatsSnapshot()))
+	maxSpeakers = ledger.ReducedSpeakers(e.cfg.Budget, maxSpeakers)
+	if maxSpeakers <= 0 {
 		e.debug(roomID, "轮跳过：speaker 降级至零（预算 100%）", "stimulus", stimulus.EventID)
 		return
 	}
+	selPolicy := policy.ToAttention()
+	selPolicy.MaxSpeakers = maxSpeakers
 
 	epoch := countRounds(history) + 1
 	e.debug(roomID, "轮开始", "round", roundID, "stimulus", stimulus.EventID, "epoch", epoch)
 
-	// 1) round.opened
+	// 1) round.opened（策略快照字段全部来自投影——声明即执行：reveal 本切片
+	// 只放行 sequential，M1"声明 simultaneous 实际按序执行"的名不副实在此纠正）
 	opened := e.newEnv(roomID, protocol.EventRoundOpened,
 		protocol.Actor{ParticipantID: "par_system", Kind: "system"}, stimulus.EventID, roundID,
 		protocol.RoundOpenedPayload{
 			RoundID:         roundID,
 			StimulusEventID: stimulus.EventID,
-			Mode:            policy.Mode,
-			RevealStrategy:  "simultaneous",
-			IntentWindow:    "30s",
-			PolicyVersion:   "pol_m1",
+			Mode:            policy.Params.Mode,
+			RevealStrategy:  policy.Params.RevealStrategy,
+			IntentWindow:    policy.Params.IntentWindow,
+			PolicyVersion:   policy.PolicyVersion,
 		})
 	if _, err := e.append(ctx, opened); err != nil {
 		e.warn(roomID, "round.opened 落库失败，轮中止", "err", err)
@@ -418,7 +419,7 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 		seatsMin[i] = contextx.Seat{ParticipantID: s.ParticipantID}
 	}
 	assembled := contextx.Assemble(contextx.Config{
-		RoomID: roomID, TaskID: roundID, Mode: policy.Mode, Seats: seatsMin,
+		RoomID: roomID, TaskID: roundID, Mode: policy.Params.Mode, Seats: seatsMin,
 		RecentWindow: 10,
 		Budget: contextx.BudgetState{
 			RemainingTokens: remainingTokens(ledger, e.cfg.Budget),
@@ -517,13 +518,13 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 				Enabled:        true,
 				CooldownOK:     true,
 				ThreadWritable: true,
-				BudgetOK:       ledgerNow.ReserveOK(e.cfg.Budget, policy.MaxSpeakers, e.cfg.ResponseCap),
+				BudgetOK:       ledgerNow.ReserveOK(e.cfg.Budget, selPolicy.MaxSpeakers, policy.Params.ResponseCap),
 			},
 		})
 	}
 
 	// 4) 确定性选择（硬资格 + 记分卡 + MMR）
-	selection := attention.Select(candidates, policy)
+	selection := attention.Select(candidates, selPolicy)
 	e.debug(roomID, "选择完成", "round", roundID,
 		"candidates", len(candidates), "selected", len(selection.Selected),
 		"rejected", len(selection.Rejected), "silent", selection.SilentCount)
@@ -580,7 +581,7 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 	// 6) 按 rank 揭示：grant → generate（draft 流）→ 迟到检查 → agent 发言
 	published, revoked := 0, 0
 	for _, sel := range selection.Selected {
-		outcome := e.revealCandidate(ctx, roomID, roundID, stimulus, sel, epoch, recordedEventByIntent[sel.IntentID], taskContext)
+		outcome := e.revealCandidate(ctx, roomID, roundID, stimulus, sel, epoch, recordedEventByIntent[sel.IntentID], taskContext, policy)
 		switch outcome {
 		case revealPublished:
 			published++
@@ -639,7 +640,8 @@ func intentMetadata(rejection attention.Rejection, selected bool, usage *agent.U
 // → generate（DraftUpdate 经 OnDraft 透传）→ 迟到检查（暂停/更新 epoch → floor.revoked，
 // AR-004：正确性由 epoch 保证，在途取消尽力而为）→ message.posted。
 func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, stimulus protocol.Envelope,
-	sel attention.Selection, epoch int64, intentEventID string, taskContext agent.Context) revealOutcome {
+	sel attention.Selection, epoch int64, intentEventID string, taskContext agent.Context,
+	policy RoundPolicy) revealOutcome {
 
 	version, err := e.cfg.Store.RoomVersion(ctx, roomID)
 	if err != nil {
@@ -653,11 +655,11 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 			RoundID:          roundID,
 			ParticipantID:    sel.ParticipantID,
 			Rank:             sel.Rank,
-			RevealStrategy:   "simultaneous",
+			RevealStrategy:   policy.Params.RevealStrategy,
 			ContextWatermark: int(version),
 			Epoch:            int(epoch),
-			ExpiresAt:        e.cfg.Now().Add(30 * time.Second).UTC().Format(time.RFC3339Nano),
-			ResponseCap:      int(e.cfg.ResponseCap),
+			ExpiresAt:        e.cfg.Now().Add(policy.IntentWindow).UTC().Format(time.RFC3339Nano),
+			ResponseCap:      int(policy.Params.ResponseCap),
 			Directed:         false,
 		})
 	appended, err := e.append(ctx, grant)
@@ -681,10 +683,10 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 		Grant: &agent.Grant{
 			GrantID:        grantID,
 			Rank:           sel.Rank,
-			RevealStrategy: "simultaneous",
+			RevealStrategy: policy.Params.RevealStrategy,
 			ViewCursor:     "",
 			Epoch:          epoch,
-			ResponseCap:    e.cfg.ResponseCap, // 复审 #9：宣告值必须传入适配器并约束发布
+			ResponseCap:    policy.Params.ResponseCap, // 复审 #9：宣告值必须传入适配器并约束发布
 		},
 		Context: taskContext,
 	})

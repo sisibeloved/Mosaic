@@ -20,6 +20,7 @@ const (
 	PauseRoom   RoomCommandCommandKind = "pause_room"
 	PostMessage RoomCommandCommandKind = "post_message"
 	ResumeRoom  RoomCommandCommandKind = "resume_room"
+	SetPolicy   RoomCommandCommandKind = "set_policy"
 )
 
 // Valid indicates whether the value is a known member of the RoomCommandCommandKind enum.
@@ -32,6 +33,8 @@ func (e RoomCommandCommandKind) Valid() bool {
 	case PostMessage:
 		return true
 	case ResumeRoom:
+		return true
+	case SetPolicy:
 		return true
 	default:
 		return false
@@ -153,7 +156,8 @@ type ManualExecutableRequest struct {
 
 // RoomCommand 命令信封（RFC-0001）。payload 按 command_kind 严格校验（未知字段拒绝）：
 // create_room → CreateRoomPayload；post_message → PostMessagePayload；
-// pause_room → PauseRoomPayload；resume_room → 空 payload。
+// pause_room → PauseRoomPayload；resume_room → 空 payload；
+// set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）。
 type RoomCommand struct {
 	CommandKind         RoomCommandCommandKind `json:"command_kind"`
 	ExpectedRoomVersion int                    `json:"expected_room_version"`
@@ -169,7 +173,19 @@ type RoomCommandCommandKind string
 
 // Snapshot defines model for Snapshot.
 type Snapshot struct {
-	AlgorithmVersion  int64          `json:"algorithm_version"`
+	AlgorithmVersion int64 `json:"algorithm_version"`
+
+	// Policy 当前策略区（记分卡透明 OQ-17——权重/模式参数对成员可见、版本化）。
+	Policy struct {
+		IntentWindow   *string                 `json:"intent_window,omitempty"`
+		Lambda         *float32                `json:"lambda,omitempty"`
+		MaxSpeakers    *int                    `json:"max_speakers,omitempty"`
+		Mode           *string                 `json:"mode,omitempty"`
+		PolicyVersion  string                  `json:"policy_version"`
+		ResponseCap    *int64                  `json:"response_cap,omitempty"`
+		RevealStrategy *string                 `json:"reveal_strategy,omitempty"`
+		Weights        *map[string]interface{} `json:"weights,omitempty"`
+	} `json:"policy"`
 	ProjectionVersion int64          `json:"projection_version"`
 	RoomId            string         `json:"room_id"`
 	RoomVersion       int64          `json:"room_version"`

@@ -87,6 +87,8 @@ func (s *Service) ExecuteCommand(ctx context.Context, actor Actor, cmd Command) 
 		return s.roomLifecycle(ctx, actor, cmd, protocol.EventRoomPaused, "pause_room payload")
 	case "resume_room":
 		return s.roomLifecycle(ctx, actor, cmd, protocol.EventRoomStarted, "resume_room payload")
+	case "set_policy":
+		return s.setPolicy(ctx, actor, cmd)
 	default:
 		return nil, fmt.Errorf("%w: 未知命令 %q", ErrInvalidCommand, cmd.CommandKind)
 	}
@@ -316,6 +318,63 @@ func mustJSON(v any) []byte {
 		panic("room: marshal: " + err.Error())
 	}
 	return raw
+}
+
+// setPolicy 策略配置命令链（RFC-0003 §3.1.7 / R-10）：严格校验 → policy.changed。
+// 版本并发语义同 pause/resume；变更只在 round 边界生效（引擎开轮自历史投影）。
+func (s *Service) setPolicy(ctx context.Context, actor Actor, cmd Command) (*CommandResult, error) {
+	if res, err := s.replayIfReceived(ctx, cmd, actor); res != nil || err != nil {
+		return res, err
+	}
+	exists, err := s.cfg.Store.RoomExists(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room exists: %w", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrRoomNotFound, cmd.RoomID)
+	}
+	version, err := s.cfg.Store.RoomVersion(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room version: %w", err)
+	}
+	if cmd.ExpectedRoomVersion != version {
+		if res, rerr := s.replayIfReceived(ctx, cmd, actor); res != nil || rerr != nil {
+			return res, rerr
+		}
+		return nil, fmt.Errorf("%w: expected=%d current=%d", ErrVersionConflict, cmd.ExpectedRoomVersion, version)
+	}
+	var params protocol.PolicyParams
+	dec := json.NewDecoder(strings.NewReader(string(cmd.Payload)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&params); err != nil {
+		return nil, fmt.Errorf("%w: set_policy payload: %v", ErrInvalidCommand, err)
+	}
+	if err := ValidatePolicyParams(params); err != nil {
+		return nil, fmt.Errorf("%w: set_policy: %v", ErrInvalidCommand, err)
+	}
+	env := protocol.Envelope{
+		EventID:       s.cfg.NewID("evt"),
+		TenantID:      s.cfg.Tenant,
+		RoomID:        cmd.RoomID,
+		Type:          protocol.EventPolicyChanged,
+		SchemaVersion: 1,
+		OccurredAt:    s.cfg.Clock(),
+		Actor:         protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
+		Visibility:    protocol.Visibility{Kind: "public"}, // 记分卡透明（OQ-17）
+		Payload:       mustJSON(params),
+		Metadata:      map[string]any{},
+	}
+	receipt := CommandReceipt{
+		TenantID:            s.cfg.Tenant,
+		RoomID:              cmd.RoomID,
+		IdempotencyKey:      cmd.IdempotencyKey,
+		CommandKind:         cmd.CommandKind,
+		RequestFingerprint:  fingerprint(cmd, actor),
+		EventID:             env.EventID,
+		ExpectedRoomVersion: cmd.ExpectedRoomVersion,
+		ExecutedAt:          s.cfg.Clock(),
+	}
+	return s.commit(ctx, env, receipt)
 }
 
 // roomLifecycle pause/resume 命令链：版本并发 + 事件落库（RFC-0001 room.paused/room.started）。

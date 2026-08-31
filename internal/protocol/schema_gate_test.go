@@ -102,6 +102,7 @@ func TestStrictSchemaValidationGate(t *testing.T) {
 		"envelope-floor-revoked-bad-reason.json",    // payload 枚举（reason）
 		"envelope-floor-granted-unknown-field.json", // additionalProperties: false（严格写）
 		"envelope-message-bad-relation-kind.json",   // payload 枚举（relations.kind，M2 定稿）
+		"envelope-policy-changed-bad-weight.json",   // payload 数值边界（权重单项 ≤0.50，B1）
 		"command-bad-idempotency-key.json",          // 幂等键 UUIDv7 pattern
 		"command-missing-payload.json",              // 命令必填字段
 	}

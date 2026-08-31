@@ -1,7 +1,6 @@
-// 设置页（计划 v1.11）：harness 可执行项管理 + 预算/策略展示。
-// 策略编辑面随 B 轨三模式配置面开放（本页先行只读水位）。
+// 设置页（计划 v1.11）：harness 可执行项管理 + 策略配置（B1：三模式参数束）+ 预算水位。
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, type Executable } from "../api/client";
+import { api, ApiError, type Executable, type Schemas } from "../api/client";
 
 declare const MOSAIC_DEV: boolean;
 
@@ -14,11 +13,96 @@ interface DebugBudget {
   limits?: { max_rounds?: number; max_utterances?: number; max_tokens?: number };
 }
 
+/** 快照策略区视图（字段可选——见 OpenAPI Snapshot.policy）。 */
+interface SnapshotPolicy {
+  policy_version?: string;
+  mode?: string;
+  max_speakers?: number;
+  lambda?: number;
+  intent_window?: string;
+  response_cap?: number;
+  reveal_strategy?: string;
+}
+
+/** 三模式产品面（review/decision 为收束模式，随 M3 面板开放）。 */
+const MODES: { id: string; label: string; desc: string }[] = [
+  { id: "open_floor", label: "Open Floor", desc: "开放讨论（默认 3 人/轮，20s 窗口）" },
+  { id: "roundtable", label: "Roundtable", desc: "圆桌（全员各 1，30s 窗口）" },
+  { id: "deep_dive", label: "Deep Dive", desc: "深潜（2 人/轮，15s 窗口，900 cap）" },
+];
+
+/** 模式默认参数束（与房间侧 policyDefaults 同源；提交前服务端再校验）。
+ * reveal 暂锁定 sequential（执行面随 reveal 策略切片开放）。 */
+function modeDefaults(mode: string): Schemas["PolicyParams"] {
+  const base: Schemas["PolicyParams"] = {
+    mode: "open_floor",
+    max_speakers: 3,
+    lambda: 0.3,
+    weights: { relevance: 0.3, novelty: 0.2, diversity: 0.15, urgency: 0.1, direct_address: 0.15, floor_share: 0.05, repetition: 0.05 },
+    intent_window: "20s",
+    response_cap: 500,
+    reveal_strategy: "sequential",
+  };
+  if (mode === "roundtable") return { ...base, mode, max_speakers: 8, intent_window: "30s", response_cap: 600 };
+  if (mode === "deep_dive") return { ...base, mode, max_speakers: 2, intent_window: "15s", response_cap: 900 };
+  return base;
+}
+
 export function SettingsView({ roomID }: { roomID: string | null }) {
   const [executables, setExecutables] = useState<Executable[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [budget, setBudget] = useState<DebugBudget | null>(null);
+  const [policy, setPolicy] = useState<SnapshotPolicy | null>(null);
+  const [policyVersion, setPolicyVersion] = useState<string>("");
+  const [roomVersion, setRoomVersion] = useState(0);
+  const [draftMode, setDraftMode] = useState<string>("open_floor");
+  const [policyMsg, setPolicyMsg] = useState<string | null>(null);
+
+  const refreshPolicy = useCallback(async () => {
+    if (!roomID) {
+      setPolicy(null);
+      return;
+    }
+    try {
+      const snap = await api.snapshot(roomID);
+      setPolicy(snap.policy ?? null);
+      setPolicyVersion(snap.policy?.policy_version ?? "");
+      setRoomVersion(snap.room_version);
+      setDraftMode(snap.policy?.mode ?? "open_floor");
+    } catch {
+      setPolicy(null);
+    }
+  }, [roomID]);
+
+  useEffect(() => {
+    void refreshPolicy();
+  }, [refreshPolicy]);
+
+  const applyPolicy = async () => {
+    if (!roomID) return;
+    setBusy("policy");
+    setPolicyMsg(null);
+    try {
+      // 以所选模式的默认束提交（参数编辑面随记分卡面板细化；权重/λ 走默认）
+      await api.setPolicy(roomID, roomVersion, modeDefaults(draftMode));
+      await refreshPolicy();
+      setPolicyMsg("已生效（下一轮起）");
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        // 版本已前进（轮次推进）——校准后重试一次
+        const snap = await api.snapshot(roomID);
+        await api.setPolicy(roomID, snap.room_version, modeDefaults(draftMode));
+        await refreshPolicy();
+        setPolicyMsg("已生效（下一轮起；版本校准后重试）");
+        return;
+      }
+      setPolicyMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
 
   const refresh = useCallback(async () => {
     try {
@@ -125,10 +209,45 @@ export function SettingsView({ roomID }: { roomID: string | null }) {
         </p>
       </section>
       <section>
-        <h3>策略与预算</h3>
-        <p className="hint">
-          当前策略：Open Floor（M1 单模式；三模式与 Policy 参数编辑随 B 轨配置面在此开放）。
-        </p>
+        <h3>策略</h3>
+        {!roomID ? (
+          <p className="hint">创建房间后在此配置讨论模式（变更在下一轮生效）。</p>
+        ) : policy ? (
+          <>
+            <p className="hint">
+              当前：{policy.mode}（{policyVersion}）· 单轮 ≤{policy.max_speakers} 人 · 窗口{" "}
+              {policy.intent_window} · cap {policy.response_cap} · reveal {policy.reveal_strategy}
+            </p>
+            <div className="row policy-modes">
+              {MODES.map((m) => (
+                <button
+                  key={m.id}
+                  className={draftMode === m.id ? "active" : "ghost"}
+                  disabled={busy === "policy"}
+                  onClick={() => setDraftMode(m.id)}
+                  title={m.desc}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <p className="hint">{MODES.find((m) => m.id === draftMode)?.desc}</p>
+            <p>
+              <button disabled={busy === "policy"} onClick={() => void applyPolicy()}>
+                {busy === "policy" ? "提交中…" : "应用模式（下一轮起生效）"}
+              </button>
+              {policyMsg && <span className="hint"> {policyMsg}</span>}
+            </p>
+            <p className="hint">
+              权重/λ/续聊等细参数编辑随记分卡面板开放；reveal 暂锁定 sequential（其余策略随 reveal 切片解禁）。
+            </p>
+          </>
+        ) : (
+          <p className="hint">加载策略中…</p>
+        )}
+      </section>
+      <section>
+        <h3>预算</h3>
         {budget ? (
           <table className="exe-table">
             <tbody>

@@ -176,11 +176,12 @@ export interface components {
         /**
          * @description 命令信封（RFC-0001）。payload 按 command_kind 严格校验（未知字段拒绝）：
          *     create_room → CreateRoomPayload；post_message → PostMessagePayload；
-         *     pause_room → PauseRoomPayload；resume_room → 空 payload。
+         *     pause_room → PauseRoomPayload；resume_room → 空 payload；
+         *     set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）。
          */
         RoomCommand: {
             /** @enum {string} */
-            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room";
+            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "set_policy";
             expected_room_version: number;
             /** @description UUIDv7（服务端按 tenant+key+kind 去重；同键异指纹 409） */
             idempotency_key: string;
@@ -206,6 +207,27 @@ export interface components {
         };
         PauseRoomPayload: {
             reason?: string;
+        };
+        /** @description 策略参数束（RFC-0003 §3.1.7；set_policy 命令体与 policy.changed 事件 payload 同构）。reveal_strategy 当前仅 sequential 可配置（其余策略的执行面随 reveal 切片开放）。 */
+        PolicyParams: {
+            /** @enum {string} */
+            mode: "roundtable" | "open_floor" | "deep_dive" | "review" | "decision";
+            max_speakers: number;
+            lambda: number;
+            weights: {
+                relevance: number;
+                novelty: number;
+                diversity: number;
+                urgency: number;
+                direct_address: number;
+                floor_share: number;
+                repetition: number;
+            };
+            intent_window: string;
+            /** Format: int64 */
+            response_cap: number;
+            /** @enum {string} */
+            reveal_strategy: "sequential" | "simultaneous" | "independent_then_cross";
         };
         CommandResponse: {
             room_id: string;
@@ -255,6 +277,18 @@ export interface components {
             projection_version: number;
             /** Format: int64 */
             algorithm_version: number;
+            /** @description 当前策略区（记分卡透明 OQ-17——权重/模式参数对成员可见、版本化）。 */
+            policy: {
+                policy_version: string;
+                mode?: string;
+                max_speakers?: number;
+                lambda?: number;
+                weights?: Record<string, never>;
+                intent_window?: string;
+                /** Format: int64 */
+                response_cap?: number;
+                reveal_strategy?: string;
+            };
             timeline: components["schemas"]["TimelineItem"][];
         };
         TimelineItem: {

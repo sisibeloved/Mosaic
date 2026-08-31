@@ -459,6 +459,7 @@ func TestPostMessageRelationsNormalized(t *testing.T) {
 	}
 }
 
+// B1：set_policy 命令链——合法参数落 policy.changed、越界拒绝、幂等回放。
 // pause/resume 命令链：事件落库、幂等、版本并发。
 func TestPauseResumeCommands(t *testing.T) {
 	store := NewMemStore()

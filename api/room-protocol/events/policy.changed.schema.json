@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/policy.changed.schema.json",
+  "title": "PolicyChangedPayload",
+  "description": "策略变更（RFC-0003 §3.1.7 / R-10；RFC-0001 Control 族）。payload 平铺参数束；policy_version 不入 payload——由投影按 policy.changed 计数派生（事件回放自证）。变更只在 round 边界生效（引擎开轮自历史投影）。reveal_strategy 当前仅 sequential 可执行（simultaneous/independent_then_cross 的执行面随 reveal 策略切片开放后解禁）。",
+  "type": "object",
+  "required": ["mode", "max_speakers", "lambda", "weights", "intent_window", "response_cap", "reveal_strategy"],
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["roundtable", "open_floor", "deep_dive", "review", "decision"]
+    },
+    "max_speakers": { "type": "integer", "minimum": 1, "maximum": 8 },
+    "lambda": { "type": "number", "minimum": 0, "maximum": 1 },
+    "weights": { "$ref": "#/$defs/policyWeights" },
+    "intent_window": { "type": "string", "pattern": "^[0-9]+(s|m|h)$" },
+    "response_cap": { "type": "integer", "minimum": 100, "maximum": 4000 },
+    "reveal_strategy": { "type": "string", "enum": ["sequential", "simultaneous", "independent_then_cross"] }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "policyWeights": {
+      "type": "object",
+      "required": ["relevance", "novelty", "diversity", "urgency", "direct_address", "floor_share", "repetition"],
+      "properties": {
+        "relevance": { "type": "number", "minimum": 0, "maximum": 0.5 },
+        "novelty": { "type": "number", "minimum": 0, "maximum": 0.5 },
+        "diversity": { "type": "number", "minimum": 0, "maximum": 0.5 },
+        "urgency": { "type": "number", "minimum": 0, "maximum": 0.5 },
+        "direct_address": { "type": "number", "minimum": 0, "maximum": 0.5 },
+        "floor_share": { "type": "number", "minimum": 0, "maximum": 0.5 },
+        "repetition": { "type": "number", "minimum": 0, "maximum": 0.5 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

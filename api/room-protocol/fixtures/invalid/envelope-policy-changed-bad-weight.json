@@ -1,0 +1,33 @@
+{
+  "event_id": "evt_01H8TESTPOLICYCHANGE0000002",
+  "tenant_id": "ten_local",
+  "room_id": "room_01H8TESTROOM00000000000000",
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "seq": 13,
+  "type": "policy.changed",
+  "schema_version": 1,
+  "occurred_at": "2026-08-31T10:01:00.123Z",
+  "actor": { "participant_id": "par_01H8TESTOWNER0000000000", "kind": "human" },
+  "causation_id": null,
+  "correlation_id": null,
+  "visibility": { "kind": "public" },
+  "payload": {
+    "mode": "deep_dive",
+    "max_speakers": 2,
+    "lambda": 0.3,
+    "weights": {
+      "relevance": 0.7,
+      "novelty": 0.2,
+      "diversity": 0.15,
+      "urgency": 0.1,
+      "direct_address": 0.15,
+      "floor_share": 0.05,
+      "repetition": 0.05
+    },
+    "intent_window": "15s",
+    "response_cap": 900,
+    "reveal_strategy": "sequential"
+  },
+  "metadata": {}
+}

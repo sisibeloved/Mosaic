@@ -27,7 +27,19 @@ type TimelineItem struct {
 	OccurredAt string  `json:"occurred_at"`
 }
 
-// Snapshot 快照四元组载体：版本三元组 + 水位（opaque cursor）。
+// PolicyView 快照的策略区（记分卡透明 OQ-17：权重、模式参数对成员可见、版本化）。
+type PolicyView struct {
+	PolicyVersion  string                 `json:"policy_version"`
+	Mode           string                 `json:"mode"`
+	MaxSpeakers    int                    `json:"max_speakers"`
+	Lambda         float64                `json:"lambda"`
+	Weights        protocol.PolicyWeights `json:"weights"`
+	IntentWindow   string                 `json:"intent_window"`
+	ResponseCap    int64                  `json:"response_cap"`
+	RevealStrategy string                 `json:"reveal_strategy"`
+}
+
+// Snapshot 快照载体：版本三元组 + 水位（opaque cursor）+ Timeline + 策略区。
 type Snapshot struct {
 	RoomID            string         `json:"room_id"`
 	RoomVersion       int64          `json:"room_version"`
@@ -35,15 +47,32 @@ type Snapshot struct {
 	ProjectionVersion int            `json:"projection_version"`
 	AlgorithmVersion  int            `json:"algorithm_version"`
 	Timeline          []TimelineItem `json:"timeline"`
+	Policy            PolicyView     `json:"policy"`
 }
 
-// ProjectSnapshot 从房间事件重建快照（仅 message 族入 Timeline；控制事件不入列表）。
+// ProjectSnapshot 从房间事件重建快照（仅 message 族入 Timeline；控制事件不入列表；
+// 策略区经 RebuildPolicy 投影——快照与引擎同源，无双轨）。
 func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 	snap := Snapshot{
 		RoomID:            roomID,
 		ProjectionVersion: ProjectionVersion,
 		AlgorithmVersion:  AlgorithmVersion,
 		Timeline:          []TimelineItem{},
+	}
+	envs := make([]protocol.Envelope, len(events))
+	for i := range events {
+		envs[i] = events[i].Envelope
+	}
+	policy := RebuildPolicy(envs)
+	snap.Policy = PolicyView{
+		PolicyVersion:  policy.PolicyVersion,
+		Mode:           policy.Params.Mode,
+		MaxSpeakers:    policy.Params.MaxSpeakers,
+		Lambda:         policy.Params.Lambda,
+		Weights:        policy.Params.Weights,
+		IntentWindow:   policy.Params.IntentWindow,
+		ResponseCap:    policy.Params.ResponseCap,
+		RevealStrategy: policy.Params.RevealStrategy,
 	}
 	for _, ev := range events {
 		if ev.Envelope.Seq > snap.RoomVersion {

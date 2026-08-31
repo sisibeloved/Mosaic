@@ -128,6 +128,12 @@ export const api = {
       commandBody("resume_room", version, {}),
     );
   },
+  setPolicy(roomID: string, version: number, params: Schemas["PolicyParams"]): Promise<CommandResponse> {
+    return post(
+      `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
+      commandBody("set_policy", version, params),
+    );
+  },
   snapshot(roomID: string): Promise<Snapshot> {
     return request<Snapshot>(`/v1/rooms/${encodeURIComponent(roomID)}/snapshot`);
   },

@@ -104,6 +104,20 @@ paths:
                   issued_at: "2026-08-30T09:31:00.000Z"
                   payload:
                     reason: 暂停一下
+              set_policy:
+                value:
+                  command_kind: set_policy
+                  expected_room_version: 10
+                  idempotency_key: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d9004"
+                  issued_at: "2026-08-31T09:00:00.000Z"
+                  payload:
+                    mode: roundtable
+                    max_speakers: 8
+                    lambda: 0.3
+                    weights: { relevance: 0.3, novelty: 0.2, diversity: 0.15, urgency: 0.1, direct_address: 0.15, floor_share: 0.05, repetition: 0.05 }
+                    intent_window: 30s
+                    response_cap: 600
+                    reveal_strategy: sequential
       responses:
         "200":
           description: 命令受理（含幂等回放）
@@ -344,11 +358,12 @@ components:
       description: |
         命令信封（RFC-0001）。payload 按 command_kind 严格校验（未知字段拒绝）：
         create_room → CreateRoomPayload；post_message → PostMessagePayload；
-        pause_room → PauseRoomPayload；resume_room → 空 payload。
+        pause_room → PauseRoomPayload；resume_room → 空 payload；
+        set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）。
       properties:
         command_kind:
           type: string
-          enum: [create_room, post_message, pause_room, resume_room]
+          enum: [create_room, post_message, pause_room, resume_room, set_policy]
         expected_room_version:
           type: integer
           minimum: 0
@@ -414,6 +429,46 @@ components:
         reason:
           type: string
           maxLength: 280
+    PolicyParams:
+      type: object
+      required: [mode, max_speakers, lambda, weights, intent_window, response_cap, reveal_strategy]
+      additionalProperties: false
+      description: 策略参数束（RFC-0003 §3.1.7；set_policy 命令体与 policy.changed 事件 payload 同构）。reveal_strategy 当前仅 sequential 可配置（其余策略的执行面随 reveal 切片开放）。
+      properties:
+        mode:
+          type: string
+          enum: [roundtable, open_floor, deep_dive, review, decision]
+        max_speakers:
+          type: integer
+          minimum: 1
+          maximum: 8
+        lambda:
+          type: number
+          minimum: 0
+          maximum: 1
+        weights:
+          type: object
+          required: [relevance, novelty, diversity, urgency, direct_address, floor_share, repetition]
+          additionalProperties: false
+          properties:
+            relevance: { type: number, minimum: 0, maximum: 0.5 }
+            novelty: { type: number, minimum: 0, maximum: 0.5 }
+            diversity: { type: number, minimum: 0, maximum: 0.5 }
+            urgency: { type: number, minimum: 0, maximum: 0.5 }
+            direct_address: { type: number, minimum: 0, maximum: 0.5 }
+            floor_share: { type: number, minimum: 0, maximum: 0.5 }
+            repetition: { type: number, minimum: 0, maximum: 0.5 }
+        intent_window:
+          type: string
+          pattern: "^[0-9]+(s|m|h)$"
+        response_cap:
+          type: integer
+          format: int64
+          minimum: 100
+          maximum: 4000
+        reveal_strategy:
+          type: string
+          enum: [sequential, simultaneous, independent_then_cross]
     CommandResponse:
       type: object
       required: [room_id, event_id, room_version, replayed]
@@ -477,13 +532,26 @@ components:
           description: opaque cursor（续传位点）
     Snapshot:
       type: object
-      required: [room_id, room_version, watermark, projection_version, algorithm_version, timeline]
+      required: [room_id, room_version, watermark, projection_version, algorithm_version, timeline, policy]
       properties:
         room_id: { type: string }
         room_version: { type: integer, format: int64 }
         watermark: { type: string }
         projection_version: { type: integer, format: int64 }
         algorithm_version: { type: integer, format: int64 }
+        policy:
+          type: object
+          required: [policy_version]
+          description: 当前策略区（记分卡透明 OQ-17——权重/模式参数对成员可见、版本化）。
+          properties:
+            policy_version: { type: string }
+            mode: { type: string }
+            max_speakers: { type: integer }
+            lambda: { type: number }
+            weights: { type: object }
+            intent_window: { type: string }
+            response_cap: { type: integer, format: int64 }
+            reveal_strategy: { type: string }
         timeline:
           type: array
           items:

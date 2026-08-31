@@ -29,7 +29,6 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/agent/adapter/codex"
 	"github.com/sisibeloved/Mosaic/internal/agent/adapter/kimi"
 	"github.com/sisibeloved/Mosaic/internal/agent/echo"
-	"github.com/sisibeloved/Mosaic/internal/attention"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
@@ -307,16 +306,10 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			return seats
 		}
 		engine := room.NewEngine(room.EngineConfig{
-			Store:  store,
-			Reader: store,
-			Agents: supervisor,
-			Seats:  syncSeats(),
-			Policy: attention.Policy{
-				Mode:        "open_floor",
-				MaxSpeakers: 3,
-				Lambda:      0.30,
-				Weights:     attention.DefaultWeights,
-			},
+			Store:    store,
+			Reader:   store,
+			Agents:   supervisor,
+			Seats:    syncSeats(),
 			Budget:   budgetLimits,
 			Receipts: store,
 			Claims:   store,
