@@ -44,6 +44,10 @@ type Deps struct {
 	// Origin——不信请求自带的 Host（DNS rebinding 后 Origin 与 Host 会同时指向
 	// 攻击者域名而相等）。空 = 测试装配退回"请求 Host + 回环 host"判定（host 仍须回环）。
 	Authority string
+	// ExtraOriginHosts 壳集成信任源（M2 桌面壳）：精确主机名匹配（如 wails.localhost）。
+	// 浏览器对 Origin 头不可伪造，且 .localhost 顶级域不落到远端——该 Origin 只能
+	// 来自本应用自带 WebView 中的页面；命中即放行（豁免回环/端口判定）。
+	ExtraOriginHosts []string
 	// UI 前端产物根（index.html 位于根；M2 SPA 经 apps/web 构建）。nil = 退回
 	// M1 内嵌最小 webui（测试装配 / 未装配 SPA 的兜底形态）。
 	UI fs.FS
@@ -307,10 +311,16 @@ func (s *server) guardWrite(w http.ResponseWriter, r *http.Request, requireJSON 
 	return true
 }
 
-// originAllowed 跨源判定：host 侧恒要求回环（配置 authority 的 host 或通用回环名）；
-// 端口侧与配置 Authority 对齐（rebinding 后请求 Host 会随攻击者域名走，不可作准）。
+// originAllowed 跨源判定：壳集成信任源（ExtraOriginHosts，M2 桌面壳）精确放行；
+// 其余 host 侧恒要求回环（配置 authority 的 host 或通用回环名），端口侧与配置
+// Authority 对齐（rebinding 后请求 Host 会随攻击者域名走，不可作准）。
 func (s *server) originAllowed(u *url.URL, requestHost string) bool {
 	host := u.Hostname()
+	for _, trusted := range s.deps.ExtraOriginHosts {
+		if host == trusted {
+			return true
+		}
+	}
 	ip := net.ParseIP(host)
 	hostLoop := host == "localhost" || (ip != nil && ip.IsLoopback())
 	if !hostLoop {

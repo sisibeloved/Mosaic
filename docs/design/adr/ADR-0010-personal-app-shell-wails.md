@@ -5,6 +5,14 @@
 | 日期 | 2026-08-25 |
 | 关联 | [交付规划 D-3](../../plan/2026-08-25-delivery-plan.md)；ADR-0002（React/Vite SPA） |
 
+
+> **修订（2026-08-31，M2）**：壳落地为**进程内装配**—— 抽取后与
+>  共用同一装配（引擎/分发/宿主层），Wails 资产服务器 Handler
+> 直连 httpapi mux（SPA 资产 + API + SSE 同源）； 进跨源写门
+> 信任源（Origin 不可伪造 + .localhost 不落远端）。desktop 自 M0 的独立 module
+> 并回主 module（，Linux 不构建）。真机拉起与
+> SSE 经资产服务器长流的运行验证随 M2 dogfood / M4 真机演练。
+
 ## 决策
 
 - 个人版应用壳用 **Wails v2**：Windows 走 WebView2、macOS 走 WKWebView，前端复用既有 React/Vite SPA，后端复用 Go 单二进制（`cmd/mosaic-server`）；

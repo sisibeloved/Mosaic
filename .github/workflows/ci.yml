@@ -86,6 +86,10 @@ jobs:
           GOOS=darwin GOARCH=arm64 go build ./cmd/mosaic-server
           GOOS=windows GOARCH=amd64 go build ./cmd/mosaic-server
           GOOS=windows GOARCH=arm64 go build ./cmd/mosaic-server
+          # M2 桌面壳（Wails）：windows 纯 Go（go-webview2）可交叉编译；
+          # darwin 交叉编译产物未做真机运行验证（运行验证归 M4 真机演练）。
+          GOOS=windows GOARCH=amd64 go build ./apps/desktop
+          GOOS=darwin GOARCH=arm64 go build ./apps/desktop
       # 复审 #19：漂移门禁须覆盖新增/删除产物——git diff 不看未跟踪文件，
       # 陈旧产物（生成器已不再输出）也测不出来；staged 比对全状态。
       # 四轮复审 #17：先清空 gen 树再重生——删除 schema 后遗留的旧声明此时会以

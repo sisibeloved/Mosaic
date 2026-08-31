@@ -1,39 +1,17 @@
-// mosaic-server 是 Mosaic 个人版的进程入口（M1：命令 API + SSE 订阅 + 房间引擎闭环）。
+// mosaic-server 是 Mosaic 个人版的 TCP 进程入口（M2 起装配本体在 internal/app，
+// 与桌面壳共用；本入口提供监听/信号/退出语义）。
 package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
 	"flag"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
-	"path"
-	"path/filepath"
-	goruntime "runtime"
-	"strconv"
-	"strings"
-	"sync/atomic"
 	"syscall"
-	"time"
 
-	"github.com/sisibeloved/Mosaic/apps/web"
-	"github.com/sisibeloved/Mosaic/internal/agent"
-	"github.com/sisibeloved/Mosaic/internal/agent/codexadapter"
-	"github.com/sisibeloved/Mosaic/internal/agent/echo"
-	"github.com/sisibeloved/Mosaic/internal/agent/kimiadapter"
-	"github.com/sisibeloved/Mosaic/internal/attention"
-	"github.com/sisibeloved/Mosaic/internal/contextx"
-	"github.com/sisibeloved/Mosaic/internal/harness"
-	"github.com/sisibeloved/Mosaic/internal/outbox"
-	"github.com/sisibeloved/Mosaic/internal/room"
-	"github.com/sisibeloved/Mosaic/internal/storage/sqlite"
-	"github.com/sisibeloved/Mosaic/internal/transport/httpapi"
-	"github.com/sisibeloved/Mosaic/internal/transport/sse"
+	"github.com/sisibeloved/Mosaic/internal/app"
 )
 
 func main() {
@@ -45,7 +23,6 @@ func main() {
 	// 二轮审校 #17：owner 级 API（命令/SSE/宿主注册表）无认证——非回环监听必须显式豁免
 	allowRemote := flag.Bool("allow-remote", false, "allow non-loopback listen (owner APIs are unauthenticated)")
 	// 开发者模式（M1 v1.8）：debug 日志级别 + /v1/debug 只读端点 + UI 调试面板。
-	// 主线排障入口前置——定位手段先于功能面铺开。
 	dev := flag.Bool("dev", false, "developer mode: debug logs + read-only /v1/debug endpoints + UI debug panel")
 	flag.Parse()
 
@@ -54,8 +31,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// 日志级别：-dev 下放开 debug（轮链路/分发/命令各环节的 ids 全程可查）；
-	// 常规模式维持 info——debug 埋点在级别门控下零输出。
+	// 日志级别：-dev 下放开 debug；常规模式维持 info——埋点零输出。
 	logLevel := new(slog.LevelVar)
 	if *dev {
 		logLevel.Set(slog.LevelDebug)
@@ -63,8 +39,7 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
 
 	if host, _, err := net.SplitHostPort(*addr); err == nil {
-		// 复审 #4：空 host（":7420"）与通配地址 = 全接口监听，不是回环——
-		// 逐项字符串白名单会把空 host 误判为回环，绕过远程监听门禁。
+		// 复审 #4：空 host（":7420"）与通配地址 = 全接口监听，不是回环。
 		ip := net.ParseIP(host)
 		loopback := host == "localhost" || (ip != nil && ip.IsLoopback())
 		if !loopback && !*allowRemote {
@@ -77,316 +52,19 @@ func main() {
 		}
 	}
 
-	// 二轮审校 #19：数据目录 owner-only（组/其他不可读——事件日志含全部讨论内容）
-	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
-		logger.Error("mkdir data failed", "dir", *dataDir, "err", err)
-		os.Exit(1)
-	}
-	// 复审 #17：既有目录权限补收紧（MkdirAll 只在新建时生效）。
-	// 四轮复审 #6：收紧失败 fail closed——安全边界建立不起来就不承载事件日志
-	//（Windows 无 POSIX 权限语义，Chmod 为无害 no-op，不触发此分支）。
-	if err := os.Chmod(*dataDir, 0o700); err != nil {
-		logger.Error("数据目录权限收紧失败（fail closed：owner-only 边界不可妥协）", "dir", *dataDir, "err", err)
-		os.Exit(1)
-	}
-	store, err := sqlite.Open(filepath.Join(*dataDir, "mosaic.db"))
-	if err != nil {
-		logger.Error("open store failed", "err", err)
-		os.Exit(1)
-	}
-	defer store.Close()
-
-	// ID：时间有序前缀 + 随机后缀（uuidv7 语义；正式 uuidv7 库随 M1 迁移框架引入）
-	newID := func(prefix string) string {
-		var b [8]byte
-		_, _ = rand.Read(b[:])
-		return prefix + "_" + strconv.FormatInt(time.Now().UnixMilli(), 36) + hex.EncodeToString(b[:])
-	}
-	clock := func() string { return time.Now().UTC().Format(time.RFC3339Nano) }
-
-	svc := room.NewService(room.Config{
-		Store:  store,
-		Clock:  clock,
-		NewID:  newID,
-		Tenant: "ten_local", // 个人版单租户常量（ADR-0008 机制映射）
+	srv, err := app.Start(ctx, app.Options{
+		Addr:      *addr,
+		DataDir:   *dataDir,
+		AgentWork: *agentWork,
+		Logger:    logger,
+		Dev:       *dev,
 	})
-
-	// 适配器注册（M1：echo conformance；native-codex 随适配器切片接入）
-	supervisor := agent.NewSupervisor()
-	if err := supervisor.Register(echo.Adapter{}); err != nil {
-		logger.Error("register echo adapter failed", "err", err)
-		os.Exit(1)
-	}
-
-	hub := sse.NewHub()
-
-	// 宿主层：启动自动扫描（负责人要求：Windows 必须覆盖 WSL 内安装的 CLI）。
-	// 扫描超时独立于服务可用性——探测失败不阻塞启动，注册表持久化合并。
-	harnessRegistry, err := harness.LoadOrCreate(filepath.Join(*dataDir, "harness-registry.json"))
 	if err != nil {
-		logger.Error("harness registry failed", "err", err)
+		logger.Error("mosaic-server 启动失败", "err", err)
 		os.Exit(1)
 	}
-	scanDone := make(chan struct{})
-	go func() {
-		defer close(scanDone)
-		scanCtx, cancel := context.WithTimeout(ctx, 30*time.Second) // 随主 ctx 取消：退出不被扫描拖住
-		defer cancel()
-		opts := harness.ScanOptions{IncludeWSL: goruntime.GOOS == "windows"}
-		if err := harnessRegistry.Scan(scanCtx, harness.NewHostRunner(), harness.BuiltinProbes, opts); err != nil {
-			logger.Warn("harness scan partial failure", "err", err)
-		}
-		for _, exe := range harnessRegistry.List() {
-			logger.Info("harness discovered",
-				"adapter", exe.Adapter, "runtime", exe.Runtime, "distro", exe.Distro,
-				"path", exe.Path, "version", exe.Version, "login", exe.Login)
-		}
-	}()
-
-	// 预算上限：引擎 admission 与调试面水位共用同一份配置（口径不得分叉）。
-	budgetLimits := contextx.Limits{ // M1 防失控默认（宽裕）：预算只作 admission 不进排序（RFC-0003）
-		MaxRounds: 500, MaxUtterances: 1500, MaxTokens: 20_000_000,
-	}
-
-	// 引擎指针先于装配声明：httpapi 调试面的座位快照经其惰性读取
-	// （引擎在宿主扫描完成后才构造，调试端点不得阻塞启动序）。
-	var enginePtr atomic.Pointer[room.Engine]
-
-	// 先 Listen 再 Serve：暴露实际绑定地址（支持 -addr 127.0.0.1:0；裸 ":port"
-	// 是全接口监听，须经 -allow-remote 豁免——复审 #4）。
-	ln, err := net.Listen("tcp", *addr)
-	if err != nil {
-		logger.Error("listen failed", "addr", *addr, "err", err)
-		os.Exit(1)
-	}
-
-	mux := httpapi.New(httpapi.Deps{
-		SVC:         svc,
-		Reader:      store,
-		Hub:         hub,
-		Actor:       room.Actor{ParticipantID: "par_owner", Kind: "human"}, // 本地 owner（ADR-0009）
-		Harness:     harnessRegistry,
-		ProbeRunner: harness.NewHostRunner(),
-		Logger:      logger,
-		Dev:         *dev,
-		Budget:      budgetLimits,
-		Outbox:      store,
-		// 四轮复审 #15：跨源写门对"配置的回环 authority"判定，不信请求自带的
-		// Host（DNS rebinding 后二者仍相等）——真实绑定地址在此注入。
-		Authority: ln.Addr().String(),
-		// M2 真实界面（v1.7 制度化）：SPA 构建产物经 go:embed 服务；
-		// 新鲜度由 CI 构建门禁把守（apps/web 源码改动未重建即红）。
-		UI: web.Dist(),
-		Seats: func() []room.AgentSeat {
-			if engine := enginePtr.Load(); engine != nil {
-				return engine.Seats()
-			}
-			return nil
-		},
-	})
-
-	logger.Info("mosaic-server listening", "addr", ln.Addr().String())
-	if *dev {
-		logger.Info("开发者模式已启用", "debug日志", "已放开", "调试端点", "/v1/debug/rooms/{room_id}/state|events", "UI面板", "已注入")
-	}
-
-	// 房间引擎 + 提交后分发：echo 恒在（conformance 基线）；宿主扫描完成后，
-	// 已启用的真实适配器（如 codex）动态注册并加入座位；此后周期 resync——
-	// 运行时经 /v1/harness/*/enable 启用的适配器无需重启即可入座（二轮审校 #1）。
-	// 分发循环晚于扫描启动——扫描期间的命令照常受理，事件在分发启动后依序投递（outbox 不丢）。
-	go func() {
-		<-scanDone
-		hostRunner := harness.NewHostRunner()
-		// agent 工作目录隔离（二轮审校 #18）：不给服务工作目录与 owner 文件——
-		// 专用空目录 + -C + read-only 沙箱三层约束；四轮复审 #2：工作根在数据目录
-		// 之外（沙箱不限制读取，dataDir 内的工作目录使 ../mosaic.db 邻位可达；
-		// 同用户 exec 模型的读取隔离边界见计划 v1.10 登记——低权限身份/allowlist 属 M2+）。
-		// 复审 #1：准备失败 fail closed（不再回退服务器 cwd——隔离失效胜过静默降级）。
-		workRoot := *agentWork
-		if workRoot == "" {
-			if cache, err := os.UserCacheDir(); err == nil {
-				workRoot = filepath.Join(cache, "mosaic", "agent-work")
-			} else {
-				workRoot = filepath.Join(os.TempDir(), "mosaic-agent-work")
-			}
-		}
-		if err := os.MkdirAll(workRoot, 0o700); err != nil {
-			logger.Error("agent work root 准备失败：codex 座位不注册（fail closed）", "dir", workRoot, "err", err)
-			workRoot = ""
-		}
-		wslHomeCache := map[string]string{}
-		// resolveWorkDir 解析座位工作目录（fail closed：任一准备失败即不注册座位——
-		// 复审 #1：隔离失效胜过静默降级）。WSL 面返回发行版内 Linux 路径与 HOME
-		// （复审 #2：Windows 路径交给发行版内 CLI 即坏；四轮复审 #4：HOME 非空且为
-		// 绝对路径才可用，无效即跳过不缓存）；native 面为宿主专用空目录（四轮复审 #2：
-		// 工作根在数据目录之外）。
-		resolveWorkDir := func(exe harness.Executable, profileID string) (dir, wslHome string, ok bool) {
-			if harness.Runtime(exe.Runtime) == harness.RuntimeWSL {
-				home, cached := wslHomeCache[exe.Distro]
-				if !cached {
-					home = hostRunner.Home(ctx, harness.RuntimeWSL, exe.Distro)
-				}
-				if home == "" || !strings.HasPrefix(home, "/") {
-					logger.Error("WSL HOME 解析无效（座位不注册，fail closed）",
-						"adapter", exe.Adapter, "distro", exe.Distro, "home", home)
-					return "", "", false
-				}
-				wslHomeCache[exe.Distro] = home
-				dir = path.Join(strings.TrimSuffix(home, "/"), ".mosaic", "agent-work", profileID)
-				if err := hostRunner.MkdirAll(ctx, harness.RuntimeWSL, exe.Distro, dir); err != nil {
-					logger.Error("WSL 工作目录准备失败：座位不注册（fail closed）", "adapter", exe.Adapter, "profile", profileID, "err", err)
-					return "", "", false
-				}
-				return dir, home, true
-			}
-			if workRoot == "" {
-				return "", "", false
-			}
-			dir = filepath.Join(workRoot, profileID)
-			if err := os.MkdirAll(dir, 0o700); err != nil {
-				logger.Error("agent 工作目录准备失败：座位不注册（fail closed）", "adapter", exe.Adapter, "profile", profileID, "err", err)
-				return "", "", false
-			}
-			return dir, "", true
-		}
-		syncSeats := func() []room.AgentSeat {
-			seats := []room.AgentSeat{{
-				ParticipantID: "par_echo",
-				Profile:       agent.Profile{ProfileID: "prof_echo", Adapter: "echo", DisplayName: "Echo"},
-			}}
-			for _, exe := range harnessRegistry.EnabledList() {
-				// 四轮复审 #3：身份基于注册表唯一 ID 派生——runtime+distro 派生会让
-				// 两个 native executable 折叠成一个 profile（后者替换前者、座位却同名）。
-				// 多实例（C 轨）：每实例独立 profile/座位/会话，同家族并存不折叠。
-				exeKey := sanitizeProfileKey(exe.ID)
-				profileID := "prof_" + exe.Adapter + "_" + exeKey
-				dir, wslHome, ok := resolveWorkDir(exe, profileID)
-				if !ok {
-					continue
-				}
-				switch exe.Adapter {
-				case "codex":
-					cfg := codexadapter.Config{CodexPath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir}
-					if wslHome != "" {
-						cfg.WSLDistro = exe.Distro
-						cfg.WSLHome = wslHome
-					}
-					// 复审 #3：按 Profile 键登记——多 executable 各自成适配器实例；
-					// 四轮复审 #9：重登驱逐旧会话（换实例后旧进程/旧 thread 不复用）。
-					if err := supervisor.RegisterFor(profileID, codexadapter.New(cfg)); err != nil {
-						logger.Warn("codex adapter register failed", "profile", profileID, "err", err)
-						continue
-					}
-					seats = append(seats, room.AgentSeat{
-						ParticipantID: "par_codex_" + exeKey,
-						Profile:       agent.Profile{ProfileID: profileID, Adapter: "codex", DisplayName: "Codex"},
-					})
-				case "kimi":
-					// M2 C 轨：第二个真实适配器入座（native-kimi，kimi -p stream-json +
-					// -S 会话恢复；工作目录经进程 cwd 生效，kimi 无 -C 等价物）。
-					cfg := kimiadapter.Config{KimiPath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir}
-					if wslHome != "" {
-						cfg.WSLDistro = exe.Distro
-						cfg.WSLHome = wslHome
-					}
-					if err := supervisor.RegisterFor(profileID, kimiadapter.New(cfg)); err != nil {
-						logger.Warn("kimi adapter register failed", "profile", profileID, "err", err)
-						continue
-					}
-					seats = append(seats, room.AgentSeat{
-						ParticipantID: "par_kimi_" + exeKey,
-						Profile:       agent.Profile{ProfileID: profileID, Adapter: "kimi", DisplayName: "Kimi"},
-					})
-				}
-			}
-			return seats
-		}
-		engine := room.NewEngine(room.EngineConfig{
-			Store:  store,
-			Reader: store,
-			Agents: supervisor,
-			Seats:  syncSeats(),
-			Policy: attention.Policy{
-				Mode:        "open_floor",
-				MaxSpeakers: 3,
-				Lambda:      0.30, // M1 默认；OQ-04 校准前可配（RFC-0003 §3.1.5）
-				Weights:     attention.DefaultWeights,
-			},
-			Budget:   budgetLimits,
-			Receipts: store,                      // Context Receipt 落库（RFC-0007）
-			Claims:   store,                      // durable handoff（二轮审校 #9）
-			OnDraft:  httpapi.DraftConsumer(hub), // DraftUpdate 安全子集 → SSE 瞬态帧
-			Logger:   logger,
-			Clock:    clock,
-			Now:      time.Now,
-			NewID:    newID,
-			Tenant:   "ten_local",
-		})
-		enginePtr.Store(engine)
-		engine.RecoverClaims() // 崩溃窗口重驱动：已声明未开轮的刺激（二轮审校 #9）
-		// 周期 resync（二轮审校 #1）：运行时启用/禁用 → 座位与适配器热更新
-		go func() {
-			ticker := time.NewTicker(10 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					engine.SetSeats(syncSeats())
-				}
-			}
-		}()
-		dispatcher := outbox.NewDispatcher(store, []outbox.Consumer{
-			httpapi.HubConsumer(hub),
-			engine,
-		}, 20*time.Millisecond).WithLogger(logger)
-		dispatcher.Run(ctx)
-	}()
-
-	// 复审 #20：请求读取期限——慢速滴灌 body 不得无限占用连接（大小上限之外的时限防线）。
-	// SSE 为无 body GET，不受 ReadTimeout 影响；WriteTimeout 不设（SSE 长流按连接存活）。
-	srv := &http.Server{
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       65 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
-	go func() {
-		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("server error", "err", err)
-			stop()
-		}
-	}()
 
 	<-ctx.Done()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = srv.Shutdown(shutdownCtx)
-	// 引擎先于 supervisor 关停：取消在途轮 → 适配器经 ctx 击杀子进程组（防孤儿）。
-	// 已提交事件构成可恢复状态（RFC-0003 3.4）；短暂宽限让击杀信号送达。
-	if engine := enginePtr.Load(); engine != nil {
-		engine.Close()
-		time.Sleep(200 * time.Millisecond)
-	}
-	supervisor.Shutdown()
+	srv.Shutdown(context.Background())
 	logger.Info("mosaic-server stopped")
-}
-
-// sanitizeProfileKey 注册表 ID → 身份/目录名安全字符（四轮复审 #3：身份基于
-// exe.ID 派生，ID 中的路径分隔符等不得进入 profileID 或目录名）。
-func sanitizeProfileKey(id string) string {
-	var b strings.Builder
-	for _, r := range id {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('_')
-		}
-	}
-	if out := b.String(); out != "" {
-		return out
-	}
-	return "x"
 }

@@ -1,45 +1,78 @@
-// Mosaic 桌面壳（ADR-0010：Wails v2，Windows=WebView2 / macOS=WKWebView）。
-// M0 最小壳 spike：验证模块依赖图与无 CLI 纯 go build 可达；
-// 绑定生成、托盘、安装器随 M2/M4 演进。独立 go module——不进服务端 CI 主链。
+//go:build windows || darwin
+
+// Mosaic 桌面壳（ADR-0010：Wails v2；Windows=WebView2 / macOS=WKWebView）。
+// M2：进程内装配（internal/app）——产品形态"本地单进程桌面应用"（D-2/D-3），
+// 与 mosaic-server 共用同一装配（引擎/分发/宿主层），不再经子进程。
+// WebView 的全部请求（SPA 资产 + API + SSE）经资产服务器 Handler 直连 httpapi
+// mux——同源相对路径调用；wails.localhost 作为跨源写门信任源（Origin 不可伪造、
+// .localhost 顶级域不落远端，只能来自本应用自带 WebView 的页面）。
+// Linux 不构建（gtk/webkit2 面不在本仓 CI 覆盖内）；验证在 Windows/macOS 真机
+// （M2 dogfood / M4 双平台演练）。
 package main
 
 import (
 	"context"
-	"embed"
+	"io/fs"
+	"log/slog"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
 
+	"github.com/sisibeloved/Mosaic/internal/app"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 )
 
-//go:embed all:frontend
-var assets embed.FS
+// emptyFS 永不命中的资产根：所有请求落到 Handler（httpapi mux 直连）。
+type emptyFS struct{}
 
-// App 暴露给前端的绑定方法（M0 占位：健康探针）。
-type App struct{}
-
-func (a *App) Ping() string { return "pong" }
+func (emptyFS) Open(string) (fs.File, error) { return nil, fs.ErrNotExist }
 
 func main() {
-	app := &App{}
-	err := wails.Run(&options.App{
+	// M2 主线开发默认在开发者模式上进行（计划 v1.8 裁定）；桌面日志走 stderr。
+	logLevel := new(slog.LevelVar)
+	logLevel.Set(slog.LevelDebug)
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		logger.Error("user config dir 不可用", "err", err)
+		os.Exit(1)
+	}
+	srv, err := app.Start(ctx, app.Options{
+		DataDir:          filepath.Join(configDir, "mosaic"),
+		Logger:           logger,
+		Dev:              true,
+		ExtraOriginHosts: []string{"wails.localhost"},
+	})
+	if err != nil {
+		logger.Error("mosaic 桌面装配失败", "err", err)
+		os.Exit(1)
+	}
+
+	if err := wails.Run(&options.App{
 		Title:     "Mosaic",
 		Width:     1180,
 		Height:    780,
 		MinWidth:  860,
 		MinHeight: 600,
 		AssetServer: &assetserver.Options{
-			Assets: assets,
+			Assets:  emptyFS{},
+			Handler: srv.Handler(),
 		},
-		OnStartup: func(ctx context.Context) {
-			// M2 起：SSE 订阅游标、命令 API 客户端在此接线
-			_ = ctx
+		OnShutdown: func(context.Context) {
+			srv.Shutdown(context.Background())
 		},
-		Bind: []interface{}{app},
-		Mac:  &mac.Options{TitleBar: mac.TitleBarDefault()},
-	})
-	if err != nil {
-		println("mosaic-desktop:", err.Error())
+		Mac: &mac.Options{TitleBar: mac.TitleBarDefault()},
+	}); err != nil {
+		srv.Shutdown(context.Background())
+		logger.Error("mosaic 桌面壳退出异常", "err", err)
+		os.Exit(1)
 	}
 }
