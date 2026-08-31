@@ -48,6 +48,10 @@ type Deps struct {
 	// 浏览器对 Origin 头不可伪造，且 .localhost 顶级域不落到远端——该 Origin 只能
 	// 来自本应用自带 WebView 中的页面；命中即放行（豁免回环/端口判定）。
 	ExtraOriginHosts []string
+	// OwnerToken 写端点认证（M2，四轮复审 #15 残留收口）：非空时全部写端点要求
+	// X-Owner-Token 匹配（401）。空 = 未启用（测试装配；生产由 internal/app 恒置——
+	// 装配层生成并持久化，第一方客户端经 /v1/owner/bootstrap（受跨源门保护）获取）。
+	OwnerToken string
 	// UI 前端产物根（index.html 位于根；M2 SPA 经 apps/web 构建）。nil = 退回
 	// M1 内嵌最小 webui（测试装配 / 未装配 SPA 的兜底形态）。
 	UI fs.FS
@@ -289,7 +293,7 @@ func writeSSE(w http.ResponseWriter, event, id string, data []byte) {
 	fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", id, event, data)
 }
 
-// guardWrite 变更端点的写防护（复审 #18；四轮复审 #15 收紧）。双层：
+// guardWrite 变更端点的写防护（复审 #18；四轮复审 #15 收紧；M2 owner token 收口）。三层：
 //  1. Origin 头存在时必须通过 originAllowed——host 必须是回环（localhost/127.x/::1；
 //     DNS rebinding 把域名解析到 127.0.0.1 时 Origin host 是攻击者域名，非回环即拒），
 //     端口必须与配置 Authority（真实监听地址）一致；Authority 未配置（测试装配）时
@@ -297,7 +301,23 @@ func writeSSE(w http.ResponseWriter, event, id string, data []byte) {
 //     非浏览器客户端无 Origin，放行。
 //  2. 带 body 的端点要求 Content-Type: application/json（跨站自定义头触发预检，
 //     本服务无 CORS 应答 → 预检即拒；同时挡掉跨站表单的默认类型）。
+//  3. OwnerToken 配置时要求 X-Owner-Token 匹配（401）——Origin 门的纵深防线：
+//     即便跨源判定存在绕过面，无凭据写仍被拒（token 的读取口 bootstrap 自身过
+//     跨源门，rebinding 页面同源化后也读不到）。
 func (s *server) guardWrite(w http.ResponseWriter, r *http.Request, requireJSON bool) bool {
+	if !s.guardOriginCT(w, r, requireJSON) {
+		return false
+	}
+	if s.deps.OwnerToken != "" && r.Header.Get("X-Owner-Token") != s.deps.OwnerToken {
+		writeError(w, http.StatusUnauthorized, "owner_token_required", "写端点需要 X-Owner-Token（经 /v1/owner/bootstrap 获取）")
+		return false
+	}
+	return true
+}
+
+// guardOriginCT 前两层（跨源门 + Content-Type 门）——bootstrap 取凭据口自身
+// 用这层（token 层对它是鸡蛋问题：取凭据前无凭据）。
+func (s *server) guardOriginCT(w http.ResponseWriter, r *http.Request, requireJSON bool) bool {
 	if origin := r.Header.Get("Origin"); origin != "" {
 		if u, err := url.Parse(origin); err != nil || !s.originAllowed(u, r.Host) {
 			writeError(w, http.StatusForbidden, "origin_rejected", "跨源写被拒绝（本地 owner API）")
@@ -309,6 +329,22 @@ func (s *server) guardWrite(w http.ResponseWriter, r *http.Request, requireJSON 
 		return false
 	}
 	return true
+}
+
+// GetOwnerBootstrap 第一方客户端引导（apigen.ServerInterface）：返回 owner token。
+// 读取口本身过跨源门——DNS rebinding 页面把请求同源化后 Origin 仍是攻击者域名，
+// 403 拒读；无 Origin 的本机客户端可达（同用户本机进程本就等效 owner——数据目录
+// 与 token 文件同为 0600 owner-only）。未启用 token 的装配返回 404（路由由 apigen
+// 按 spec 恒注册，语义在 handler 内收敛）。
+func (s *server) GetOwnerBootstrap(w http.ResponseWriter, r *http.Request) {
+	if s.deps.OwnerToken == "" {
+		writeError(w, http.StatusNotFound, "owner_token_disabled", "本装配未启用 owner token")
+		return
+	}
+	if !s.guardOriginCT(w, r, false) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"token": s.deps.OwnerToken})
 }
 
 // originAllowed 跨源判定：壳集成信任源（ExtraOriginHosts，M2 桌面壳）精确放行；

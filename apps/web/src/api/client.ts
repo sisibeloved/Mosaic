@@ -21,8 +21,41 @@ export class ApiError extends Error {
 /** 最近一次命令响应的 trace id（开发者模式面板显示）。 */
 export let lastTrace = "";
 
+// Owner token（M2 写端点凭据）：同源 bootstrap 惰性获取、401 触发重试一次。
+// 旧装配（无 token）bootstrap 404 → 保持 null，请求行为不变。
+let ownerToken: string | null = null;
+let bootstrapped = false;
+
+async function ensureToken(): Promise<void> {
+  if (bootstrapped) return;
+  bootstrapped = true;
+  try {
+    const resp = await fetch("/v1/owner/bootstrap");
+    if (resp.ok) {
+      const d = (await resp.json()) as { token?: string };
+      ownerToken = d.token ?? null;
+    }
+  } catch {
+    ownerToken = null;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(path, init);
+  const doFetch = () => {
+    const headers = new Headers(init?.headers);
+    if (ownerToken && init?.method) {
+      headers.set("X-Owner-Token", ownerToken);
+    }
+    return fetch(path, { ...init, headers });
+  };
+  let resp = await doFetch();
+  if (resp.status === 401) {
+    bootstrapped = false;
+    await ensureToken();
+    if (ownerToken) {
+      resp = await doFetch();
+    }
+  }
   const trace = resp.headers.get("X-Trace-Id");
   if (trace) lastTrace = trace;
   const text = await resp.text();

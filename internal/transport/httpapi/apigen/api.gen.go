@@ -210,8 +210,14 @@ type Internal = Error
 // NotFound defines model for NotFound.
 type NotFound = Error
 
+// OriginRejected defines model for OriginRejected.
+type OriginRejected = Error
+
 // TooLarge defines model for TooLarge.
 type TooLarge = Error
+
+// Unauthorized defines model for Unauthorized.
+type Unauthorized = Error
 
 // UnsupportedMediaType defines model for UnsupportedMediaType.
 type UnsupportedMediaType = Error
@@ -260,6 +266,9 @@ type ServerInterface interface {
 	// EnableHarnessExecutable 启用可执行项（登录门控；启用后 ≤10s 入座，无需重启）
 	// (POST /v1/harness/executables/{id}/enable)
 	EnableHarnessExecutable(w http.ResponseWriter, r *http.Request, id ExecutableID)
+	// GetOwnerBootstrap 第一方客户端引导：返回 owner token（跨源门保护）
+	// (GET /v1/owner/bootstrap)
+	GetOwnerBootstrap(w http.ResponseWriter, r *http.Request)
 	// CreateRoom 创建房间（create_room 命令）
 	// (POST /v1/rooms)
 	CreateRoom(w http.ResponseWriter, r *http.Request)
@@ -368,6 +377,20 @@ func (siw *ServerInterfaceWrapper) EnableHarnessExecutable(w http.ResponseWriter
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.EnableHarnessExecutable(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetOwnerBootstrap operation middleware
+func (siw *ServerInterfaceWrapper) GetOwnerBootstrap(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetOwnerBootstrap(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -610,6 +633,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/rooms/{room_id}/commands", wrapper.SubmitRoomCommand)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/events", wrapper.SubscribeRoomEvents)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/snapshot", wrapper.GetRoomSnapshot)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/owner/bootstrap", wrapper.GetOwnerBootstrap)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/enable", wrapper.EnableHarnessExecutable)

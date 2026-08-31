@@ -107,6 +107,14 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		return nil, fmt.Errorf("app: open store: %w", err)
 	}
 
+	// Owner token（M2，四轮复审 #15 残留收口）：首启生成、0600 持久化，重启不变
+	//（会话连续性）。写端点凭据；第一方客户端经 /v1/owner/bootstrap（跨源门保护）获取。
+	ownerToken, err := loadOrCreateOwnerToken(filepath.Join(opts.DataDir, "owner-token"))
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("app: owner token: %w", err)
+	}
+
 	// ID：时间有序前缀 + 随机后缀（uuidv7 语义）。
 	newID := func(prefix string) string {
 		var b [8]byte
@@ -176,6 +184,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Budget:           budgetLimits,
 		Outbox:           store,
 		ExtraOriginHosts: opts.ExtraOriginHosts,
+		OwnerToken:       ownerToken,
 		UI:               ui,
 		Seats: func() []room.AgentSeat {
 			if engine := enginePtr.Load(); engine != nil {
@@ -397,6 +406,26 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		}
 	}()
 	return server, nil
+}
+
+// loadOrCreateOwnerToken 读写端凭据：存在即复用（重启不变，会话连续），否则生成
+// 32 字节随机 hex 并以 0600 落盘（数据目录已 owner-only；同用户本机进程等效 owner，
+// token 的对手面是跨源/rebinding 页面，不是本机进程）。
+func loadOrCreateOwnerToken(path string) (string, error) {
+	if raw, err := os.ReadFile(path); err == nil {
+		if tok := strings.TrimSpace(string(raw)); tok != "" {
+			return tok, nil
+		}
+	}
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate: %w", err)
+	}
+	tok := hex.EncodeToString(b[:])
+	if err := os.WriteFile(path, []byte(tok+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("persist: %w", err)
+	}
+	return tok, nil
 }
 
 // sanitizeProfileKey 注册表 ID → 身份/目录名安全字符（四轮复审 #3）。

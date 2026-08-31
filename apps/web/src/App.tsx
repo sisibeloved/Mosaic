@@ -63,7 +63,7 @@ export function App() {
       </aside>
       <main className="main">
         {view === "settings" ? (
-          <SettingsView />
+          <SettingsView roomID={room.roomID} />
         ) : (
           <>
             <TypingStatus roundOpen={room.roundOpen} typing={room.typing} />

@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -198,7 +199,13 @@ func TestDiscussionLoop_ST(t *testing.T) {
 
 	postCommand := func(url string, body map[string]any) (int, map[string]any) {
 		raw, _ := json.Marshal(body)
-		resp, err := client.Post(url, "application/json", bytes.NewReader(raw))
+		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
+		if err != nil {
+			t.Fatalf("POST %s: %v", url, err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Owner-Token", ownerTokenST(t, base))
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("POST %s: %v", url, err)
 		}
@@ -585,10 +592,40 @@ func TestCrashRecovery_ST(t *testing.T) {
 	}
 }
 
+// stOwnerTokens 每实例缓存写凭据（owner token M2：真实二进制写端点强制 X-Owner-Token）。
+var stOwnerTokens sync.Map // base → token
+
+func ownerTokenST(t *testing.T, base string) string {
+	t.Helper()
+	if v, ok := stOwnerTokens.Load(base); ok {
+		return v.(string)
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Get(base + "/v1/owner/bootstrap")
+	if err != nil {
+		t.Fatalf("bootstrap %s: %v", base, err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Token string `json:"token"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	if resp.StatusCode != 200 || out.Token == "" {
+		t.Fatalf("bootstrap %s status=%d token=%q", base, resp.StatusCode, out.Token)
+	}
+	stOwnerTokens.Store(base, out.Token)
+	return out.Token
+}
+
 func postJSONST(t *testing.T, base, path string, body map[string]any) map[string]any {
 	t.Helper()
 	raw, _ := json.Marshal(body)
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Post(base+path, "application/json", bytes.NewReader(raw))
+	req, err := http.NewRequest(http.MethodPost, base+path, bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Owner-Token", ownerTokenST(t, base))
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", path, err)
 	}

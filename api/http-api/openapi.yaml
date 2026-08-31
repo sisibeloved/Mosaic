@@ -14,9 +14,12 @@ info:
     - 命令体上限 1MiB（413）；读超时 65s（SSE 无 body GET 不受影响）。
     - 游标为 opaque 字符串：不得解析其内部结构，续传原样回传（RFC-0001 P0）。
     - SSE 订阅：`text/event-stream`，帧格式 `id: <cursor>` + `event: <type>` + `data: <EventView JSON>`；
-      断线重连带 `Last-Event-ID` 头（或 `?cursor=`）从水位续传，不整段重放；
+      断线重连连带 `Last-Event-ID` 头（或 `?cursor=`）从水位续传，不整段重放；
       `draft.update` 为瞬态帧（无 id、断线不补发）；服务端发 `resync_required` 具名事件时
       客户端应走快照恢复。事件类型见 api/room-protocol/events/。
+    - 写端点要求 OwnerToken 头（M2，四轮复审 #15 残留收口）：第一方 SPA 经同源
+      `GET /v1/owner/bootstrap`（受跨源门保护——DNS rebinding 读不到）取 token；
+      命令端点幂等重试自带 token 重放。
 servers:
   - url: http://127.0.0.1:7420
     description: 默认回环监听（个人版）
@@ -41,6 +44,7 @@ paths:
     post:
       operationId: createRoom
       summary: 创建房间（create_room 命令）
+      security: [{ OwnerToken: [] }]
       requestBody:
         required: true
         content:
@@ -62,6 +66,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/CommandResponse"
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "409": { $ref: "#/components/responses/Conflict" }
         "413": { $ref: "#/components/responses/TooLarge" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
@@ -69,6 +74,7 @@ paths:
     post:
       operationId: submitRoomCommand
       summary: 提交房间命令（post_message / pause_room / resume_room）
+      security: [{ OwnerToken: [] }]
       parameters:
         - $ref: "#/components/parameters/RoomID"
       requestBody:
@@ -106,6 +112,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/CommandResponse"
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "413": { $ref: "#/components/responses/TooLarge" }
@@ -148,6 +155,31 @@ paths:
                 $ref: "#/components/schemas/Snapshot"
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/Internal" }
+  /v1/owner/bootstrap:
+    get:
+      operationId: getOwnerBootstrap
+      summary: 第一方客户端引导：返回 owner token（跨源门保护）
+      description: |
+        仅在配置了 OwnerToken 的装配上注册。响应含写端点所需的 X-Owner-Token 值。
+        读取本身过跨源门：Origin 存在且非信任源（回环/壳源）→ 403——DNS rebinding
+        页面同源化后也读不到 token（写通道另由 Origin 门 + token 双重把守）。
+        无 Origin 的本机客户端（curl/同源 GET）可达——同用户本机进程本就等效 owner。
+      responses:
+        "200":
+          description: token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token]
+                properties:
+                  token: { type: string }
+        "403": { $ref: "#/components/responses/OriginRejected" }
+        "404":
+          description: 本装配未启用 owner token（owner_token_disabled）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/harness/executables:
     get:
       operationId: listHarnessExecutables
@@ -169,6 +201,7 @@ paths:
     post:
       operationId: addHarnessExecutable
       summary: 手动登记 agent CLI（探测失败拒收）
+      security: [{ OwnerToken: [] }]
       requestBody:
         required: true
         content:
@@ -186,6 +219,7 @@ paths:
                 properties:
                   status: { type: string, const: registered }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "413": { $ref: "#/components/responses/TooLarge" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "503": { $ref: "#/components/responses/HarnessUnavailable" }
@@ -193,6 +227,7 @@ paths:
     post:
       operationId: enableHarnessExecutable
       summary: 启用可执行项（登录门控；启用后 ≤10s 入座，无需重启）
+      security: [{ OwnerToken: [] }]
       parameters:
         - $ref: "#/components/parameters/ExecutableID"
       responses:
@@ -206,6 +241,7 @@ paths:
                 properties:
                   status: { type: string }
                   enabled: { type: boolean, const: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: login_required（未登录不可启用）
@@ -218,6 +254,7 @@ paths:
     post:
       operationId: disableHarnessExecutable
       summary: 禁用可执行项（座位随 resync 撤出）
+      security: [{ OwnerToken: [] }]
       parameters:
         - $ref: "#/components/parameters/ExecutableID"
       responses:
@@ -231,9 +268,16 @@ paths:
                 properties:
                   status: { type: string }
                   enabled: { type: boolean, const: false }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/HarnessUnavailable" }
 components:
+  securitySchemes:
+    OwnerToken:
+      type: apiKey
+      in: header
+      name: X-Owner-Token
+      description: 写端点认证（M2）。第一方客户端经 GET /v1/owner/bootstrap（跨源门保护）获取。
   parameters:
     RoomID:
       name: room_id
@@ -249,6 +293,16 @@ components:
   responses:
     BadRequest:
       description: 请求不合法（bad_request / invalid_command / bad_cursor / bad_limit / invalid_entry）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    OriginRejected:
+      description: 跨源拒绝（origin_rejected——本地 owner API）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: 缺少或错误的 X-Owner-Token（owner_token_required）
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

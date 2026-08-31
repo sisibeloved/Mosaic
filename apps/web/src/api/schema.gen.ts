@@ -94,6 +94,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/owner/bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 第一方客户端引导：返回 owner token（跨源门保护）
+         * @description 仅在配置了 OwnerToken 的装配上注册。响应含写端点所需的 X-Owner-Token 值。
+         *     读取本身过跨源门：Origin 存在且非信任源（回环/壳源）→ 403——DNS rebinding
+         *     页面同源化后也读不到 token（写通道另由 Origin 门 + token 双重把守）。
+         *     无 Origin 的本机客户端（curl/同源 GET）可达——同用户本机进程本就等效 owner。
+         */
+        get: operations["getOwnerBootstrap"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/harness/executables": {
         parameters: {
             query?: never;
@@ -283,6 +306,24 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description 跨源拒绝（origin_rejected——本地 owner API） */
+        OriginRejected: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description 缺少或错误的 X-Owner-Token（owner_token_required） */
+        Unauthorized: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description 版本冲突 / 幂等键指纹冲突（version_conflict / idempotency_conflict） */
         Conflict: {
             headers: {
@@ -406,6 +447,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
             409: components["responses"]["Conflict"];
             413: components["responses"]["TooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
@@ -436,6 +478,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             413: components["responses"]["TooLarge"];
@@ -492,6 +535,38 @@ export interface operations {
             500: components["responses"]["Internal"];
         };
     };
+    getOwnerBootstrap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description token */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        token: string;
+                    };
+                };
+            };
+            403: components["responses"]["OriginRejected"];
+            /** @description 本装配未启用 owner token（owner_token_disabled） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     listHarnessExecutables: {
         parameters: {
             query?: never;
@@ -541,6 +616,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
             413: components["responses"]["TooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             503: components["responses"]["HarnessUnavailable"];
@@ -571,6 +647,7 @@ export interface operations {
                     };
                 };
             };
+            401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
             /** @description login_required（未登录不可启用） */
             409: {
@@ -609,6 +686,7 @@ export interface operations {
                     };
                 };
             };
+            401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
             503: components["responses"]["HarnessUnavailable"];
         };
