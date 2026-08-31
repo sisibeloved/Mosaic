@@ -12,8 +12,8 @@ package main
 
 import (
 	"context"
-	"io/fs"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -26,10 +26,11 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 )
 
-// emptyFS 永不命中的资产根：所有请求落到 Handler（httpapi mux 直连）。
-type emptyFS struct{}
-
-func (emptyFS) Open(string) (fs.File, error) { return nil, fs.ErrNotExist }
+// newAssetServerOptions 不设置 Assets，使所有请求直接落到 Handler（httpapi mux 直连）。
+// Wails 会在初始化时校验非 nil 的 Assets 根目录，因此不能使用永不命中的虚拟 FS。
+func newAssetServerOptions(handler http.Handler) *assetserver.Options {
+	return &assetserver.Options{Handler: handler}
+}
 
 func main() {
 	// M2 主线开发默认在开发者模式上进行（计划 v1.8 裁定）；桌面日志走 stderr。
@@ -57,15 +58,12 @@ func main() {
 	}
 
 	if err := wails.Run(&options.App{
-		Title:     "Mosaic",
-		Width:     1180,
-		Height:    780,
-		MinWidth:  860,
-		MinHeight: 600,
-		AssetServer: &assetserver.Options{
-			Assets:  emptyFS{},
-			Handler: srv.Handler(),
-		},
+		Title:       "Mosaic",
+		Width:       1180,
+		Height:      780,
+		MinWidth:    860,
+		MinHeight:   600,
+		AssetServer: newAssetServerOptions(srv.Handler()),
 		OnShutdown: func(context.Context) {
 			srv.Shutdown(context.Background())
 		},
