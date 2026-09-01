@@ -23,7 +23,7 @@ export function TypingBar({
   const pids = Object.keys(typing);
   if (pids.length === 0) return null;
   return (
-    <div aria-live="polite" className="border-t border-border px-4 py-1.5">
+    <div aria-live="polite" className="border-t border-border py-1.5 pl-4 pr-6">
       <div className="mx-auto flex max-w-3xl flex-col gap-1">
         {pids.map((pid) => {
           const t = typing[pid];

@@ -103,7 +103,7 @@ export function Composer({
   };
 
   return (
-    <div className="border-t border-border px-4 py-3">
+    <div className="border-t border-border py-3 pl-4 pr-6">
       <div className="mx-auto max-w-3xl">
         {chips.length > 0 && (
           <div className="mb-1.5 flex flex-wrap gap-1.5">
@@ -147,7 +147,7 @@ export function Composer({
               ))}
             </ul>
           )}
-          <div className="flex items-end gap-2 rounded-2xl border border-border bg-surface-2 px-3 py-2 transition-colors focus-within:border-accent">
+          <div className="flex items-center gap-2 rounded-2xl border border-border bg-surface-2 px-3 py-2 transition-colors focus-within:border-accent">
             <textarea
               ref={areaRef}
               rows={1}

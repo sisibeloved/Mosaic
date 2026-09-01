@@ -1,22 +1,18 @@
 // 设置页（纯全局层，不读取任何"当前房间"状态）：Agent 实例（harness 可执行项管理 +
-// 手动登记）/ 开发者（开关 + DevPanel——UI 展示面本地持久化；调试端点仍由服务端
-// -dev 决定是否装配；调试目标经房间下拉显式选择）。
+// 手动登记）/ 开发者（全局开关——开启后调试面板出现在各房间抽屉的"调试"Tab；
+// 调试端点仍由服务端 -dev 决定是否装配）。
 // 分层规矩：房间讨论策略在房间内调（抽屉"策略"Tab）；外观主题在个人中心。
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, type Executable } from "../api/client";
-import { DevPanel } from "../components/DevPanel";
 import { useDevMode } from "../state/dev";
-import { useRooms } from "../state/rooms";
 import { adapterLabel, channelLabel } from "../lib/copy";
 import { truncate } from "../lib/ui";
 
 export function SettingsPage() {
-  const { rooms } = useRooms();
   const [devMode, setDevMode] = useDevMode();
   const [executables, setExecutables] = useState<Executable[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [debugRoomId, setDebugRoomId] = useState<string | null>(null);
   const [form, setForm] = useState({ adapter: "", runtime: "native", distro: "", path: "", version: "", channel: "" });
   const [formMsg, setFormMsg] = useState<string | null>(null);
 
@@ -33,9 +29,6 @@ export function SettingsPage() {
   useEffect(() => {
     void refreshExecutables();
   }, [refreshExecutables]);
-
-  // 调试目标：下拉显式选择，未选时取列表首间（useRooms 进壳时已拉取）。
-  const debugRoom = debugRoomId ?? rooms?.[0]?.room_id ?? null;
 
   const toggle = async (exe: Executable) => {
     setBusy(exe.id);
@@ -221,9 +214,10 @@ export function SettingsPage() {
 
         <section>
           <h2 className="mb-1 text-sm font-medium">开发者</h2>
-          <div className="mb-3 flex items-start justify-between gap-4">
+          <div className="flex items-start justify-between gap-4">
             <p className="text-xs text-faint">
-              显示调试面板（trace、事件日志、预算水位）。调试端点需服务端以 -dev
+              全局开关：开启后每个房间抽屉出现"调试"Tab（trace、事件日志、预算水位——
+              调试数据是房间局部信息，在房间上下文查看）。调试端点需服务端以 -dev
               启动才装配（桌面端默认启用）；开关只控制界面展示，本地持久化。
             </p>
             <button
@@ -239,29 +233,6 @@ export function SettingsPage() {
               {devMode ? "已开启" : "已关闭"}
             </button>
           </div>
-          {devMode && (
-            <>
-              <label className="mb-3 flex items-center gap-2 text-xs text-faint">
-                调试目标房间
-                {rooms === null || rooms.length === 0 ? (
-                  <span>暂无房间——建房后在此选择调试目标。</span>
-                ) : (
-                  <select
-                    value={debugRoom ?? ""}
-                    onChange={(e) => setDebugRoomId(e.target.value)}
-                    className="max-w-64 truncate rounded-lg border border-border bg-surface-2 px-2 py-1 text-text outline-none focus:border-accent"
-                  >
-                    {rooms.map((r) => (
-                      <option key={r.room_id} value={r.room_id}>
-                        {r.display_name}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </label>
-              <DevPanel roomID={debugRoom} />
-            </>
-          )}
         </section>
       </div>
     </div>

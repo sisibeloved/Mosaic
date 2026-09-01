@@ -21,8 +21,8 @@ export function AppShell() {
   return (
     <div className="flex h-full">
       <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-surface">
-        <Link to="/" className="flex items-center gap-2 px-4 pb-2 pt-4" title="回首页">
-          <AppLogo size={20} />
+        <Link to="/" className="flex items-center gap-2.5 px-4 pb-2 pt-4" title="回首页">
+          <AppLogo size={26} />
           <span className="text-base font-semibold tracking-wide">Mosaic</span>
         </Link>
         <div className="px-3 pb-2">

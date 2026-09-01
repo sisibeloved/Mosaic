@@ -225,6 +225,7 @@ export function RoomPage() {
         </div>
         {drawerOpen && (
           <MemberPanel
+            roomID={roomId}
             participants={room.participants}
             roster={room.roster}
             scorecard={room.scorecard}

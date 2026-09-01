@@ -1,4 +1,4 @@
-// 右侧抽屉（成员 / 发言评估 / 话题线 / 策略）：数据源为房间快照投影（随 SSE 事件由 room.ts
+// 右侧抽屉（成员 / 发言评估 / 话题线 / 策略，开发者模式追加"调试"）：数据源为房间快照投影（随 SSE 事件由 room.ts
 // 防抖重取），无手动刷新。请优先发言沿用 endorse_intent 命令链（room.endorse 内部做版本校准+409 重试）。
 // 成员 Tab 顶部"邀请"沿用 invite_agent 命令链（同校准/重试）；策略 Tab 走 set_policy
 // 命令链（onSetPolicy 由 RoomPage 做版本校准+409 重试）——房间级设置只出现在房间上下文。
@@ -6,6 +6,8 @@
 import { useEffect, useState } from "react";
 import { api, type AgentSeatInfo, type ParticipantView, type PolicyParams } from "../../api/client";
 import type { GraphEdge, PolicyView, ScorecardItem, ThreadItem } from "../../api/room";
+import { useDevMode } from "../../state/dev";
+import { DevPanel } from "../DevPanel";
 import {
   adapterLabel,
   channelLabel,
@@ -20,7 +22,7 @@ import {
 import { displayNameOf, shortId, truncate } from "../../lib/ui";
 import { Avatar } from "./Avatar";
 
-type Tab = "members" | "scorecard" | "graph" | "policy";
+type Tab = "members" | "scorecard" | "graph" | "policy" | "debug";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "members", label: "成员" },
@@ -28,6 +30,9 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "graph", label: "话题线" },
   { id: "policy", label: "策略" },
 ];
+
+/** 开发者模式（全局开关）开启时追加"调试"Tab——调试数据是本房间的局部信息。 */
+const DEBUG_TAB: { id: Tab; label: string } = { id: "debug", label: "调试" };
 
 /** 三模式产品面（B1 参数束；review/decision 为收束模式，随 M3 面板开放）。 */
 const MODES: { id: string; label: string; desc: string }[] = [
@@ -54,6 +59,7 @@ function modeDefaults(mode: string): PolicyParams {
 }
 
 export function MemberPanel({
+  roomID,
   participants,
   roster,
   scorecard,
@@ -70,6 +76,8 @@ export function MemberPanel({
   onClose,
   describeEvent,
 }: {
+  /** 本房间 id（调试 Tab 的数据目标；房间局部信息的来源）。 */
+  roomID: string | null;
   participants: ParticipantView[];
   /** 入房 Agent 名单（null = 全席模式，无邀请入口语义上的候选）。 */
   roster: string[] | null;
@@ -92,6 +100,13 @@ export function MemberPanel({
   describeEvent: (eventID: string) => string | null;
 }) {
   const [tab, setTab] = useState<Tab>("members");
+  const devMode = useDevMode();
+  const tabs = devMode ? [...TABS, DEBUG_TAB] : TABS;
+
+  // 开发者模式关闭时若正停在调试 Tab，回退到成员 Tab。
+  useEffect(() => {
+    if (!devMode && tab === "debug") setTab("members");
+  }, [devMode, tab]);
 
   useEffect(() => {
     onTabActive(tab);
@@ -101,7 +116,7 @@ export function MemberPanel({
     <aside className="animate-fade-in flex w-80 shrink-0 flex-col border-l border-border bg-surface">
       <div className="flex items-center border-b border-border px-2 py-1.5">
         <div className="flex flex-1 gap-1">
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <button
               key={t.id}
               type="button"
@@ -137,6 +152,11 @@ export function MemberPanel({
         )}
         {tab === "graph" && <GraphTab threads={threads} edges={edges} describeEvent={describeEvent} />}
         {tab === "policy" && <PolicyTab policy={policy} busy={policyBusy} onSetPolicy={onSetPolicy} />}
+        {tab === "debug" && (
+          <div className="px-3 py-3">
+            <DevPanel roomID={roomID} />
+          </div>
+        )}
       </div>
     </aside>
   );

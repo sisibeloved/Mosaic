@@ -16,11 +16,12 @@ export function Avatar({
   return (
     <span
       aria-hidden
-      className="flex shrink-0 select-none items-center justify-center rounded-full font-medium text-white"
+      className="flex shrink-0 select-none items-center justify-center rounded-full font-medium leading-none text-white"
       style={{
         width: size,
         height: size,
-        fontSize: size * 0.44,
+        // 字号取整 + leading-none：小尺寸下避免分数像素与行高把 CJK 字形顶歪
+        fontSize: Math.round(size * 0.44),
         backgroundColor: color ?? avatarColor(participantID),
         ...(color ? { color: "var(--accent-contrast)" } : {}),
       }}

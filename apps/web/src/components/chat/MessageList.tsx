@@ -32,7 +32,7 @@ export function MessageList({
     <div
       ref={boxRef}
       onScroll={onScroll}
-      className="flex-1 overflow-y-auto px-4 py-4"
+      className="flex-1 overflow-y-auto px-4 py-4 [scrollbar-gutter:stable]"
       role="log"
       aria-label="讨论时间线"
     >
