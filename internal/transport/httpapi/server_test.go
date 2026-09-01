@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sisibeloved/Mosaic/internal/agent"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
@@ -452,6 +453,85 @@ func newHarnessTestServer(t *testing.T) (*httptest.Server, *harness.Registry) {
 	}))
 	t.Cleanup(ts.Close)
 	return ts, reg
+}
+
+// TestListAgentsDisabled：/v1/agents 如实区分"在席"与"已发现未启用"（v1.24
+// dogfood #1——选人页只有测试桩的可见性缺陷：注册表里 codex/kimi 已发现未启用
+// 也要上报，客户端灰芯片指路设置）。启用后从未启用清单消失。
+func TestListAgentsDisabled(t *testing.T) {
+	store := room.NewMemStore()
+	svc := room.NewService(room.Config{
+		Store:  store,
+		Clock:  func() string { return "2026-08-28T12:00:00.000Z" },
+		NewID:  func(prefix string) string { return prefix + "_la" },
+		Tenant: "ten_local",
+	})
+	reg, err := harness.LoadOrCreate(t.TempDir() + "/agents.json")
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	ts := httptest.NewServer(New(Deps{
+		SVC: svc, Reader: store, Hub: sse.NewHub(),
+		Actor:   room.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Harness: reg, ProbeRunner: miniRunner{},
+		Seats: func() []room.AgentSeat {
+			return []room.AgentSeat{{
+				ParticipantID: "par_echo",
+				Profile:       agent.Profile{ProfileID: "prof_echo", Adapter: "echo", DisplayName: "Echo"},
+			}}
+		},
+	}))
+	t.Cleanup(ts.Close)
+
+	// 手动登记一个未启用的 codex（登记后默认 disabled）
+	resp, err := http.Post(ts.URL+"/v1/harness/executables", "application/json",
+		strings.NewReader(`{"adapter":"codex","runtime":"native","path":"/opt/tools/codex"}`))
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("add status = %d", resp.StatusCode)
+	}
+
+	get := func() struct {
+		Agents   []map[string]any `json:"agents"`
+		Disabled []map[string]any `json:"disabled"`
+	} {
+		r, err := http.Get(ts.URL + "/v1/agents")
+		if err != nil {
+			t.Fatalf("get agents: %v", err)
+		}
+		defer r.Body.Close()
+		var out struct {
+			Agents   []map[string]any `json:"agents"`
+			Disabled []map[string]any `json:"disabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return out
+	}
+
+	first := get()
+	if len(first.Agents) != 1 || first.Agents[0]["participant_id"] != "par_echo" {
+		t.Fatalf("在席应恰 echo：%v", first.Agents)
+	}
+	if len(first.Disabled) != 1 || first.Disabled[0]["adapter"] != "codex" || first.Disabled[0]["channel"] != "cli" {
+		t.Fatalf("未启用清单应含 codex/cli：%v", first.Disabled)
+	}
+
+	// 启用后从未启用清单消失（留在 agents 与否取决于座位 resync，不在此断言）
+	list := reg.List()
+	if len(list) != 1 {
+		t.Fatalf("registry 应恰一项：%v", list)
+	}
+	if err := reg.SetEnabled(list[0].ID, true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if second := get(); len(second.Disabled) != 0 {
+		t.Fatalf("启用后未启用清单应空：%v", second.Disabled)
+	}
 }
 
 func TestHarnessEndpoints(t *testing.T) {

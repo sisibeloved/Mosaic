@@ -122,12 +122,23 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	}
 	clock := func() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
+	// 引擎指针先于服务构造声明：create_room 缺省选人要读当时在席座位做名单
+	// 快照（v1.24：引擎在扫描完成后创建——首开窗口内为 nil，物化为空名单，
+	// 与"扫描完成前无席"的实态一致）。
+	var enginePtr atomic.Pointer[room.Engine]
+
 	svc := room.NewService(room.Config{
 		Store:  store,
 		Lister: store, // GET /v1/rooms 房间列表读路径
 		Clock:  clock,
 		NewID:  newID,
 		Tenant: "ten_local", // 个人版单租户常量（ADR-0008 机制映射）
+		Seats: func() []room.AgentSeat {
+			if engine := enginePtr.Load(); engine != nil {
+				return engine.Seats()
+			}
+			return nil
+		},
 	})
 
 	supervisor := agent.NewSupervisor()
@@ -164,8 +175,6 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	budgetLimits := contextx.Limits{
 		MaxRounds: 500, MaxUtterances: 1500, MaxTokens: 20_000_000,
 	}
-
-	var enginePtr atomic.Pointer[room.Engine]
 
 	ui := opts.UI
 	if ui == nil {

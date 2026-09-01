@@ -52,6 +52,10 @@ type Config struct {
 	Clock  func() string              // RFC3339
 	NewID  func(prefix string) string // 事件/房间 ID 生成（前缀 evt_/room_）
 	Tenant string
+	// Seats 可选：当前在席座位（装配层注入引擎快照）。create_room 未选人时
+	// 物化当时在席名单（v1.24：roster 是创建时点快照——建房后新启用的 Agent
+	// 不自动入房，增量走 invite_agent）。nil = 不物化（空 agents，旧语义）。
+	Seats func() []AgentSeat
 }
 
 // Service 命令处理服务：校验 → 幂等 → 并发检查 → 事件生产（原子落库）。
@@ -119,7 +123,7 @@ func (s *Service) createRoom(ctx context.Context, actor Actor, cmd Command) (*Co
 	}
 	var payload struct {
 		DisplayName string   `json:"display_name"`
-		Agents      []string `json:"agents"` // 可选：入房 Agent（participant ID；缺省 = 全部在席）
+		Agents      []string `json:"agents"` // 可选：入房 Agent（participant ID；缺省 = 物化当时在席名单）
 	}
 	dec := json.NewDecoder(strings.NewReader(string(cmd.Payload)))
 	dec.DisallowUnknownFields()
@@ -137,6 +141,18 @@ func (s *Service) createRoom(ctx context.Context, actor Actor, cmd Command) (*Co
 			return nil, fmt.Errorf("%w: agents 项须为 participant ID（par_*）", ErrInvalidCommand)
 		}
 	}
+	// 缺省选人 → 物化当时在席座位（v1.24：roster 是创建时点快照——建房后新启用的
+	// Agent 不自动入房，增量走 invite_agent）。取前 8（与显式选人同一上界）。
+	if len(payload.Agents) == 0 && s.cfg.Seats != nil {
+		for _, seat := range s.cfg.Seats() {
+			if len(payload.Agents) >= 8 {
+				break
+			}
+			if participantIDPattern.MatchString(seat.ParticipantID) {
+				payload.Agents = append(payload.Agents, seat.ParticipantID)
+			}
+		}
+	}
 
 	roomID := s.cfg.NewID("room")
 	rootThread := s.cfg.NewID("thr") // 根线程：房间创建即有（Thread 生命周期 M2 展开）
@@ -151,7 +167,8 @@ func (s *Service) createRoom(ctx context.Context, actor Actor, cmd Command) (*Co
 		Visibility:    protocol.Visibility{Kind: "public"},
 		Payload: mustJSON(map[string]any{
 			"display_name": payload.DisplayName, "thread_id": rootThread,
-			"agents": payload.Agents, // 空数组 = 缺省全部在席；非空 = 恰好所选（引擎按 roster 过滤）
+			// 名单快照（v1.24 起含缺省物化）；空数组仅出现在未接 Seats 的旧装配（兼容投影）
+			"agents": payload.Agents,
 		}),
 		Metadata: map[string]any{},
 	}

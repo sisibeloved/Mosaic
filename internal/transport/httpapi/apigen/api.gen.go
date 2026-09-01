@@ -444,7 +444,7 @@ type ServerInterface interface {
 	// GetHealthz 存活探针
 	// (GET /healthz)
 	GetHealthz(w http.ResponseWriter, r *http.Request)
-	// ListAgents 当前在席 Agent 座位（建房选择的候选集）
+	// ListAgents 当前在席 Agent 座位（建房选择的候选集）+ 已发现未启用项
 	// (GET /v1/agents)
 	ListAgents(w http.ResponseWriter, r *http.Request)
 	// ListHarnessExecutables 宿主扫描到的 agent CLI 注册表

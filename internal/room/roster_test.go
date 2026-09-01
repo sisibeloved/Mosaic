@@ -131,3 +131,65 @@ func TestCreateRoomAgentValidation(t *testing.T) {
 		}
 	}
 }
+
+// TestCreateRoomDefaultMaterializesRoster：缺省选人 = 当时在席名单快照（v1.24，
+// dogfood #2——"建房后装新 Agent 怎么办"：不自动入房，走邀请）。三断言：
+// 未选人建房物化当时全席；建房后新启用的座位不自动入房（引擎轮排除）；
+// 此后新建的房间快照才含新座。
+func TestCreateRoomDefaultMaterializesRoster(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(echo.Adapter{})
+	t.Cleanup(sup.Shutdown)
+	newID := counterNewID()
+	seats := []AgentSeat{
+		{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "prof_echo", Adapter: "echo"}},
+		{ParticipantID: "par_other", Profile: agent.Profile{ProfileID: "po", Adapter: "echo"}},
+	}
+	eng := NewEngine(EngineConfig{Store: store, Reader: store, Agents: sup, Seats: seats,
+		Budget: contextx.Limits{}, Clock: testClock, Now: time.Now, NewID: newID, Tenant: "ten_local"})
+	svc := NewService(Config{Store: store, Reader: store, Clock: testClock, NewID: newID,
+		Tenant: "ten_local", Seats: eng.Seats})
+	actor := Actor{ParticipantID: "par_owner", Kind: "human"}
+
+	created, err := svc.ExecuteCommand(context.Background(), actor,
+		Command{CommandKind: "create_room", ExpectedRoomVersion: 0,
+			IdempotencyKey: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5fa1", IssuedAt: "2026-08-31T09:00:00.000Z",
+			Payload: []byte(`{"display_name":"快照房"}`)})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	stored, _, _ := store.EventsAfter(context.Background(), created.RoomID, "", 1000)
+	if got := ProjectSnapshot(created.RoomID, stored).Roster; len(got) != 2 {
+		t.Fatalf("缺省选人应物化当时全席（2 席）：%v", got)
+	}
+
+	// 建房后新启用一座（SetSeats 模拟 resync）：旧房间不自动收编
+	eng.SetSeats(append(seats, AgentSeat{
+		ParticipantID: "par_late", Profile: agent.Profile{ProfileID: "pl", Adapter: "echo"},
+	}))
+	rosterStimulus(t, store, eng, created.RoomID, "evt_rm_h1", "新座启用后")
+	waitRoundClosed(t, store, created.RoomID)
+	events := store.RoomEvents(created.RoomID)
+	for _, ev := range events {
+		if ev.Actor.ParticipantID == "par_late" {
+			t.Fatalf("建房后启用的 par_late 不应自动入房：%v", typesOf(events))
+		}
+	}
+	if n := countAgentMsgsOf(events); n != 2 {
+		t.Fatalf("恰原两名额发言，实得 %d：%v", n, typesOf(events))
+	}
+
+	// 此后新建的房间：快照含新座
+	created2, err := svc.ExecuteCommand(context.Background(), actor,
+		Command{CommandKind: "create_room", ExpectedRoomVersion: 0,
+			IdempotencyKey: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5fa2", IssuedAt: "2026-08-31T09:00:03.000Z",
+			Payload: []byte(`{"display_name":"快照房2"}`)})
+	if err != nil {
+		t.Fatalf("create2: %v", err)
+	}
+	stored2, _, _ := store.EventsAfter(context.Background(), created2.RoomID, "", 1000)
+	if got := ProjectSnapshot(created2.RoomID, stored2).Roster; len(got) != 3 {
+		t.Fatalf("新房间应快照 3 席：%v", got)
+	}
+}

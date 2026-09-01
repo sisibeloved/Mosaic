@@ -111,9 +111,16 @@ export interface AgentSeatInfo {
   display_name: string;
 }
 
+/** 已发现但未启用的可执行项（v1.24：选人页如实展示，指路设置）。 */
+export interface DisabledAgentInfo {
+  adapter: string;
+  channel?: string;
+  version?: string;
+}
+
 export const api = {
-  agents(): Promise<{ agents: AgentSeatInfo[] }> {
-    return request<{ agents: AgentSeatInfo[] }>("/v1/agents");
+  agents(): Promise<{ agents: AgentSeatInfo[]; disabled?: DisabledAgentInfo[] }> {
+    return request<{ agents: AgentSeatInfo[]; disabled?: DisabledAgentInfo[] }>("/v1/agents");
   },
   listRooms(): Promise<{ rooms: RoomSummary[] }> {
     return request<{ rooms: RoomSummary[] }>("/v1/rooms");

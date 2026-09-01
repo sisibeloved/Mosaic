@@ -404,7 +404,8 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 
 // ---- 宿主层可执行程序端点（RFC-0002 双层管理的宿主面；apigen.ServerInterface）----
 
-// ListAgents 当前在席座位（apigen.ServerInterface）——建房选择的候选集。
+// ListAgents 当前在席座位 + 已发现未启用项（apigen.ServerInterface）——
+// 建房选择页候选集与"还有谁未启用"的如实展示（v1.24 dogfood #1）。
 // 引擎未就绪（宿主扫描期）返回空列表而非阻塞。
 func (s *server) ListAgents(w http.ResponseWriter, _ *http.Request) {
 	agents := []map[string]any{}
@@ -417,7 +418,24 @@ func (s *server) ListAgents(w http.ResponseWriter, _ *http.Request) {
 			})
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agents": agents})
+	disabled := []map[string]any{}
+	if s.deps.Harness != nil {
+		for _, exe := range s.deps.Harness.List() {
+			if exe.Enabled {
+				continue
+			}
+			channel := exe.Channel
+			if channel == "" {
+				channel = harness.ChannelCLI // 注册表口径：空值按 cli 处理（与座位面一致）
+			}
+			disabled = append(disabled, map[string]any{
+				"adapter": exe.Adapter,
+				"channel": channel,
+				"version": exe.Version,
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agents": agents, "disabled": disabled})
 }
 
 func (s *server) ListHarnessExecutables(w http.ResponseWriter, _ *http.Request) {

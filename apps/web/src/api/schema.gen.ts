@@ -107,10 +107,12 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 当前在席 Agent 座位（建房选择的候选集）
+         * 当前在席 Agent 座位（建房选择的候选集）+ 已发现未启用项
          * @description 引擎座位快照（已启用的真实适配器 + echo 基线）。participant_id 即建房
          *     create_room.payload.agents 项与 invite_agent 目标。座位随 harness 启停
-         *     动态变化（10s resync）。
+         *     动态变化（10s resync）。disabled 为已发现但未启用的可执行项（v1.24：
+         *     选人页如实展示"还有谁未启用"，指路设置）——仅有 adapter/channel/version，
+         *     无 participant_id（未入席）。
          */
         get: operations["listAgents"];
         put?: never;
@@ -733,7 +735,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 座位列表 */
+            /** @description 座位列表 + 未启用项 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -744,6 +746,11 @@ export interface operations {
                             participant_id: string;
                             adapter: string;
                             display_name: string;
+                        }[];
+                        disabled?: {
+                            adapter: string;
+                            channel?: string;
+                            version?: string;
                         }[];
                     };
                 };
