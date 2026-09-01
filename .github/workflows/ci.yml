@@ -22,6 +22,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
+      # v1.22：dist 不入库——go:embed 编译期解析 apps/web/dist，先建 SPA 再跑一切
+      # Go 门禁；缺失即红（有意，不静默降级）。node 为 runner 预装；npm ci 按
+      # package-lock 精确还原（三腿一致）。
+      - name: Build SPA (go:embed 编译期依赖)
+        run: |
+          cd apps/web
+          npm ci
+          npm run build
       - name: Vet (UT+IT+ST 全部标签)
         run: go vet -tags "it st" ./...
       - name: Unit tests
@@ -117,19 +125,18 @@ jobs:
             echo "::error::gen-api 产物漂移（spec 改动未重生成）"
             exit 1
           fi
-      # M2 真实界面（v1.7 制度化）：SPA 源码 → dist / API 类型产物新鲜度
-      # （依赖版本经 package-lock.json 锁定；node 为 runner 预装）。
-      - name: SPA build gate (apps/web → dist + API 类型新鲜度)
+      # ADR-0007：OpenAPI → SPA 类型产物新鲜度（schema.gen.ts 入库——它是 SPA 源
+      # 的消费面，不是构建产物）。v1.22 起 dist 不入库，"重建后整目录 diff"门禁随之
+      # 撤销；可编译性由上方首步保证。
+      - name: gen-api TS drift gate (openapi → schema.gen.ts)
         if: matrix.os == 'ubuntu-latest'
         run: |
           cd apps/web
-          npm ci
           npm run gen:api
-          npm run build
           cd ../..
-          git add -A apps/web/
-          if ! git diff --cached --quiet -- apps/web/; then
-            git diff --cached -- apps/web/
-            echo "::error::SPA 产物漂移（源码/契约改动未重建或未重生成）"
+          git add -A apps/web/src/api/
+          if ! git diff --cached --quiet -- apps/web/src/api/; then
+            git diff --cached -- apps/web/src/api/
+            echo "::error::schema.gen.ts 产物漂移（契约改动未重生成）"
             exit 1
           fi

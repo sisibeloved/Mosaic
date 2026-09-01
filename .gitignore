@@ -33,6 +33,6 @@ tmp/
 .DS_Store
 Thumbs.db
 
-
-# 前端构建产物入库（go:embed 服务 + CI 新鲜度门禁），不受全局 dist/ 忽略影响
-!apps/web/dist/
+# apps/web/dist/ 前端构建产物不入库（计划 v1.22，撤销 v1.7 入库裁定）：
+# 由 npm run build 生成——tools/scripts/build.sh / wails build（frontend 钩子）/ CI 首步。
+# go:embed 编译期解析 dist，缺失时 go build/vet/test 直接红（有意，不静默降级）。
