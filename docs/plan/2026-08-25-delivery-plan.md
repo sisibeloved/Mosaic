@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.25 |
+| 版本 | v1.26 |
 | 日期 | 2026-09-01 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -42,6 +42,7 @@
 | v1.23 | 2026-09-01 | Mosaic 项目组 / ZCode | **桌面壳防闪窗（dogfood：mosaic.exe 启动连闪十多次 CMD 黑框）**。根因：GUI 子系统进程里 exec 控制台子程序（harness 启动探测、WSL 发行版解析的 wsl.exe 调用、codex/kimi CLI 生成、座位 10s resync 的 Home/MkdirAll）——每个子进程各自分配控制台窗口；控制台宿主（mosaic-server）下子进程继承其控制台故从未暴露。修复：internal/winhide（build tag 分裂）——Windows 设 SysProcAttr{CreationFlags: CREATE_NO_WINDOW, HideWindow}（幂等、保留既有字段），非 Windows no-op；接入面全覆盖：harness HostRunner.command/WSLDistros、codex/kimi 适配器 applySysProc（Windows 变体此前为空实现）+ 两适配器 wsl.exe 路径补挂钩子（此前漏挂；POSIX 下该路径不可达，行为零变化）。UT（Windows CI 腿）：标志位设置 + 幂等；linux 门禁全绿（no-op 语义）。桌面产物经 build.sh desktop 重建待 owner 真机复验。**登记**：Job Object 整组进程管理仍属 M2 进程管理项（击杀 wsl.exe 不必然终止发行版内进程的已知缺口不变） |
 | v1.24 | 2026-09-01 | Mosaic 项目组 / ZCode | **dogfood 反馈两项（roster 语义修正 + 选人页可见性）**。(1) **废除"动态全席"（反馈 #2："建房后安装新 Agent 怎么办"——原 roster=null 语义下新启用座位会悄悄入房，不可接受）**：create_room 未选人 → **物化当时在席名单快照**写入 room.created.payload.agents（Config.Seats 由装配注入引擎座位，惰性读取；≤8 与显式选人同界）。新房间永远有具体名单；此后新启用的 Agent 不自动入房，走房间内 invite_agent（登记制不变）。RosterOf 的 null 分支仅保留给旧房间投影兼容。**登记边角**：引擎在宿主扫描完成前（≤30s）无席——该窗口物化为空名单会退回旧语义，UI 侧以"座位就绪中"禁建堵口（API 直调者自担）。(2) **选人页如实展示（反馈 #1：列表只有测试桩）**：实态为 desktop 注册表已发现 codex/kimi 且 logged_in 但 enabled=false（每数据目录独立注册表），门是开的、页面上却毫无提示。/v1/agents 增报 disabled 清单（adapter/channel/version，来自 harness 注册表未启用项）；/new 页未启用项以灰芯片展示并指路 设置→Agent 实例（开启后 ≤10s 入座）；建房按钮文案带实时席数（"全部 N 位 Agent"），座位未就绪禁建。UT：物化快照三断言（当时全席/后启用不入房引擎轮排除/新房快照含新座）+ ListAgents disabled 上报与启用后清空 |
 | v1.25 | 2026-09-01 | Mosaic 项目组 / ZCode | **dogfood 反馈四项（含一次严重缺陷与测试面检讨）**。(1) **无正式回应/无正在输入（反馈 #2，严重——owner 裁定"测试本身偏离，起不到防护效果"，成立）**：根因经 Windows 原生真机复现锁定——宿主（Windows）环境无代理变量，而发行版内 codex/kimi 必须经 127.0.0.1:7890 出网；适配器 env -i 白名单从宿主透传 → 发行版内 CLI 直连被墙 → 意图评估逐座 180s 超时拖死整轮（事件序：round.opened 后 180s 才首条 intent.recorded）。修复：internal/wslenv——WSL 执行面网络配置改取发行版自身登录环境（bash -l env，白名单过滤，per-distro 缓存；MergeForWSL 剥宿主同名键防 loopback 错配）；codex/kimi 两 wslExecer 接入。真机复现验证：全轮 33s（评估 21s + 生成 12s，双消息同毫秒揭示）。**测试面检讨与补强**：此前只在 web/WSL-native 形态验证——Windows+wsl.exe 适配面零覆盖；CI（GitHub runner 无 WSL）结构性无法覆盖该链路，UT 钉住 MergeForWSL/parseEnvAllowlist 契约 + Windows 原生复现流程（%TEMP% 数据目录 + drive 脚本）登记为本机验收步骤。附带排除：winhide（CREATE_NO_WINDOW）经隔离实验证明无害（echo/cat-stdin/codex 全矩阵 flags on/off 一致）。(2) **存量房间全席（反馈 #1）**：RosterOf 对旧房间（无 agents 载荷）按参与历史推导名单（agent actor + intent/grant 载荷目标）——活房间固化、新启用座位不自动入房；无 agent 历史回退 nil（空转旧房首轮兼容，UI 文案如实说明）。(3) **系统提醒持久化（反馈 #4）**：快照 Timeline 收录 round.opened/closed（含 outcome）+ room.paused/started——切房间/刷新不再丢；SSE 瞬态与快照双路同键去重。(4) **开发者模式贯穿（反馈 #3）**：dev 开 → 房间时间线内联基建事件（[dev] 意向/发言权授予/撤销及原因/入房/策略变更，瞬态）——"对话怎么运转、卡在哪一步"在使用过程中直接可见 |
+| v1.26 | 2026-09-01 | Mosaic 项目组 / ZCode | **裁定：自动续聊（轮次自驱动）落地 M2 dogfood 迭代片——负责人“直说哪个交付阶段”问询的钉死答复**。背景：dogfood 反馈“一轮即收”定性为非缺陷非配置错——M2 轮次语义为人类消息驱动单轮（引擎仅 actor=human 刺激开轮），轮内多遍依赖模式 reveal 策略（Roundtable=independent_then_cross+rebuttals 已可用）；自动续聊自 B2 登记“后续切片”以来未钉条目，本版钉死归属。理由：RFC-0003 §3.1.7 模式参数表本就将其定义为计数有界参数（Open Floor 有限默认 3 轮 / Deep Dive 2–6 轮 / 其余关），停止条件三重——轮数上限、静默轮（零公开发言即停）、预算 100% 硬停（§3.4 熔断梯度既有“自动续聊停止”条款）——不依赖 RFC-0005 收束协议，无需等 M3；且 M2 出口判据“连续 5 个工作日真实自用”被逐轮手动踢球阻塞，属 dogfood 体验直接依赖。范围边界：优雅收束（closure round / 六种 Capsule / reopen）仍归 M3 不变——M2 的“停”是有界停止，M3 的“收束”是判定性结论，两机制不同。M2 checklist 新增条目 |
 
 # 1. 交付目标与"完全可用"定义
 
@@ -144,6 +145,7 @@
 - [ ] 完整设置页面（设置菜单，**v1.11 增补·M1 验收反馈**）：统一承载配置面——harness 可执行项管理（启用/禁用/登录态展示，复用 `/v1/harness/executables` 端点）；开发者模式开关说明与调试面板入口（M1 已落地 `-dev` 与 webui 面板，接导航）；Policy/预算参数（三模式条目的"Policy 参数配置面"归入本页）；界面偏好（语言/主题，i18n 文案随 M4 填充）
 - [ ] 发言静默期"正在输入"状态显示（**v1.11 增补·M1 验收反馈**）：相邻发言间隔实测十几至几十秒（exec 批式生成时长），当前 Timeline 仅渲染已发布发言、静默期零反馈；复用既有信号导出进行中状态——`round.opened`→"评估中"（全座位并行 intent 评估）、`floor.granted`→座位级"正在生成"、`message.posted` 解除，经 SSE 事件与 OnDraft 瞬态帧通道渲染，不新增日志事件族；Capabilities.Streaming=false 的适配器（native-codex）以此状态帧代理 draft 流
 - [ ] 三模式（Open Floor / Roundtable 含 rebuttals / Deep Dive）+ Policy 参数配置面（配置面 UI 归入设置页面条目）
+- [ ] 自动续聊（轮次自驱动，**v1.26 增补·dogfood 反馈**）：round 收口后按模式参数自动开下一轮——RFC-0003 §3.1.7 表：Open Floor 有限（默认 3 轮）/ Deep Dive 2–6 轮 / Roundtable·Review·Decision 关；停止三条件：轮数上限、静默轮（零公开发言即停）、预算 100% 硬停（§3.4 熔断梯度既有条款）；不依赖 RFC-0005——优雅收束判定/Capsule 归 M3，M2 以有界续聊服务自用（出口判据“连续自用”的体验依赖）
 - [x] reveal 三策略（sequential / simultaneous / independent_then_cross）**（2026-08-31 B2：simultaneous 冻结水位统一揭示 + ITC cross 子轮；默认束对齐 RFC）**
 - [x] 点名与定向交锋快速通道（slot 上限 + 交锋链）**（2026-08-31 B3：定向 slot 优先资格+顺序前置、上限 min(ceil(名额/2),2)、交锋链窗口 2/3 与深度 4；dyad 约束随 M3 投影）**
 - [x] 人类保送（intent.endorsed）+ 记分卡面板（band + 未选 Intent 可查）**（2026-08-31 B4：endorse 命令/事件/执行链（人类可追溯）+ 快照 scorecard + SPA 记分卡面板；boost 随 Policy 加权参数定稿）**

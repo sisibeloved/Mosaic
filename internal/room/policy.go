@@ -16,7 +16,7 @@ import (
 // Open Floor=simultaneous、Roundtable=independent_then_cross（rebuttals=1）、
 // Deep Dive/Review/Decision=sequential）。Roundtable"全员各 1"以数值上限（8）
 // 近似，座位数取 min 在引擎内生效；自动续聊参数不随 B2 落地（轮次自驱动
-// 语义，登记至后续切片）。
+// 语义，登记至 M2 dogfood 迭代片——计划 v1.26 裁定）。
 func policyDefaults(mode string) protocol.PolicyParams {
 	p := protocol.PolicyParams{
 		Mode:           "open_floor",
