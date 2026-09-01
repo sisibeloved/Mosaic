@@ -6,7 +6,7 @@
  */
 
 /**
- * Round 生命周期开启：刺激提交或唤醒检查触发；策略变更只在 round 边界生效（R-10）。
+ * Round 生命周期开启：刺激提交或唤醒检查触发；策略变更只在 round 边界生效（R-10）。auto_index 标记自动续聊轮（RFC-0003 §3.1.7 自动续聊参数，计划 v1.26：缺省 = 人类消息驱动）。
  */
 export interface RoundOpenedPayload {
   round_id: string;
@@ -15,4 +15,8 @@ export interface RoundOpenedPayload {
   reveal_strategy: "sequential" | "simultaneous" | "independent_then_cross";
   intent_window: string;
   policy_version: string;
+  /**
+   * 自动续聊轮序（1..auto_rounds 链内递增；刺激为上一轮最后一条 agent 发言）
+   */
+  auto_index?: number;
 }

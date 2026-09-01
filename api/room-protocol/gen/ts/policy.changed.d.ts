@@ -20,6 +20,10 @@ export interface PolicyChangedPayload {
    * cross 子轮数（Roundtable 默认 1；仅 independent_then_cross 消费）
    */
   rebuttals: number;
+  /**
+   * 自动续聊轮数上限（0=关；Open Floor 默认 3 / Deep Dive 2；RFC §3.1.7，计划 v1.26）
+   */
+  auto_rounds: number;
 }
 export interface PolicyWeights {
   relevance: number;
