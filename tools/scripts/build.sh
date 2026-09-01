@@ -36,8 +36,17 @@ build_desktop() {
     echo "错误：desktop 目标需要 wails CLI：go install github.com/wailsapp/wails/v2/cmd/wails@latest" >&2
     exit 1
   }
+  # 桌面壳 build tag 限 windows || darwin——Linux 宿主无法本地构建，
+  # 默认交叉 windows/amd64（WAILS_PLATFORM 可覆盖，如 darwin/universal）；
+  # windows/darwin 宿主走原生构建。交叉时 -skipbindings：绑定生成按宿主平台
+  # 编译桌面壳（linux 下被 build tag 排除即红），且本应用无 wails 绑定方法，
+  # 该步本就无产物。
+  local platform_args=()
+  if [ "$(uname -s)" = "Linux" ]; then
+    platform_args=(-platform "${WAILS_PLATFORM:-windows/amd64}" -skipbindings)
+  fi
   cd apps/desktop
-  wails build # frontend 钩子会再跑一次 npm（幂等，~1s）
+  wails build "${platform_args[@]}" # frontend 钩子会再跑一次 npm（幂等，~1s）
   cd ../..
   echo "apps/desktop/build/bin/ 桌面产物就绪"
 }
