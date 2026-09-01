@@ -1,60 +1,22 @@
-// 设置页：实例（harness 可执行项管理 + 手动登记）/ 策略（当前房间三模式预设，
-// 沿用 set_policy 命令链）/ 外观（主题切换）/ 开发者（开关 + DevPanel——UI 展示面
-// 本地持久化；调试端点仍由服务端 -dev 决定是否装配）。
+// 设置页（纯全局层，不读取任何"当前房间"状态）：Agent 实例（harness 可执行项管理 +
+// 手动登记）/ 开发者（开关 + DevPanel——UI 展示面本地持久化；调试端点仍由服务端
+// -dev 决定是否装配；调试目标经房间下拉显式选择）。
+// 分层规矩：房间讨论策略在房间内调（抽屉"策略"Tab）；外观主题在个人中心。
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import { api, ApiError, type Executable, type PolicyParams } from "../api/client";
+import { api, ApiError, type Executable } from "../api/client";
 import { DevPanel } from "../components/DevPanel";
-import { getLastRoomId } from "../state/rooms";
 import { useDevMode } from "../state/dev";
-import { useTheme } from "../state/theme";
+import { useRooms } from "../state/rooms";
 import { adapterLabel, channelLabel } from "../lib/copy";
 import { truncate } from "../lib/ui";
 
-/** 快照策略区视图（字段可选——见 OpenAPI Snapshot.policy）。 */
-interface SnapshotPolicy {
-  policy_version?: string;
-  mode?: string;
-  max_speakers?: number;
-  lambda?: number;
-  intent_window?: string;
-  response_cap?: number;
-  reveal_strategy?: string;
-}
-
-/** 三模式产品面（B1 参数束；review/decision 为收束模式，随 M3 面板开放）。 */
-const MODES: { id: string; label: string; desc: string }[] = [
-  { id: "open_floor", label: "Open Floor", desc: "开放讨论（默认 3 人/轮，20s 窗口）" },
-  { id: "roundtable", label: "Roundtable", desc: "圆桌（全员各 1，30s 窗口）" },
-  { id: "deep_dive", label: "Deep Dive", desc: "深潜（2 人/轮，15s 窗口，900 cap）" },
-];
-
-/** 模式默认参数束（与房间侧 policyDefaults 同源；提交前服务端再校验）。 */
-function modeDefaults(mode: string): PolicyParams {
-  const base: PolicyParams = {
-    mode: "open_floor",
-    max_speakers: 3,
-    lambda: 0.3,
-    weights: { relevance: 0.3, novelty: 0.2, diversity: 0.15, urgency: 0.1, direct_address: 0.15, floor_share: 0.05, repetition: 0.05 },
-    intent_window: "20s",
-    response_cap: 500,
-    reveal_strategy: "simultaneous",
-    rebuttals: 0,
-  };
-  if (mode === "roundtable") return { ...base, mode, max_speakers: 8, intent_window: "30s", response_cap: 600, reveal_strategy: "independent_then_cross", rebuttals: 1 };
-  if (mode === "deep_dive") return { ...base, mode, max_speakers: 2, intent_window: "15s", response_cap: 900, reveal_strategy: "sequential" };
-  return base;
-}
-
 export function SettingsPage() {
-  const roomID = getLastRoomId();
-  const [theme, setTheme] = useTheme();
+  const { rooms } = useRooms();
   const [devMode, setDevMode] = useDevMode();
   const [executables, setExecutables] = useState<Executable[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [policy, setPolicy] = useState<SnapshotPolicy | null>(null);
-  const [policyMsg, setPolicyMsg] = useState<string | null>(null);
+  const [debugRoomId, setDebugRoomId] = useState<string | null>(null);
   const [form, setForm] = useState({ adapter: "", runtime: "native", distro: "", path: "", version: "", channel: "" });
   const [formMsg, setFormMsg] = useState<string | null>(null);
 
@@ -72,47 +34,8 @@ export function SettingsPage() {
     void refreshExecutables();
   }, [refreshExecutables]);
 
-  const refreshPolicy = useCallback(async () => {
-    if (!roomID) {
-      setPolicy(null);
-      return;
-    }
-    try {
-      const snap = await api.snapshot(roomID);
-      setPolicy(snap.policy ?? null);
-    } catch {
-      setPolicy(null);
-    }
-  }, [roomID]);
-
-  useEffect(() => {
-    void refreshPolicy();
-  }, [refreshPolicy]);
-
-  const applyMode = async (mode: string) => {
-    if (!roomID) return;
-    setBusy("policy");
-    setPolicyMsg(null);
-    try {
-      const snap = await api.snapshot(roomID); // 命令前版本校准；409 兜底一次
-      try {
-        await api.setPolicy(roomID, snap.room_version, modeDefaults(mode));
-      } catch (e) {
-        if (e instanceof ApiError && e.status === 409) {
-          const fresh = await api.snapshot(roomID);
-          await api.setPolicy(roomID, fresh.room_version, modeDefaults(mode));
-        } else {
-          throw e;
-        }
-      }
-      await refreshPolicy();
-      setPolicyMsg("已生效（下一轮起）");
-    } catch (e) {
-      setPolicyMsg(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  };
+  // 调试目标：下拉显式选择，未选时取列表首间（useRooms 进壳时已拉取）。
+  const debugRoom = debugRoomId ?? rooms?.[0]?.room_id ?? null;
 
   const toggle = async (exe: Executable) => {
     setBusy(exe.id);
@@ -297,77 +220,6 @@ export function SettingsPage() {
         </section>
 
         <section>
-          <h2 className="mb-1 text-sm font-medium">讨论策略</h2>
-          {!roomID ? (
-            <p className="text-xs text-faint">进入一个房间后在此配置讨论模式（变更在下一轮生效）。</p>
-          ) : (
-            <>
-              <p className="mb-3 text-xs text-faint">
-                作用于当前房间（
-                <Link to={`/rooms/${roomID}`} className="text-accent hover:underline">
-                  返回房间
-                </Link>
-                ）。当前：
-                {policy
-                  ? `${policy.mode}（${policy.policy_version}）· 单轮 ≤${policy.max_speakers} 人 · 窗口 ${policy.intent_window} · cap ${policy.response_cap} · reveal ${policy.reveal_strategy}`
-                  : "读取中…"}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {MODES.map((m) => {
-                  const active = policy?.mode === m.id;
-                  return (
-                    <button
-                      key={m.id}
-                      type="button"
-                      disabled={busy === "policy"}
-                      title={m.desc}
-                      onClick={() => void applyMode(m.id)}
-                      className={`rounded-xl border px-3.5 py-2 text-left transition-colors disabled:opacity-40 ${
-                        active
-                          ? "border-accent bg-accent-soft"
-                          : "border-border bg-surface-2 hover:border-faint"
-                      }`}
-                    >
-                      <span className={`block text-sm ${active ? "text-accent" : "text-text"}`}>{m.label}</span>
-                      <span className="block text-[11px] text-faint">{m.desc}</span>
-                    </button>
-                  );
-                })}
-              </div>
-              {policyMsg && <p className="mt-2 text-xs text-dim">{policyMsg}</p>}
-              <p className="mt-2 text-[11px] text-faint">
-                权重/λ/续聊等细参数编辑随记分卡面板开放；reveal 策略随模式默认（Roundtable 含 1 轮 cross 交锋）。
-              </p>
-            </>
-          )}
-        </section>
-
-        <section>
-          <h2 className="mb-1 text-sm font-medium">外观</h2>
-          <div className="flex gap-2">
-            {(
-              [
-                { id: "dark", label: "暗色（默认）" },
-                { id: "light", label: "亮色" },
-              ] as const
-            ).map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => setTheme(t.id)}
-                className={`rounded-xl border px-3.5 py-2 text-sm transition-colors ${
-                  theme === t.id
-                    ? "border-accent bg-accent-soft text-accent"
-                    : "border-border bg-surface-2 text-text hover:border-faint"
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section>
           <h2 className="mb-1 text-sm font-medium">开发者</h2>
           <div className="mb-3 flex items-start justify-between gap-4">
             <p className="text-xs text-faint">
@@ -387,7 +239,29 @@ export function SettingsPage() {
               {devMode ? "已开启" : "已关闭"}
             </button>
           </div>
-          {devMode && <DevPanel roomID={roomID} />}
+          {devMode && (
+            <>
+              <label className="mb-3 flex items-center gap-2 text-xs text-faint">
+                调试目标房间
+                {rooms === null || rooms.length === 0 ? (
+                  <span>暂无房间——建房后在此选择调试目标。</span>
+                ) : (
+                  <select
+                    value={debugRoom ?? ""}
+                    onChange={(e) => setDebugRoomId(e.target.value)}
+                    className="max-w-64 truncate rounded-lg border border-border bg-surface-2 px-2 py-1 text-text outline-none focus:border-accent"
+                  >
+                    {rooms.map((r) => (
+                      <option key={r.room_id} value={r.room_id}>
+                        {r.display_name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </label>
+              <DevPanel roomID={debugRoom} />
+            </>
+          )}
         </section>
       </div>
     </div>

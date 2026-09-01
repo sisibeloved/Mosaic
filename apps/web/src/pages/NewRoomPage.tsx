@@ -1,9 +1,10 @@
-// /new 空态引导页：选择入房 Agent（拉人进群语义——dogfood 反馈 #1）后建房跳转。
+// 首页（/ 与 /new）：引导建房页——选择入房 Agent（拉人进群语义——dogfood 反馈 #1）后建房跳转。
 // 不选 = 拉入当前全部在席 Agent（建房时点快照——之后新启用的 Agent 不自动入房，
 // 走房间内邀请）；未启用的已发现项以灰芯片如实展示，指路设置。
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type AgentSeatInfo, type DisabledAgentInfo } from "../api/client";
+import { AppLogo } from "../components/AppLogo";
 import { adapterLabel, channelLabel } from "../lib/copy";
 import { createRoom } from "../state/rooms";
 
@@ -55,7 +56,7 @@ export function NewRoomPage() {
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-4 px-6">
-      <span className="inline-block h-12 w-12 rounded-2xl bg-accent" aria-hidden />
+      <AppLogo size={48} />
       <h1 className="text-xl font-semibold tracking-tight">Mosaic 讨论室</h1>
       <p className="max-w-md text-center text-sm text-dim">
         选择要拉进房间的 Agent（不选 = 当前全部在席；入房名单在创建时确定，之后新启用的

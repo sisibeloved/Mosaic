@@ -8,8 +8,6 @@ export interface RoomsState {
   error: string | null;
 }
 
-const LAST_ROOM_KEY = "mosaic.lastRoomId";
-
 let state: RoomsState = { rooms: null, error: null };
 const listeners = new Set<() => void>();
 let inflight: Promise<void> | null = null;
@@ -53,20 +51,4 @@ export async function createRoom(displayName = "新房间", agents: string[] = [
   const created = await api.createRoom(displayName, agents);
   await refreshRooms();
   return created.room_id;
-}
-
-export function getLastRoomId(): string | null {
-  try {
-    return localStorage.getItem(LAST_ROOM_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function setLastRoomId(roomID: string): void {
-  try {
-    localStorage.setItem(LAST_ROOM_KEY, roomID);
-  } catch {
-    // 存储不可用时跳过记忆
-  }
 }

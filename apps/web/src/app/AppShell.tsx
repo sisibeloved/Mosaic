@@ -1,7 +1,10 @@
-// App 壳（参考 ChatGPT App）：左侧边栏（Logo / + 新房间 / 房间列表 / 底部设置与主题），
-// 主区为当前房间或设置页（<Outlet/>），无多余 chrome。
+// App 壳（参考 ChatGPT App）：左侧边栏（品牌 / + 新房间 / 房间列表 / 底部个人中心、
+// 设置与主题——纯全局层，不读取任何"当前房间"状态），主区为首页、房间详情或
+// 全局页（<Outlet/>），无多余 chrome。
 import { useEffect } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
+import { AppLogo } from "../components/AppLogo";
+import { Avatar } from "../components/chat/Avatar";
 import { relativeTime } from "../lib/ui";
 import { refreshRooms, useRooms } from "../state/rooms";
 import { toggleTheme, useTheme } from "../state/theme";
@@ -18,10 +21,10 @@ export function AppShell() {
   return (
     <div className="flex h-full">
       <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-surface">
-        <div className="flex items-center gap-2 px-4 pb-2 pt-4">
-          <span className="inline-block h-5 w-5 rounded-md bg-accent" aria-hidden />
+        <Link to="/" className="flex items-center gap-2 px-4 pb-2 pt-4" title="回首页">
+          <AppLogo size={20} />
           <span className="text-base font-semibold tracking-wide">Mosaic</span>
-        </div>
+        </Link>
         <div className="px-3 pb-2">
           <button
             type="button"
@@ -58,17 +61,30 @@ export function AppShell() {
           )}
           {error && <p className="px-2 py-2 text-xs text-danger">{error}</p>}
         </nav>
-        <div className="flex items-center justify-between border-t border-border px-3 py-2">
+        <div className="flex items-center gap-1 border-t border-border px-2 py-2">
+          <NavLink
+            to="/me"
+            title="个人中心"
+            className={({ isActive }) =>
+              `flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 transition-colors ${
+                isActive ? "bg-surface-3" : "hover:bg-surface-2"
+              }`
+            }
+          >
+            <Avatar participantID="human" displayName="我" size={22} color="var(--accent)" />
+            <span className="truncate text-sm">个人中心</span>
+          </NavLink>
           <NavLink
             to="/settings"
+            title="设置"
+            aria-label="设置"
             className={({ isActive }) =>
-              `flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm transition-colors ${
+              `rounded-lg p-2 transition-colors ${
                 isActive ? "bg-surface-3 text-text" : "text-dim hover:bg-surface-2 hover:text-text"
               }`
             }
           >
             <IconGear />
-            设置
           </NavLink>
           <button
             type="button"
