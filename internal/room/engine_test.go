@@ -788,6 +788,7 @@ func TestEngineReceiptCreatedAt(t *testing.T) {
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "t1", TenantID: "ten_local", RoomID: "room_t", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
+	seedNoAutoPolicy(t, store, "room_t") // receiptSink 闭包无锁——自动续轮第二轮并发写 captured 与断言读相撞（Windows -race 实证）
 	deliverHuman(t, store, eng, "room_t")
 	waitRoundClosed(t, store, "room_t")
 	if len(captured) == 0 {
