@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Mosaic 应用图标矢量母版（M-mosaic 方案，2026-08 选定）。
+       几何：512 视口，边距 120，5x5 网格 pitch 56.8（tile 44.8 + gap 12），圆角 12.5。
+       配色与 web 端渠道色板一致：col0=Codex 蓝 / col1=Kimi 绿 / col2=Echo 琥珀 /
+       col3=玫瑰 / col4=紫。位图批量导出由同目录 export_icon.py 负责，
+       改动设计请先改本文件，再同步 export_icon.py 中的几何常量。 -->
+  <rect width="512" height="512" rx="112" fill="#0f1218"/>
+  <g fill="#7aa2ff">
+    <rect x="120" y="120" width="44.8" height="44.8" rx="12.5"/>
+    <rect x="120" y="176.8" width="44.8" height="44.8" rx="12.5"/>
+    <rect x="120" y="233.6" width="44.8" height="44.8" rx="12.5"/>
+    <rect x="120" y="290.4" width="44.8" height="44.8" rx="12.5"/>
+    <rect x="120" y="347.2" width="44.8" height="44.8" rx="12.5"/>
+  </g>
+  <rect x="176.8" y="176.8" width="44.8" height="44.8" rx="12.5" fill="#4ade80"/>
+  <rect x="233.6" y="233.6" width="44.8" height="44.8" rx="12.5" fill="#fbbf24"/>
+  <rect x="290.4" y="176.8" width="44.8" height="44.8" rx="12.5" fill="#fb7185"/>
+  <g fill="#a78bfa">
+    <rect x="347.2" y="120" width="44.8" height="44.8" rx="12.5"/>
+    <rect x="347.2" y="176.8" width="44.8" height="44.8" rx="12.5"/>
+    <rect x="347.2" y="233.6" width="44.8" height="44.8" rx="12.5"/>
+    <rect x="347.2" y="290.4" width="44.8" height="44.8" rx="12.5"/>
+    <rect x="347.2" y="347.2" width="44.8" height="44.8" rx="12.5"/>
+  </g>
+</svg>

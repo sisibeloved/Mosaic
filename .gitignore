@@ -16,6 +16,10 @@ bin/
 *.out
 *.exe
 
+# Python（docs/design/icon/.venv 等）
+.venv/
+__pycache__/
+
 # Runtime data
 data/
 tmp/
