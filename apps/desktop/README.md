@@ -45,9 +45,11 @@ Wails 目录约定，`wails build` 打包时自动取用（M4 打包演练生效
 ## 开发（真机）
 
 ```bash
+# 唯一构建入口（SPA → 目标产物）：tools/scripts/build.sh [server|desktop|all]
+tools/scripts/build.sh desktop   # = 下面的 wails build（frontend 钩子自动先 npm）
+
 # 前置：go ≥1.25、node/npm、wails CLI（go install github.com/wailsapp/wails/v2/cmd/wails@latest）
 wails doctor   # 平台依赖（Windows: WebView2 Runtime；macOS: Xcode CLT）
-wails build    # frontend 钩子自动先 npm build（apps/web，见 wails.json），再编译 Go
 ```
 
 注意（v1.22 起 dist 不入库）：`go build ./apps/desktop` 直连编译同样需要先有
