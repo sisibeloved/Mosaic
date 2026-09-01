@@ -41,9 +41,11 @@ func endorseEnv(t *testing.T) (*MemStore, *Engine, *Service, string) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	// max=1（一轮恰一个获选、一个未获选）
+	// max=1（一轮恰一个获选、一个未获选）；关自动续聊（保送测试轮后快照版本发命令，
+	// 续轮推进版本会撞 409——CI 双腿实证；默认束 v1.27 起为 3）
 	p := policyDefaults("open_floor")
 	p.MaxSpeakers = 1
+	p.AutoRounds = 0
 	if _, err := svc.ExecuteCommand(context.Background(), Actor{ParticipantID: "par_owner", Kind: "human"},
 		Command{RoomID: created.RoomID, CommandKind: "set_policy", ExpectedRoomVersion: 1,
 			IdempotencyKey: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5eb1", IssuedAt: "2026-08-31T09:00:01.000Z",
