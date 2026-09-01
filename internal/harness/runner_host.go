@@ -15,6 +15,8 @@ import (
 	goruntime "runtime"
 	"strings"
 	"unicode/utf16"
+
+	"github.com/sisibeloved/Mosaic/internal/winhide"
 )
 
 // HostRunner 生产实现。
@@ -24,12 +26,16 @@ type HostRunner struct{}
 func NewHostRunner() *HostRunner { return &HostRunner{} }
 
 func (h *HostRunner) command(ctx context.Context, runtime Runtime, distro string, args []string) *exec.Cmd {
+	var cmd *exec.Cmd
 	if runtime == RuntimeWSL {
 		argv := []string{"-d", distro, "--"}
 		argv = append(argv, args...)
-		return exec.CommandContext(ctx, "wsl.exe", argv...)
+		cmd = exec.CommandContext(ctx, "wsl.exe", argv...)
+	} else {
+		cmd = exec.CommandContext(ctx, args[0], args[1:]...)
 	}
-	return exec.CommandContext(ctx, args[0], args[1:]...)
+	winhide.Hide(cmd) // 探测子进程不建控制台窗口（桌面壳防闪框；其它平台 no-op）
+	return cmd
 }
 
 // Run 执行命令，返回合并输出与退出码；命令无法启动视为 err。
@@ -146,6 +152,7 @@ func (h *HostRunner) WSLDistros(ctx context.Context) []string {
 		return nil
 	}
 	cmd := exec.CommandContext(ctx, "wsl.exe", "--list", "--quiet")
+	winhide.Hide(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil

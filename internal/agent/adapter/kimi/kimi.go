@@ -488,6 +488,7 @@ func (w *wslExecer) Exec(ctx context.Context, argv []string, env []string, dir s
 	cmd.WaitDelay = 10 * time.Second
 	// 已知缺口同 codex：击杀 wsl.exe 不必然终止发行版内进程——Windows Job Object 属
 	// M2 进程管理项；超时值内任务自行退出为主路径。
+	applySysProc(cmd) // Windows：不建控制台窗口（桌面壳防闪框）
 	if err := cmd.Start(); err != nil {
 		return "", -1, err
 	}
