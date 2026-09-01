@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/agent"
+	"github.com/sisibeloved/Mosaic/internal/wslenv"
 )
 
 // Config 适配器配置。
@@ -509,6 +510,10 @@ func wslArgs(distro string, env []string, argv []string) []string {
 }
 
 func (w *wslExecer) Exec(ctx context.Context, argv []string, env []string, stdin string) (string, int, error) {
+	// 网络配置改取发行版侧（真机复现 2026-09-01：宿主（Windows）无代理变量，
+	// 发行版内 codex 直连被墙 → 意图评估 180s 超时拖死整轮）。宿主侧同名键剥除
+	//（loopback 语义不同），发行版登录环境白名单键注入。
+	env = wslenv.MergeForWSL(env, wslenv.NetEnv(w.distro))
 	cmd := exec.CommandContext(ctx, "wsl.exe", wslArgs(w.distro, env, argv)...)
 	cmd.Stdin = bytes.NewReader([]byte(stdin))
 	var combined bytes.Buffer

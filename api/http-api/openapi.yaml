@@ -750,6 +750,10 @@ components:
     TimelineItem:
       type: object
       required: [position, event_id, type, actor_id, actor_kind, occurred_at]
+      description: |
+        v1.25 起 Timeline 含系统事件（round.opened / round.closed / room.paused /
+        room.started）——轮次提醒随快照持久化（此前仅 SSE 瞬态，切房间即失）。
+        outcome 仅 round.closed 携带（结果标签，客户端映射用户语言）。
       properties:
         position: { type: string }
         event_id: { type: string }
@@ -757,6 +761,7 @@ components:
         actor_id: { type: string }
         actor_kind: { type: string }
         body: { type: string }
+        outcome: { type: string }
         thread_id:
           oneOf:
             - type: "null"

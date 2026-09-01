@@ -367,13 +367,16 @@ type Snapshot struct {
 // SnapshotThreadsState defines model for Snapshot.Threads.State.
 type SnapshotThreadsState string
 
-// TimelineItem defines model for TimelineItem.
+// TimelineItem v1.25 起 Timeline 含系统事件（round.opened / round.closed / room.paused /
+// room.started）——轮次提醒随快照持久化（此前仅 SSE 瞬态，切房间即失）。
+// outcome 仅 round.closed 携带（结果标签，客户端映射用户语言）。
 type TimelineItem struct {
 	ActorId    string    `json:"actor_id"`
 	ActorKind  string    `json:"actor_kind"`
 	Body       *string   `json:"body,omitempty"`
 	EventId    string    `json:"event_id"`
 	OccurredAt time.Time `json:"occurred_at"`
+	Outcome    *string   `json:"outcome,omitempty"`
 	Position   string    `json:"position"`
 	ThreadId   *string   `json:"thread_id,omitempty"`
 	Type       string    `json:"type"`

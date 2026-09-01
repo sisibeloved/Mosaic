@@ -15,7 +15,10 @@ const (
 	AlgorithmVersion  = 1
 )
 
-// TimelineItem Timeline 视图项（对外形态：无 seq/tenant）。
+// TimelineItem Timeline 视图项（对外形态：无 seq/tenant）。v1.25 起系统事件
+// （round.opened/closed、room.paused/started）随 Timeline 持久化（dogfood #4：
+// 切房间/刷新后轮次提醒消失——SSE 瞬态不应是唯一来源）；Outcome 为
+// round.closed 的结果标签（客户端映射用户语言）。
 type TimelineItem struct {
 	Position   string  `json:"position"`
 	EventID    string  `json:"event_id"`
@@ -23,6 +26,7 @@ type TimelineItem struct {
 	ActorID    string  `json:"actor_id"`
 	ActorKind  string  `json:"actor_kind"`
 	Body       string  `json:"body,omitempty"`
+	Outcome    string  `json:"outcome,omitempty"`
 	ThreadID   *string `json:"thread_id,omitempty"`
 	OccurredAt string  `json:"occurred_at"`
 }
@@ -85,9 +89,10 @@ type ScorecardItem struct {
 	OccurredAt       string `json:"occurred_at"`
 }
 
-// ProjectSnapshot 从房间事件重建快照（仅 message 族入 Timeline；控制事件不入列表；
-// 策略区经 RebuildPolicy 投影——快照与引擎同源，无双轨；记分卡自 intent.recorded
-// 全量投影 + intent.endorsed 合并——事件不回写）。
+// ProjectSnapshot 从房间事件重建快照（Timeline = message 族 + 轮次/暂停系统
+// 事件——v1.25 持久化；其余控制事件不入列表；策略区经 RebuildPolicy 投影——
+// 快照与引擎同源，无双轨；记分卡自 intent.recorded 全量投影 + intent.endorsed
+// 合并——事件不回写）。
 func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 	snap := Snapshot{
 		RoomID:            roomID,
@@ -175,6 +180,28 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 			continue
 		}
 		if ev.Envelope.Type != protocol.EventMessagePosted {
+			// 系统事件入 Timeline（v1.25 持久化——SSE 瞬态不再是唯一来源）
+			switch ev.Envelope.Type {
+			case protocol.EventRoundOpened, protocol.EventRoundClosed,
+				protocol.EventRoomPaused, protocol.EventRoomStarted:
+				item := TimelineItem{
+					Position:   ev.Cursor,
+					EventID:    ev.Envelope.EventID,
+					Type:       ev.Envelope.Type,
+					ActorID:    ev.Envelope.Actor.ParticipantID,
+					ActorKind:  ev.Envelope.Actor.Kind,
+					ThreadID:   ev.Envelope.ThreadID,
+					OccurredAt: ev.Envelope.OccurredAt,
+				}
+				if ev.Envelope.Type == protocol.EventRoundClosed {
+					var p struct {
+						Outcome string `json:"outcome"`
+					}
+					_ = json.Unmarshal(ev.Envelope.Payload, &p)
+					item.Outcome = p.Outcome
+				}
+				snap.Timeline = append(snap.Timeline, item)
+			}
 			continue
 		}
 		var body struct {

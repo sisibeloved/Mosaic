@@ -193,3 +193,71 @@ func TestCreateRoomDefaultMaterializesRoster(t *testing.T) {
 		t.Fatalf("新房间应快照 3 席：%v", got)
 	}
 }
+
+// TestRosterOfLegacyDerivation：旧房间（无 agents 载荷）按参与历史推导名单
+// （v1.25 dogfood #1：动态全席对存量活房间同样不可接受——历史出现过的 agent
+// 固化为名单，此后新启用座位不自动入房）；无 agent 历史回退 nil（首轮兼容）。
+func TestRosterOfLegacyDerivation(t *testing.T) {
+	mk := func(typ string, actorID, actorKind, payload string) protocol.Envelope {
+		return protocol.Envelope{EventID: "evt_d_" + actorID + string(typ), TenantID: "ten_local",
+			RoomID: "room_legacy", Type: typ, Actor: protocol.Actor{ParticipantID: actorID, Kind: actorKind},
+			Payload: []byte(payload), Metadata: map[string]any{}}
+	}
+	envs := []protocol.Envelope{
+		mk(protocol.EventRoomCreated, "par_owner", "human", `{}`),
+		mk(protocol.EventRoundOpened, "par_system", "system", `{}`),
+		mk(protocol.EventIntentRecorded, "par_system", "system", `{"participant_id":"par_a","action":"speak"}`),
+		mk(protocol.EventFloorGranted, "par_system", "system", `{"participant_id":"par_b","grant_id":"g1"}`),
+		mk(protocol.EventMessagePosted, "par_a", "agent", `{"body":"hi"}`),
+	}
+	roster := RosterOf(envs)
+	if roster == nil || !roster["par_a"] || !roster["par_b"] || len(roster) != 2 {
+		t.Fatalf("历史推导名单应为 {par_a, par_b}：%v", roster)
+	}
+
+	// 无 agent 历史：nil（全部在席——空转旧房/测试夹具的首轮兼容）
+	empty := []protocol.Envelope{
+		mk(protocol.EventRoomCreated, "par_owner", "human", `{}`),
+		mk(protocol.EventMessagePosted, "par_owner", "human", `{"body":"stimulus"}`),
+	}
+	if got := RosterOf(empty); got != nil {
+		t.Fatalf("无 agent 历史应回退 nil（全部在席）：%v", got)
+	}
+}
+
+// TestTimelineIncludesSystemEvents：系统事件（轮次/暂停）随快照 Timeline 持久化
+// （v1.25 dogfood #4：切房间/刷新后轮次提醒消失——SSE 不再是唯一来源）。
+func TestTimelineIncludesSystemEvents(t *testing.T) {
+	mk := func(id string, typ string, actor protocol.Actor, payload string) StoredEvent {
+		return StoredEvent{Cursor: "cur_" + id, Envelope: protocol.Envelope{EventID: id,
+			TenantID: "ten_local", RoomID: "room_tl", Type: typ, Actor: actor,
+			Payload: []byte(payload), Metadata: map[string]any{}}}
+	}
+	events := []StoredEvent{
+		mk("e1", protocol.EventRoomCreated, protocol.Actor{ParticipantID: "o", Kind: "human"}, `{"display_name":"x"}`),
+		mk("e2", protocol.EventMessagePosted, protocol.Actor{ParticipantID: "o", Kind: "human"}, `{"body":"q"}`),
+		mk("e3", protocol.EventRoundOpened, protocol.Actor{ParticipantID: "s", Kind: "system"}, `{}`),
+		mk("e4", protocol.EventIntentRecorded, protocol.Actor{ParticipantID: "s", Kind: "system"}, `{"participant_id":"par_a"}`),
+		mk("e5", protocol.EventRoundClosed, protocol.Actor{ParticipantID: "s", Kind: "system"}, `{"outcome":"published"}`),
+		mk("e6", protocol.EventRoomPaused, protocol.Actor{ParticipantID: "o", Kind: "human"}, `{"reason":"r"}`),
+	}
+	snap := ProjectSnapshot("room_tl", events)
+	var types []string
+	for _, item := range snap.Timeline {
+		types = append(types, item.Type)
+	}
+	want := []string{"message.posted", "round.opened", "round.closed", "room.paused"}
+	if len(types) != len(want) {
+		t.Fatalf("Timeline 类型序列 = %v，期望 %v（intent.recorded 不入列）", types, want)
+	}
+	for i := range want {
+		if types[i] != want[i] {
+			t.Fatalf("Timeline 类型序列 = %v，期望 %v", types, want)
+		}
+	}
+	for _, item := range snap.Timeline {
+		if item.Type == "round.closed" && item.Outcome != "published" {
+			t.Fatalf("round.closed 应携带 outcome=published：%+v", item)
+		}
+	}
+}

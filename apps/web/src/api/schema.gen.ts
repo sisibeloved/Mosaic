@@ -421,6 +421,11 @@ export interface components {
             /** @description seated（在座；离座语义随 UI 重设计后续切片定稿） */
             seat_status: string;
         };
+        /**
+         * @description v1.25 起 Timeline 含系统事件（round.opened / round.closed / room.paused /
+         *     room.started）——轮次提醒随快照持久化（此前仅 SSE 瞬态，切房间即失）。
+         *     outcome 仅 round.closed 携带（结果标签，客户端映射用户语言）。
+         */
         TimelineItem: {
             position: string;
             event_id: string;
@@ -428,6 +433,7 @@ export interface components {
             actor_id: string;
             actor_kind: string;
             body?: string;
+            outcome?: string;
             thread_id?: null | string;
             /** Format: date-time */
             occurred_at: string;

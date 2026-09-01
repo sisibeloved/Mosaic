@@ -5,8 +5,11 @@
 // - 时间线按 event_id 去重兜底（双通道交叠窗口）；
 // - draft.update 瞬态帧（无 id、不入日志、断线不补发）驱动座位级打字预览；
 // - 投影区（participants/scorecard/graph/threads/policy）由事件触发防抖重取快照。
+// - 系统事件（轮次/暂停）随快照 Timeline 持久化（v1.25）——切房间/刷新不丢；
+//   开发者模式下意向/授予/撤销等基建事件内联进时间线（[dev] 前缀，瞬态）。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, type EventView, type ParticipantView, type Snapshot } from "./client";
+import { useDevMode } from "../state/dev";
 
 export type Connection = "idle" | "connecting" | "live" | "reconnecting" | "resync";
 
@@ -25,6 +28,13 @@ export interface TimelineEntry {
   addressedTo?: string[];
   detail?: string;
 }
+
+/** 系统事件 → 时间线文案（快照 Timeline 与 SSE 双路共用；outcome 用 ROUND_OUTCOME）。 */
+const SYSTEM_EVENT_TEXT: Record<string, string> = {
+  "round.opened": "新一轮讨论开始",
+  "room.paused": "房间已暂停",
+  "room.started": "房间已恢复",
+};
 
 /** 座位级进行中状态（计划 v1.11：静默期反馈 + draft.update 草稿预览）。 */
 export interface TypingState {
@@ -127,6 +137,7 @@ export function useRoom(roomID: string | null): RoomHandle {
   const [state, setState] = useState<RoomModelState | null>(null);
   const [connection, setConnection] = useState<Connection>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [devMode] = useDevMode();
   const esRef = useRef<EventSource | null>(null);
   const versionRef = useRef(0);
   const roomRef = useRef<string | null>(null);
@@ -266,10 +277,49 @@ export function useRoom(roomID: string | null): RoomHandle {
             scheduleRefresh();
             break;
         }
+        // 开发者模式（v1.25 dogfood #3）：基建事件内联时间线——房间怎么运转、
+        // 卡在哪一步，在使用过程中直接可见（瞬态，不入快照）。
+        if (devMode) {
+          const nm = (pid?: string) =>
+            pid ? (prev.participants.find((x) => x.participant_id === pid)?.display_name ?? pid) : "?";
+          let detail: string | null = null;
+          switch (type) {
+            case "intent.recorded": {
+              const p = view.payload as
+                | { participant_id?: string; action?: string; type?: string; public_rationale?: string }
+                | null;
+              detail = `[dev] 意向 ${nm(p?.participant_id)}：${p?.action ?? "?"}${
+                p?.type ? ` · ${p.type}` : ""
+              }${p?.public_rationale ? `（${p.public_rationale}）` : ""}`;
+              break;
+            }
+            case "floor.granted": {
+              const p = view.payload as { participant_id?: string; grant_id?: string } | null;
+              detail = `[dev] 发言权 → ${nm(p?.participant_id)}${p?.grant_id ? `（${p.grant_id}）` : ""}`;
+              break;
+            }
+            case "floor.revoked": {
+              const p = view.payload as { reason?: string } | null;
+              detail = `[dev] 发言权撤销${p?.reason ? `：${p.reason}` : ""}`;
+              break;
+            }
+            case "participant.admitted": {
+              const p = view.payload as { participant_id?: string } | null;
+              detail = `[dev] ${nm(p?.participant_id)} 入房（invite_agent）`;
+              break;
+            }
+            case "policy.changed": {
+              const p = view.payload as { policy_version?: string; mode?: string } | null;
+              detail = `[dev] 策略变更 → ${p?.mode ?? "?"}（${p?.policy_version ?? "?"}）`;
+              break;
+            }
+          }
+          if (detail) append(systemEntry(view, detail));
+        }
         return next;
       });
     },
-    [scheduleRefresh],
+    [scheduleRefresh, devMode],
   );
 
   /** draft.update 瞬态帧：text_delta 累积文本（截尾上限）；stage 原值更新阶段。 */
@@ -311,14 +361,29 @@ export function useRoom(roomID: string | null): RoomHandle {
       grantSeatRef.current = {};
       setState({
         roomID: id,
-        entries: snap.timeline.map((item) => ({
-          key: item.event_id,
-          kind: "message",
-          actorID: item.actor_id,
-          actorKind: item.actor_kind,
-          occurredAt: item.occurred_at,
-          body: item.body,
-        })),
+        entries: snap.timeline.map((item) =>
+          item.type === "message.posted"
+            ? {
+                key: item.event_id,
+                kind: "message" as const,
+                actorID: item.actor_id,
+                actorKind: item.actor_kind,
+                occurredAt: item.occurred_at,
+                body: item.body,
+              }
+            : {
+                // 系统事件持久化项（v1.25）：round/pause 提醒不再随 SSE 瞬态丢失
+                key: item.event_id,
+                kind: "system" as const,
+                actorID: item.actor_id,
+                actorKind: item.actor_kind,
+                occurredAt: item.occurred_at,
+                detail:
+                  item.type === "round.closed"
+                    ? (ROUND_OUTCOME[item.outcome ?? ""] ?? `本轮结束（${item.outcome ?? "?"}）`)
+                    : (SYSTEM_EVENT_TEXT[item.type] ?? item.type),
+              },
+        ),
         typing: {},
         roundOpen: false,
         paused: false,

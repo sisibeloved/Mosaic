@@ -1,6 +1,7 @@
 // 房间成员 roster（RFC-0001 Membership 族最小落地）：create_room 可选 agents
-// 选择（缺省全部在席）+ invite_agent → participant.admitted。引擎按 roster 过滤
-// 全局座位——房间讨论面 = 选中者；roster 中的座位未启用时后续启用即入房。
+// 选择（缺省 = 物化当时在席名单，v1.24）+ invite_agent → participant.admitted。
+// 引擎按 roster 过滤全局座位——房间讨论面 = 名单内且在席者；名单内座位未启用时
+// 后续启用即入房。旧房间无 agents 载荷 → 历史推导（见 RosterOf）。
 package room
 
 import (
@@ -12,8 +13,12 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 )
 
-// RosterOf 房间成员投影：room.created.payload.agents（空/缺省 = 全部）+
-// participant.admitted 链。空集语义 = 未选择（全部在席，向后兼容）。
+// RosterOf 房间成员投影：room.created.payload.agents（v1.24 起含缺省物化快照）+
+// participant.admitted 链。
+// 旧房间（v1.24 前建房、无 agents 载荷）：从历史推导——曾出现在房间里的 agent
+// （消息/意向/授予的参与者）即为名单（dogfood v1.25：动态全席对存量活房间同样
+// 不可接受）；从未有 agent 参与的历史（空转旧房/测试夹具）回退 nil = 全部在席
+// （首轮兼容：历史无信息量时维持旧语义，首轮之后即有推导名单）。
 func RosterOf(envs []protocol.Envelope) map[string]bool {
 	roster := map[string]bool{}
 	explicit := false
@@ -39,10 +44,29 @@ func RosterOf(envs []protocol.Envelope) map[string]bool {
 			}
 		}
 	}
-	if !explicit {
-		return nil // 全部在席
+	if explicit {
+		return roster
 	}
-	return roster
+	// 旧房间：历史推导（消息 actor 为 agent 的参与者 + 意向/授予载荷目标）
+	derived := map[string]bool{}
+	for _, env := range envs {
+		if env.Actor.Kind == "agent" && participantIDPattern.MatchString(env.Actor.ParticipantID) {
+			derived[env.Actor.ParticipantID] = true
+		}
+		switch env.Type {
+		case protocol.EventIntentRecorded, protocol.EventFloorGranted:
+			var p struct {
+				ParticipantID string `json:"participant_id"`
+			}
+			if json.Unmarshal(env.Payload, &p) == nil && participantIDPattern.MatchString(p.ParticipantID) {
+				derived[p.ParticipantID] = true
+			}
+		}
+	}
+	if len(derived) > 0 {
+		return derived
+	}
+	return nil // 无 agent 历史：全部在席（首轮兼容）
 }
 
 // inviteAgent 拉人命令（RFC-0001 Membership：participant.admitted；人类 actor）。

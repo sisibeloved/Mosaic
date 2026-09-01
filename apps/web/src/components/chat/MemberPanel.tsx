@@ -301,7 +301,7 @@ function InviteList({
   if (roster === null) {
     return (
       <p className="mx-2 mb-2 rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-[11px] text-faint">
-        本房间为全席模式（建房时未选人）——所有在席 Agent 均已在房间内。
+        本房间创建于旧版本且尚无 Agent 参与记录，暂按全部在席处理；发起一轮讨论后名单即按参与历史固化，此后新启用的 Agent 走邀请。
       </p>
     );
   }
