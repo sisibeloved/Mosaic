@@ -105,8 +105,21 @@ func TestDevMode_ST(t *testing.T) {
 		"payload": map[string]any{"display_name": "dev"},
 	})
 	roomID := created["room_id"].(string)
+	// 本用例钉单轮 dev 复盘链路：显式关自动续聊（默认束 v1.27 起为 3；链式语义
+	// 由 TestAutoRoundContinuation_ST 专测）。
+	postJSONST(t, base, "/v1/rooms/"+roomID+"/commands", map[string]any{
+		"command_kind": "set_policy", "expected_room_version": 1,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d9003", "issued_at": "2026-08-30T09:30:00.500Z",
+		"payload": map[string]any{
+			"mode": "open_floor", "max_speakers": 3, "lambda": 0.3,
+			"weights": map[string]any{"relevance": 0.3, "novelty": 0.2, "diversity": 0.15,
+				"urgency": 0.1, "direct_address": 0.15, "floor_share": 0.05, "repetition": 0.05},
+			"intent_window": "20s", "response_cap": 500, "reveal_strategy": "simultaneous",
+			"rebuttals": 0, "auto_rounds": 0,
+		},
+	})
 	posted := postJSONST(t, base, "/v1/rooms/"+roomID+"/commands", map[string]any{
-		"command_kind": "post_message", "expected_room_version": 1,
+		"command_kind": "post_message", "expected_room_version": 2,
 		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d9002", "issued_at": "2026-08-30T09:30:01.000Z",
 		"payload": map[string]any{"body": "dev 模式复盘", "reply_to": nil, "addressed_to": []any{}, "relations": []any{}},
 	})

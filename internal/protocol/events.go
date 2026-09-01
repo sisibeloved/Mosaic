@@ -69,6 +69,10 @@ type RoundOpenedPayload struct {
 	RevealStrategy  string `json:"reveal_strategy"` // sequential | simultaneous | independent_then_cross
 	IntentWindow    string `json:"intent_window"`
 	PolicyVersion   string `json:"policy_version"`
+	// AutoIndex 自动续聊轮序（RFC-0003 §3.1.7 自动续聊参数；计划 v1.26）：
+	// 1..auto_rounds 链内递增；缺省/0 = 人类消息驱动轮。刺激为上一轮最后一条
+	// agent 发言（stimulus_event_id 可回溯锚点）。
+	AutoIndex int `json:"auto_index,omitempty"`
 }
 
 // IntentRecordedPayload intent.recorded：TurnIntent 的用户可见投影（公开 band，不公开精确分）。
@@ -97,7 +101,8 @@ type PolicyParams struct {
 	IntentWindow   string        `json:"intent_window"`
 	ResponseCap    int64         `json:"response_cap"`
 	RevealStrategy string        `json:"reveal_strategy"`
-	Rebuttals      int           `json:"rebuttals"` // cross 子轮数（0-2；Roundtable 默认 1）
+	Rebuttals      int           `json:"rebuttals"`   // cross 子轮数（0-2；Roundtable 默认 1）
+	AutoRounds     int           `json:"auto_rounds"` // 自动续聊轮数上限（0-6，0=关；Open Floor 默认 3 / Deep Dive 2）
 }
 
 // PolicyWeights 记分卡权重 wire 形态（七项；正项之和 >1 由投影端归一化）。

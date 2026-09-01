@@ -320,6 +320,8 @@ type Snapshot struct {
 
 	// Policy 当前策略区（记分卡透明 OQ-17——权重/模式参数对成员可见、版本化）。
 	Policy struct {
+		// AutoRounds 自动续聊轮数上限（0=关；Open Floor 默认 3 / Deep Dive 2；RFC §3.1.7，计划 v1.26）
+		AutoRounds     *int                    `json:"auto_rounds,omitempty"`
 		IntentWindow   *string                 `json:"intent_window,omitempty"`
 		Lambda         *float32                `json:"lambda,omitempty"`
 		MaxSpeakers    *int                    `json:"max_speakers,omitempty"`
@@ -369,10 +371,14 @@ type SnapshotThreadsState string
 
 // TimelineItem v1.25 起 Timeline 含系统事件（round.opened / round.closed / room.paused /
 // room.started）——轮次提醒随快照持久化（此前仅 SSE 瞬态，切房间即失）。
-// outcome 仅 round.closed 携带（结果标签，客户端映射用户语言）。
+// outcome 仅 round.closed 携带（结果标签，客户端映射用户语言）；
+// auto_index 仅 round.opened 携带（>0 = 自动续聊轮，v1.27）。
 type TimelineItem struct {
-	ActorId    string    `json:"actor_id"`
-	ActorKind  string    `json:"actor_kind"`
+	ActorId   string `json:"actor_id"`
+	ActorKind string `json:"actor_kind"`
+
+	// AutoIndex 自动续聊轮序（1..auto_rounds；缺省 = 人类消息驱动轮）
+	AutoIndex  *int      `json:"auto_index,omitempty"`
 	Body       *string   `json:"body,omitempty"`
 	EventId    string    `json:"event_id"`
 	OccurredAt time.Time `json:"occurred_at"`

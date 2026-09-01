@@ -106,6 +106,7 @@ func TestSimultaneousGenerationParallel(t *testing.T) {
 		{EventID: "sp0", TenantID: "ten_local", RoomID: "room_sp", Type: protocol.EventRoomCreated,
 			Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
+	seedNoAutoPolicy(t, store, "room_sp")
 	start := time.Now()
 	deliverHuman(t, store, eng, "room_sp")
 	waitRoundClosed(t, store, "room_sp")

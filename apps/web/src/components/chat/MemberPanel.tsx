@@ -36,9 +36,9 @@ const DEBUG_TAB: { id: Tab; label: string } = { id: "debug", label: "调试" };
 
 /** 三模式产品面（B1 参数束；review/decision 为收束模式，随 M3 面板开放）。 */
 const MODES: { id: string; label: string; desc: string }[] = [
-  { id: "open_floor", label: "Open Floor", desc: "开放讨论（默认 3 人/轮，20s 窗口）" },
-  { id: "roundtable", label: "Roundtable", desc: "圆桌（全员各 1，30s 窗口）" },
-  { id: "deep_dive", label: "Deep Dive", desc: "深潜（2 人/轮，15s 窗口，900 cap）" },
+  { id: "open_floor", label: "Open Floor", desc: "开放讨论（3 人/轮，20s 窗口，自动续聊 3 轮）" },
+  { id: "roundtable", label: "Roundtable", desc: "圆桌（全员各 1 + 交锋，30s 窗口）" },
+  { id: "deep_dive", label: "Deep Dive", desc: "深潜（2 人/轮，15s 窗口，900 cap，自动续聊 2 轮）" },
 ];
 
 /** 模式默认参数束（与房间侧 policyDefaults 同源；提交前服务端再校验）。 */
@@ -52,9 +52,10 @@ function modeDefaults(mode: string): PolicyParams {
     response_cap: 500,
     reveal_strategy: "simultaneous",
     rebuttals: 0,
+    auto_rounds: 3,
   };
-  if (mode === "roundtable") return { ...base, mode, max_speakers: 8, intent_window: "30s", response_cap: 600, reveal_strategy: "independent_then_cross", rebuttals: 1 };
-  if (mode === "deep_dive") return { ...base, mode, max_speakers: 2, intent_window: "15s", response_cap: 900, reveal_strategy: "sequential" };
+  if (mode === "roundtable") return { ...base, mode, max_speakers: 8, intent_window: "30s", response_cap: 600, reveal_strategy: "independent_then_cross", rebuttals: 1, auto_rounds: 0 };
+  if (mode === "deep_dive") return { ...base, mode, max_speakers: 2, intent_window: "15s", response_cap: 900, reveal_strategy: "sequential", auto_rounds: 2 };
   return base;
 }
 
@@ -188,7 +189,7 @@ function PolicyTab({
       <p className="pb-2 text-[11px] text-faint">
         当前：
         {policy
-          ? `${policy.mode ?? "—"}（${policy.policy_version ?? "—"}）· 单轮 ≤${policy.max_speakers ?? "—"} 人 · 窗口 ${policy.intent_window ?? "—"} · cap ${policy.response_cap ?? "—"} · reveal ${policy.reveal_strategy ?? "—"}`
+          ? `${policy.mode ?? "—"}（${policy.policy_version ?? "—"}）· 单轮 ≤${policy.max_speakers ?? "—"} 人 · 窗口 ${policy.intent_window ?? "—"} · cap ${policy.response_cap ?? "—"} · reveal ${policy.reveal_strategy ?? "—"} · 续聊 ${(policy.auto_rounds ?? 0) > 0 ? `${policy.auto_rounds} 轮` : "关"}`
           : "读取中…"}
       </p>
       <div className="flex flex-col gap-2">
@@ -212,7 +213,7 @@ function PolicyTab({
       </div>
       {msg && <p className="pt-2 text-xs text-dim">{msg}</p>}
       <p className="pt-2 text-[11px] text-faint">
-        作用于本房间，下一轮起生效。权重/λ/续聊等细参数编辑随记分卡面板开放；reveal 策略随模式默认（Roundtable 含 1 轮 cross 交锋）。
+        作用于本房间，下一轮起生效。自动续聊：一条消息后 agents 自动接力至多 N 轮（静默/暂停/预算即停）。权重/λ 细参数编辑随记分卡面板开放。
       </p>
     </div>
   );

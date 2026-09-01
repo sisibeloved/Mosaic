@@ -45,6 +45,7 @@ func setRevealPolicy(t *testing.T, store *MemStore, reveal string, rebuttals int
 	p := policyDefaults("open_floor")
 	p.RevealStrategy = reveal
 	p.Rebuttals = rebuttals
+	p.AutoRounds = 0 // reveal 机制单轮断言：关自动续聊（默认束 v1.27 起为 3）
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "ev_pol_rv", TenantID: "ten_local", RoomID: "room_rv", Type: protocol.EventPolicyChanged,
 			Actor:   protocol.Actor{ParticipantID: "o", Kind: "human"},
@@ -86,6 +87,7 @@ func grantsAndMessages(events []protocol.Envelope) (grants []protocol.FloorGrant
 // 双获选者 grant 的 context_watermark 相同（冻结），且全部发授先于任何正文。
 func TestRevealSimultaneousFrozenWatermark(t *testing.T) {
 	store, eng, roomID := revealTestEngine(t)
+	seedNoAutoPolicy(t, store, roomID) // 默认束 v1.27 起自动续聊=3：本用例钉单轮揭示语义
 	deliverHuman(t, store, eng, roomID)
 	waitRoundClosed(t, store, roomID)
 

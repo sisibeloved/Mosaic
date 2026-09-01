@@ -15,8 +15,9 @@ import (
 // 模式默认参数束（RFC-0003 §3.1.7 表；reveal 默认随 B2 执行面落地对齐：
 // Open Floor=simultaneous、Roundtable=independent_then_cross（rebuttals=1）、
 // Deep Dive/Review/Decision=sequential）。Roundtable"全员各 1"以数值上限（8）
-// 近似，座位数取 min 在引擎内生效；自动续聊参数不随 B2 落地（轮次自驱动
-// 语义，登记至 M2 dogfood 迭代片——计划 v1.26 裁定）。
+// 近似，座位数取 min 在引擎内生效。自动续聊（M2 dogfood 迭代片，计划 v1.26
+// 裁定）：Open Floor=有限默认 3 轮、Deep Dive=2 轮（RFC 区间 2-6 下限）、
+// Roundtable/Review/Decision=关（cross 子轮/交锋链已是轮内接力形态）。
 func policyDefaults(mode string) protocol.PolicyParams {
 	p := protocol.PolicyParams{
 		Mode:           "open_floor",
@@ -27,6 +28,7 @@ func policyDefaults(mode string) protocol.PolicyParams {
 		ResponseCap:    500,
 		RevealStrategy: "simultaneous",
 		Rebuttals:      0,
+		AutoRounds:     3,
 	}
 	switch mode {
 	case "roundtable":
@@ -36,23 +38,27 @@ func policyDefaults(mode string) protocol.PolicyParams {
 		p.ResponseCap = 600
 		p.RevealStrategy = "independent_then_cross"
 		p.Rebuttals = 1
+		p.AutoRounds = 0
 	case "deep_dive":
 		p.Mode = "deep_dive"
 		p.MaxSpeakers = 2
 		p.IntentWindow = "15s"
 		p.ResponseCap = 900
 		p.RevealStrategy = "sequential"
+		p.AutoRounds = 2
 	case "review":
 		p.Mode = "review"
 		p.IntentWindow = "30s"
 		p.ResponseCap = 500
 		p.RevealStrategy = "sequential"
+		p.AutoRounds = 0
 	case "decision":
 		p.Mode = "decision"
 		p.MaxSpeakers = 2
 		p.IntentWindow = "45s"
 		p.ResponseCap = 400
 		p.RevealStrategy = "sequential"
+		p.AutoRounds = 0
 	case "open_floor":
 	default:
 		p.Mode = mode // 非法模式由 ValidatePolicyParams 拒
@@ -103,6 +109,9 @@ func ValidatePolicyParams(p protocol.PolicyParams) error {
 	}
 	if p.Rebuttals < 0 || p.Rebuttals > 2 {
 		return fmt.Errorf("rebuttals 越界 [0,2]（RFC §3.1.7：Roundtable 可配 0-2）")
+	}
+	if p.AutoRounds < 0 || p.AutoRounds > 6 {
+		return fmt.Errorf("auto_rounds 越界 [0,6]（RFC §3.1.7：Deep Dive 上限 6）")
 	}
 	return nil
 }

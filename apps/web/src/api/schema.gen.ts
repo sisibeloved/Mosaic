@@ -285,7 +285,7 @@ export interface components {
             /** @enum {string} */
             effect: "grant";
         };
-        /** @description 策略参数束（RFC-0003 §3.1.7；set_policy 命令体与 policy.changed 事件 payload 同构）。reveal 三策略自 B2 起全部可执行（simultaneous=冻结水位统一揭示；independent_then_cross=独立首轮+cross 子轮）。 */
+        /** @description 策略参数束（RFC-0003 §3.1.7；set_policy 命令体与 policy.changed 事件 payload 同构）。reveal 三策略自 B2 起全部可执行（simultaneous=冻结水位统一揭示；independent_then_cross=独立首轮+cross 子轮）。auto_rounds 为自动续聊轮数上限（0=关；计划 v1.26）。 */
         PolicyParams: {
             /** @enum {string} */
             mode: "roundtable" | "open_floor" | "deep_dive" | "review" | "decision";
@@ -307,6 +307,8 @@ export interface components {
             reveal_strategy: "sequential" | "simultaneous" | "independent_then_cross";
             /** @description cross 子轮数（Roundtable 默认 1；仅 independent_then_cross 消费） */
             rebuttals: number;
+            /** @description 自动续聊轮数上限（0=关；Open Floor 默认 3 / Deep Dive 2；停止条件=轮数上限/静默轮/预算 100% 硬停） */
+            auto_rounds: number;
         };
         CommandResponse: {
             room_id: string;
@@ -371,6 +373,8 @@ export interface components {
                 /** Format: int64 */
                 response_cap?: number;
                 reveal_strategy?: string;
+                /** @description 自动续聊轮数上限（0=关；Open Floor 默认 3 / Deep Dive 2；RFC §3.1.7，计划 v1.26） */
+                auto_rounds?: number;
             };
             /** @description 房间成员投影（room.created.agents + participant.admitted 链；null/缺 = 全部在席）。 */
             roster?: string[];
@@ -424,7 +428,8 @@ export interface components {
         /**
          * @description v1.25 起 Timeline 含系统事件（round.opened / round.closed / room.paused /
          *     room.started）——轮次提醒随快照持久化（此前仅 SSE 瞬态，切房间即失）。
-         *     outcome 仅 round.closed 携带（结果标签，客户端映射用户语言）。
+         *     outcome 仅 round.closed 携带（结果标签，客户端映射用户语言）；
+         *     auto_index 仅 round.opened 携带（>0 = 自动续聊轮，v1.27）。
          */
         TimelineItem: {
             position: string;
@@ -434,6 +439,8 @@ export interface components {
             actor_kind: string;
             body?: string;
             outcome?: string;
+            /** @description 自动续聊轮序（1..auto_rounds；缺省 = 人类消息驱动轮） */
+            auto_index?: number;
             thread_id?: null | string;
             /** Format: date-time */
             occurred_at: string;

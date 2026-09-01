@@ -33,7 +33,8 @@
     "intent_window": "30s",
     "response_cap": 600,
     "reveal_strategy": "independent_then_cross",
-    "rebuttals": 1
+    "rebuttals": 1,
+    "auto_rounds": 0
   },
   "metadata": {}
 }

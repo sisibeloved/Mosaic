@@ -75,6 +75,7 @@ func directedTestEngine(t *testing.T) (*MemStore, *Engine, string) {
 			Payload: mustMarshalForTest(func() protocol.PolicyParams {
 				p := policyDefaults("open_floor")
 				p.MaxSpeakers = 2
+				p.AutoRounds = 0 // 定向链用例逐轮人类驱动：关自动续聊（默认束 v1.27 起为 3）
 				return p
 			}()), Metadata: map[string]any{}},
 	})

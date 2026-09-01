@@ -18,7 +18,8 @@ const (
 // TimelineItem Timeline 视图项（对外形态：无 seq/tenant）。v1.25 起系统事件
 // （round.opened/closed、room.paused/started）随 Timeline 持久化（dogfood #4：
 // 切房间/刷新后轮次提醒消失——SSE 瞬态不应是唯一来源）；Outcome 为
-// round.closed 的结果标签（客户端映射用户语言）。
+// round.closed 的结果标签（客户端映射用户语言）；AutoIndex 为 round.opened
+// 的自动续聊轮序（>0 = 自动轮，缺省 = 人类消息驱动；v1.27）。
 type TimelineItem struct {
 	Position   string  `json:"position"`
 	EventID    string  `json:"event_id"`
@@ -27,6 +28,7 @@ type TimelineItem struct {
 	ActorKind  string  `json:"actor_kind"`
 	Body       string  `json:"body,omitempty"`
 	Outcome    string  `json:"outcome,omitempty"`
+	AutoIndex  int     `json:"auto_index,omitempty"`
 	ThreadID   *string `json:"thread_id,omitempty"`
 	OccurredAt string  `json:"occurred_at"`
 }
@@ -41,6 +43,7 @@ type PolicyView struct {
 	IntentWindow   string                 `json:"intent_window"`
 	ResponseCap    int64                  `json:"response_cap"`
 	RevealStrategy string                 `json:"reveal_strategy"`
+	AutoRounds     int                    `json:"auto_rounds"`
 }
 
 // Snapshot 快照载体：版本三元组 + 水位（opaque cursor）+ Timeline + 策略区。
@@ -140,6 +143,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 		IntentWindow:   policy.Params.IntentWindow,
 		ResponseCap:    policy.Params.ResponseCap,
 		RevealStrategy: policy.Params.RevealStrategy,
+		AutoRounds:     policy.Params.AutoRounds,
 	}
 	for _, ev := range events {
 		if ev.Envelope.Seq > snap.RoomVersion {
@@ -199,6 +203,13 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 					}
 					_ = json.Unmarshal(ev.Envelope.Payload, &p)
 					item.Outcome = p.Outcome
+				}
+				if ev.Envelope.Type == protocol.EventRoundOpened {
+					var p struct {
+						AutoIndex int `json:"auto_index"`
+					}
+					_ = json.Unmarshal(ev.Envelope.Payload, &p)
+					item.AutoIndex = p.AutoIndex
 				}
 				snap.Timeline = append(snap.Timeline, item)
 			}

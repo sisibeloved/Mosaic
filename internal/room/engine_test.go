@@ -63,6 +63,8 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 	if _, err := store.AppendEvents(context.Background(), []protocol.Envelope{seedHuman}); err != nil {
 		t.Fatalf("seed create: %v", err)
 	}
+	seedNoAutoPolicy(t, store, "room_eng")
+
 	human := protocol.Envelope{
 		EventID:       "evt_eng_human",
 		TenantID:      "ten_local",
@@ -99,6 +101,7 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 	// 事件链与顺序
 	wantTypes := []string{
 		protocol.EventRoomCreated,
+		protocol.EventPolicyChanged, // no-auto 种子（默认束 v1.27 起自动续聊=3）
 		protocol.EventMessagePosted, // human
 		protocol.EventRoundOpened,
 		protocol.EventIntentRecorded,
@@ -119,9 +122,9 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 	}
 
 	// causation 纪律（RFC-0003）：agent 发言 causation 指向 floor.granted；grant 指向 intent.recorded
-	agentMsg := events[5]
-	grant := events[4]
-	intent := events[3]
+	agentMsg := events[6]
+	grant := events[5]
+	intent := events[4]
 	if agentMsg.CausationID == nil || *agentMsg.CausationID != grant.EventID {
 		t.Fatalf("agent 消息 causation 应指向 floor.granted：%v", agentMsg.CausationID)
 	}
@@ -132,8 +135,8 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 		t.Fatalf("agent 消息 actor 不符：%+v", agentMsg.Actor)
 	}
 	// 同轮 correlation
-	roundID := events[2].CorrelationID
-	for _, ev := range events[2:] {
+	roundID := events[3].CorrelationID
+	for _, ev := range events[3:] {
 		if ev.CorrelationID == nil || *ev.CorrelationID != *roundID {
 			t.Fatalf("%s correlation 应为 round id", ev.Type)
 		}
@@ -149,7 +152,7 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 	}
 	// round.closed 结果
 	var rc protocol.RoundClosedPayload
-	if err := json.Unmarshal(events[6].Payload, &rc); err != nil || rc.Outcome != "published" || rc.SelectedCount != 1 {
+	if err := json.Unmarshal(events[7].Payload, &rc); err != nil || rc.Outcome != "published" || rc.SelectedCount != 1 {
 		t.Fatalf("round.closed 不符：%+v err=%v", rc, err)
 	}
 }
@@ -239,6 +242,7 @@ func TestEngineMultiSeatSelection(t *testing.T) {
 		Actor:      protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
 		Visibility: protocol.Visibility{Kind: "public"}, Payload: []byte(`{}`), Metadata: map[string]any{},
 	}})
+	seedNoAutoPolicy(t, store, "room_multi")
 	store.AppendEvents(context.Background(), []protocol.Envelope{{
 		EventID: "evt_m_human", TenantID: "ten_local", RoomID: "room_multi",
 		Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
@@ -265,14 +269,14 @@ func TestEngineMultiSeatSelection(t *testing.T) {
 	if len(events) == 0 || events[len(events)-1].Type != protocol.EventRoundClosed {
 		t.Fatalf("轮未完成，事件数=%d", len(events))
 	}
-	// 期望：created, human, round.opened, intent×2, grant×2（simultaneous：先全部发授）,
-	// agent msg×2, round.closed = 10（B2 起 open_floor 默认 reveal=simultaneous：
-	// 发授集中在生成前，正文在生成后统一揭示）
-	if len(events) != 10 {
+	// 期望：created, policy(no-auto 种子), human, round.opened, intent×2, grant×2
+	// （simultaneous：先全部发授）, agent msg×2, round.closed = 11（B2 起 open_floor
+	// 默认 reveal=simultaneous：发授集中在生成前，正文在生成后统一揭示）
+	if len(events) != 11 {
 		t.Fatalf("事件数 = %d（期望 10）：%v", len(events), typesOf(events))
 	}
 	want := []string{
-		protocol.EventRoomCreated, protocol.EventMessagePosted, protocol.EventRoundOpened,
+		protocol.EventRoomCreated, protocol.EventPolicyChanged, protocol.EventMessagePosted, protocol.EventRoundOpened,
 		protocol.EventIntentRecorded, protocol.EventIntentRecorded,
 		protocol.EventFloorGranted, protocol.EventFloorGranted,
 		protocol.EventMessagePosted, protocol.EventMessagePosted,
@@ -320,7 +324,7 @@ func TestEngineMultiSeatSelection(t *testing.T) {
 	}
 	// round.closed 汇总
 	var rc protocol.RoundClosedPayload
-	_ = json.Unmarshal(events[9].Payload, &rc)
+	_ = json.Unmarshal(events[10].Payload, &rc)
 	if rc.Outcome != "published" || rc.SelectedCount != 2 {
 		t.Fatalf("round.closed 不符：%+v", rc)
 	}
@@ -594,6 +598,7 @@ func TestEngineRecordsEvalUsage(t *testing.T) {
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "u1", TenantID: "ten_local", RoomID: "room_u", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
+	seedNoAutoPolicy(t, store, "room_u")
 	deliverHuman(t, store, eng, "room_u")
 	waitRoundClosed(t, store, "room_u")
 	var sawUsage bool
@@ -667,6 +672,7 @@ func TestEngineRoundsSerializedPerRoom(t *testing.T) {
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "s0", TenantID: "ten_local", RoomID: "room_s", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
+	seedNoAutoPolicy(t, store, "room_s")
 	for _, id := range []string{"evt_s1", "evt_s2"} {
 		env := protocol.Envelope{
 			EventID: id, TenantID: "ten_local", RoomID: "room_s",
@@ -981,6 +987,7 @@ func TestEngineDurableHandoffClaim(t *testing.T) {
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "dh0", TenantID: "ten_local", RoomID: "room_dh", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
+	seedNoAutoPolicy(t, store, "room_dh")
 	stimulus := protocol.Envelope{
 		EventID: "dh1", TenantID: "ten_local", RoomID: "room_dh",
 		Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
@@ -1024,6 +1031,7 @@ func TestEngineRecoverClaimsDrivesLostRound(t *testing.T) {
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "rc0", TenantID: "ten_local", RoomID: "room_rc", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
+	seedNoAutoPolicy(t, store, "room_rc")
 	lost := protocol.Envelope{
 		EventID: "rc1", TenantID: "ten_local", RoomID: "room_rc",
 		Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
@@ -1056,6 +1064,7 @@ func TestEngineDynamicSeats(t *testing.T) {
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "ds0", TenantID: "ten_local", RoomID: "room_ds", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
+	seedNoAutoPolicy(t, store, "room_ds")
 	eng.SetSeats([]AgentSeat{
 		{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p1", Adapter: "echo"}},
 		{ParticipantID: "par_late", Profile: agent.Profile{ProfileID: "p2", Adapter: "echo"}},
@@ -1256,6 +1265,7 @@ func TestEngineResumeRedrivesPausedStimulus(t *testing.T) {
 		{EventID: "rd0", TenantID: "ten_local", RoomID: "room_rd", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 		{EventID: "rd1", TenantID: "ten_local", RoomID: "room_rd", Type: protocol.EventRoomPaused, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
+	seedNoAutoPolicy(t, store, "room_rd")
 	deliverHuman(t, store, eng, "room_rd")
 	time.Sleep(150 * time.Millisecond) // 暂停门：不开轮、声明留存
 	if hasType(store.RoomEvents("room_rd"), protocol.EventRoundOpened) {
@@ -1382,6 +1392,7 @@ func TestEngineStimulusOrderPreserved(t *testing.T) {
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "so0", TenantID: "ten_local", RoomID: "room_so", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
+	seedNoAutoPolicy(t, store, "room_so")
 	stimulus := func(id, body string) protocol.Envelope {
 		return protocol.Envelope{
 			EventID: id, TenantID: "ten_local", RoomID: "room_so",

@@ -3,8 +3,13 @@
 // → 各 seat 意图评估 → attention.Select（硬资格含预算 admission + 记分卡 + MMR）
 // → 全量 intent.recorded（band+usage）→ 按 rank floor.granted（epoch）
 // → generate（DraftUpdate 安全子集经 OnDraft 透传）→ 迟到检查（暂停/新 epoch → floor.revoked）
-// → message.posted(agent, causation=grant, usage 入 metadata) → round.closed。
-// 崩溃语义（RFC-0003 3.4）：轮状态由事件重建，未提交的选择重算。
+// → message.posted(agent, causation=grant, usage 入 metadata) → round.closed
+// → 自动续聊决策（§3.1.7 auto_rounds：有公开发言且未达上限 → 以本轮最后一条
+//
+//	agent 发言为刺激入队下一轮；静默/暂停/预算/上限即链终止；计划 v1.26）。
+//
+// 崩溃语义（RFC-0003 3.4）：轮状态由事件重建，未提交的选择重算；自动续轮
+// 条目为内存态——崩溃窗口内链断开不重复开轮（用户补踢即续）。
 package room
 
 import (
@@ -74,18 +79,48 @@ type Engine struct {
 
 // roomQueue 单房间串行队列：FIFO channel + 懒启动常驻 worker。
 type roomQueue struct {
-	ch    chan protocol.Envelope
+	ch    chan roomItem
 	start sync.Once
 }
 
-// enqueue 入队并确保该房间 worker 存活：严格按到达序处理（复审 #16）。
+// roomItem 房间队列条目：人类刺激信封，或自动续轮请求（自动续聊，计划 v1.26）。
+// 到达序统一排队——轮收口时入队的续轮请求排在"收口前已到达的人类消息"之后，
+// 人类在轮边界天然抢占接力。
+type roomItem struct {
+	env  protocol.Envelope // 非 auto：人类刺激（runRound 入参）
+	auto *autoContinue     // 非 nil：自动续轮请求
+}
+
+// autoContinue 自动续轮请求（内存态，不入 outbox/claims——崩溃窗口内链断开，
+// 正确性无损：不会重复开轮，用户补踢即续；语义登记于计划 v1.27）。
+type autoContinue struct {
+	roomID        string
+	anchorRoundID string // 决策时的最新轮：处理时若已有更新轮（人类抢占）→ 过期丢弃
+	anchor        protocol.Envelope
+}
+
+// enqueue 人类刺激入队并确保该房间 worker 存活：严格按到达序处理（复审 #16）。
 // 缓冲 256 对个人版单房间足够；满时阻塞形成背压（不丢、不乱序）；Close 后丢弃。
 func (e *Engine) enqueue(env protocol.Envelope) {
-	qAny, _ := e.roomQueues.LoadOrStore(env.RoomID, &roomQueue{ch: make(chan protocol.Envelope, 256)})
+	e.enqueueItem(roomItem{env: env})
+}
+
+// enqueueAuto 自动续轮请求入队（round 收口时由 worker 自身调用；缓冲充足，
+// worker 是唯一消费者且逐条排空，不会自阻塞）。
+func (e *Engine) enqueueAuto(a autoContinue) {
+	e.enqueueItem(roomItem{auto: &a})
+}
+
+func (e *Engine) enqueueItem(it roomItem) {
+	roomID := it.env.RoomID
+	if it.auto != nil {
+		roomID = it.auto.roomID
+	}
+	qAny, _ := e.roomQueues.LoadOrStore(roomID, &roomQueue{ch: make(chan roomItem, 256)})
 	q := qAny.(*roomQueue)
 	q.start.Do(func() { go e.roomWorker(q) })
 	select {
-	case q.ch <- env:
+	case q.ch <- it:
 	case <-e.lifecycle.Done():
 	}
 }
@@ -96,8 +131,12 @@ func (e *Engine) roomWorker(q *roomQueue) {
 		select {
 		case <-e.lifecycle.Done():
 			return
-		case env := <-q.ch:
-			e.runRound(e.lifecycle, env)
+		case it := <-q.ch:
+			if it.auto != nil {
+				e.runAutoRound(e.lifecycle, *it.auto)
+				continue
+			}
+			e.runRound(e.lifecycle, it.env, 0)
 		}
 	}
 }
@@ -359,7 +398,10 @@ func pausedAfter(events []StoredEvent, anchorSeq int64) bool {
 }
 
 // runRound 一轮：预算/暂停门控 → 评估全部 seat → 确定性选择 → 按 rank 揭示。
-func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
+// autoIndex>0 = 自动续聊轮（刺激=上一轮最后一条 agent 发言；RFC-0003 §3.1.7
+// 自动续聊参数，计划 v1.26）：开轮前按当下策略重验轮数上限（事件溯源——
+// 不依赖入队时的决策快照），声明清理仅人类刺激路径（续轮刺激不经 outbox）。
+func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope, autoIndex int) {
 	if ctx.Err() != nil { // 已 Close：不再开轮
 		return
 	}
@@ -379,7 +421,7 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 	// 幂等护栏（复审 #10/#16）：同刺激已有 round.opened（outbox 重投 / resume 重驱动 /
 	// RecoverClaims 与在途轮竞态）——清声明即返回，不双开轮。
 	if roundOpenedForStimulus(history, stimulus.EventID) {
-		if e.cfg.Claims != nil {
+		if e.cfg.Claims != nil && autoIndex == 0 {
 			_ = e.cfg.Claims.DeleteClaim(ctx, roomID, stimulus.EventID)
 		}
 		return
@@ -416,6 +458,17 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 	// 策略自事件链投影（R-10：policy.changed 只在 round 边界生效——开轮时重建，
 	// 不做热调）。Roundtable"全员各 1"以座位数取 min；预算 90% 梯度在此降 speaker。
 	policy := RebuildPolicy(envs)
+	if autoIndex > 0 {
+		// 自动续聊上限（事件溯源重验：入队后策略可能已改小/关闭；链内 auto 轮
+		// 连续计数 ≥ 上限 → 丢弃，链终止）
+		trailing := trailingAutoRounds(history)
+		if trailing >= policy.Params.AutoRounds {
+			e.debug(roomID, "自动续聊终止：轮数上限", "trailing", trailing,
+				"auto_rounds", policy.Params.AutoRounds)
+			return
+		}
+		autoIndex = trailing + 1
+	}
 	roomSeats := e.roomSeats(history)
 	maxSpeakers := policy.EffectiveMaxSpeakers(len(roomSeats))
 	maxSpeakers = ledger.ReducedSpeakers(e.cfg.Budget, maxSpeakers)
@@ -427,7 +480,8 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 	selPolicy.MaxSpeakers = maxSpeakers
 
 	epoch := countRounds(history) + 1
-	e.debug(roomID, "轮开始", "round", roundID, "stimulus", stimulus.EventID, "epoch", epoch)
+	e.debug(roomID, "轮开始", "round", roundID, "stimulus", stimulus.EventID, "epoch", epoch,
+		"auto_index", autoIndex)
 
 	// 定向交锋（RFC §3.1.9）：刺激点名 → 被点名者获定向 slot；交锋链（连续
 	// 定向轮）窗口缩短 2/3，深度超限回正常队列。链长自历史推导（事件溯源）。
@@ -454,12 +508,13 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 			RevealStrategy:  policy.Params.RevealStrategy,
 			IntentWindow:    policy.Params.IntentWindow,
 			PolicyVersion:   policy.PolicyVersion,
+			AutoIndex:       autoIndex,
 		})
 	if _, err := e.append(ctx, opened); err != nil {
 		e.warn(roomID, "round.opened 落库失败，轮中止", "err", err)
 		return
 	}
-	if e.cfg.Claims != nil {
+	if e.cfg.Claims != nil && autoIndex == 0 {
 		// 声明使命完成（认领→开轮）：清除（失败不致命——恢复扫描会按已开轮清理）
 		if err := e.cfg.Claims.DeleteClaim(ctx, roomID, stimulus.EventID); err != nil {
 			e.warn(roomID, "claim 清除失败（恢复扫描兜底）", "err", err)
@@ -530,6 +585,103 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 	_, _ = e.append(ctx, closed)
 	e.debug(roomID, "轮结束", "round", roundID, "outcome", outcome,
 		"published", published, "revoked", revoked)
+
+	// 8) 自动续聊决策（RFC-0003 §3.1.7；计划 v1.26 裁定 M2 dogfood 片）：
+	// 本轮有公开发言、未暂停、链内 auto 轮数未达上限 → 下一轮以"本轮最后一条
+	// agent 发言"为刺激入队。到达序语义：收口前已入队的人类消息先处理（人类
+	// 在轮边界抢占）；处理时已有更新轮 → 过期丢弃。静默（quiescent/revoked_all）
+	// 与预算熔断轮自然终止链；上限与暂停在开轮门控再验（事件溯源，不靠本决策）。
+	if a := e.autoContinueFor(ctx, roomID, roundID, outcome, policy, autoIndex); a != nil {
+		e.enqueueAuto(*a)
+	}
+}
+
+// autoContinueFor 自动续轮决策：返回 nil = 链终止（关/静默/暂停/达上限/无锚点）。
+// 仅作活性行为——正确性由 runRound 开轮门控的事件溯源重验兜底。
+func (e *Engine) autoContinueFor(ctx context.Context, roomID, roundID, outcome string,
+	policy RoundPolicy, autoIndex int,
+) *autoContinue {
+	if policy.Params.AutoRounds <= 0 || outcome != "published" || autoIndex >= policy.Params.AutoRounds {
+		return nil
+	}
+	fresh, err := e.roomHistory(ctx, roomID)
+	if err != nil {
+		e.warn(roomID, "自动续聊决策读史失败，链终止", "err", err)
+		return nil
+	}
+	if roomPaused(fresh) {
+		return nil // 轮内暂停：链终止（resume 不复活——人类补踢即续）
+	}
+	anchor := lastAgentMessage(fresh)
+	if anchor == nil {
+		return nil
+	}
+	a := &autoContinue{roomID: roomID, anchorRoundID: roundID, anchor: *anchor}
+	e.debug(roomID, "自动续聊入队", "anchor_round", roundID,
+		"anchor", anchor.EventID, "next_index", autoIndex+1)
+	return a
+}
+
+// runAutoRound 处理自动续轮条目：新鲜度检查（决策后已有更新轮开过——人类抢占
+// 或竞态 → 丢弃）后走 runRound 完整路径（门控/上限/预算全部事件溯源重验）。
+func (e *Engine) runAutoRound(ctx context.Context, a autoContinue) {
+	if ctx.Err() != nil {
+		return
+	}
+	fresh, err := e.roomHistory(ctx, a.roomID)
+	if err != nil {
+		e.warn(a.roomID, "自动续轮读史失败，丢弃", "err", err)
+		return
+	}
+	if latest := latestRoundID(fresh); latest != a.anchorRoundID {
+		e.debug(a.roomID, "自动续轮过期丢弃：已有更新轮", "anchor_round", a.anchorRoundID,
+			"latest_round", latest)
+		return
+	}
+	e.runRound(ctx, a.anchor, 1) // autoIndex 由 runRound 自历史重derive（trailing+1）
+}
+
+// lastAgentMessage 历史中最后一条 agent 的 message.posted（自动续轮刺激锚点）。
+func lastAgentMessage(events []StoredEvent) *protocol.Envelope {
+	for i := len(events) - 1; i >= 0; i-- {
+		env := events[i].Envelope
+		if env.Type == protocol.EventMessagePosted && env.Actor.Kind == "agent" {
+			return &env
+		}
+	}
+	return nil
+}
+
+// latestRoundID 最新 round.opened 的轮 ID（空 = 无轮）。
+func latestRoundID(events []StoredEvent) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Envelope.Type != protocol.EventRoundOpened {
+			continue
+		}
+		var p protocol.RoundOpenedPayload
+		if json.Unmarshal(events[i].Envelope.Payload, &p) == nil {
+			return p.RoundID
+		}
+		return ""
+	}
+	return ""
+}
+
+// trailingAutoRounds 链尾连续自动轮计数：自最新 round.opened 向前数 auto_index>0
+// 的轮，遇人类轮（auto_index 缺省）即止。损坏 payload 保守按人类轮止（链断）。
+func trailingAutoRounds(events []StoredEvent) int {
+	n := 0
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Envelope.Type != protocol.EventRoundOpened {
+			continue
+		}
+		var p protocol.RoundOpenedPayload
+		if json.Unmarshal(events[i].Envelope.Payload, &p) != nil || p.AutoIndex <= 0 {
+			break
+		}
+		n++
+	}
+	return n
 }
 
 type revealOutcome int

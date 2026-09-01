@@ -217,11 +217,14 @@ export function useRoom(roomID: string | null): RoomHandle {
             }
             break;
           }
-          case "round.opened":
-            append(systemEntry(view, "新一轮讨论开始"));
+          case "round.opened": {
+            // 自动续聊轮（v1.27）：payload.auto_index>0 → 接力轮，标签区分
+            const auto = (view.payload as { auto_index?: number } | null)?.auto_index ?? 0;
+            append(systemEntry(view, auto > 0 ? `自动续聊 · 第 ${auto} 轮` : "新一轮讨论开始"));
             next.roundOpen = true;
             scheduleRefresh();
             break;
+          }
           case "round.closed": {
             const outcome = (view.payload as { outcome?: string } | null)?.outcome ?? "";
             append(systemEntry(view, ROUND_OUTCOME[outcome] ?? `本轮结束（${outcome}）`));
@@ -381,7 +384,9 @@ export function useRoom(roomID: string | null): RoomHandle {
                 detail:
                   item.type === "round.closed"
                     ? (ROUND_OUTCOME[item.outcome ?? ""] ?? `本轮结束（${item.outcome ?? "?"}）`)
-                    : (SYSTEM_EVENT_TEXT[item.type] ?? item.type),
+                    : item.type === "round.opened" && (item.auto_index ?? 0) > 0
+                      ? `自动续聊 · 第 ${item.auto_index} 轮`
+                      : (SYSTEM_EVENT_TEXT[item.type] ?? item.type),
               },
         ),
         typing: {},

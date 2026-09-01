@@ -29,20 +29,25 @@ func TestPolicyDefaultsPerMode(t *testing.T) {
 		cap   int64
 		reval string
 		rebut int
+		auto  int
 	}{
-		"open_floor": {3, "20s", 500, "simultaneous", 0},
-		"roundtable": {8, "30s", 600, "independent_then_cross", 1},
-		"deep_dive":  {2, "15s", 900, "sequential", 0},
-		"review":     {3, "30s", 500, "sequential", 0},
-		"decision":   {2, "45s", 400, "sequential", 0},
+		"open_floor": {3, "20s", 500, "simultaneous", 0, 3},
+		"roundtable": {8, "30s", 600, "independent_then_cross", 1, 0},
+		"deep_dive":  {2, "15s", 900, "sequential", 0, 2},
+		"review":     {3, "30s", 500, "sequential", 0, 0},
+		"decision":   {2, "45s", 400, "sequential", 0, 0},
 	}
 	def := DefaultPolicy()
 	for mode, want := range cases {
 		got := policyDefaults(mode)
 		if got.MaxSpeakers != want.max || got.IntentWindow != want.win ||
-			got.ResponseCap != want.cap || got.RevealStrategy != want.reval || got.Rebuttals != want.rebut {
+			got.ResponseCap != want.cap || got.RevealStrategy != want.reval || got.Rebuttals != want.rebut ||
+			got.AutoRounds != want.auto {
 			t.Fatalf("%s 参数束不符：%+v（want %+v）", mode, got, want)
 		}
+	}
+	if def.Params.AutoRounds != 3 {
+		t.Fatalf("默认束自动续聊应为 3（RFC §3.1.7 Open Floor）：%+v", def.Params)
 	}
 	if def.PolicyVersion != "pol_1" || def.Params.Mode != "open_floor" {
 		t.Fatalf("默认策略应为 open_floor/pol_1：%+v", def)

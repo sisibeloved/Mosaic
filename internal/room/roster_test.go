@@ -41,7 +41,9 @@ func rosterEnv(t *testing.T) (*MemStore, *Engine, *Service, string) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	return store, eng, svc, created.RoomID
+	roomID := created.RoomID
+	seedNoAutoPolicy(t, store, roomID) // 选人/名额断言按轮计数：关自动续聊（默认束 v1.27 起为 3）
+	return store, eng, svc, roomID
 }
 
 func rosterStimulus(t *testing.T, store *MemStore, eng *Engine, roomID, eventID, body string) {
@@ -163,6 +165,7 @@ func TestCreateRoomDefaultMaterializesRoster(t *testing.T) {
 	if got := ProjectSnapshot(created.RoomID, stored).Roster; len(got) != 2 {
 		t.Fatalf("缺省选人应物化当时全席（2 席）：%v", got)
 	}
+	seedNoAutoPolicy(t, store, created.RoomID) // 名额断言按轮计数：关自动续聊（默认束 v1.27 起为 3）
 
 	// 建房后新启用一座（SetSeats 模拟 resync）：旧房间不自动收编
 	eng.SetSeats(append(seats, AgentSeat{
