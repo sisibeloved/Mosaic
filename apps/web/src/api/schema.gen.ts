@@ -99,6 +99,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 当前在席 Agent 座位（建房选择的候选集）
+         * @description 引擎座位快照（已启用的真实适配器 + echo 基线）。participant_id 即建房
+         *     create_room.payload.agents 项与 invite_agent 目标。座位随 harness 启停
+         *     动态变化（10s resync）。
+         */
+        get: operations["listAgents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/owner/bootstrap": {
         parameters: {
             query?: never;
@@ -185,12 +207,13 @@ export interface components {
          *     rename_room → RenameRoomPayload（UI 重设计切片 1；room.renamed 事件）；
          *     set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）；
          *     endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）；
+         *     invite_agent → {participant_id}（RFC-0001 Membership：participant.admitted 拉人）；
          *     fork/pause/resume/close/reopen/merge_thread → ThreadLifecyclePayload（RFC-0004 线程生命周期，
          *     状态机转移校验；merge 在个人版单 owner 形态下为直接命令=确认权）。
          */
         RoomCommand: {
             /** @enum {string} */
-            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "rename_room" | "set_policy" | "endorse_intent" | "fork_thread" | "pause_thread" | "resume_thread" | "close_thread" | "reopen_thread" | "merge_thread";
+            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "rename_room" | "set_policy" | "endorse_intent" | "invite_agent" | "fork_thread" | "pause_thread" | "resume_thread" | "close_thread" | "reopen_thread" | "merge_thread";
             expected_room_version: number;
             /** @description UUIDv7（服务端按 tenant+key+kind 去重；同键异指纹 409） */
             idempotency_key: string;
@@ -200,6 +223,8 @@ export interface components {
         };
         CreateRoomPayload: {
             display_name?: string;
+            /** @description 入房 Agent（participant ID，见 GET /v1/agents）。缺省/空 = 全部在席；非空 = 恰好所选（后续可 invite_agent 拉人）。 */
+            agents?: string[];
         };
         /** @description 房间改名载荷（room.renamed 事件载荷同构）；改名不接受置空/纯空白。 */
         RenameRoomPayload: {
@@ -345,6 +370,8 @@ export interface components {
                 response_cap?: number;
                 reveal_strategy?: string;
             };
+            /** @description 房间成员投影（room.created.agents + participant.admitted 链；null/缺 = 全部在席）。 */
+            roster?: string[];
             /** @description 线程投影（RFC-0004 生命周期状态 + fork 谱系 + 合并去向）。 */
             threads: {
                 thread_id: string;
@@ -695,6 +722,32 @@ export interface operations {
             };
             404: components["responses"]["NotFound"];
             500: components["responses"]["Internal"];
+        };
+    };
+    listAgents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 座位列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        agents: {
+                            participant_id: string;
+                            adapter: string;
+                            display_name: string;
+                        }[];
+                    };
+                };
+            };
         };
     };
     getOwnerBootstrap: {

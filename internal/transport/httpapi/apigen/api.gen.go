@@ -41,6 +41,7 @@ const (
 	CreateRoom    RoomCommandCommandKind = "create_room"
 	EndorseIntent RoomCommandCommandKind = "endorse_intent"
 	ForkThread    RoomCommandCommandKind = "fork_thread"
+	InviteAgent   RoomCommandCommandKind = "invite_agent"
 	MergeThread   RoomCommandCommandKind = "merge_thread"
 	PauseRoom     RoomCommandCommandKind = "pause_room"
 	PauseThread   RoomCommandCommandKind = "pause_thread"
@@ -62,6 +63,8 @@ func (e RoomCommandCommandKind) Valid() bool {
 	case EndorseIntent:
 		return true
 	case ForkThread:
+		return true
+	case InviteAgent:
 		return true
 	case MergeThread:
 		return true
@@ -258,6 +261,7 @@ type ParticipantViewKind string
 // rename_room → RenameRoomPayload（UI 重设计切片 1；room.renamed 事件）；
 // set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）；
 // endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）；
+// invite_agent → {participant_id}（RFC-0001 Membership：participant.admitted 拉人）；
 // fork/pause/resume/close/reopen/merge_thread → ThreadLifecyclePayload（RFC-0004 线程生命周期，
 // 状态机转移校验；merge 在个人版单 owner 形态下为直接命令=确认权）。
 type RoomCommand struct {
@@ -328,6 +332,9 @@ type Snapshot struct {
 	ProjectionVersion int64  `json:"projection_version"`
 	RoomId            string `json:"room_id"`
 	RoomVersion       int64  `json:"room_version"`
+
+	// Roster 房间成员投影（room.created.agents + participant.admitted 链；null/缺 = 全部在席）。
+	Roster *[]string `json:"roster,omitempty"`
 
 	// Scorecard 记分卡（R-08/OQ-17：intent 全量投影，band + 未选理由 + 保送状态）。
 	Scorecard []struct {
@@ -437,6 +444,9 @@ type ServerInterface interface {
 	// GetHealthz 存活探针
 	// (GET /healthz)
 	GetHealthz(w http.ResponseWriter, r *http.Request)
+	// ListAgents 当前在席 Agent 座位（建房选择的候选集）
+	// (GET /v1/agents)
+	ListAgents(w http.ResponseWriter, r *http.Request)
 	// ListHarnessExecutables 宿主扫描到的 agent CLI 注册表
 	// (GET /v1/harness/executables)
 	ListHarnessExecutables(w http.ResponseWriter, r *http.Request)
@@ -483,6 +493,20 @@ func (siw *ServerInterfaceWrapper) GetHealthz(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetHealthz(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListAgents operation middleware
+func (siw *ServerInterfaceWrapper) ListAgents(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListAgents(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -834,6 +858,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/rooms/{room_id}/commands", wrapper.SubmitRoomCommand)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/events", wrapper.SubscribeRoomEvents)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/snapshot", wrapper.GetRoomSnapshot)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/agents", wrapper.ListAgents)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/owner/bootstrap", wrapper.GetOwnerBootstrap)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)

@@ -53,6 +53,7 @@ type Snapshot struct {
 	Policy            PolicyView        `json:"policy"`
 	Scorecard         []ScorecardItem   `json:"scorecard"`
 	Threads           []ThreadView      `json:"threads"`
+	Roster            []string          `json:"roster"`
 	Graph             []GraphEdge       `json:"graph"`
 	Participants      []ParticipantView `json:"participants"`
 }
@@ -114,6 +115,12 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 	}
 	policy := RebuildPolicy(envs)
 	threads, graph := RebuildThreads(envs)
+	if roster := RosterOf(envs); roster != nil {
+		snap.Roster = make([]string, 0, len(roster))
+		for id := range roster {
+			snap.Roster = append(snap.Roster, id)
+		}
+	}
 	snap.Threads = make([]ThreadView, 0, len(threads))
 	for _, th := range threads {
 		snap.Threads = append(snap.Threads, *th)

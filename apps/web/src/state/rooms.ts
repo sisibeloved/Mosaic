@@ -48,9 +48,9 @@ export async function refreshRooms(): Promise<void> {
   return inflight;
 }
 
-/** 建房（默认名"新房间"）→ 刷新列表 → 返回 room_id 供跳转。 */
-export async function createRoom(displayName = "新房间"): Promise<string> {
-  const created = await api.createRoom(displayName);
+/** 建房（默认名"新房间"；agents = 入房 Agent 选择，空 = 全部在席）→ 刷新列表 → 返回 room_id 供跳转。 */
+export async function createRoom(displayName = "新房间", agents: string[] = []): Promise<string> {
+  const created = await api.createRoom(displayName, agents);
   await refreshRooms();
   return created.room_id;
 }

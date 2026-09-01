@@ -95,6 +95,8 @@ func (s *Service) ExecuteCommand(ctx context.Context, actor Actor, cmd Command) 
 		return s.setPolicy(ctx, actor, cmd)
 	case "endorse_intent":
 		return s.endorseIntent(ctx, actor, cmd)
+	case "invite_agent":
+		return s.inviteAgent(ctx, actor, cmd)
 	case "fork_thread", "pause_thread", "resume_thread", "close_thread", "reopen_thread", "merge_thread":
 		eventType := map[string]string{
 			"fork_thread": "thread.forked", "pause_thread": "thread.paused",
@@ -116,7 +118,8 @@ func (s *Service) createRoom(ctx context.Context, actor Actor, cmd Command) (*Co
 		return nil, fmt.Errorf("%w: create_room 不接受 room_id", ErrInvalidCommand)
 	}
 	var payload struct {
-		DisplayName string `json:"display_name"`
+		DisplayName string   `json:"display_name"`
+		Agents      []string `json:"agents"` // 可选：入房 Agent（participant ID；缺省 = 全部在席）
 	}
 	dec := json.NewDecoder(strings.NewReader(string(cmd.Payload)))
 	dec.DisallowUnknownFields()
@@ -125,6 +128,14 @@ func (s *Service) createRoom(ctx context.Context, actor Actor, cmd Command) (*Co
 	}
 	if len([]rune(payload.DisplayName)) > 120 {
 		return nil, fmt.Errorf("%w: display_name 超 120 字", ErrInvalidCommand)
+	}
+	if len(payload.Agents) > 8 {
+		return nil, fmt.Errorf("%w: agents ≤ 8", ErrInvalidCommand)
+	}
+	for _, a := range payload.Agents {
+		if !participantIDPattern.MatchString(a) {
+			return nil, fmt.Errorf("%w: agents 项须为 participant ID（par_*）", ErrInvalidCommand)
+		}
 	}
 
 	roomID := s.cfg.NewID("room")
@@ -138,8 +149,11 @@ func (s *Service) createRoom(ctx context.Context, actor Actor, cmd Command) (*Co
 		OccurredAt:    s.cfg.Clock(),
 		Actor:         protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
 		Visibility:    protocol.Visibility{Kind: "public"},
-		Payload:       mustJSON(map[string]any{"display_name": payload.DisplayName, "thread_id": rootThread}),
-		Metadata:      map[string]any{},
+		Payload: mustJSON(map[string]any{
+			"display_name": payload.DisplayName, "thread_id": rootThread,
+			"agents": payload.Agents, // 空数组 = 缺省全部在席；非空 = 恰好所选（引擎按 roster 过滤）
+		}),
+		Metadata: map[string]any{},
 	}
 	receipt := CommandReceipt{
 		TenantID:            s.cfg.Tenant,
@@ -260,9 +274,10 @@ var relationKinds = map[string]bool{
 }
 
 var (
-	threadIDPattern = regexp.MustCompile(`^thr_[0-9A-Za-z_-]+$`)
-	eventIDPattern  = regexp.MustCompile(`^evt_[0-9A-Za-z_-]+$`)
-	intentIDPattern = regexp.MustCompile(`^int_[0-9A-Za-z_-]+$`)
+	threadIDPattern      = regexp.MustCompile(`^thr_[0-9A-Za-z_-]+$`)
+	eventIDPattern       = regexp.MustCompile(`^evt_[0-9A-Za-z_-]+$`)
+	intentIDPattern      = regexp.MustCompile(`^int_[0-9A-Za-z_-]+$`)
+	participantIDPattern = regexp.MustCompile(`^par_[0-9A-Za-z_-]+$`)
 )
 
 // commit 原子落库 + 回执；回执竞态时重查回放（并发同键后到者）。

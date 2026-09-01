@@ -192,6 +192,32 @@ paths:
                 $ref: "#/components/schemas/Snapshot"
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/Internal" }
+  /v1/agents:
+    get:
+      operationId: listAgents
+      summary: 当前在席 Agent 座位（建房选择的候选集）
+      description: |
+        引擎座位快照（已启用的真实适配器 + echo 基线）。participant_id 即建房
+        create_room.payload.agents 项与 invite_agent 目标。座位随 harness 启停
+        动态变化（10s resync）。
+      responses:
+        "200":
+          description: 座位列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agents]
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      type: object
+                      required: [participant_id, adapter, display_name]
+                      properties:
+                        participant_id: { type: string }
+                        adapter: { type: string }
+                        display_name: { type: string }
   /v1/owner/bootstrap:
     get:
       operationId: getOwnerBootstrap
@@ -385,12 +411,13 @@ components:
         rename_room → RenameRoomPayload（UI 重设计切片 1；room.renamed 事件）；
         set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）；
         endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）；
+        invite_agent → {participant_id}（RFC-0001 Membership：participant.admitted 拉人）；
         fork/pause/resume/close/reopen/merge_thread → ThreadLifecyclePayload（RFC-0004 线程生命周期，
         状态机转移校验；merge 在个人版单 owner 形态下为直接命令=确认权）。
       properties:
         command_kind:
           type: string
-          enum: [create_room, post_message, pause_room, resume_room, rename_room, set_policy, endorse_intent, fork_thread, pause_thread, resume_thread, close_thread, reopen_thread, merge_thread]
+          enum: [create_room, post_message, pause_room, resume_room, rename_room, set_policy, endorse_intent, invite_agent, fork_thread, pause_thread, resume_thread, close_thread, reopen_thread, merge_thread]
         expected_room_version:
           type: integer
           minimum: 0
@@ -410,6 +437,11 @@ components:
         display_name:
           type: string
           maxLength: 120
+        agents:
+          type: array
+          maxItems: 8
+          description: 入房 Agent（participant ID，见 GET /v1/agents）。缺省/空 = 全部在席；非空 = 恰好所选（后续可 invite_agent 拉人）。
+          items: { type: string, pattern: "^par_[0-9A-Za-z_-]+$" }
     RenameRoomPayload:
       type: object
       required: [display_name]
@@ -644,6 +676,10 @@ components:
             intent_window: { type: string }
             response_cap: { type: integer, format: int64 }
             reveal_strategy: { type: string }
+        roster:
+          type: array
+          description: 房间成员投影（room.created.agents + participant.admitted 链；null/缺 = 全部在席）。
+          items: { type: string }
         threads:
           type: array
           description: 线程投影（RFC-0004 生命周期状态 + fork 谱系 + 合并去向）。

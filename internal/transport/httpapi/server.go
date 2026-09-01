@@ -404,6 +404,22 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 
 // ---- 宿主层可执行程序端点（RFC-0002 双层管理的宿主面；apigen.ServerInterface）----
 
+// ListAgents 当前在席座位（apigen.ServerInterface）——建房选择的候选集。
+// 引擎未就绪（宿主扫描期）返回空列表而非阻塞。
+func (s *server) ListAgents(w http.ResponseWriter, _ *http.Request) {
+	agents := []map[string]any{}
+	if s.deps.Seats != nil {
+		for _, seat := range s.deps.Seats() {
+			agents = append(agents, map[string]any{
+				"participant_id": seat.ParticipantID,
+				"adapter":        seat.Profile.Adapter,
+				"display_name":   seat.Profile.DisplayName,
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agents": agents})
+}
+
 func (s *server) ListHarnessExecutables(w http.ResponseWriter, _ *http.Request) {
 	if s.deps.Harness == nil {
 		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")

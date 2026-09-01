@@ -1,0 +1,133 @@
+// UT 层：建房选 Agent + 拉人（dogfood 反馈 #1——RFC-0001 Membership 最小落地）。
+package room
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/sisibeloved/Mosaic/internal/agent"
+	"github.com/sisibeloved/Mosaic/internal/agent/echo"
+	"github.com/sisibeloved/Mosaic/internal/contextx"
+	"github.com/sisibeloved/Mosaic/internal/outbox"
+	"github.com/sisibeloved/Mosaic/internal/protocol"
+)
+
+// rosterEnv：双 echo 座（par_echo + par_other），建房即选 par_echo。
+func rosterEnv(t *testing.T) (*MemStore, *Engine, *Service, string) {
+	t.Helper()
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(echo.Adapter{})
+	t.Cleanup(sup.Shutdown)
+	eng := NewEngine(EngineConfig{
+		Store: store, Reader: store, Agents: sup,
+		Seats: []AgentSeat{
+			{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "prof_echo", Adapter: "echo"}},
+			{ParticipantID: "par_other", Profile: agent.Profile{ProfileID: "po", Adapter: "echo"}},
+		},
+		Budget: contextx.Limits{},
+		Clock:  testClock, Now: time.Now,
+		NewID: counterNewID(), Tenant: "ten_local",
+	})
+	svc := NewService(Config{Store: store, Reader: store, Clock: testClock,
+		NewID: counterNewID(), Tenant: "ten_local"})
+	created, err := svc.ExecuteCommand(context.Background(), Actor{ParticipantID: "par_owner", Kind: "human"},
+		Command{CommandKind: "create_room", ExpectedRoomVersion: 0,
+			IdempotencyKey: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5ecf", IssuedAt: "2026-08-31T09:00:00.000Z",
+			Payload: []byte(`{"display_name":"选人房","agents":["par_echo"]}`),
+		})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	return store, eng, svc, created.RoomID
+}
+
+func rosterStimulus(t *testing.T, store *MemStore, eng *Engine, roomID, eventID, body string) {
+	t.Helper()
+	payload, _ := json.Marshal(map[string]any{
+		"body": body, "reply_to": nil, "addressed_to": []any{}, "relations": []any{},
+	})
+	env := protocol.Envelope{
+		EventID: eventID, TenantID: "ten_local", RoomID: roomID,
+		Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
+		Actor:      protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Visibility: protocol.Visibility{Kind: "public"}, Payload: payload, Metadata: map[string]any{},
+	}
+	if _, err := store.AppendEvents(context.Background(), []protocol.Envelope{env}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	raw, _ := json.Marshal(env)
+	eng.Deliver(context.Background(), outbox.Entry{RoomID: roomID, Envelope: raw})
+}
+
+// TestCreateRoomAgentSelection：agents=["par_echo"] → 只有 echo 参与轮；
+// invite_agent 拉人后 par_other 入房参与。
+func TestCreateRoomAgentSelection(t *testing.T) {
+	store, eng, svc, roomID := rosterEnv(t)
+
+	rosterStimulus(t, store, eng, roomID, "evt_ro_h1", "选人房消息")
+	waitRoundClosed(t, store, roomID)
+
+	events := store.RoomEvents(roomID)
+	for _, ev := range events {
+		if ev.Actor.ParticipantID == "par_other" {
+			t.Fatalf("未入选的 par_other 不应参与轮（出现在 %s）：%v", ev.Type, typesOf(events))
+		}
+	}
+	if countAgentMsgsOf(events) != 1 {
+		t.Fatalf("恰 echo 一条发言：%v", typesOf(events))
+	}
+	stored, _, _ := store.EventsAfter(context.Background(), roomID, "", 1000)
+	snap := ProjectSnapshot(roomID, stored)
+	if len(snap.Roster) != 1 || snap.Roster[0] != "par_echo" {
+		t.Fatalf("roster 投影不符：%v", snap.Roster)
+	}
+
+	// invite_agent 拉人 → par_other 入 roster 并参与下一轮
+	version := int64(0)
+	for _, ev := range store.RoomEvents(roomID) {
+		if ev.Seq > version {
+			version = ev.Seq
+		}
+	}
+	if _, err := svc.ExecuteCommand(context.Background(), Actor{ParticipantID: "par_owner", Kind: "human"},
+		Command{RoomID: roomID, CommandKind: "invite_agent", ExpectedRoomVersion: version,
+			IdempotencyKey: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5ed1", IssuedAt: "2026-08-31T09:00:01.000Z",
+			Payload: []byte(`{"participant_id":"par_other"}`),
+		}); err != nil {
+		t.Fatalf("invite: %v", err)
+	}
+	rosterStimulus(t, store, eng, roomID, "evt_ro_h2", "拉人后的消息")
+	waitRoundsClosed(t, store, roomID, 2)
+	sawOther := false
+	for _, ev := range store.RoomEvents(roomID) {
+		if ev.Actor.ParticipantID == "par_other" && ev.Seq > version {
+			sawOther = true
+		}
+	}
+	if !sawOther {
+		t.Fatal("invite 后 par_other 应参与轮")
+	}
+}
+
+// TestCreateRoomAgentValidation：非法 participant id / 超 8 拒绝。
+func TestCreateRoomAgentValidation(t *testing.T) {
+	_, _, svc, _ := rosterEnv(t)
+	actor := Actor{ParticipantID: "par_owner", Kind: "human"}
+	cases := []struct{ name, payload string }{
+		{"非法 id", `{"display_name":"x","agents":["codex"]}`},
+		{"超上限", `{"display_name":"x","agents":["par_1","par_2","par_3","par_4","par_5","par_6","par_7","par_8","par_9"]}`},
+	}
+	for i, tc := range cases {
+		if _, err := svc.ExecuteCommand(context.Background(), actor,
+			Command{CommandKind: "create_room", ExpectedRoomVersion: 0,
+				IdempotencyKey: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5ed" + string(rune('2'+i)),
+				IssuedAt:       "2026-08-31T09:00:02.000Z",
+				Payload:        []byte(tc.payload),
+			}); err == nil {
+			t.Fatalf("%s 应拒绝", tc.name)
+		}
+	}
+}

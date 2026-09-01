@@ -283,6 +283,28 @@ func (e *Engine) debug(roomID, msg string, args ...any) {
 // Seats 当前座位快照（开发者模式状态端点用；与轮执行同一份数据）。
 func (e *Engine) Seats() []AgentSeat { return e.seatsSnapshot() }
 
+// roomSeats 房间有效座位：全局座位 ∩ 房间 roster（roster 为空 = 全部在席，
+// 向后兼容；create_room agents 选择 / participant.admitted 驱动——dogfood：
+// 建房即选 Agent，与拉人进群同构）。
+func (e *Engine) roomSeats(history []StoredEvent) []AgentSeat {
+	all := e.seatsSnapshot()
+	envs := make([]protocol.Envelope, len(history))
+	for i := range history {
+		envs[i] = history[i].Envelope
+	}
+	roster := RosterOf(envs)
+	if roster == nil {
+		return all
+	}
+	out := make([]AgentSeat, 0, len(all))
+	for _, s := range all {
+		if roster[s.ParticipantID] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // roomHistory 拉全量房间事件（M1 房间规模小；增量缓存随 M2 性能项）。
 func (e *Engine) roomHistory(ctx context.Context, roomID string) ([]StoredEvent, error) {
 	var all []StoredEvent
@@ -394,7 +416,8 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 	// 策略自事件链投影（R-10：policy.changed 只在 round 边界生效——开轮时重建，
 	// 不做热调）。Roundtable"全员各 1"以座位数取 min；预算 90% 梯度在此降 speaker。
 	policy := RebuildPolicy(envs)
-	maxSpeakers := policy.EffectiveMaxSpeakers(len(e.seatsSnapshot()))
+	roomSeats := e.roomSeats(history)
+	maxSpeakers := policy.EffectiveMaxSpeakers(len(roomSeats))
 	maxSpeakers = ledger.ReducedSpeakers(e.cfg.Budget, maxSpeakers)
 	if maxSpeakers <= 0 {
 		e.debug(roomID, "轮跳过：speaker 降级至零（预算 100%）", "stimulus", stimulus.EventID)
@@ -408,7 +431,7 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 
 	// 定向交锋（RFC §3.1.9）：刺激点名 → 被点名者获定向 slot；交锋链（连续
 	// 定向轮）窗口缩短 2/3，深度超限回正常队列。链长自历史推导（事件溯源）。
-	directed, slotCap, chainLen := directedSlotsFor(history, stimulus, e.seatsSnapshot(), selPolicy.MaxSpeakers)
+	directed, slotCap, chainLen := directedSlotsFor(history, stimulus, roomSeats, selPolicy.MaxSpeakers)
 	if chainLen >= 2 && chainLen <= maxDirectedChainDepth {
 		shortened := policy.IntentWindow * 2 / 3
 		if secs := (shortened + time.Second - 1) / time.Second; secs >= 1 {
@@ -418,7 +441,7 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 		e.debug(roomID, "交锋链窗口缩短", "chain", chainLen, "window", policy.Params.IntentWindow)
 	}
 	fullHouse := policy.Params.Mode == "roundtable" &&
-		policy.EffectiveMaxSpeakers(len(e.seatsSnapshot())) >= len(e.seatsSnapshot())
+		policy.EffectiveMaxSpeakers(len(roomSeats)) >= len(roomSeats)
 
 	// 1) round.opened（策略快照字段全部来自投影——声明即执行：reveal 本切片
 	// 只放行 sequential，M1"声明 simultaneous 实际按序执行"的名不副实在此纠正）
@@ -444,7 +467,7 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 	}
 
 	// 2) 上下文组装（七层最小 + Receipt；同轮各任务共享组装、逐任务 Receipt）
-	seats := e.seatsSnapshot()
+	seats := roomSeats
 	seatsMin := make([]contextx.Seat, len(seats))
 	for i, s := range seats {
 		seatsMin[i] = contextx.Seat{ParticipantID: s.ParticipantID}
@@ -471,7 +494,7 @@ func (e *Engine) runRound(ctx context.Context, stimulus protocol.Envelope) {
 
 	// 3-5) 评估 → 选择 → intent.recorded 全记录（主波 subround=0；cross 子轮复用）
 	selection, recordedByIntent, ok := e.evaluateAndSelect(ctx, roomID, roundID, stimulus,
-		history, e.seatsSnapshot(), taskContext, selPolicy, policy, ledger, 0,
+		history, roomSeats, taskContext, selPolicy, policy, ledger, 0,
 		directed, slotCap, fullHouse)
 	if !ok {
 		return
@@ -778,15 +801,38 @@ func (e *Engine) revealSimultaneous(ctx context.Context, roomID, roundID string,
 		}
 		wave = append(wave, pending{sel: sel, grantID: grantID, grantEnv: grantEnv})
 	}
-	for i := range wave {
-		draft, ok := e.runGenerate(ctx, roomID, roundID, stimulus, wave[i].sel,
-			wave[i].grantEnv, wave[i].grantID, taskContext, policy)
-		if !ok {
-			revoked++ // 该授已按 generation_failed 撤销；其余继续（AR-008）
-			continue
+	// 生成并行（dogfood 反馈修复）：冻结水位下各获选者的生成互相独立——
+	// 串行会让首条可见回应 = 各座位延迟之和（双真实 agent 80s+ 零输出）；
+	// 并行后 = 最慢者。失败撤销在 goroutine 内各自落（append 事件线程安全经
+	// 存储事务；runTask/适配器会话按座位隔离）。发布仍在全部完成后按 rank
+	// 统一揭示（simultaneous 语义不变）。
+	if len(wave) > 1 {
+		var wg sync.WaitGroup
+		for i := range wave {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				draft, ok := e.runGenerate(ctx, roomID, roundID, stimulus, wave[i].sel,
+					wave[i].grantEnv, wave[i].grantID, taskContext, policy)
+				if ok {
+					wave[i].draft = draft
+					wave[i].genOK = true
+				}
+			}(i)
 		}
-		wave[i].draft = draft
-		wave[i].genOK = true
+		wg.Wait()
+	} else if len(wave) == 1 {
+		draft, ok := e.runGenerate(ctx, roomID, roundID, stimulus, wave[0].sel,
+			wave[0].grantEnv, wave[0].grantID, taskContext, policy)
+		if ok {
+			wave[0].draft = draft
+			wave[0].genOK = true
+		}
+	}
+	for i := range wave {
+		if !wave[i].genOK {
+			revoked++ // 该授已按 generation_failed 撤销（AR-008）；计数在发布前汇总
+		}
 	}
 	for _, p := range wave {
 		if !p.genOK {

@@ -5,8 +5,8 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.19 |
-| 日期 | 2026-08-31 |
+| 版本 | v1.20 |
+| 日期 | 2026-09-01 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
 | 交付目标 | **个人完全可用的 App**：单用户本地运行，一等公民支持 Windows 与 macOS；不是验证性半成品 |
@@ -36,6 +36,7 @@
 | v1.17 | 2026-08-31 | Mosaic 项目组 / ZCode | **B 轨切片 3：点名与定向交锋快速通道（RFC-0003 §3.1.9）**。(1) **定向 slot**：公开消息 addressed_to → 被点名者下一轮获定向回应 slot——优先资格（未获选的合格定向候选强制入围前排）+ 发言顺序前置（稳定排序 + rank 重排）；floor.granted.directed 标记；slot 调整在选择后、intent.recorded 前应用（Selected 标记与最终选择一致）。(2) **slot 约束**：上限 min(ceil(名额/2), 2)（纯函数 UT 表驱动钉住 1/1/2/2/2）；全员模式（Roundtable）仅顺序前置不增名额；定向不绕过硬资格/预算 admission。(3) **交锋链**：连续定向轮链长自事件历史推导（round.opened causation → 刺激 addressed_to 回溯）；链 ≥2 意图窗口缩短 2/3（整数秒向上取整，20s→14s/15s→10s）；深度 >4（RFC 默认）回正常评分队列与窗口——链计数、缩短、截止全在 round.opened 写入前完成（声明即执行）。(4) **界面**：时间线作者可点击点名（输入区定向 chip，可取消）；post_message addressed_to 全链路（客户端/时间线/引擎）。UT（slot 优先与上限/链窗口缩短与超限回退/上限推导表）+ 三层门禁全绿。**登记**：dyad_share 对交锋链的降权约束依赖 RFC-0006 结构投影（M3 接入后挂接）；agent 侧主动 addressed_to（交锋链自动延续）随适配器提示词引导落地 |
 | v1.18 | 2026-08-31 | Mosaic 项目组 / ZCode | **B 轨切片 4：人类保送 + 记分卡面板（RFC-0003 §3.1.11 / OQ-17 / R-08）**。(1) **endorse_intent 命令**：intent_id 存在性校验（Reader 注入）→ intent.endorsed 事件（human actor、public 对全体可见；effect 本切片仅 grant——boost 语义依赖 Policy 加权参数定稿，未定不收）。(2) **引擎执行面**：intent.endorsed → 上下文重组（保送指令层 + 原轮刺激锚）→ floor.granted（grant_id 语义化前缀 + causation=endorsed 事件——人类可追溯链 message→grant→endorsed(human)；metadata endorsed 标记）→ 生成 → 发布（独立暂停围栏 + CAS 良性重试）；不绕过预算（熔断/预留不足跳过）、硬资格（座位在席）、安全（适配器发布门）。(3) **记分卡**：intent.recorded 增公开 unselected_reason（R-08 从 metadata 升公开 payload，schema expand-first 可选字段）；快照增 scorecard 区（intent 全量投影 + intent.endorsed 合并 endorsed 标记——事件不回写）；SPA 记分卡面板（第三导航：band/获选/未选理由/公开理由 + 未获选意向一键保送，409 校准重试）。UT（保送全链 + 人类可追溯链断言 + boost/未知 intent/非法 id 拒绝）/IT/ST 全绿；OpenAPI 契约枚举扩 6 种 |
 | v1.19 | 2026-08-31 | Mosaic 项目组 / ZCode | **B 轨切片 5（收口）：Thread 生命周期 + Timeline/Graph 双视图（RFC-0004）——B 轨全部切片完成**。(1) **事件族**：thread.forked/paused/resumed/closed/reopened/merged（六事件 payload 携谱系/目标/合并去向；phase.changed 与 archived 随 M3——RFC 表 T2/归档项如实登记）。(2) **命令族**：fork_thread（source_event_id+goal 必填，源事件定位父线程）/pause/resume/close/reopen/merge_thread——状态机转移在命令面校验（active↔paused→closed→reopened；merged 终态），merge 在个人版单 owner 形态下为直接命令（owner 即 OQ-05 确认权；propose/accept 双步为多人类形态语义，登记）。(3) **引擎门控**：刺激落暂停/关闭/已合并线程不开自动轮（人类消息本身不受限）；线程状态自事件投影。(4) **投影**：快照增 threads（状态/谱系/目标/消息数）与 graph（显式边全集：forked_from/responds_to/merged_into + relations 类型化边；推断边属 RFC-0006 结构投影 M3 接入后标 inferred——双视图显式与推断的区分语义已就位）。(5) **界面**：图谱视图（第四导航——线程表 + 边列表，显式边全量、推断位标注 M3）。UT（状态机全转移 + 非法转移拒绝 + 图边投影 + 引擎线程门）/IT/ST 全绿；契约枚举扩 12 种命令。**B 轨五切片（B1 策略基座/B2 reveal 三策略/B3 点名定向/B4 保送记分卡/B5 Thread 图谱）全部完成**。**登记**：上下文按线程隔离的完整契约（RFC-0004 §3.5 近期窗口线程内过滤）与 fork 参与者子集的上下文裁剪随 M3 记忆层；Thread UI 的 fork 入口（消息级分叉按钮）随 M2 后续 dogfood 反馈迭代 |
+| v1.20 | 2026-09-01 | Mosaic 项目组 / ZCode | **dogfood 反馈两项修复**。(1) **建房选 Agent + 拉人（反馈 #1）**：create_room 载荷可选 agents（participant ID 列表；缺省/空 = 全部在席向后兼容，非空 = 恰好所选）+ invite_agent 命令 → participant.admitted（RFC-0001 Membership 最小落地；登记制——roster 中的座位启用后即入房）；引擎 roomSeats = 全局座位 ∩ 房间 roster（评估/上下文/定向/全员判定/保送全链过滤）；GET /v1/agents 座位端点（建房选择器候选集）；快照 roster 投影；SPA /new 页 Agent 多选芯片（空选 = 全部）。UT：选人排除未入选座（评估零出现）+ invite 后入房参与 + 校验拒绝。(2) **simultaneous 波内生成并行化（反馈 #2——无正式回应）**：B2 的串行生成让首条可见回应 = 各座位延迟之和（双真实 agent 80s+ 零输出）；改为并行（冻结水位下生成互独立，墙钟 = 最慢者；失败各自撤销；发布仍按 rank 统一揭示）。UT：双 400ms 座一轮 <700ms + 生成窗口重叠原子证据。真机实录：codex+kimi 选人房（echo 正确排除），发送后 45s 双消息同毫秒揭示（并行生效）。门禁全绿；契约枚举扩 14 种（含用户批次 rename_room） |
 
 # 1. 交付目标与"完全可用"定义
 

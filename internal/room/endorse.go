@@ -57,7 +57,7 @@ func (e *Engine) runEndorse(ctx context.Context, endorsed protocol.Envelope) {
 		return
 	}
 	// 硬资格：座位须在席（Agent 不能保送 Agent 的执行侧等价物——不在席即无资格）
-	seat := e.seatOf(participant)
+	seat := e.seatIn(participant, e.roomSeats(history))
 	if seat == nil {
 		e.warn(roomID, "保送跳过：参与者不在席", "intent", payload.IntentID, "participant", participant)
 		return
@@ -82,8 +82,9 @@ func (e *Engine) runEndorse(ctx context.Context, endorsed protocol.Envelope) {
 			anchor = *stim
 		}
 	}
+	roomSeats := e.roomSeats(history)
 	seatsMin := make([]contextx.Seat, 0)
-	for _, s := range e.seatsSnapshot() {
+	for _, s := range roomSeats {
 		seatsMin = append(seatsMin, contextx.Seat{ParticipantID: s.ParticipantID})
 	}
 	assembled := contextx.Assemble(contextx.Config{
@@ -191,9 +192,9 @@ func (e *Engine) issueGrantCustom(ctx context.Context, roomID, causationEventID 
 	return grant, appended[0].EventID, true
 }
 
-// seatOf 参与者在席查找。
-func (e *Engine) seatOf(participantID string) *AgentSeat {
-	for _, s := range e.seatsSnapshot() {
+// seatIn 指定座位集合内的参与者查找。
+func (e *Engine) seatIn(participantID string, seats []AgentSeat) *AgentSeat {
+	for _, s := range seats {
 		if s.ParticipantID == participantID {
 			seat := s
 			return &seat

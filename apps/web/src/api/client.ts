@@ -105,12 +105,30 @@ function commandBody(kind: string, expectedVersion: number, payload: unknown) {
   };
 }
 
+export interface AgentSeatInfo {
+  participant_id: string;
+  adapter: string;
+  display_name: string;
+}
+
 export const api = {
+  agents(): Promise<{ agents: AgentSeatInfo[] }> {
+    return request<{ agents: AgentSeatInfo[] }>("/v1/agents");
+  },
   listRooms(): Promise<{ rooms: RoomSummary[] }> {
     return request<{ rooms: RoomSummary[] }>("/v1/rooms");
   },
-  createRoom(displayName: string): Promise<CommandResponse> {
-    return post("/v1/rooms", commandBody("create_room", 0, { display_name: displayName }));
+  createRoom(displayName: string, agentsSel: string[] = []): Promise<CommandResponse> {
+    return post("/v1/rooms", commandBody("create_room", 0, {
+      display_name: displayName,
+      ...(agentsSel.length > 0 ? { agents: agentsSel } : {}),
+    }));
+  },
+  inviteAgent(roomID: string, version: number, participantID: string): Promise<CommandResponse> {
+    return post(
+      `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
+      commandBody("invite_agent", version, { participant_id: participantID }),
+    );
   },
   renameRoom(roomID: string, version: number, displayName: string): Promise<CommandResponse> {
     return post(
