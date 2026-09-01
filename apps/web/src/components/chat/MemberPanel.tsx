@@ -1,9 +1,10 @@
 // 右侧抽屉（成员 / 发言评估 / 话题线）：数据源为房间快照投影（随 SSE 事件由 room.ts
 // 防抖重取），无手动刷新。请优先发言沿用 endorse_intent 命令链（room.endorse 内部做版本校准+409 重试）。
-// 内部枚举一律经 lib/copy 映射层转为用户语言，不裸显。
+// 成员 Tab 顶部"邀请"沿用 invite_agent 命令链（同校准/重试）。内部枚举一律经 lib/copy
+// 映射层转为用户语言，不裸显。
 import { useEffect, useState } from "react";
+import { api, type AgentSeatInfo, type ParticipantView } from "../../api/client";
 import type { GraphEdge, ScorecardItem, ThreadItem } from "../../api/room";
-import type { ParticipantView } from "../../api/client";
 import {
   adapterLabel,
   channelLabel,
@@ -28,21 +29,28 @@ const TABS: { id: Tab; label: string }[] = [
 
 export function MemberPanel({
   participants,
+  roster,
   scorecard,
   threads,
   edges,
   endorseBusy,
   onEndorse,
+  inviteBusy,
+  onInvite,
   onTabActive,
   onClose,
   describeEvent,
 }: {
   participants: ParticipantView[];
+  /** 入房 Agent 名单（null = 全席模式，无邀请入口语义上的候选）。 */
+  roster: string[] | null;
   scorecard: ScorecardItem[];
   threads: ThreadItem[];
   edges: GraphEdge[];
   endorseBusy: string | null;
   onEndorse: (intentID: string) => void;
+  inviteBusy: string | null;
+  onInvite: (participantID: string) => void;
   /** Tab 打开/切换时回调（触发投影刷新）。 */
   onTabActive: (tab: Tab) => void;
   onClose: () => void;
@@ -82,7 +90,9 @@ export function MemberPanel({
         </button>
       </div>
       <div className="flex-1 overflow-y-auto">
-        {tab === "members" && <MembersTab participants={participants} />}
+        {tab === "members" && (
+          <MembersTab participants={participants} roster={roster} inviteBusy={inviteBusy} onInvite={onInvite} />
+        )}
         {tab === "scorecard" && (
           <ScorecardTab
             scorecard={scorecard}
@@ -97,29 +107,115 @@ export function MemberPanel({
   );
 }
 
-function MembersTab({ participants }: { participants: ParticipantView[] }) {
-  if (participants.length === 0) {
-    return <p className="px-3 py-4 text-xs text-faint">暂无参与者信息。</p>;
+function MembersTab({
+  participants,
+  roster,
+  inviteBusy,
+  onInvite,
+}: {
+  participants: ParticipantView[];
+  roster: string[] | null;
+  inviteBusy: string | null;
+  onInvite: (participantID: string) => void;
+}) {
+  const [inviting, setInviting] = useState(false);
+  // 快照 participants 是全局座位视图（含未入房 Agent）；房间成员 = 人类 + roster
+  // 名单内的 Agent（roster null = 全席模式，所有在席 Agent 均在房内）。
+  const members = participants.filter(
+    (p) => p.kind !== "agent" || roster === null || roster.includes(p.participant_id),
+  );
+  return (
+    <div className="py-1">
+      <div className="flex items-center justify-between px-3 pb-1 pt-1">
+        <h3 className="text-xs font-medium text-dim">成员（{members.length}）</h3>
+        <button
+          type="button"
+          onClick={() => setInviting((v) => !v)}
+          aria-expanded={inviting}
+          className="rounded-lg px-2 py-0.5 text-[11px] text-dim transition-colors hover:bg-surface-2 hover:text-text"
+        >
+          + 邀请
+        </button>
+      </div>
+      {inviting && <InviteList roster={roster} busy={inviteBusy} onInvite={onInvite} />}
+      {members.length === 0 ? (
+        <p className="px-3 py-3 text-xs text-faint">暂无参与者信息。</p>
+      ) : (
+        <ul className="py-1">
+          {members.map((p) => (
+            <li key={p.participant_id} className="flex items-center gap-2.5 px-3 py-2">
+              <Avatar participantID={p.participant_id} displayName={p.display_name} size={28} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 text-sm">
+                  <span className="truncate">{p.display_name}</span>
+                  {p.kind === "human" && (
+                    <span className="rounded bg-accent-soft px-1.5 text-[10px] leading-4 text-accent">我</span>
+                  )}
+                </div>
+                <div className="mt-0.5 flex flex-wrap gap-1">
+                  <Badge>{kindLabel(p.kind)}</Badge>
+                  {p.adapter && <Badge>{adapterLabel(p.adapter)}</Badge>}
+                  {p.channel && <Badge>{channelLabel(p.channel)}</Badge>}
+                </div>
+              </div>
+              <Badge tone={p.seat_status === "seated" ? "ok" : "dim"}>{seatStatusLabel(p.seat_status)}</Badge>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** 邀请候选：在席（GET /v1/agents）且不在 roster 内（roster 即房间成员名单）。 */
+function InviteList({
+  roster,
+  busy,
+  onInvite,
+}: {
+  roster: string[] | null;
+  busy: string | null;
+  onInvite: (participantID: string) => void;
+}) {
+  const [agents, setAgents] = useState<AgentSeatInfo[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .agents()
+      .then(({ agents }) => setAgents(agents))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, []);
+
+  if (roster === null) {
+    return (
+      <p className="mx-2 mb-2 rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-[11px] text-faint">
+        本房间为全席模式（建房时未选人）——所有在席 Agent 均已在房间内。
+      </p>
+    );
+  }
+  if (error) return <p className="mx-2 mb-2 px-1 text-[11px] text-danger">{error}</p>;
+  if (agents === null) return <p className="mx-2 mb-2 px-1 text-[11px] text-faint">座位加载中…</p>;
+
+  const candidates = agents.filter((a) => !roster.includes(a.participant_id));
+  if (candidates.length === 0) {
+    return <p className="mx-2 mb-2 px-1 text-[11px] text-faint">没有可邀请的在席 Agent。</p>;
   }
   return (
-    <ul className="py-1">
-      {participants.map((p) => (
-        <li key={p.participant_id} className="flex items-center gap-2.5 px-3 py-2">
-          <Avatar participantID={p.participant_id} displayName={p.display_name} size={28} />
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5 text-sm">
-              <span className="truncate">{p.display_name}</span>
-              {p.kind === "human" && (
-                <span className="rounded bg-accent-soft px-1.5 text-[10px] leading-4 text-accent">我</span>
-              )}
-            </div>
-            <div className="mt-0.5 flex flex-wrap gap-1">
-              <Badge>{kindLabel(p.kind)}</Badge>
-              {p.adapter && <Badge>{adapterLabel(p.adapter)}</Badge>}
-              {p.channel && <Badge>{channelLabel(p.channel)}</Badge>}
-            </div>
-          </div>
-          <Badge tone={p.seat_status === "seated" ? "ok" : "dim"}>{seatStatusLabel(p.seat_status)}</Badge>
+    <ul className="mx-2 mb-2 rounded-lg border border-border bg-surface-2 py-1">
+      {candidates.map((a) => (
+        <li key={a.participant_id} className="flex items-center gap-2 px-2.5 py-1.5 text-xs">
+          <Avatar participantID={a.participant_id} displayName={a.display_name} size={20} />
+          <span className="min-w-0 flex-1 truncate">{a.display_name}</span>
+          <span className="shrink-0 text-[10px] text-faint">{adapterLabel(a.adapter)}</span>
+          <button
+            type="button"
+            disabled={busy === a.participant_id}
+            onClick={() => onInvite(a.participant_id)}
+            className="shrink-0 rounded-lg bg-surface-3 px-2 py-0.5 text-[11px] text-text transition-opacity hover:opacity-85 disabled:opacity-40"
+          >
+            {busy === a.participant_id ? "邀请中…" : "邀请"}
+          </button>
         </li>
       ))}
     </ul>

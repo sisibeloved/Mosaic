@@ -1,15 +1,15 @@
 // 设置页：实例（harness 可执行项管理 + 手动登记）/ 策略（当前房间三模式预设，
-// 沿用 set_policy 命令链）/ 外观（主题切换）/ 开发者（MOSAIC_DEV 时 DevPanel）。
+// 沿用 set_policy 命令链）/ 外观（主题切换）/ 开发者（开关 + DevPanel——UI 展示面
+// 本地持久化；调试端点仍由服务端 -dev 决定是否装配）。
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError, type Executable, type PolicyParams } from "../api/client";
 import { DevPanel } from "../components/DevPanel";
 import { getLastRoomId } from "../state/rooms";
+import { useDevMode } from "../state/dev";
 import { useTheme } from "../state/theme";
 import { adapterLabel, channelLabel } from "../lib/copy";
 import { truncate } from "../lib/ui";
-
-declare const MOSAIC_DEV: boolean;
 
 /** 快照策略区视图（字段可选——见 OpenAPI Snapshot.policy）。 */
 interface SnapshotPolicy {
@@ -49,6 +49,7 @@ function modeDefaults(mode: string): PolicyParams {
 export function SettingsPage() {
   const roomID = getLastRoomId();
   const [theme, setTheme] = useTheme();
+  const [devMode, setDevMode] = useDevMode();
   const [executables, setExecutables] = useState<Executable[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -366,12 +367,28 @@ export function SettingsPage() {
           </div>
         </section>
 
-        {MOSAIC_DEV && (
-          <section>
-            <h2 className="mb-1 text-sm font-medium">开发者</h2>
-            <DevPanel roomID={roomID} />
-          </section>
-        )}
+        <section>
+          <h2 className="mb-1 text-sm font-medium">开发者</h2>
+          <div className="mb-3 flex items-start justify-between gap-4">
+            <p className="text-xs text-faint">
+              显示调试面板（trace、事件日志、预算水位）。调试端点需服务端以 -dev
+              启动才装配（桌面端默认启用）；开关只控制界面展示，本地持久化。
+            </p>
+            <button
+              type="button"
+              aria-pressed={devMode}
+              onClick={() => setDevMode(!devMode)}
+              className={`shrink-0 rounded-xl border px-3.5 py-2 text-sm transition-colors ${
+                devMode
+                  ? "border-accent bg-accent-soft text-accent"
+                  : "border-border bg-surface-2 text-text hover:border-faint"
+              }`}
+            >
+              {devMode ? "已开启" : "已关闭"}
+            </button>
+          </div>
+          {devMode && <DevPanel roomID={roomID} />}
+        </section>
       </div>
     </div>
   );

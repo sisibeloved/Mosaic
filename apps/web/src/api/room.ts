@@ -53,6 +53,7 @@ const SUBSCRIBED_EVENTS = [
   "room.started",
   "room.renamed",
   "policy.changed",
+  "participant.admitted",
 ] as const;
 
 const ROUND_OUTCOME: Record<string, string> = {
@@ -78,6 +79,8 @@ interface RoomModelState {
   policy: PolicyView | null;
   roundOpen: boolean;
   paused: boolean;
+  /** 入房 Agent 名单（null = 全席模式：建房未选人，所有在席 Agent 均在房内）。 */
+  roster: string[] | null;
 }
 
 export interface RoomHandle {
@@ -93,6 +96,7 @@ export interface RoomHandle {
   policy: PolicyView | null;
   roundOpen: boolean;
   paused: boolean;
+  roster: string[] | null;
   connection: Connection;
   error: string | null;
   send(body: string, addressedTo?: string[]): Promise<void>;
@@ -100,6 +104,8 @@ export interface RoomHandle {
   resume(): Promise<void>;
   rename(displayName: string): Promise<void>;
   endorse(intentID: string): Promise<void>;
+  /** invite_agent 拉人入房（RFC-0001 Membership：participant.admitted）。 */
+  invite(participantID: string): Promise<void>;
   /** 重取快照投影区（成员/记分卡/谱系/策略）——抽屉 Tab 打开时调用。 */
   refreshProjections(): Promise<void>;
 }
@@ -113,6 +119,7 @@ function projections(snap: Snapshot) {
     threads: snap.threads,
     edges: snap.graph,
     policy: snap.policy,
+    roster: snap.roster ?? null,
   };
 }
 
@@ -123,6 +130,8 @@ export function useRoom(roomID: string | null): RoomHandle {
   const esRef = useRef<EventSource | null>(null);
   const versionRef = useRef(0);
   const roomRef = useRef<string | null>(null);
+  /** 自愈重订入口：onerror CLOSED 时经此回到 loadAndSubscribe（ref 于 effect 中同步）。 */
+  const reloadRef = useRef<(id: string) => Promise<void>>(async () => {});
   /** floor.granted 的 grant_id → 座位（floor.revoked 载荷无 participant_id，靠它回收打字态）。 */
   const grantSeatRef = useRef<Record<string, string>>({});
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -253,6 +262,7 @@ export function useRoom(roomID: string | null): RoomHandle {
           }
           case "intent.endorsed":
           case "policy.changed":
+          case "participant.admitted": // invite_agent 拉人 → 成员/roster 投影刷新
             scheduleRefresh();
             break;
         }
@@ -321,7 +331,13 @@ export function useRoom(roomID: string | null): RoomHandle {
       es.onopen = () => setConnection("live");
       es.onerror = () => {
         if (es.readyState === EventSource.CLOSED) {
+          // 永久断流（非 200 / 错误 Content-Type 等，如嵌入 WebView 的资产桥）：
+          // 浏览器不再自动重连，也等不到 resync_required——快照重建 + 退避重订，
+          // 避免 UI 永卡"恢复中"。
           setConnection("resync");
+          setTimeout(() => {
+            if (esRef.current === es) void reloadRef.current(id);
+          }, 3000);
         } else {
           setConnection("reconnecting"); // 浏览器将带 Last-Event-ID 自动重连
         }
@@ -338,10 +354,13 @@ export function useRoom(roomID: string | null): RoomHandle {
         setConnection("resync");
         void loadAndSubscribe(id);
       });
-      setConnection("live");
     },
     [applyEvent, applyDraft, closeStream],
   );
+
+  useEffect(() => {
+    reloadRef.current = loadAndSubscribe;
+  }, [loadAndSubscribe]);
 
   // 房间切换：复位并重新装载；卸载/切换时断流。
   useEffect(() => {
@@ -419,6 +438,10 @@ export function useRoom(roomID: string | null): RoomHandle {
     (intentID: string) => runCommand((id, v) => api.endorseIntent(id, v, intentID)),
     [runCommand],
   );
+  const invite = useCallback(
+    (participantID: string) => runCommand((id, v) => api.inviteAgent(id, v, participantID)),
+    [runCommand],
+  );
 
   return {
     roomID: state?.roomID ?? null,
@@ -433,6 +456,7 @@ export function useRoom(roomID: string | null): RoomHandle {
     policy: state?.policy ?? null,
     roundOpen: state?.roundOpen ?? false,
     paused: state?.paused ?? false,
+    roster: state?.roster ?? null,
     connection,
     error,
     send,
@@ -440,6 +464,7 @@ export function useRoom(roomID: string | null): RoomHandle {
     resume,
     rename,
     endorse,
+    invite,
     refreshProjections: refreshProjectionsNow,
   };
 }

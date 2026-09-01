@@ -23,6 +23,7 @@ export function RoomPage() {
   const room = useRoom(roomId);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [endorseBusy, setEndorseBusy] = useState<string | null>(null);
+  const [inviteBusy, setInviteBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
 
@@ -62,6 +63,19 @@ export function RoomPage() {
         .endorse(intentID)
         .catch(() => {})
         .finally(() => setEndorseBusy(null));
+    },
+    [room],
+  );
+
+  // invite_agent：participant.admitted SSE 事件驱动投影刷新；SSE 未达时兜底手刷一次。
+  const onInvite = useCallback(
+    (participantID: string) => {
+      setInviteBusy(participantID);
+      void room
+        .invite(participantID)
+        .then(() => room.refreshProjections())
+        .catch(() => {})
+        .finally(() => setInviteBusy(null));
     },
     [room],
   );
@@ -188,11 +202,14 @@ export function RoomPage() {
         {drawerOpen && (
           <MemberPanel
             participants={room.participants}
+            roster={room.roster}
             scorecard={room.scorecard}
             threads={room.threads}
             edges={room.edges}
             endorseBusy={endorseBusy}
             onEndorse={onEndorse}
+            inviteBusy={inviteBusy}
+            onInvite={onInvite}
             onTabActive={onTabActive}
             onClose={() => setDrawerOpen(false)}
             describeEvent={describeEvent}

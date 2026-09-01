@@ -1,33 +1,19 @@
 // App 壳（参考 ChatGPT App）：左侧边栏（Logo / + 新房间 / 房间列表 / 底部设置与主题），
 // 主区为当前房间或设置页（<Outlet/>），无多余 chrome。
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { relativeTime } from "../lib/ui";
-import { createRoom, refreshRooms, useRooms } from "../state/rooms";
+import { refreshRooms, useRooms } from "../state/rooms";
 import { toggleTheme, useTheme } from "../state/theme";
 
 export function AppShell() {
   const { rooms, error } = useRooms();
   const navigate = useNavigate();
   const [theme, setTheme] = useTheme();
-  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     void refreshRooms();
   }, []);
-
-  const onCreate = async () => {
-    if (creating) return;
-    setCreating(true);
-    try {
-      const roomID = await createRoom();
-      navigate(`/rooms/${roomID}`);
-    } catch {
-      // 列表区会显示错误（rooms store）；此处不再叠加提示
-    } finally {
-      setCreating(false);
-    }
-  };
 
   return (
     <div className="flex h-full">
@@ -39,12 +25,11 @@ export function AppShell() {
         <div className="px-3 pb-2">
           <button
             type="button"
-            onClick={() => void onCreate()}
-            disabled={creating}
-            className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-contrast transition-opacity hover:opacity-90 disabled:opacity-50"
+            onClick={() => navigate("/new")}
+            className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-contrast transition-opacity hover:opacity-90"
           >
             <IconPlus />
-            {creating ? "创建中…" : "新房间"}
+            新房间
           </button>
         </div>
         <nav className="flex-1 overflow-y-auto px-2 py-1" aria-label="房间列表">

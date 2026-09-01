@@ -1,9 +1,8 @@
-// 开发者区（M1 v1.8 机制延续）：MOSAIC_DEV 由服务端 -dev 注入；trace 展示、
-// 直读 /v1/debug 只读端点、预算水位（5s 轮询，仅开发者模式装配 debug 端点）。
+// 开发者区（M1 v1.8 机制延续）：展示开关在设置页（state/dev，本地持久化）；
+// trace 展示、直读 /v1/debug 只读端点、预算水位（5s 轮询）。端点仅当服务端
+// -dev 时装配——404 时给出明确提示而非无限"读取中"。
 import { useEffect, useState } from "react";
-import { api, lastTrace } from "../api/client";
-
-declare const MOSAIC_DEV: boolean;
+import { api, ApiError, lastTrace } from "../api/client";
 
 interface DebugBudget {
   rounds?: number;
@@ -19,19 +18,26 @@ const BUDGET_LEVELS = ["正常", "70% 降发言", "90% 降座", "100% 硬停"];
 export function DevPanel({ roomID }: { roomID: string | null }) {
   const [out, setOut] = useState<string>("");
   const [budget, setBudget] = useState<DebugBudget | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
 
   useEffect(() => {
-    if (!MOSAIC_DEV || !roomID) {
+    if (!roomID) {
       setBudget(null);
+      setUnavailable(false);
       return;
     }
     let alive = true;
     const load = async () => {
       try {
         const st = (await api.debugState(roomID)) as { budget?: DebugBudget };
-        if (alive) setBudget(st.budget ?? null);
-      } catch {
-        if (alive) setBudget(null);
+        if (alive) {
+          setBudget(st.budget ?? null);
+          setUnavailable(false);
+        }
+      } catch (e) {
+        if (!alive) return;
+        setBudget(null);
+        setUnavailable(e instanceof ApiError && e.status === 404);
       }
     };
     void load();
@@ -41,8 +47,6 @@ export function DevPanel({ roomID }: { roomID: string | null }) {
       clearInterval(timer);
     };
   }, [roomID]);
-
-  if (!MOSAIC_DEV) return null;
 
   const load = async (fn: () => Promise<unknown>) => {
     try {
@@ -79,7 +83,11 @@ export function DevPanel({ roomID }: { roomID: string | null }) {
         </table>
       ) : (
         <p className="text-xs text-faint">
-          {roomID ? "预算水位读取中…" : "进入一个房间后此处显示实时预算水位。"}
+          {unavailable
+            ? "调试端点未装配——服务端需以 -dev 启动（桌面端默认启用）。"
+            : roomID
+              ? "预算水位读取中…"
+              : "进入一个房间后此处显示实时预算水位。"}
         </p>
       )}
       <div className="flex gap-2">
