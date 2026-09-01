@@ -62,6 +62,9 @@ func TestUISpaServedAndFallback(t *testing.T) {
 	if resp.StatusCode != 200 || !strings.Contains(string(body), "MOSAIC_DEV") {
 		t.Fatalf("GET / 应返回 SPA index：%d %q", resp.StatusCode, body)
 	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("index 必须 no-cache（WebView2 持久缓存实证会跨进程留旧 UI），got %q", cc)
+	}
 
 	// 静态资产直出
 	resp2, _ := http.Get(ts.URL + "/assets/app.js")
@@ -71,6 +74,9 @@ func TestUISpaServedAndFallback(t *testing.T) {
 	if ct := resp2.Header.Get("Content-Type"); !strings.Contains(ct, "javascript") {
 		t.Fatalf("资产 Content-Type = %q", ct)
 	}
+	if cc := resp2.Header.Get("Cache-Control"); cc != "public, max-age=31536000, immutable" {
+		t.Fatalf("内容哈希资产应 immutable 长缓存，got %q", cc)
+	}
 	resp2.Body.Close()
 
 	// 前端路由回退：未知非 /v1 路径回 index.html
@@ -79,6 +85,9 @@ func TestUISpaServedAndFallback(t *testing.T) {
 	resp3.Body.Close()
 	if resp3.StatusCode != 200 || !strings.Contains(string(body3), "MOSAIC_DEV") {
 		t.Fatalf("前端路由应回退 index.html：%d", resp3.StatusCode)
+	}
+	if cc := resp3.Header.Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("回退 index 必须 no-cache，got %q", cc)
 	}
 
 	// /v1 命名空间不被回退吞掉

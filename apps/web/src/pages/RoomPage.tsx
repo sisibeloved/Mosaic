@@ -1,5 +1,5 @@
 // 房间页：顶栏（房名双击/编辑图标改名、连接态、暂停/恢复、抽屉开关）
-// + 消息流 + 正在输入区 + 输入框 + 右侧可折叠抽屉（成员/记分卡/谱系）。
+// + 消息流 + 正在输入区 + 输入框 + 右侧可折叠抽屉（成员/发言评估/话题线）。
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useRoom, type Connection } from "../api/room";
@@ -7,6 +7,7 @@ import { Composer } from "../components/chat/Composer";
 import { MemberPanel } from "../components/chat/MemberPanel";
 import { MessageList } from "../components/chat/MessageList";
 import { TypingBar } from "../components/chat/TypingBar";
+import { displayNameOf, truncate } from "../lib/ui";
 import { refreshRooms, setLastRoomId } from "../state/rooms";
 
 const CONNECTION_TEXT: Record<Connection, string> = {
@@ -70,6 +71,18 @@ export function RoomPage() {
     void room.refreshProjections();
   }, []);
 
+  // 观点关系边的可读引用：TimelineEntry.key 即 event_id（快照与 SSE 两路同键），
+  // 能命中消息就解析成"名字：摘要"（摘要截 24 字），否则返回 null 由面板回退短 hash。
+  const describeEvent = useCallback(
+    (eventID: string): string | null => {
+      const e = room.entries.find((x) => x.key === eventID);
+      if (!e || e.kind !== "message" || !e.body) return null;
+      const summary = truncate(e.body.replace(/\s+/g, " ").trim(), 24);
+      return `${displayNameOf(room.participants, e.actorID)}：${summary}`;
+    },
+    [room.entries, room.participants],
+  );
+
   if (roomId && room.error && !room.roomID) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-sm">
@@ -103,7 +116,7 @@ export function RoomPage() {
         ) : (
           <>
             <h1
-              className="cursor-text truncate text-sm font-medium"
+              className="cursor-text truncate text-sm font-medium tracking-tight"
               title="双击改名"
               onDoubleClick={startRename}
             >
@@ -182,6 +195,7 @@ export function RoomPage() {
             onEndorse={onEndorse}
             onTabActive={onTabActive}
             onClose={() => setDrawerOpen(false)}
+            describeEvent={describeEvent}
           />
         )}
       </div>

@@ -6,17 +6,10 @@ import { api, ApiError, type Executable, type PolicyParams } from "../api/client
 import { DevPanel } from "../components/DevPanel";
 import { getLastRoomId } from "../state/rooms";
 import { useTheme } from "../state/theme";
+import { adapterLabel, channelLabel } from "../lib/copy";
 import { truncate } from "../lib/ui";
 
 declare const MOSAIC_DEV: boolean;
-
-/** 渠道徽标文案（ADR-0012 家族裁定：列表顺序即优先级，此处只做可读化）。 */
-function channelLabel(channel?: string): string {
-  if (!channel || channel === "cli") return "CLI";
-  if (channel === "app:codex-desktop") return "桌面 App";
-  if (channel === "app:kimi-work") return "Kimi Work";
-  return channel;
-}
 
 /** 快照策略区视图（字段可选——见 OpenAPI Snapshot.policy）。 */
 interface SnapshotPolicy {
@@ -168,7 +161,7 @@ export function SettingsPage() {
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex max-w-2xl flex-col gap-8 px-6 py-8">
-        <h1 className="text-lg font-semibold">设置</h1>
+        <h1 className="text-lg font-semibold tracking-tight">设置</h1>
 
         <section>
           <h2 className="mb-1 text-sm font-medium">Agent 实例</h2>
@@ -189,7 +182,7 @@ export function SettingsPage() {
                   <li key={exe.id} className="flex items-center gap-3 px-3 py-2.5">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-1.5 text-sm">
-                        <span className="font-medium">{exe.adapter}</span>
+                        <span className="font-medium">{adapterLabel(exe.adapter)}</span>
                         <ExeBadge>{channelLabel(exe.channel)}</ExeBadge>
                         <ExeBadge>{exe.runtime}{exe.distro ? `（${exe.distro}）` : ""}</ExeBadge>
                         {exe.version && <span className="text-xs text-faint">{exe.version}</span>}

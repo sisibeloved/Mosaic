@@ -1,8 +1,20 @@
-// 右侧抽屉（成员 / 记分卡 / 谱系）：数据源为房间快照投影（随 SSE 事件由 room.ts
-// 防抖重取），无手动刷新。保送沿用 endorse_intent 命令链（room.endorse 内部做版本校准+409 重试）。
+// 右侧抽屉（成员 / 发言评估 / 话题线）：数据源为房间快照投影（随 SSE 事件由 room.ts
+// 防抖重取），无手动刷新。请优先发言沿用 endorse_intent 命令链（room.endorse 内部做版本校准+409 重试）。
+// 内部枚举一律经 lib/copy 映射层转为用户语言，不裸显。
 import { useEffect, useState } from "react";
 import type { GraphEdge, ScorecardItem, ThreadItem } from "../../api/room";
 import type { ParticipantView } from "../../api/client";
+import {
+  adapterLabel,
+  channelLabel,
+  intentActionLabel,
+  intentTypeLabel,
+  kindLabel,
+  relationKindLabel,
+  scoreBandLabel,
+  seatStatusLabel,
+  threadStateLabel,
+} from "../../lib/copy";
 import { displayNameOf, shortId, truncate } from "../../lib/ui";
 import { Avatar } from "./Avatar";
 
@@ -10,8 +22,8 @@ type Tab = "members" | "scorecard" | "graph";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "members", label: "成员" },
-  { id: "scorecard", label: "记分卡" },
-  { id: "graph", label: "谱系" },
+  { id: "scorecard", label: "发言评估" },
+  { id: "graph", label: "话题线" },
 ];
 
 export function MemberPanel({
@@ -23,6 +35,7 @@ export function MemberPanel({
   onEndorse,
   onTabActive,
   onClose,
+  describeEvent,
 }: {
   participants: ParticipantView[];
   scorecard: ScorecardItem[];
@@ -33,6 +46,8 @@ export function MemberPanel({
   /** Tab 打开/切换时回调（触发投影刷新）。 */
   onTabActive: (tab: Tab) => void;
   onClose: () => void;
+  /** event_id → "名字：摘要" 可读引用；解析不到返回 null（回退短 hash）。 */
+  describeEvent: (eventID: string) => string | null;
 }) {
   const [tab, setTab] = useState<Tab>("members");
 
@@ -76,7 +91,7 @@ export function MemberPanel({
             onEndorse={onEndorse}
           />
         )}
-        {tab === "graph" && <GraphTab threads={threads} edges={edges} />}
+        {tab === "graph" && <GraphTab threads={threads} edges={edges} describeEvent={describeEvent} />}
       </div>
     </aside>
   );
@@ -99,12 +114,12 @@ function MembersTab({ participants }: { participants: ParticipantView[] }) {
               )}
             </div>
             <div className="mt-0.5 flex flex-wrap gap-1">
-              <Badge>{p.kind}</Badge>
-              {p.adapter && <Badge>{p.adapter}</Badge>}
-              {p.channel && <Badge>{p.channel}</Badge>}
+              <Badge>{kindLabel(p.kind)}</Badge>
+              {p.adapter && <Badge>{adapterLabel(p.adapter)}</Badge>}
+              {p.channel && <Badge>{channelLabel(p.channel)}</Badge>}
             </div>
           </div>
-          <Badge tone={p.seat_status === "seated" ? "ok" : "dim"}>{p.seat_status}</Badge>
+          <Badge tone={p.seat_status === "seated" ? "ok" : "dim"}>{seatStatusLabel(p.seat_status)}</Badge>
         </li>
       ))}
     </ul>
@@ -126,7 +141,7 @@ function ScorecardTab({
   if (items.length === 0) {
     return (
       <p className="px-3 py-4 text-xs text-faint">
-        尚无意向记录——发起一轮讨论后此处可查（band 公开、精确分不公开，反 Goodhart）。
+        每轮讨论中，各智能体的发言意向与遴选结果会记录在这里。评估只公开档位，不公开精确分数。
       </p>
     );
   }
@@ -141,16 +156,16 @@ function ScorecardTab({
                 {displayNameOf(participants, it.participant_id)}
               </span>
               <Badge tone={it.selected ? "ok" : it.score_band === "unranked" ? "warn" : "dim"}>
-                {it.score_band}
+                评估：{scoreBandLabel(it.score_band)}
               </Badge>
               <span className="ml-auto text-dim">
-                {it.selected ? "✓ 获选" : it.endorsed ? "已保送" : "未选"}
+                {it.selected ? "✓ 已发言" : it.endorsed ? "点名优先" : "未发言"}
               </span>
             </div>
             <div className="mt-0.5 text-dim">
-              意向：{it.action === "silent" ? "弃权" : it.type || it.action || "—"}
+              意向：{it.action === "silent" ? "本轮不发言" : it.type ? intentTypeLabel(it.type) : it.action ? intentActionLabel(it.action) : "—"}
             </div>
-            {it.unselected_reason && <div className="text-faint">未选理由：{it.unselected_reason}</div>}
+            {it.unselected_reason && <div className="text-faint">未获发言权：{it.unselected_reason}</div>}
             {it.public_rationale && (
               <div className="truncate text-faint" title={it.public_rationale}>
                 {truncate(it.public_rationale, 60)}
@@ -163,7 +178,7 @@ function ScorecardTab({
                 onClick={() => onEndorse(it.intent_id)}
                 className="mt-1 rounded-lg bg-surface-3 px-2.5 py-1 text-[11px] text-text transition-opacity hover:opacity-85 disabled:opacity-40"
               >
-                {busy === it.intent_id ? "保送中…" : "保送（授予发言权）"}
+                {busy === it.intent_id ? "处理中…" : "请 TA 优先发言"}
               </button>
             )}
           </li>
@@ -173,12 +188,20 @@ function ScorecardTab({
   );
 }
 
-function GraphTab({ threads, edges }: { threads: ThreadItem[]; edges: GraphEdge[] }) {
+function GraphTab({
+  threads,
+  edges,
+  describeEvent,
+}: {
+  threads: ThreadItem[];
+  edges: GraphEdge[];
+  describeEvent: (eventID: string) => string | null;
+}) {
   return (
     <div className="py-1">
-      <h3 className="px-3 pb-1 pt-2 text-xs font-medium text-dim">线程（{threads.length}）</h3>
+      <h3 className="px-3 pb-1 pt-2 text-xs font-medium text-dim">话题线（{threads.length}）</h3>
       {threads.length === 0 ? (
-        <p className="px-3 py-1 text-xs text-faint">暂无线程投影。</p>
+        <p className="px-3 py-1 text-xs text-faint">暂无话题线。</p>
       ) : (
         <ul className="divide-y divide-border">
           {threads.map((th) => (
@@ -188,12 +211,12 @@ function GraphTab({ threads, edges }: { threads: ThreadItem[]; edges: GraphEdge[
                   {shortId(th.thread_id)}
                 </span>
                 <Badge tone={th.state === "active" ? "ok" : th.state === "merged" ? "warn" : "dim"}>
-                  {th.state}
+                  {threadStateLabel(th.state)}
                 </Badge>
                 <span className="ml-auto text-faint">{th.message_count ?? 0} 条</span>
               </div>
               <div className="mt-0.5 text-faint">
-                {th.parent ? `派生自 ${shortId(th.parent)}` : "根线程"}
+                {th.parent ? `分支自 ${shortId(th.parent)}` : "主话题"}
                 {th.goal ? ` · ${truncate(th.goal, 40)}` : ""}
                 {th.merged_into ? ` · 合并入 ${shortId(th.merged_into)}` : ""}
               </div>
@@ -201,26 +224,41 @@ function GraphTab({ threads, edges }: { threads: ThreadItem[]; edges: GraphEdge[
           ))}
         </ul>
       )}
-      <h3 className="px-3 pb-1 pt-3 text-xs font-medium text-dim">关系边（{edges.length}）</h3>
+      <h3 className="px-3 pb-1 pt-3 text-xs font-medium text-dim">观点关系（{edges.length}）</h3>
       {edges.length === 0 ? (
         <p className="px-3 py-1 text-xs text-faint">
-          暂无——发言时声明 relations（支持/质疑/…）或从消息分叉线程后此处可查。
+          暂无——发言时声明观点关系（支持/质疑/…）或从消息分出话题线后此处可查。
         </p>
       ) : (
         <ul className="px-3">
           {edges.map((e, i) => (
             <li key={i} className="py-1 text-xs">
-              <Badge>{e.kind}</Badge>{" "}
-              <span className="font-mono text-dim">
-                {shortId(e.from)} → {shortId(e.to)}
+              <Badge>{relationKindLabel(e.kind)}</Badge>{" "}
+              <span className="text-dim">
+                <EventRef eventID={e.from} describeEvent={describeEvent} />
+                {" → "}
+                <EventRef eventID={e.to} describeEvent={describeEvent} />
               </span>
-              {e.inferred && <span className="text-faint">（推断）</span>}
+              {e.inferred && <span className="text-faint">（系统推断）</span>}
             </li>
           ))}
         </ul>
       )}
     </div>
   );
+}
+
+/** 边的端点：能解析为消息就显示"名字：摘要"，否则回退短 hash（mono）。 */
+function EventRef({
+  eventID,
+  describeEvent,
+}: {
+  eventID: string;
+  describeEvent: (eventID: string) => string | null;
+}) {
+  const text = describeEvent(eventID);
+  if (text) return <>{text}</>;
+  return <span className="font-mono">{shortId(eventID)}</span>;
 }
 
 function Badge({

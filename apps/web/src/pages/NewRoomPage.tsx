@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type AgentSeatInfo } from "../api/client";
+import { adapterLabel } from "../lib/copy";
 import { createRoom } from "../state/rooms";
 
 export function NewRoomPage() {
@@ -47,7 +48,7 @@ export function NewRoomPage() {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-4 px-6">
       <span className="inline-block h-12 w-12 rounded-2xl bg-accent" aria-hidden />
-      <h1 className="text-xl font-semibold">Mosaic 讨论室</h1>
+      <h1 className="text-xl font-semibold tracking-tight">Mosaic 讨论室</h1>
       <p className="max-w-md text-center text-sm text-dim">
         选择要拉进房间的 Agent（不选 = 全部在席）；它们会自主评估发言权，你也可以随时 @ 点名。
       </p>
@@ -64,7 +65,7 @@ export function NewRoomPage() {
                 type="button"
                 aria-pressed={on}
                 onClick={() => toggle(a.participant_id)}
-                title={`${a.display_name}（${a.adapter}）`}
+                title={`${a.display_name}（${adapterLabel(a.adapter)}）`}
                 className={
                   "rounded-full border px-4 py-1.5 text-sm transition-colors " +
                   (on
@@ -73,7 +74,7 @@ export function NewRoomPage() {
                 }
               >
                 {a.display_name}
-                <span className="ml-1.5 text-xs opacity-60">{a.adapter}</span>
+                <span className="ml-1.5 text-xs opacity-60">{adapterLabel(a.adapter)}</span>
               </button>
             );
           })

@@ -5,10 +5,13 @@ export function Avatar({
   participantID,
   displayName,
   size = 32,
+  color,
 }: {
   participantID: string;
   displayName: string;
   size?: number;
+  /** 覆盖哈希定色（如人类头像固定用强调色）；覆盖时文字色改用 accent-contrast。 */
+  color?: string;
 }) {
   return (
     <span
@@ -18,7 +21,8 @@ export function Avatar({
         width: size,
         height: size,
         fontSize: size * 0.44,
-        backgroundColor: avatarColor(participantID),
+        backgroundColor: color ?? avatarColor(participantID),
+        ...(color ? { color: "var(--accent-contrast)" } : {}),
       }}
     >
       {avatarInitial(displayName)}

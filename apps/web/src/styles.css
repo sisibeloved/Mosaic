@@ -39,6 +39,13 @@
   --warn: #b45309;
 }
 
+@theme {
+  /* 字体 token：纯系统栈，不下载不打包字体文件。
+     --font-sans 接管 preflight 默认正文字体；--font-mono 供 font-mono 工具类（ID/路径）。 */
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "Cascadia Code", "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace;
+}
+
 @theme inline {
   --color-bg: var(--bg);
   --color-surface: var(--surface);
@@ -66,13 +73,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family:
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    "PingFang SC",
-    "Microsoft YaHei",
-    sans-serif;
+  /* 正文字体由 @theme --font-sans 经 preflight 接管，此处不再覆写 */
   font-size: 14px;
   line-height: 1.6;
 }

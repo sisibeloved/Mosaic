@@ -1,8 +1,9 @@
-// 消息流（参考 Grok Bot / KimiClaw 群聊）：人类右侧气泡；agent 左侧带
-// 头像/显示名/kind 徽标；system 事件居中细灰条。用户上翻时暂停自动滚底。
+// 消息流（参考 Grok Bot / KimiClaw 群聊）：人类右侧气泡带"我"头像（accent 色、省名字行）；
+// agent 左侧带头像/显示名/类别徽标；system 事件居中细灰条。用户上翻时暂停自动滚底。
 import { useEffect, useRef } from "react";
 import type { TimelineEntry } from "../../api/room";
 import type { ParticipantView } from "../../api/client";
+import { adapterLabel, channelLabel, kindLabel } from "../../lib/copy";
 import { displayNameOf, participantOf, relativeTime } from "../../lib/ui";
 import { Avatar } from "./Avatar";
 
@@ -84,15 +85,19 @@ function HumanBubble({
   entry: TimelineEntry;
   participants: ParticipantView[];
 }) {
+  // 头像在最右（外侧），气泡在头像左侧（内侧）；名字行省略——自己知道自己。
   return (
-    <div className="animate-rise flex flex-col items-end">
-      <div className="max-w-[78%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-accent-soft px-3.5 py-2 text-sm text-text">
-        {entry.body}
+    <div className="animate-rise flex justify-end gap-2.5">
+      <div className="flex max-w-[80%] flex-col items-end">
+        <div className="whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-accent-soft px-3.5 py-2 text-sm text-text">
+          {entry.body}
+        </div>
+        <div className="mt-0.5 text-[11px] text-faint">
+          <AddressedLine entry={entry} participants={participants} />
+          {relativeTime(entry.occurredAt)}
+        </div>
       </div>
-      <div className="mt-0.5 text-[11px] text-faint">
-        <AddressedLine entry={entry} participants={participants} />
-        {relativeTime(entry.occurredAt)}
-      </div>
+      <Avatar participantID={entry.actorID} displayName="我" color="var(--accent)" />
     </div>
   );
 }
@@ -113,12 +118,12 @@ function AgentBubble({
         <div className="mb-0.5 flex flex-wrap items-baseline gap-x-2 text-xs">
           <span className="font-medium text-text">{name}</span>
           <span className="rounded bg-surface-3 px-1.5 py-px text-[10px] leading-4 text-dim">
-            {entry.actorKind}
+            {kindLabel(entry.actorKind)}
           </span>
           {p?.adapter && (
             <span className="rounded bg-surface-3 px-1.5 py-px text-[10px] leading-4 text-dim">
-              {p.adapter}
-              {p.channel ? ` · ${p.channel}` : ""}
+              {adapterLabel(p.adapter)}
+              {p.channel ? ` · ${channelLabel(p.channel)}` : ""}
             </span>
           )}
           <span className="text-faint">{relativeTime(entry.occurredAt)}</span>

@@ -3,6 +3,7 @@
 // （可点 × 移除；上限 3——契约 PostMessagePayload.addressed_to maxItems=3）。
 import { useEffect, useRef, useState } from "react";
 import type { ParticipantView } from "../../api/client";
+import { adapterLabel } from "../../lib/copy";
 import { Avatar } from "./Avatar";
 
 const MAX_TARGETS = 3;
@@ -140,7 +141,7 @@ export function Composer({
                   >
                     <Avatar participantID={a.participant_id} displayName={a.display_name} size={20} />
                     <span className="truncate">{a.display_name}</span>
-                    {a.adapter && <span className="ml-auto text-[10px] text-faint">{a.adapter}</span>}
+                    {a.adapter && <span className="ml-auto text-[10px] text-faint">{adapterLabel(a.adapter)}</span>}
                   </button>
                 </li>
               ))}

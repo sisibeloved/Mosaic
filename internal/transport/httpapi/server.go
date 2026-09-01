@@ -581,6 +581,12 @@ func (s *server) handleUI(w http.ResponseWriter, r *http.Request) {
 	if upath != "" {
 		if f, err := s.deps.UI.Open(upath); err == nil {
 			_ = f.Close()
+			// /assets/ 下是 Vite 内容哈希资产：长缓存 + immutable；其余（如 favicon）保守 no-cache。
+			if strings.HasPrefix(upath, "assets/") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			} else {
+				w.Header().Set("Cache-Control", "no-cache")
+			}
 			http.FileServerFS(s.deps.UI).ServeHTTP(w, r)
 			return
 		}
@@ -601,6 +607,9 @@ func (s *server) serveSpaIndex(w http.ResponseWriter) {
 		raw = []byte(strings.Replace(string(raw), "const MOSAIC_DEV = false;", "const MOSAIC_DEV = true;", 1))
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// no-cache：客户端每次校验——WebView2 持久缓存会跨进程存活（实证：重建产物后壳内
+	// 仍显旧 UI），哈希资产走 immutable，入口页必须总是拿到最新。
+	w.Header().Set("Cache-Control", "no-cache")
 	_, _ = w.Write(raw)
 }
 
