@@ -28,7 +28,7 @@ func rosterEnv(t *testing.T) (*MemStore, *Engine, *Service, string) {
 			{ParticipantID: "par_other", Profile: agent.Profile{ProfileID: "po", Adapter: "echo"}},
 		},
 		Budget: contextx.Limits{},
-		Clock:  testClock, Now: time.Now,
+		Clock:  testClock, Now: time.Now, ReactionWindow: 5 * time.Millisecond,
 		NewID: counterNewID(), Tenant: "ten_local",
 	})
 	svc := NewService(Config{Store: store, Reader: store, Clock: testClock,
@@ -42,7 +42,6 @@ func rosterEnv(t *testing.T) (*MemStore, *Engine, *Service, string) {
 		t.Fatalf("create: %v", err)
 	}
 	roomID := created.RoomID
-	seedNoAutoPolicy(t, store, roomID) // 选人/名额断言按轮计数：关自动续聊（默认束 v1.27 起为 3）
 	return store, eng, svc, roomID
 }
 
@@ -149,7 +148,7 @@ func TestCreateRoomDefaultMaterializesRoster(t *testing.T) {
 		{ParticipantID: "par_other", Profile: agent.Profile{ProfileID: "po", Adapter: "echo"}},
 	}
 	eng := NewEngine(EngineConfig{Store: store, Reader: store, Agents: sup, Seats: seats,
-		Budget: contextx.Limits{}, Clock: testClock, Now: time.Now, NewID: newID, Tenant: "ten_local"})
+		Budget: contextx.Limits{}, Clock: testClock, Now: time.Now, ReactionWindow: 5 * time.Millisecond, NewID: newID, Tenant: "ten_local"})
 	svc := NewService(Config{Store: store, Reader: store, Clock: testClock, NewID: newID,
 		Tenant: "ten_local", Seats: eng.Seats})
 	actor := Actor{ParticipantID: "par_owner", Kind: "human"}
@@ -165,7 +164,6 @@ func TestCreateRoomDefaultMaterializesRoster(t *testing.T) {
 	if got := ProjectSnapshot(created.RoomID, stored).Roster; len(got) != 2 {
 		t.Fatalf("缺省选人应物化当时全席（2 席）：%v", got)
 	}
-	seedNoAutoPolicy(t, store, created.RoomID) // 名额断言按轮计数：关自动续聊（默认束 v1.27 起为 3）
 
 	// 建房后新启用一座（SetSeats 模拟 resync）：旧房间不自动收编
 	eng.SetSeats(append(seats, AgentSeat{
@@ -249,9 +247,9 @@ func TestTimelineIncludesSystemEvents(t *testing.T) {
 	for _, item := range snap.Timeline {
 		types = append(types, item.Type)
 	}
-	want := []string{"message.posted", "round.opened", "round.closed", "room.paused"}
+	want := []string{"message.posted", "room.paused"} // RFC-0012：round.* 内部化，Timeline 不再收录
 	if len(types) != len(want) {
-		t.Fatalf("Timeline 类型序列 = %v，期望 %v（intent.recorded 不入列）", types, want)
+		t.Fatalf("Timeline 类型序列 = %v，期望 %v（round.* 不入列）", types, want)
 	}
 	for i := range want {
 		if types[i] != want[i] {
@@ -259,8 +257,8 @@ func TestTimelineIncludesSystemEvents(t *testing.T) {
 		}
 	}
 	for _, item := range snap.Timeline {
-		if item.Type == "round.closed" && item.Outcome != "published" {
-			t.Fatalf("round.closed 应携带 outcome=published：%+v", item)
+		if item.Type == "round.opened" || item.Type == "round.closed" {
+			t.Fatalf("round.* 不得入 Timeline（RFC-0012 内部化）：%+v", item)
 		}
 	}
 }

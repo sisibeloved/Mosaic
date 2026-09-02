@@ -11,7 +11,6 @@ import (
 
 	"github.com/sisibeloved/Mosaic/internal/agent"
 	"github.com/sisibeloved/Mosaic/internal/agent/echo"
-	"github.com/sisibeloved/Mosaic/internal/attention"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
@@ -40,7 +39,7 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 		Reader: store,
 		Agents: sup,
 		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "prof_echo", Adapter: "echo"}}},
-		Clock:  testClock,
+		Clock:  testClock, ReactionWindow: 5 * time.Millisecond,
 		Now:    func() time.Time { return time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC) },
 		NewID:  newID,
 		Tenant: "ten_local",
@@ -63,7 +62,6 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 	if _, err := store.AppendEvents(context.Background(), []protocol.Envelope{seedHuman}); err != nil {
 		t.Fatalf("seed create: %v", err)
 	}
-	seedNoAutoPolicy(t, store, "room_eng")
 
 	human := protocol.Envelope{
 		EventID:       "evt_eng_human",
@@ -101,13 +99,13 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 	// 事件链与顺序
 	wantTypes := []string{
 		protocol.EventRoomCreated,
-		protocol.EventPolicyChanged, // no-auto 种子（默认束 v1.27 起自动续聊=3）
 		protocol.EventMessagePosted, // human
 		protocol.EventRoundOpened,
 		protocol.EventIntentRecorded,
 		protocol.EventFloorGranted,
 		protocol.EventMessagePosted, // agent
 		protocol.EventRoundClosed,
+		// RFC-0012：波后 echo 处于冷却 → 无第二波（单座静默终止，无事件）
 	}
 	if len(events) != len(wantTypes) {
 		t.Fatalf("事件数 = %d（期望 %d）：%v", len(events), len(wantTypes), typesOf(events))
@@ -122,9 +120,9 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 	}
 
 	// causation 纪律（RFC-0003）：agent 发言 causation 指向 floor.granted；grant 指向 intent.recorded
-	agentMsg := events[6]
-	grant := events[5]
-	intent := events[4]
+	agentMsg := events[5]
+	grant := events[4]
+	intent := events[3]
 	if agentMsg.CausationID == nil || *agentMsg.CausationID != grant.EventID {
 		t.Fatalf("agent 消息 causation 应指向 floor.granted：%v", agentMsg.CausationID)
 	}
@@ -135,8 +133,8 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 		t.Fatalf("agent 消息 actor 不符：%+v", agentMsg.Actor)
 	}
 	// 同轮 correlation
-	roundID := events[3].CorrelationID
-	for _, ev := range events[3:] {
+	roundID := events[2].CorrelationID
+	for _, ev := range events[2:] {
 		if ev.CorrelationID == nil || *ev.CorrelationID != *roundID {
 			t.Fatalf("%s correlation 应为 round id", ev.Type)
 		}
@@ -152,7 +150,7 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 	}
 	// round.closed 结果
 	var rc protocol.RoundClosedPayload
-	if err := json.Unmarshal(events[7].Payload, &rc); err != nil || rc.Outcome != "published" || rc.SelectedCount != 1 {
+	if err := json.Unmarshal(events[6].Payload, &rc); err != nil || rc.Outcome != "published" || rc.SelectedCount != 1 {
 		t.Fatalf("round.closed 不符：%+v err=%v", rc, err)
 	}
 }
@@ -166,7 +164,7 @@ func TestEngineIgnoresNonHumanAndOtherRooms(t *testing.T) {
 	eng := NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup,
 		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
-		Clock: testClock, Now: time.Now, NewID: func(p string) string { return p + "_x" },
+		Clock: testClock, Now: time.Now, NewID: func(p string) string { return p + "_x" }, ReactionWindow: 5 * time.Millisecond,
 		Tenant: "ten_local", RoomID: "room_eng",
 	})
 
@@ -229,7 +227,7 @@ func TestEngineMultiSeatSelection(t *testing.T) {
 			{ParticipantID: "par_echo_b", Profile: agent.Profile{ProfileID: "prof_b", Adapter: "echo"}},
 			{ParticipantID: "par_echo_a", Profile: agent.Profile{ProfileID: "prof_a", Adapter: "echo"}},
 		},
-		Clock:  testClock,
+		Clock: testClock, ReactionWindow: 5 * time.Millisecond,
 		Now:    func() time.Time { return time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC) },
 		NewID:  newID,
 		Tenant: "ten_local",
@@ -242,7 +240,6 @@ func TestEngineMultiSeatSelection(t *testing.T) {
 		Actor:      protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
 		Visibility: protocol.Visibility{Kind: "public"}, Payload: []byte(`{}`), Metadata: map[string]any{},
 	}})
-	seedNoAutoPolicy(t, store, "room_multi")
 	store.AppendEvents(context.Background(), []protocol.Envelope{{
 		EventID: "evt_m_human", TenantID: "ten_local", RoomID: "room_multi",
 		Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
@@ -269,17 +266,17 @@ func TestEngineMultiSeatSelection(t *testing.T) {
 	if len(events) == 0 || events[len(events)-1].Type != protocol.EventRoundClosed {
 		t.Fatalf("轮未完成，事件数=%d", len(events))
 	}
-	// 期望：created, policy(no-auto 种子), human, round.opened, intent×2, grant×2
-	// （simultaneous：先全部发授）, agent msg×2, round.closed = 11（B2 起 open_floor
-	// 默认 reveal=simultaneous：发授集中在生成前，正文在生成后统一揭示）
-	if len(events) != 11 {
+	// 期望：created, human, round.opened, intent×2, (grant,msg)×2 交错, closed = 10
+	// （RFC-0012：意愿放行 sequential——intent 齐后逐座 授→生成→发布；上波发言者下波冷却，
+	//  双座同波都回 → 下波全冷却 → 单波终止）
+	if len(events) != 10 {
 		t.Fatalf("事件数 = %d（期望 10）：%v", len(events), typesOf(events))
 	}
 	want := []string{
-		protocol.EventRoomCreated, protocol.EventPolicyChanged, protocol.EventMessagePosted, protocol.EventRoundOpened,
+		protocol.EventRoomCreated, protocol.EventMessagePosted, protocol.EventRoundOpened,
 		protocol.EventIntentRecorded, protocol.EventIntentRecorded,
-		protocol.EventFloorGranted, protocol.EventFloorGranted,
-		protocol.EventMessagePosted, protocol.EventMessagePosted,
+		protocol.EventFloorGranted, protocol.EventMessagePosted, // 序贯：授→生成→发布 逐座
+		protocol.EventFloorGranted, protocol.EventMessagePosted,
 		protocol.EventRoundClosed,
 	}
 	for i, w := range want {
@@ -324,7 +321,7 @@ func TestEngineMultiSeatSelection(t *testing.T) {
 	}
 	// round.closed 汇总
 	var rc protocol.RoundClosedPayload
-	_ = json.Unmarshal(events[10].Payload, &rc)
+	_ = json.Unmarshal(events[9].Payload, &rc)
 	if rc.Outcome != "published" || rc.SelectedCount != 2 {
 		t.Fatalf("round.closed 不符：%+v", rc)
 	}
@@ -530,8 +527,8 @@ func TestEngineLateRejectionOnPause(t *testing.T) {
 	}
 	var rc protocol.RoundClosedPayload
 	_ = json.Unmarshal(events[len(events)-1].Payload, &rc)
-	if rc.Outcome != "revoked_all" {
-		t.Fatalf("outcome = %s（期望 revoked_all）", rc.Outcome)
+	if rc.Outcome != "quiescent" {
+		t.Fatalf("outcome = %s（期望 quiescent——全撤销波零发布）", rc.Outcome)
 	}
 }
 
@@ -598,7 +595,6 @@ func TestEngineRecordsEvalUsage(t *testing.T) {
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "u1", TenantID: "ten_local", RoomID: "room_u", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
-	seedNoAutoPolicy(t, store, "room_u")
 	deliverHuman(t, store, eng, "room_u")
 	waitRoundClosed(t, store, "room_u")
 	var sawUsage bool
@@ -661,7 +657,10 @@ func TestEngineGenerateFailureRevokesWithReason(t *testing.T) {
 }
 
 // 同房间轮串行：第二条刺激不得与在途轮并发开轮（同 epoch 双轮是竞态缺陷）。
-func TestEngineRoundsSerializedPerRoom(t *testing.T) {
+// RFC-0012：波串行 + 去抖合并——两条快速连发的人类消息合并为一个反应波
+// （窗口重锚，锚=最新消息 s2）；波内生成阻塞期间无第二波开启（单飞）。
+// 唯一座发言后冷却 → 无后续波（自然终止）。
+func TestEngineWavesSerializeAndDebounce(t *testing.T) {
 	store := NewMemStore()
 	sup := agent.NewSupervisor()
 	_ = sup.Register(gatedAdapter{})
@@ -672,7 +671,6 @@ func TestEngineRoundsSerializedPerRoom(t *testing.T) {
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "s0", TenantID: "ten_local", RoomID: "room_s", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
-	seedNoAutoPolicy(t, store, "room_s")
 	for _, id := range []string{"evt_s1", "evt_s2"} {
 		env := protocol.Envelope{
 			EventID: id, TenantID: "ten_local", RoomID: "room_s",
@@ -686,42 +684,38 @@ func TestEngineRoundsSerializedPerRoom(t *testing.T) {
 		raw, _ := json.Marshal(env)
 		eng.Deliver(context.Background(), outbox.Entry{RoomID: "room_s", Envelope: raw})
 	}
-	// 等第一轮 grant（generate 阻塞中），第二轮不得开轮
+	// 等波进入生成（generate 阻塞中）——期间不得有第二波
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && !hasType(store.RoomEvents("room_s"), protocol.EventFloorGranted) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	time.Sleep(150 * time.Millisecond)
 	if n := countType(store.RoomEvents("room_s"), protocol.EventRoundOpened); n != 1 {
-		t.Fatalf("在途轮未完成时 round.opened = %d（期望 1，串行）", n)
+		t.Fatalf("在途波未完成时 round.opened = %d（期望 1，串行）", n)
 	}
 	close(gate)
-	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && countType(store.RoomEvents("room_s"), protocol.EventRoundClosed) != 2 {
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitRoundClosed(t, store, "room_s")
+
 	events := store.RoomEvents("room_s")
-	if n := countType(events, protocol.EventRoundClosed); n != 2 {
-		t.Fatalf("两轮未全部完成：%v", typesOf(events))
+	if n := countType(events, protocol.EventRoundOpened); n != 1 {
+		t.Fatalf("连发两条应去抖合并为一个波：round.opened = %d（期望 1）", n)
 	}
-	// 串行序：第一个 round.closed 必须先于第二个 round.opened
-	closedIdx, openedIdx := -1, -1
-	seenOpened := 0
-	for i, ev := range events {
-		switch ev.Type {
-		case protocol.EventRoundOpened:
-			seenOpened++
-			if seenOpened == 2 {
-				openedIdx = i
-			}
-		case protocol.EventRoundClosed:
-			if closedIdx < 0 {
-				closedIdx = i
-			}
+	// 锚点 = 最新消息（s2）：round.opened.stimulus_event_id
+	for _, ev := range events {
+		if ev.Type != protocol.EventRoundOpened {
+			continue
 		}
+		var p protocol.RoundOpenedPayload
+		_ = json.Unmarshal(ev.Payload, &p)
+		if p.StimulusEventID != "evt_s2" {
+			t.Fatalf("波锚点应为最新消息 evt_s2：%+v", p)
+		}
+		break
 	}
-	if closedIdx < 0 || openedIdx < 0 || closedIdx > openedIdx {
-		t.Fatalf("轮未串行（closed@%d 应早于 opened#2@%d）：%v", closedIdx, openedIdx, typesOf(events))
+	// 唯一座发言后冷却 → 无后续波
+	time.Sleep(120 * time.Millisecond)
+	if n := countType(store.RoomEvents("room_s"), protocol.EventRoundOpened); n != 1 {
+		t.Fatalf("发言者冷却应终止流：round.opened = %d（期望 1）", n)
 	}
 }
 
@@ -772,7 +766,7 @@ func TestEngineReceiptCreatedAt(t *testing.T) {
 			captured = append(captured, r)
 			return nil
 		}),
-		Clock: testClock, Now: time.Now,
+		Clock: testClock, Now: time.Now, ReactionWindow: 5 * time.Millisecond,
 		NewID: func() func(string) string {
 			var mu sync.Mutex
 			var n int64
@@ -788,7 +782,6 @@ func TestEngineReceiptCreatedAt(t *testing.T) {
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "t1", TenantID: "ten_local", RoomID: "room_t", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
-	seedNoAutoPolicy(t, store, "room_t") // receiptSink 闭包无锁——自动续轮第二轮并发写 captured 与断言读相撞（Windows -race 实证）
 	deliverHuman(t, store, eng, "room_t")
 	waitRoundClosed(t, store, "room_t")
 	if len(captured) == 0 {
@@ -965,8 +958,8 @@ func TestEnginePauseResumeFence(t *testing.T) {
 	}
 	var rc protocol.RoundClosedPayload
 	_ = json.Unmarshal(events[len(events)-1].Payload, &rc)
-	if rc.Outcome != "revoked_all" {
-		t.Fatalf("outcome = %s（期望 revoked_all）", rc.Outcome)
+	if rc.Outcome != "quiescent" {
+		t.Fatalf("outcome = %s（期望 quiescent——全撤销波零发布）", rc.Outcome)
 	}
 }
 
@@ -982,13 +975,12 @@ func TestEngineDurableHandoffClaim(t *testing.T) {
 	eng := NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup, Claims: store,
 		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "gated"}}},
-		Clock: testClock, Now: time.Now,
+		Clock: testClock, Now: time.Now, ReactionWindow: 5 * time.Millisecond,
 		NewID: counterNewID(), Tenant: "ten_local",
 	})
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "dh0", TenantID: "ten_local", RoomID: "room_dh", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
-	seedNoAutoPolicy(t, store, "room_dh")
 	stimulus := protocol.Envelope{
 		EventID: "dh1", TenantID: "ten_local", RoomID: "room_dh",
 		Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
@@ -1026,13 +1018,12 @@ func TestEngineRecoverClaimsDrivesLostRound(t *testing.T) {
 	eng := NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup, Claims: store,
 		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
-		Clock: testClock, Now: time.Now,
+		Clock: testClock, Now: time.Now, ReactionWindow: 5 * time.Millisecond,
 		NewID: counterNewID(), Tenant: "ten_local",
 	})
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "rc0", TenantID: "ten_local", RoomID: "room_rc", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
-	seedNoAutoPolicy(t, store, "room_rc")
 	lost := protocol.Envelope{
 		EventID: "rc1", TenantID: "ten_local", RoomID: "room_rc",
 		Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
@@ -1065,7 +1056,6 @@ func TestEngineDynamicSeats(t *testing.T) {
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "ds0", TenantID: "ten_local", RoomID: "room_ds", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
-	seedNoAutoPolicy(t, store, "room_ds")
 	eng.SetSeats([]AgentSeat{
 		{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p1", Adapter: "echo"}},
 		{ParticipantID: "par_late", Profile: agent.Profile{ProfileID: "p2", Adapter: "echo"}},
@@ -1143,6 +1133,30 @@ func waitRoundClosed(t *testing.T, store *MemStore, roomID string) {
 	t.Fatalf("轮未完成：%v", typesOf(store.RoomEvents(roomID)))
 }
 
+// waitRoundsClosed 等待第 n 个 round.closed（原 directed_test 辅助，随文件退役迁此）。
+// countAgentMsgsOf agent 发言计数（原 parallel_test 辅助，随文件退役迁此）。
+func countAgentMsgsOf(events []protocol.Envelope) int {
+	n := 0
+	for _, ev := range events {
+		if ev.Type == protocol.EventMessagePosted && ev.Actor.Kind == "agent" {
+			n++
+		}
+	}
+	return n
+}
+
+func waitRoundsClosed(t *testing.T, store *MemStore, roomID string, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if countType(store.RoomEvents(roomID), protocol.EventRoundClosed) >= n {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("轮未达 %d 轮：%v", n, typesOf(store.RoomEvents(roomID)))
+}
+
 func countType(events []protocol.Envelope, typ string) int {
 	n := 0
 	for _, e := range events {
@@ -1206,8 +1220,8 @@ func newEchoEngine(store *MemStore, sup *agent.Supervisor, limits contextx.Limit
 	return NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup,
 		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: adapterName}}},
-		Budget: limits,
-		Clock:  testClock, Now: time.Now,
+		Budget: limits, ReactionWindow: 5 * time.Millisecond, // RFC-0012 去抖窗口测试化
+		Clock: testClock, Now: time.Now,
 		NewID: func(p string) string {
 			mu.Lock()
 			defer mu.Unlock()
@@ -1259,14 +1273,13 @@ func TestEngineResumeRedrivesPausedStimulus(t *testing.T) {
 	eng := NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup, Claims: store,
 		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
-		Clock: testClock, Now: time.Now,
+		Clock: testClock, Now: time.Now, ReactionWindow: 5 * time.Millisecond,
 		NewID: counterNewID(), Tenant: "ten_local",
 	})
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "rd0", TenantID: "ten_local", RoomID: "room_rd", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 		{EventID: "rd1", TenantID: "ten_local", RoomID: "room_rd", Type: protocol.EventRoomPaused, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
-	seedNoAutoPolicy(t, store, "room_rd")
 	deliverHuman(t, store, eng, "room_rd")
 	time.Sleep(150 * time.Millisecond) // 暂停门：不开轮、声明留存
 	if hasType(store.RoomEvents("room_rd"), protocol.EventRoundOpened) {
@@ -1336,8 +1349,8 @@ func TestEnginePauseDuringEvalRevokesBeforeGrant(t *testing.T) {
 	}
 	var rc protocol.RoundClosedPayload
 	_ = json.Unmarshal(events[len(events)-1].Payload, &rc)
-	if rc.Outcome != "revoked_all" {
-		t.Fatalf("outcome = %s（期望 revoked_all）", rc.Outcome)
+	if rc.Outcome != "quiescent" {
+		t.Fatalf("outcome = %s（期望 quiescent——全撤销波零发布）", rc.Outcome)
 	}
 }
 
@@ -1358,7 +1371,7 @@ func TestEngineDeliverClaimErrorFailsClosed(t *testing.T) {
 	eng := NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup, Claims: failClaimStore{store},
 		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
-		Clock: testClock, Now: time.Now,
+		Clock: testClock, Now: time.Now, ReactionWindow: 5 * time.Millisecond,
 		NewID: counterNewID(), Tenant: "ten_local",
 	})
 	store.AppendEvents(context.Background(), []protocol.Envelope{
@@ -1382,18 +1395,17 @@ func TestEngineDeliverClaimErrorFailsClosed(t *testing.T) {
 }
 
 // 复审 #16：同房间两条刺激按到达序开轮——per-room FIFO，不因 goroutine 调度乱序。
-func TestEngineStimulusOrderPreserved(t *testing.T) {
+// RFC-0012 §2.1 去抖重锚：窗口内先后两条消息只开一个波，锚=最新那条；
+// 首条不单独开波（消息是语境——合并评估，成本闸）。
+func TestReactionDebounceMergesToLatestAnchor(t *testing.T) {
 	store := NewMemStore()
 	sup := agent.NewSupervisor()
-	_ = sup.Register(gatedAdapter{})
+	_ = sup.Register(echo.Adapter{})
 	defer sup.Shutdown()
-	setGate(make(chan struct{}))
-	defer setGate(nil)
-	eng := newEchoEngine(store, sup, contextx.Limits{}, "gated")
+	eng := newEchoEngine(store, sup, contextx.Limits{}, "echo")
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "so0", TenantID: "ten_local", RoomID: "room_so", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
-	seedNoAutoPolicy(t, store, "room_so")
 	stimulus := func(id, body string) protocol.Envelope {
 		return protocol.Envelope{
 			EventID: id, TenantID: "ten_local", RoomID: "room_so",
@@ -1403,46 +1415,25 @@ func TestEngineStimulusOrderPreserved(t *testing.T) {
 	}
 	s1, s2 := stimulus("so1", "first"), stimulus("so2", "second")
 	store.AppendEvents(context.Background(), []protocol.Envelope{s1, s2})
-	// 依序投递（outbox 单线程顺序语义）；gate 关闭使第一轮的 generate 阻塞
 	_ = eng.Deliver(context.Background(), outbox.Entry{RoomID: "room_so", Envelope: mustRawJSON(s1)})
 	_ = eng.Deliver(context.Background(), outbox.Entry{RoomID: "room_so", Envelope: mustRawJSON(s2)})
 
-	// 第一轮必须是 s1 的（FIFO：到达序即处理序）
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && countType(store.RoomEvents("room_so"), protocol.EventRoundOpened) < 1 {
-		time.Sleep(5 * time.Millisecond)
+	waitRoundClosed(t, store, "room_so")
+	time.Sleep(120 * time.Millisecond)
+	events := store.RoomEvents("room_so")
+	if n := countType(events, protocol.EventRoundOpened); n != 1 {
+		t.Fatalf("去抖应合并为单波：round.opened = %d（期望 1）：%v", n, typesOf(events))
 	}
-	var firstStimulus string
-	for _, ev := range store.RoomEvents("room_so") {
+	for _, ev := range events {
 		if ev.Type != protocol.EventRoundOpened {
 			continue
 		}
 		var p protocol.RoundOpenedPayload
 		_ = json.Unmarshal(ev.Payload, &p)
-		if firstStimulus == "" {
-			firstStimulus = p.StimulusEventID
+		if p.StimulusEventID != "so2" {
+			t.Fatalf("波锚点应为最新消息 so2：%+v", p)
 		}
 		break
-	}
-	if firstStimulus != "so1" {
-		t.Fatalf("第一轮必须是先到的刺激，got %s", firstStimulus)
-	}
-	close(gate) // 放行：第一轮收尾后第二轮（s2）串行开轮
-	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && countType(store.RoomEvents("room_so"), protocol.EventRoundOpened) < 2 {
-		time.Sleep(5 * time.Millisecond)
-	}
-	var order []string
-	for _, ev := range store.RoomEvents("room_so") {
-		if ev.Type != protocol.EventRoundOpened {
-			continue
-		}
-		var p protocol.RoundOpenedPayload
-		_ = json.Unmarshal(ev.Payload, &p)
-		order = append(order, p.StimulusEventID)
-	}
-	if len(order) != 2 || order[0] != "so1" || order[1] != "so2" {
-		t.Fatalf("开轮序必须等于到达序：%v", order)
 	}
 }
 
@@ -1463,31 +1454,22 @@ func TestEngineEvalUsageCountsTowardAdmission(t *testing.T) {
 		eng := NewEngine(EngineConfig{
 			Store: store, Reader: store, Agents: sup,
 			Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "stub_intent"}}},
-			Budget: contextx.Limits{MaxTokens: 1000},
-			Clock:  testClock, Now: time.Now,
+			Budget: contextx.Limits{MaxTokens: 800}, // RFC-0012：默认 cap 500——零耗时预留过、评估 500 后 500+500>800 失格
+			Clock:  testClock, Now: time.Now, ReactionWindow: 5 * time.Millisecond,
 			NewID: counterNewID(), Tenant: "ten_local",
 		})
-		// 策略投影（max=1/cap=600 的算术前提）以 policy.changed 入历史——引擎开轮自历史重建。
-		policyParams := func(max int, cap int64) protocol.PolicyParams {
-			return protocol.PolicyParams{Mode: "open_floor", MaxSpeakers: max, Lambda: 0.30,
-				Weights:      protocol.PolicyWeights(attention.DefaultWeights),
-				IntentWindow: "20s", ResponseCap: cap, RevealStrategy: "sequential"}
-		}
 		store.AppendEvents(context.Background(), []protocol.Envelope{
 			{EventID: "eu0", TenantID: "ten_local", RoomID: "room_eu", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
-			{EventID: "eu_pol", TenantID: "ten_local", RoomID: "room_eu", Type: protocol.EventPolicyChanged,
-				Actor:   protocol.Actor{ParticipantID: "o", Kind: "human"},
-				Payload: mustMarshalForTest(policyParams(1, 600)), Metadata: map[string]any{}},
 		})
 		deliverHuman(t, store, eng, "room_eu")
 		waitRoundClosed(t, store, "room_eu")
 		return hasType(store.RoomEvents("room_eu"), protocol.EventFloorGranted)
 	}
 	if !run(nil) {
-		t.Fatal("零评估消耗时对称预留应通过（600<=1000），对照失败")
+		t.Fatal("零评估消耗时对称预留应通过（500<=800），对照失败")
 	}
 	if run(&agent.Usage{InputTokens: 500, OutputTokens: 0}) {
-		t.Fatal("评估消耗 500 后同轮 admission 应失格（500+600>1000）——同轮 eval 用量不得绕过预算")
+		t.Fatal("评估消耗 500 后同波 admission 应失格（500+500>800）——同波 eval 用量不得绕过预算")
 	}
 }
 
@@ -1523,7 +1505,7 @@ func newCasEngine(t *testing.T, store *casHookStore) *Engine {
 	return NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup,
 		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
-		Clock: testClock, Now: time.Now,
+		Clock: testClock, Now: time.Now, ReactionWindow: 5 * time.Millisecond,
 		NewID: counterNewID(), Tenant: "ten_local",
 	})
 }
@@ -1647,7 +1629,7 @@ func TestEngineResumeScanErrorPropagates(t *testing.T) {
 	eng := NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup, Claims: failPendingClaims{store},
 		Seats: []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
-		Clock: testClock, Now: time.Now,
+		Clock: testClock, Now: time.Now, ReactionWindow: 5 * time.Millisecond,
 		NewID: counterNewID(), Tenant: "ten_local",
 	})
 	resume := protocol.Envelope{

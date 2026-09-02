@@ -1,8 +1,7 @@
 // 房间页：顶栏（房名双击/编辑图标改名、连接态、暂停/恢复、抽屉开关）
-// + 消息流 + 正在输入区 + 输入框 + 右侧可折叠抽屉（成员/发言评估/话题线/策略）。
+// + 消息流 + 正在输入区 + 输入框 + 右侧可折叠抽屉（成员/发言评估/话题线）。
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, ApiError, type PolicyParams } from "../api/client";
 import { useRoom, type Connection } from "../api/room";
 import { Composer } from "../components/chat/Composer";
 import { MemberPanel } from "../components/chat/MemberPanel";
@@ -27,7 +26,6 @@ export function RoomPage() {
   const [inviteBusy, setInviteBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
-  const [policyBusy, setPolicyBusy] = useState(false);
 
   // 房间内有新事件 → 防抖轻量刷新侧栏列表（last_event_at 排序；不轮询）
   const entryCount = room.entries.length;
@@ -78,31 +76,6 @@ export function RoomPage() {
     [room],
   );
 
-  // set_policy：命令前快照版本校准、409 兜底重试一次（同 endorse/invite 链），
-  // 生效后重取投影让策略 Tab 显示新值。
-  const onSetPolicy = useCallback(
-    async (params: PolicyParams) => {
-      if (!roomId) return;
-      setPolicyBusy(true);
-      try {
-        const snap = await api.snapshot(roomId);
-        try {
-          await api.setPolicy(roomId, snap.room_version, params);
-        } catch (e) {
-          if (e instanceof ApiError && e.status === 409) {
-            const fresh = await api.snapshot(roomId);
-            await api.setPolicy(roomId, fresh.room_version, params);
-          } else {
-            throw e;
-          }
-        }
-        await room.refreshProjections();
-      } finally {
-        setPolicyBusy(false);
-      }
-    },
-    [room, roomId],
-  );
 
   // refreshProjections 在 useRoom 内为稳定引用（useCallback 空依赖），首帧捕获即可。
   const onTabActive = useCallback(() => {
@@ -235,9 +208,6 @@ export function RoomPage() {
             onEndorse={onEndorse}
             inviteBusy={inviteBusy}
             onInvite={onInvite}
-            policy={room.policy}
-            policyBusy={policyBusy}
-            onSetPolicy={onSetPolicy}
             onTabActive={onTabActive}
             onClose={() => setDrawerOpen(false)}
             describeEvent={describeEvent}

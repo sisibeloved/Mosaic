@@ -27,7 +27,7 @@ func threadEnv(t *testing.T) (*MemStore, *Engine, *Service, string, string) {
 		Store: store, Reader: store, Agents: sup,
 		Seats:  []AgentSeat{{ParticipantID: "par_a", Profile: agent.Profile{ProfileID: "pa", Adapter: "echo"}}},
 		Budget: contextx.Limits{},
-		Clock:  testClock, Now: time.Now,
+		Clock:  testClock, Now: time.Now, ReactionWindow: 5 * time.Millisecond,
 		NewID: sharedID, Tenant: "ten_local",
 	})
 	svc := NewService(Config{Store: store, Reader: store, Clock: testClock,

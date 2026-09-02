@@ -207,7 +207,6 @@ export interface components {
          *     create_room → CreateRoomPayload；post_message → PostMessagePayload；
          *     pause_room → PauseRoomPayload；resume_room → 空 payload；
          *     rename_room → RenameRoomPayload（UI 重设计切片 1；room.renamed 事件）；
-         *     set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）；
          *     endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）；
          *     invite_agent → {participant_id}（RFC-0001 Membership：participant.admitted 拉人）；
          *     fork/pause/resume/close/reopen/merge_thread → ThreadLifecyclePayload（RFC-0004 线程生命周期，
@@ -215,7 +214,7 @@ export interface components {
          */
         RoomCommand: {
             /** @enum {string} */
-            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "rename_room" | "set_policy" | "endorse_intent" | "invite_agent" | "fork_thread" | "pause_thread" | "resume_thread" | "close_thread" | "reopen_thread" | "merge_thread";
+            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "rename_room" | "endorse_intent" | "invite_agent" | "fork_thread" | "pause_thread" | "resume_thread" | "close_thread" | "reopen_thread" | "merge_thread";
             expected_room_version: number;
             /** @description UUIDv7（服务端按 tenant+key+kind 去重；同键异指纹 409） */
             idempotency_key: string;
@@ -279,36 +278,11 @@ export interface components {
             merged_into?: string;
             reason?: string;
         };
-        /** @description 人类保送（RFC-0003 §3.1.11 / OQ-17）。effect=grant 直接授予 Floor（默认）；boost 随 Policy 加权参数定稿开放。不绕过预算/硬资格/安全；对全体可见。 */
+        /** @description 人类保送（RFC-0003 §3.1.11 / OQ-17）。effect=grant 直接授予 Floor（默认）；boost 未开放。不绕过预算/硬资格/安全；对全体可见。 */
         EndorseIntentPayload: {
             intent_id: string;
             /** @enum {string} */
             effect: "grant";
-        };
-        /** @description 策略参数束（RFC-0003 §3.1.7；set_policy 命令体与 policy.changed 事件 payload 同构）。reveal 三策略自 B2 起全部可执行（simultaneous=冻结水位统一揭示；independent_then_cross=独立首轮+cross 子轮）。auto_rounds 为自动续聊轮数上限（0=关；计划 v1.26）。 */
-        PolicyParams: {
-            /** @enum {string} */
-            mode: "roundtable" | "open_floor" | "deep_dive" | "review" | "decision";
-            max_speakers: number;
-            lambda: number;
-            weights: {
-                relevance: number;
-                novelty: number;
-                diversity: number;
-                urgency: number;
-                direct_address: number;
-                floor_share: number;
-                repetition: number;
-            };
-            intent_window: string;
-            /** Format: int64 */
-            response_cap: number;
-            /** @enum {string} */
-            reveal_strategy: "sequential" | "simultaneous" | "independent_then_cross";
-            /** @description cross 子轮数（Roundtable 默认 1；仅 independent_then_cross 消费） */
-            rebuttals: number;
-            /** @description 自动续聊轮数上限（0=关；Open Floor 默认 3 / Deep Dive 2；停止条件=轮数上限/静默轮/预算 100% 硬停） */
-            auto_rounds: number;
         };
         CommandResponse: {
             room_id: string;
@@ -362,20 +336,6 @@ export interface components {
             display_name: string;
             /** @description 参与者视图（装配层注入：本地 owner + 引擎座位；非投影产物——ADR-0011 注记，不进 room_version/水位语义）。 */
             participants: components["schemas"]["ParticipantView"][];
-            /** @description 当前策略区（记分卡透明 OQ-17——权重/模式参数对成员可见、版本化）。 */
-            policy: {
-                policy_version: string;
-                mode?: string;
-                max_speakers?: number;
-                lambda?: number;
-                weights?: Record<string, never>;
-                intent_window?: string;
-                /** Format: int64 */
-                response_cap?: number;
-                reveal_strategy?: string;
-                /** @description 自动续聊轮数上限（0=关；Open Floor 默认 3 / Deep Dive 2；RFC §3.1.7，计划 v1.26） */
-                auto_rounds?: number;
-            };
             /** @description 房间成员投影（room.created.agents + participant.admitted 链；null/缺 = 全部在席）。 */
             roster?: string[];
             /** @description 线程投影（RFC-0004 生命周期状态 + fork 谱系 + 合并去向）。 */
@@ -426,10 +386,8 @@ export interface components {
             seat_status: string;
         };
         /**
-         * @description v1.25 起 Timeline 含系统事件（round.opened / round.closed / room.paused /
-         *     room.started）——轮次提醒随快照持久化（此前仅 SSE 瞬态，切房间即失）。
-         *     outcome 仅 round.closed 携带（结果标签，客户端映射用户语言）；
-         *     auto_index 仅 round.opened 携带（>0 = 自动续聊轮，v1.27）。
+         * @description RFC-0012 群聊模型：Timeline = 消息族 + 暂停/恢复系统提醒（round.* 内部化，
+         *     不入用户可见时间线）。
          */
         TimelineItem: {
             position: string;
@@ -438,9 +396,6 @@ export interface components {
             actor_id: string;
             actor_kind: string;
             body?: string;
-            outcome?: string;
-            /** @description 自动续聊轮序（1..auto_rounds；缺省 = 人类消息驱动轮） */
-            auto_index?: number;
             thread_id?: null | string;
             /** Format: date-time */
             occurred_at: string;

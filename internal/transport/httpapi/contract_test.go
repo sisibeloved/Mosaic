@@ -92,7 +92,7 @@ func TestSpecCommandKindEnum(t *testing.T) {
 		s, _ := v.(string)
 		got[s] = true
 	}
-	want := map[string]bool{"create_room": true, "post_message": true, "pause_room": true, "resume_room": true, "rename_room": true, "set_policy": true, "endorse_intent": true, "fork_thread": true, "pause_thread": true, "resume_thread": true, "close_thread": true, "reopen_thread": true, "merge_thread": true, "invite_agent": true}
+	want := map[string]bool{"create_room": true, "post_message": true, "pause_room": true, "resume_room": true, "rename_room": true, "endorse_intent": true, "fork_thread": true, "pause_thread": true, "resume_thread": true, "close_thread": true, "reopen_thread": true, "merge_thread": true, "invite_agent": true}
 	if len(got) != len(want) {
 		t.Fatalf("command_kind 枚举漂移：spec=%v 服务端=%v", got, want)
 	}

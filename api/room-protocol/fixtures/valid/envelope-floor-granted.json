@@ -8,16 +8,20 @@
   "type": "floor.granted",
   "schema_version": 1,
   "occurred_at": "2026-08-25T10:00:03.000Z",
-  "actor": { "participant_id": "par_system", "kind": "system" },
+  "actor": {
+    "participant_id": "par_system",
+    "kind": "system"
+  },
   "causation_id": "evt_01H8TESTINTENTENDORSED0000",
   "correlation_id": "rnd_01H8TESTROUND00000000000",
-  "visibility": { "kind": "participants" },
+  "visibility": {
+    "kind": "participants"
+  },
   "payload": {
     "grant_id": "grant_01H8TESTGRANT000000000",
     "round_id": "rnd_01H8TESTROUND00000000000",
     "participant_id": "par_codex",
     "rank": 1,
-    "reveal_strategy": "simultaneous",
     "context_watermark": 151,
     "epoch": 7,
     "expires_at": "2026-08-25T10:00:33.000Z",

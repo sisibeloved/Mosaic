@@ -6,12 +6,11 @@
  */
 
 /**
- * Round 生命周期关闭：一轮可产生零公开发言（合法结果而非错误，AR-002）。
+ * 反应波关闭（RFC-0012：quiescent=意愿静默终止——全员选择不回，流自然结束）。
  */
 export interface RoundClosedPayload {
   round_id: string;
-  outcome: "published" | "quiescent" | "budget_stopped" | "revoked_all";
+  outcome: "published" | "quiescent";
   selected_count: number;
   silent_count: number;
-  cross_subrounds: number;
 }

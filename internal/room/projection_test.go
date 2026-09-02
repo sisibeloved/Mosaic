@@ -47,18 +47,15 @@ func TestProjectSnapshotQuadruple(t *testing.T) {
 	if snap.ProjectionVersion != ProjectionVersion || snap.AlgorithmVersion != AlgorithmVersion {
 		t.Fatalf("版本三元组不符：%d/%d", snap.ProjectionVersion, snap.AlgorithmVersion)
 	}
-	// 系统事件（round.opened）入 Timeline（v1.25 持久化）+ 两条消息；无 seq 字段
-	if len(snap.Timeline) != 3 {
-		t.Fatalf("timeline = %d 项", len(snap.Timeline))
+	// RFC-0012：round.* 内部化——Timeline 仅消息族；无 seq 字段
+	if len(snap.Timeline) != 2 {
+		t.Fatalf("timeline = %d 项（期望 2：round.* 不入列）", len(snap.Timeline))
 	}
-	if snap.Timeline[0].Type != protocol.EventRoundOpened {
-		t.Fatalf("timeline[0] 应为 round.opened：%+v", snap.Timeline[0])
-	}
-	if snap.Timeline[1].Body != "hi" || snap.Timeline[2].ActorKind != "agent" {
+	if snap.Timeline[0].Body != "hi" || snap.Timeline[1].ActorKind != "agent" {
 		t.Fatalf("timeline 内容不符：%+v", snap.Timeline)
 	}
-	if snap.Timeline[1].ThreadID == nil || *snap.Timeline[1].ThreadID != "thr_root" {
-		t.Fatalf("thread_id 丢失：%v", snap.Timeline[1].ThreadID)
+	if snap.Timeline[0].ThreadID == nil || *snap.Timeline[0].ThreadID != "thr_root" {
+		t.Fatalf("thread_id 丢失：%v", snap.Timeline[0].ThreadID)
 	}
 	raw, _ := json.Marshal(snap.Timeline[1])
 	if strings.Contains(string(raw), `"seq"`) {

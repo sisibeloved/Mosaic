@@ -15,11 +15,8 @@ const (
 	AlgorithmVersion  = 1
 )
 
-// TimelineItem Timeline 视图项（对外形态：无 seq/tenant）。v1.25 起系统事件
-// （round.opened/closed、room.paused/started）随 Timeline 持久化（dogfood #4：
-// 切房间/刷新后轮次提醒消失——SSE 瞬态不应是唯一来源）；Outcome 为
-// round.closed 的结果标签（客户端映射用户语言）；AutoIndex 为 round.opened
-// 的自动续聊轮序（>0 = 自动轮，缺省 = 人类消息驱动；v1.27）。
+// TimelineItem Timeline 视图项（对外形态：无 seq/tenant；RFC-0012：消息族 +
+// 暂停/恢复系统提醒——round.* 已内部化不入列表）。
 type TimelineItem struct {
 	Position   string  `json:"position"`
 	EventID    string  `json:"event_id"`
@@ -27,23 +24,8 @@ type TimelineItem struct {
 	ActorID    string  `json:"actor_id"`
 	ActorKind  string  `json:"actor_kind"`
 	Body       string  `json:"body,omitempty"`
-	Outcome    string  `json:"outcome,omitempty"`
-	AutoIndex  int     `json:"auto_index,omitempty"`
 	ThreadID   *string `json:"thread_id,omitempty"`
 	OccurredAt string  `json:"occurred_at"`
-}
-
-// PolicyView 快照的策略区（记分卡透明 OQ-17：权重、模式参数对成员可见、版本化）。
-type PolicyView struct {
-	PolicyVersion  string                 `json:"policy_version"`
-	Mode           string                 `json:"mode"`
-	MaxSpeakers    int                    `json:"max_speakers"`
-	Lambda         float64                `json:"lambda"`
-	Weights        protocol.PolicyWeights `json:"weights"`
-	IntentWindow   string                 `json:"intent_window"`
-	ResponseCap    int64                  `json:"response_cap"`
-	RevealStrategy string                 `json:"reveal_strategy"`
-	AutoRounds     int                    `json:"auto_rounds"`
 }
 
 // Snapshot 快照载体：版本三元组 + 水位（opaque cursor）+ Timeline + 策略区。
@@ -57,7 +39,6 @@ type Snapshot struct {
 	AlgorithmVersion  int               `json:"algorithm_version"`
 	DisplayName       string            `json:"display_name"`
 	Timeline          []TimelineItem    `json:"timeline"`
-	Policy            PolicyView        `json:"policy"`
 	Scorecard         []ScorecardItem   `json:"scorecard"`
 	Threads           []ThreadView      `json:"threads"`
 	Roster            []string          `json:"roster"`
@@ -92,10 +73,9 @@ type ScorecardItem struct {
 	OccurredAt       string `json:"occurred_at"`
 }
 
-// ProjectSnapshot 从房间事件重建快照（Timeline = message 族 + 轮次/暂停系统
-// 事件——v1.25 持久化；其余控制事件不入列表；策略区经 RebuildPolicy 投影——
-// 快照与引擎同源，无双轨；记分卡自 intent.recorded 全量投影 + intent.endorsed
-// 合并——事件不回写）。
+// ProjectSnapshot 从房间事件重建快照（RFC-0012：Timeline = message 族 +
+// 暂停/恢复系统提醒——round.* 内部化不入列表；策略区已退役；记分卡自
+// intent.recorded 全量投影 + intent.endorsed 合并——事件不回写）。
 func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 	snap := Snapshot{
 		RoomID:            roomID,
@@ -121,7 +101,6 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 	for i := range events {
 		envs[i] = events[i].Envelope
 	}
-	policy := RebuildPolicy(envs)
 	threads, graph := RebuildThreads(envs)
 	if roster := RosterOf(envs); roster != nil {
 		snap.Roster = make([]string, 0, len(roster))
@@ -134,17 +113,6 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 		snap.Threads = append(snap.Threads, *th)
 	}
 	snap.Graph = graph
-	snap.Policy = PolicyView{
-		PolicyVersion:  policy.PolicyVersion,
-		Mode:           policy.Params.Mode,
-		MaxSpeakers:    policy.Params.MaxSpeakers,
-		Lambda:         policy.Params.Lambda,
-		Weights:        policy.Params.Weights,
-		IntentWindow:   policy.Params.IntentWindow,
-		ResponseCap:    policy.Params.ResponseCap,
-		RevealStrategy: policy.Params.RevealStrategy,
-		AutoRounds:     policy.Params.AutoRounds,
-	}
 	for _, ev := range events {
 		if ev.Envelope.Seq > snap.RoomVersion {
 			snap.RoomVersion = ev.Envelope.Seq
@@ -184,10 +152,10 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 			continue
 		}
 		if ev.Envelope.Type != protocol.EventMessagePosted {
-			// 系统事件入 Timeline（v1.25 持久化——SSE 瞬态不再是唯一来源）
+			// 系统提醒入 Timeline（暂停/恢复——SSE 瞬态不是唯一来源；
+			// RFC-0012：round.* 内部化，不入用户可见时间线）
 			switch ev.Envelope.Type {
-			case protocol.EventRoundOpened, protocol.EventRoundClosed,
-				protocol.EventRoomPaused, protocol.EventRoomStarted:
+			case protocol.EventRoomPaused, protocol.EventRoomStarted:
 				item := TimelineItem{
 					Position:   ev.Cursor,
 					EventID:    ev.Envelope.EventID,
@@ -196,20 +164,6 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 					ActorKind:  ev.Envelope.Actor.Kind,
 					ThreadID:   ev.Envelope.ThreadID,
 					OccurredAt: ev.Envelope.OccurredAt,
-				}
-				if ev.Envelope.Type == protocol.EventRoundClosed {
-					var p struct {
-						Outcome string `json:"outcome"`
-					}
-					_ = json.Unmarshal(ev.Envelope.Payload, &p)
-					item.Outcome = p.Outcome
-				}
-				if ev.Envelope.Type == protocol.EventRoundOpened {
-					var p struct {
-						AutoIndex int `json:"auto_index"`
-					}
-					_ = json.Unmarshal(ev.Envelope.Payload, &p)
-					item.AutoIndex = p.AutoIndex
 				}
 				snap.Timeline = append(snap.Timeline, item)
 			}

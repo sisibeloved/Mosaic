@@ -6,14 +6,13 @@
  */
 
 /**
- * FloorGrant 签发：含 rank 与 reveal_strategy；epoch 用于迟到拒绝（AR-004/AR-008）；生成结果提交以消费 grant 为准。
+ * FloorGrant 签发：意愿放行记账（RFC-0012）；epoch 用于迟到拒绝（AR-004/AR-008）。
  */
 export interface FloorGrantedPayload {
   grant_id: string;
   round_id: string;
   participant_id: string;
   rank: number;
-  reveal_strategy: "sequential" | "simultaneous" | "independent_then_cross";
   context_watermark: number;
   epoch: number;
   expires_at: string;

@@ -5,17 +5,32 @@
   "description": "tenant/room/actor 由鉴权与路径绑定，命令体内不出现；idempotency_key 必须为 UUIDv7。",
   "type": "object",
   "required": [
-    "command_kind", "expected_room_version", "idempotency_key", "issued_at", "payload"
+    "command_kind",
+    "expected_room_version",
+    "idempotency_key",
+    "issued_at",
+    "payload"
   ],
   "properties": {
-    "command_kind": { "type": "string", "pattern": "^[a-z0-9_]+$" },
-    "expected_room_version": { "type": "integer", "minimum": 0 },
+    "command_kind": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "expected_room_version": {
+      "type": "integer",
+      "minimum": 0
+    },
     "idempotency_key": {
       "type": "string",
       "description": "UUIDv7（时间有序；服务端按 tenant+key+kind 唯一约束去重）",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
     },
-    "issued_at": { "type": "string", "format": "date-time" },
-    "payload": { "type": "object" }
+    "issued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object"
+    }
   }
 }

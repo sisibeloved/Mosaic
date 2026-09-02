@@ -68,9 +68,9 @@ func (e *Engine) runEndorse(ctx context.Context, endorsed protocol.Envelope) {
 		envs[i] = history[i].Envelope
 	}
 	ledger := contextx.RebuildBudget(envs)
-	policy := RebuildPolicy(envs)
+	policy := defaultChatPolicy()
 	if !ledger.Admit(e.cfg.Budget) ||
-		!ledger.ReserveOK(e.cfg.Budget, 1, policy.Params.ResponseCap) {
+		!ledger.ReserveOK(e.cfg.Budget, 1, policy.ResponseCap) {
 		e.debug(roomID, "保送跳过：预算熔断/预留不足", "intent", payload.IntentID)
 		return
 	}
@@ -88,7 +88,7 @@ func (e *Engine) runEndorse(ctx context.Context, endorsed protocol.Envelope) {
 		seatsMin = append(seatsMin, contextx.Seat{ParticipantID: s.ParticipantID})
 	}
 	assembled := contextx.Assemble(contextx.Config{
-		RoomID: roomID, TaskID: endorsed.EventID, Mode: policy.Params.Mode, Seats: seatsMin,
+		RoomID: roomID, TaskID: endorsed.EventID, Mode: "chat", Seats: seatsMin,
 		RecentWindow: 10, Endorse: true,
 		Budget: contextx.BudgetState{
 			RemainingTokens: remainingTokens(ledger, e.cfg.Budget),
@@ -166,7 +166,7 @@ func (e *Engine) publishEndorsed(ctx context.Context, roomID string, stimulus pr
 // issueGrantCustom 保送发授（grant_id 语义化前缀 par_endorse_*，与轮内 grant 区分；
 // rank=1；causation=endorsed 事件——人类可追溯）。
 func (e *Engine) issueGrantCustom(ctx context.Context, roomID, causationEventID string,
-	sel attention.Selection, policy RoundPolicy, watermark int64, grantID string) (protocol.Envelope, string, bool) {
+	sel attention.Selection, policy chatGrantPolicy, watermark int64, grantID string) (protocol.Envelope, string, bool) {
 
 	grant := e.newEnv(roomID, protocol.EventFloorGranted,
 		protocol.Actor{ParticipantID: "par_system", Kind: "system"}, causationEventID, "",
@@ -175,11 +175,10 @@ func (e *Engine) issueGrantCustom(ctx context.Context, roomID, causationEventID 
 			RoundID:          "",
 			ParticipantID:    sel.ParticipantID,
 			Rank:             1,
-			RevealStrategy:   policy.Params.RevealStrategy,
 			ContextWatermark: int(watermark),
 			Epoch:            0,
-			ExpiresAt:        e.cfg.Now().Add(policy.IntentWindow).UTC().Format(time.RFC3339Nano),
-			ResponseCap:      int(policy.Params.ResponseCap),
+			ExpiresAt:        e.cfg.Now().Add(policy.GrantExpiry).UTC().Format(time.RFC3339Nano),
+			ResponseCap:      int(policy.ResponseCap),
 			Directed:         false,
 		})
 	grant.Metadata = map[string]any{"endorsed": true}

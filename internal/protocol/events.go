@@ -61,18 +61,11 @@ type Visibility struct {
 	Participants []string `json:"participants,omitempty"`
 }
 
-// RoundOpenedPayload round.opened（RFC-0003 §3.1.11）。
+// RoundOpenedPayload round.opened（RFC-0012 §2.2：反应波内部记账——快照
+// Timeline 不收录；策略面已退役，stimulus_event_id 即波锚点=最新一条消息）。
 type RoundOpenedPayload struct {
 	RoundID         string `json:"round_id"`
 	StimulusEventID string `json:"stimulus_event_id"`
-	Mode            string `json:"mode"`            // roundtable | open_floor | deep_dive | review | decision
-	RevealStrategy  string `json:"reveal_strategy"` // sequential | simultaneous | independent_then_cross
-	IntentWindow    string `json:"intent_window"`
-	PolicyVersion   string `json:"policy_version"`
-	// AutoIndex 自动续聊轮序（RFC-0003 §3.1.7 自动续聊参数；计划 v1.26）：
-	// 1..auto_rounds 链内递增；缺省/0 = 人类消息驱动轮。刺激为上一轮最后一条
-	// agent 发言（stimulus_event_id 可回溯锚点）。
-	AutoIndex int `json:"auto_index,omitempty"`
 }
 
 // IntentRecordedPayload intent.recorded：TurnIntent 的用户可见投影（公开 band，不公开精确分）。
@@ -91,30 +84,8 @@ type IntentRecordedPayload struct {
 	UnselectedReason string   `json:"unselected_reason,omitempty"` // 记分卡透明（R-08）：未选理由（budget/duplicate/…）
 }
 
-// PolicyParams 策略参数束（RFC-0003 §3.1.7；set_policy 命令体与 policy.changed
-// 事件共用。模式 = 参数束，不改变协议与对象模型）。
-type PolicyParams struct {
-	Mode           string        `json:"mode"`
-	MaxSpeakers    int           `json:"max_speakers"`
-	Lambda         float64       `json:"lambda"`
-	Weights        PolicyWeights `json:"weights"`
-	IntentWindow   string        `json:"intent_window"`
-	ResponseCap    int64         `json:"response_cap"`
-	RevealStrategy string        `json:"reveal_strategy"`
-	Rebuttals      int           `json:"rebuttals"`   // cross 子轮数（0-2；Roundtable 默认 1）
-	AutoRounds     int           `json:"auto_rounds"` // 自动续聊轮数上限（0-6，0=关；Open Floor 默认 3 / Deep Dive 2）
-}
-
-// PolicyWeights 记分卡权重 wire 形态（七项；正项之和 >1 由投影端归一化）。
-type PolicyWeights struct {
-	Relevance     float64 `json:"relevance"`
-	Novelty       float64 `json:"novelty"`
-	Diversity     float64 `json:"diversity"`
-	Urgency       float64 `json:"urgency"`
-	DirectAddress float64 `json:"direct_address"`
-	FloorShare    float64 `json:"floor_share"`
-	Repetition    float64 `json:"repetition"`
-}
+// PolicyParams/PolicyWeights 已随 RFC-0012 退役（群聊制无房间策略面）；
+// 存量 policy.changed 事件投影端忽略（回放容错，事件溯源不动存量日志）。
 
 // ThreadLifecyclePayload thread 生命周期事件族（RFC-0004；forked 携带谱系）。
 type ThreadLifecyclePayload struct {
@@ -140,7 +111,6 @@ type FloorGrantedPayload struct {
 	RoundID          string `json:"round_id"`
 	ParticipantID    string `json:"participant_id"`
 	Rank             int    `json:"rank"`
-	RevealStrategy   string `json:"reveal_strategy"`
 	ContextWatermark int    `json:"context_watermark"`
 	Epoch            int    `json:"epoch"`
 	ExpiresAt        string `json:"expires_at"`
@@ -156,11 +126,10 @@ type FloorRevokedPayload struct {
 
 // RoundClosedPayload round.closed：零公开发言是合法结果（AR-002）。
 type RoundClosedPayload struct {
-	RoundID        string `json:"round_id"`
-	Outcome        string `json:"outcome"` // published | quiescent | budget_stopped | revoked_all
-	SelectedCount  int    `json:"selected_count"`
-	SilentCount    int    `json:"silent_count"`
-	CrossSubrounds int    `json:"cross_subrounds"`
+	RoundID       string `json:"round_id"`
+	Outcome       string `json:"outcome"` // published | quiescent | revoked_all（quiescent=意愿静默终止，RFC-0012）
+	SelectedCount int    `json:"selected_count"`
+	SilentCount   int    `json:"silent_count"`
 }
 
 // DecodePayload 按事件类型把 Envelope.Payload 解码为对应边界结构。

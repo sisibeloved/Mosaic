@@ -9,7 +9,6 @@ export type Executable = Schemas["Executable"];
 export type CommandResponse = Schemas["CommandResponse"];
 export type RoomSummary = Schemas["RoomSummary"];
 export type ParticipantView = Schemas["ParticipantView"];
-export type PolicyParams = Schemas["PolicyParams"];
 export type ManualExecutableRequest = Schemas["ManualExecutableRequest"];
 
 export class ApiError extends Error {
@@ -164,12 +163,6 @@ export const api = {
     return post(
       `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
       commandBody("resume_room", version, {}),
-    );
-  },
-  setPolicy(roomID: string, version: number, params: Schemas["PolicyParams"]): Promise<CommandResponse> {
-    return post(
-      `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
-      commandBody("set_policy", version, params),
     );
   },
   endorseIntent(roomID: string, version: number, intentID: string): Promise<CommandResponse> {

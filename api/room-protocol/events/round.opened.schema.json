@@ -2,30 +2,21 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://mosaic.local/room-protocol/events/round.opened.schema.json",
   "title": "RoundOpenedPayload",
-  "description": "Round 生命周期开启：刺激提交或唤醒检查触发；策略变更只在 round 边界生效（R-10）。auto_index 标记自动续聊轮（RFC-0003 §3.1.7 自动续聊参数，计划 v1.26：缺省 = 人类消息驱动）。",
+  "description": "反应波开启（RFC-0012 §2.2：round 内部记账，快照 Timeline 不收录；stimulus_event_id=波锚点=最新一条消息）。",
   "type": "object",
   "required": [
-    "round_id", "stimulus_event_id", "mode", "reveal_strategy", "intent_window", "policy_version"
+    "round_id",
+    "stimulus_event_id"
   ],
   "additionalProperties": false,
   "properties": {
-    "round_id": { "type": "string", "pattern": "^rnd_[0-9A-Za-z_-]+$" },
-    "stimulus_event_id": { "type": "string", "pattern": "^evt_[0-9A-Za-z_-]+$" },
-    "mode": {
+    "round_id": {
       "type": "string",
-      "enum": ["roundtable", "open_floor", "deep_dive", "review", "decision"]
+      "pattern": "^rnd_[0-9A-Za-z_-]+$"
     },
-    "reveal_strategy": {
+    "stimulus_event_id": {
       "type": "string",
-      "enum": ["sequential", "simultaneous", "independent_then_cross"]
-    },
-    "intent_window": { "type": "string", "pattern": "^[0-9]+(s|m|h)$" },
-    "policy_version": { "type": "string", "pattern": "^pol_[0-9A-Za-z_-]+$" },
-    "auto_index": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 6,
-      "description": "自动续聊轮序（1..auto_rounds 链内递增；刺激为上一轮最后一条 agent 发言）"
+      "pattern": "^evt_[0-9A-Za-z_-]+$"
     }
   }
 }

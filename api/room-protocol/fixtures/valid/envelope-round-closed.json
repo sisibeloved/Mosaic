@@ -8,16 +8,20 @@
   "type": "round.closed",
   "schema_version": 1,
   "occurred_at": "2026-08-25T10:01:00.000Z",
-  "actor": { "participant_id": "par_system", "kind": "system" },
+  "actor": {
+    "participant_id": "par_system",
+    "kind": "system"
+  },
   "causation_id": null,
   "correlation_id": "rnd_01H8TESTROUND00000000000",
-  "visibility": { "kind": "public" },
+  "visibility": {
+    "kind": "public"
+  },
   "payload": {
     "round_id": "rnd_01H8TESTROUND00000000000",
     "outcome": "published",
     "selected_count": 2,
-    "silent_count": 1,
-    "cross_subrounds": 1
+    "silent_count": 1
   },
   "metadata": {}
 }

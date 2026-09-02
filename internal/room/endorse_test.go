@@ -21,15 +21,17 @@ func endorseEnv(t *testing.T) (*MemStore, *Engine, *Service, string) {
 	store := NewMemStore()
 	sup := agent.NewSupervisor()
 	_ = sup.Register(echo.Adapter{})
+	_ = sup.Register(silentAdapter{})
 	t.Cleanup(sup.Shutdown)
 	eng := NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup,
 		Seats: []AgentSeat{
 			{ParticipantID: "par_a", Profile: agent.Profile{ProfileID: "pa", Adapter: "echo"}},
-			{ParticipantID: "par_b", Profile: agent.Profile{ProfileID: "pb", Adapter: "echo"}},
+			// RFC-0012：群聊制无中央选人——保送对象改为 silent 决定（人类翻转 agent 的自决不回）
+			{ParticipantID: "par_b", Profile: agent.Profile{ProfileID: "pb", Adapter: "silent_stub"}},
 		},
 		Budget: contextx.Limits{},
-		Clock:  testClock, Now: time.Now,
+		Clock:  testClock, Now: time.Now, ReactionWindow: 5 * time.Millisecond,
 		NewID: counterNewID(), Tenant: "ten_local",
 	})
 	svc := NewService(Config{Store: store, Reader: store, Clock: testClock,
@@ -40,17 +42,6 @@ func endorseEnv(t *testing.T) (*MemStore, *Engine, *Service, string) {
 			Payload: []byte(`{"display_name":"e"}`)})
 	if err != nil {
 		t.Fatalf("create: %v", err)
-	}
-	// max=1（一轮恰一个获选、一个未获选）；关自动续聊（保送测试轮后快照版本发命令，
-	// 续轮推进版本会撞 409——CI 双腿实证；默认束 v1.27 起为 3）
-	p := policyDefaults("open_floor")
-	p.MaxSpeakers = 1
-	p.AutoRounds = 0
-	if _, err := svc.ExecuteCommand(context.Background(), Actor{ParticipantID: "par_owner", Kind: "human"},
-		Command{RoomID: created.RoomID, CommandKind: "set_policy", ExpectedRoomVersion: 1,
-			IdempotencyKey: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5eb1", IssuedAt: "2026-08-31T09:00:01.000Z",
-			Payload: mustMarshalForTest(p)}); err != nil {
-		t.Fatalf("set_policy: %v", err)
 	}
 	return store, eng, svc, created.RoomID
 }
@@ -209,4 +200,30 @@ func hasEndorsePublish(events []protocol.Envelope) bool {
 		}
 	}
 	return false
+}
+
+// silentAdapter 恒 silent 的本地桩（保送对象制造：群聊制无选人——silent 意图
+// 即人类可翻转的自决不回；不走全局 stubIntentData，避免跨测试竞态）。
+type silentAdapter struct{}
+
+func (silentAdapter) Name() string                     { return "silent_stub" }
+func (silentAdapter) Capabilities() agent.Capabilities { return agent.Capabilities{} }
+func (silentAdapter) Boot(context.Context, agent.Profile) (agent.Session, error) {
+	return silentSession{}, nil
+}
+
+type silentSession struct{}
+
+func (silentSession) Run(context.Context, agent.Task) (agent.Handle, error) {
+	return silentHandle{}, nil
+}
+func (silentSession) Cancel(string) {}
+func (silentSession) Close()        {}
+
+type silentHandle struct{}
+
+func (silentHandle) Updates() <-chan agent.DraftUpdate { return nil }
+func (silentHandle) Cancel()                           {}
+func (silentHandle) Result() (agent.Result, error) {
+	return agent.Result{Block: "turn_intent", Data: map[string]any{"action": "silent"}}, nil
 }

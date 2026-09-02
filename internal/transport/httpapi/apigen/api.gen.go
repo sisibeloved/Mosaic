@@ -50,7 +50,6 @@ const (
 	ReopenThread  RoomCommandCommandKind = "reopen_thread"
 	ResumeRoom    RoomCommandCommandKind = "resume_room"
 	ResumeThread  RoomCommandCommandKind = "resume_thread"
-	SetPolicy     RoomCommandCommandKind = "set_policy"
 )
 
 // Valid indicates whether the value is a known member of the RoomCommandCommandKind enum.
@@ -81,8 +80,6 @@ func (e RoomCommandCommandKind) Valid() bool {
 	case ResumeRoom:
 		return true
 	case ResumeThread:
-		return true
-	case SetPolicy:
 		return true
 	default:
 		return false
@@ -259,7 +256,6 @@ type ParticipantViewKind string
 // create_room → CreateRoomPayload；post_message → PostMessagePayload；
 // pause_room → PauseRoomPayload；resume_room → 空 payload；
 // rename_room → RenameRoomPayload（UI 重设计切片 1；room.renamed 事件）；
-// set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）；
 // endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）；
 // invite_agent → {participant_id}（RFC-0001 Membership：participant.admitted 拉人）；
 // fork/pause/resume/close/reopen/merge_thread → ThreadLifecyclePayload（RFC-0004 线程生命周期，
@@ -316,24 +312,10 @@ type Snapshot struct {
 	} `json:"graph"`
 
 	// Participants 参与者视图（装配层注入：本地 owner + 引擎座位；非投影产物——ADR-0011 注记，不进 room_version/水位语义）。
-	Participants []ParticipantView `json:"participants"`
-
-	// Policy 当前策略区（记分卡透明 OQ-17——权重/模式参数对成员可见、版本化）。
-	Policy struct {
-		// AutoRounds 自动续聊轮数上限（0=关；Open Floor 默认 3 / Deep Dive 2；RFC §3.1.7，计划 v1.26）
-		AutoRounds     *int                    `json:"auto_rounds,omitempty"`
-		IntentWindow   *string                 `json:"intent_window,omitempty"`
-		Lambda         *float32                `json:"lambda,omitempty"`
-		MaxSpeakers    *int                    `json:"max_speakers,omitempty"`
-		Mode           *string                 `json:"mode,omitempty"`
-		PolicyVersion  string                  `json:"policy_version"`
-		ResponseCap    *int64                  `json:"response_cap,omitempty"`
-		RevealStrategy *string                 `json:"reveal_strategy,omitempty"`
-		Weights        *map[string]interface{} `json:"weights,omitempty"`
-	} `json:"policy"`
-	ProjectionVersion int64  `json:"projection_version"`
-	RoomId            string `json:"room_id"`
-	RoomVersion       int64  `json:"room_version"`
+	Participants      []ParticipantView `json:"participants"`
+	ProjectionVersion int64             `json:"projection_version"`
+	RoomId            string            `json:"room_id"`
+	RoomVersion       int64             `json:"room_version"`
 
 	// Roster 房间成员投影（room.created.agents + participant.admitted 链；null/缺 = 全部在席）。
 	Roster *[]string `json:"roster,omitempty"`
@@ -369,20 +351,14 @@ type Snapshot struct {
 // SnapshotThreadsState defines model for Snapshot.Threads.State.
 type SnapshotThreadsState string
 
-// TimelineItem v1.25 起 Timeline 含系统事件（round.opened / round.closed / room.paused /
-// room.started）——轮次提醒随快照持久化（此前仅 SSE 瞬态，切房间即失）。
-// outcome 仅 round.closed 携带（结果标签，客户端映射用户语言）；
-// auto_index 仅 round.opened 携带（>0 = 自动续聊轮，v1.27）。
+// TimelineItem RFC-0012 群聊模型：Timeline = 消息族 + 暂停/恢复系统提醒（round.* 内部化，
+// 不入用户可见时间线）。
 type TimelineItem struct {
-	ActorId   string `json:"actor_id"`
-	ActorKind string `json:"actor_kind"`
-
-	// AutoIndex 自动续聊轮序（1..auto_rounds；缺省 = 人类消息驱动轮）
-	AutoIndex  *int      `json:"auto_index,omitempty"`
+	ActorId    string    `json:"actor_id"`
+	ActorKind  string    `json:"actor_kind"`
 	Body       *string   `json:"body,omitempty"`
 	EventId    string    `json:"event_id"`
 	OccurredAt time.Time `json:"occurred_at"`
-	Outcome    *string   `json:"outcome,omitempty"`
 	Position   string    `json:"position"`
 	ThreadId   *string   `json:"thread_id,omitempty"`
 	Type       string    `json:"type"`

@@ -126,21 +126,6 @@ paths:
                   issued_at: "2026-08-31T09:05:00.000Z"
                   payload:
                     display_name: 新房间名
-              set_policy:
-                value:
-                  command_kind: set_policy
-                  expected_room_version: 10
-                  idempotency_key: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d9004"
-                  issued_at: "2026-08-31T09:00:00.000Z"
-                  payload:
-                    mode: roundtable
-                    max_speakers: 8
-                    lambda: 0.3
-                    weights: { relevance: 0.3, novelty: 0.2, diversity: 0.15, urgency: 0.1, direct_address: 0.15, floor_share: 0.05, repetition: 0.05 }
-                    intent_window: 30s
-                    response_cap: 600
-                    reveal_strategy: independent_then_cross
-                    rebuttals: 1
       responses:
         "200":
           description: 命令受理（含幂等回放）
@@ -420,7 +405,6 @@ components:
         create_room → CreateRoomPayload；post_message → PostMessagePayload；
         pause_room → PauseRoomPayload；resume_room → 空 payload；
         rename_room → RenameRoomPayload（UI 重设计切片 1；room.renamed 事件）；
-        set_policy → PolicyParams（RFC-0003 §3.1.7；变更只在 round 边界生效）；
         endorse_intent → EndorseIntentPayload（OQ-17 人类保送，effect=grant）；
         invite_agent → {participant_id}（RFC-0001 Membership：participant.admitted 拉人）；
         fork/pause/resume/close/reopen/merge_thread → ThreadLifecyclePayload（RFC-0004 线程生命周期，
@@ -428,7 +412,7 @@ components:
       properties:
         command_kind:
           type: string
-          enum: [create_room, post_message, pause_room, resume_room, rename_room, set_policy, endorse_intent, invite_agent, fork_thread, pause_thread, resume_thread, close_thread, reopen_thread, merge_thread]
+          enum: [create_room, post_message, pause_room, resume_room, rename_room, endorse_intent, invite_agent, fork_thread, pause_thread, resume_thread, close_thread, reopen_thread, merge_thread]
         expected_room_version:
           type: integer
           minimum: 0
@@ -545,7 +529,7 @@ components:
       type: object
       required: [intent_id, effect]
       additionalProperties: false
-      description: 人类保送（RFC-0003 §3.1.11 / OQ-17）。effect=grant 直接授予 Floor（默认）；boost 随 Policy 加权参数定稿开放。不绕过预算/硬资格/安全；对全体可见。
+      description: 人类保送（RFC-0003 §3.1.11 / OQ-17）。effect=grant 直接授予 Floor（默认）；boost 未开放。不绕过预算/硬资格/安全；对全体可见。
       properties:
         intent_id:
           type: string
@@ -553,56 +537,6 @@ components:
         effect:
           type: string
           enum: [grant]
-    PolicyParams:
-      type: object
-      required: [mode, max_speakers, lambda, weights, intent_window, response_cap, reveal_strategy, rebuttals, auto_rounds]
-      additionalProperties: false
-      description: 策略参数束（RFC-0003 §3.1.7；set_policy 命令体与 policy.changed 事件 payload 同构）。reveal 三策略自 B2 起全部可执行（simultaneous=冻结水位统一揭示；independent_then_cross=独立首轮+cross 子轮）。auto_rounds 为自动续聊轮数上限（0=关；计划 v1.26）。
-      properties:
-        mode:
-          type: string
-          enum: [roundtable, open_floor, deep_dive, review, decision]
-        max_speakers:
-          type: integer
-          minimum: 1
-          maximum: 8
-        lambda:
-          type: number
-          minimum: 0
-          maximum: 1
-        weights:
-          type: object
-          required: [relevance, novelty, diversity, urgency, direct_address, floor_share, repetition]
-          additionalProperties: false
-          properties:
-            relevance: { type: number, minimum: 0, maximum: 0.5 }
-            novelty: { type: number, minimum: 0, maximum: 0.5 }
-            diversity: { type: number, minimum: 0, maximum: 0.5 }
-            urgency: { type: number, minimum: 0, maximum: 0.5 }
-            direct_address: { type: number, minimum: 0, maximum: 0.5 }
-            floor_share: { type: number, minimum: 0, maximum: 0.5 }
-            repetition: { type: number, minimum: 0, maximum: 0.5 }
-        intent_window:
-          type: string
-          pattern: "^[0-9]+(s|m|h)$"
-        response_cap:
-          type: integer
-          format: int64
-          minimum: 100
-          maximum: 4000
-        reveal_strategy:
-          type: string
-          enum: [sequential, simultaneous, independent_then_cross]
-        rebuttals:
-          type: integer
-          minimum: 0
-          maximum: 2
-          description: cross 子轮数（Roundtable 默认 1；仅 independent_then_cross 消费）
-        auto_rounds:
-          type: integer
-          minimum: 0
-          maximum: 6
-          description: 自动续聊轮数上限（0=关；Open Floor 默认 3 / Deep Dive 2；停止条件=轮数上限/静默轮/预算 100% 硬停）
     CommandResponse:
       type: object
       required: [room_id, event_id, room_version, replayed]
@@ -666,7 +600,7 @@ components:
           description: opaque cursor（续传位点）
     Snapshot:
       type: object
-      required: [room_id, room_version, watermark, projection_version, algorithm_version, display_name, timeline, policy, scorecard, threads, graph, participants]
+      required: [room_id, room_version, watermark, projection_version, algorithm_version, display_name, timeline, scorecard, threads, graph, participants]
       properties:
         room_id: { type: string }
         room_version: { type: integer, format: int64 }
@@ -679,20 +613,6 @@ components:
           description: 参与者视图（装配层注入：本地 owner + 引擎座位；非投影产物——ADR-0011 注记，不进 room_version/水位语义）。
           items:
             $ref: "#/components/schemas/ParticipantView"
-        policy:
-          type: object
-          required: [policy_version]
-          description: 当前策略区（记分卡透明 OQ-17——权重/模式参数对成员可见、版本化）。
-          properties:
-            policy_version: { type: string }
-            mode: { type: string }
-            max_speakers: { type: integer }
-            lambda: { type: number }
-            weights: { type: object }
-            intent_window: { type: string }
-            response_cap: { type: integer, format: int64 }
-            reveal_strategy: { type: string }
-            auto_rounds: { type: integer, description: 自动续聊轮数上限（0=关；Open Floor 默认 3 / Deep Dive 2；RFC §3.1.7，计划 v1.26） }
         roster:
           type: array
           description: 房间成员投影（room.created.agents + participant.admitted 链；null/缺 = 全部在席）。
@@ -757,10 +677,8 @@ components:
       type: object
       required: [position, event_id, type, actor_id, actor_kind, occurred_at]
       description: |
-        v1.25 起 Timeline 含系统事件（round.opened / round.closed / room.paused /
-        room.started）——轮次提醒随快照持久化（此前仅 SSE 瞬态，切房间即失）。
-        outcome 仅 round.closed 携带（结果标签，客户端映射用户语言）；
-        auto_index 仅 round.opened 携带（>0 = 自动续聊轮，v1.27）。
+        RFC-0012 群聊模型：Timeline = 消息族 + 暂停/恢复系统提醒（round.* 内部化，
+        不入用户可见时间线）。
       properties:
         position: { type: string }
         event_id: { type: string }
@@ -768,8 +686,6 @@ components:
         actor_id: { type: string }
         actor_kind: { type: string }
         body: { type: string }
-        outcome: { type: string }
-        auto_index: { type: integer, description: 自动续聊轮序（1..auto_rounds；缺省 = 人类消息驱动轮） }
         thread_id:
           oneOf:
             - type: "null"

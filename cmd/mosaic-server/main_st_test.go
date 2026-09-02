@@ -516,22 +516,9 @@ func TestCrashRecovery_ST(t *testing.T) {
 		"payload": map[string]any{"display_name": "crash"},
 	})
 	roomID := created["room_id"].(string)
-	// 崩溃恢复语义钉单轮：显式关自动续聊（默认束 v1.27 起为 3——否则快照采样与
-	// SIGKILL 之间链继续推进，版本差会被误判为重启漂移；链式语义由 auto_st 专测）。
-	postJSONST(t, base1, "/v1/rooms/"+roomID+"/commands", map[string]any{
-		"command_kind": "set_policy", "expected_room_version": 1,
-		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7304", "issued_at": "2026-08-28T12:00:00.000Z",
-		"payload": map[string]any{
-			"mode": "open_floor", "max_speakers": 3, "lambda": 0.3,
-			"weights": map[string]any{"relevance": 0.3, "novelty": 0.2, "diversity": 0.15,
-				"urgency": 0.1, "direct_address": 0.15, "floor_share": 0.05, "repetition": 0.05},
-			"intent_window": "20s", "response_cap": 500, "reveal_strategy": "simultaneous",
-			"rebuttals": 0, "auto_rounds": 0,
-		},
-	})
 	// 人类消息触发引擎轮（echo 确定性完成）
 	postJSONST(t, base1, "/v1/rooms/"+roomID+"/commands", map[string]any{
-		"command_kind": "post_message", "expected_room_version": 2,
+		"command_kind": "post_message", "expected_room_version": 1,
 		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d7302", "issued_at": "2026-08-28T12:00:00.000Z",
 		"payload": map[string]any{"body": "crash 前的消息"},
 	})

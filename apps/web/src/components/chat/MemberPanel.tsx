@@ -1,11 +1,11 @@
-// 右侧抽屉（成员 / 发言评估 / 话题线 / 策略，开发者模式追加"调试"）：数据源为房间快照投影（随 SSE 事件由 room.ts
+// 右侧抽屉（成员 / 发言评估 / 话题线，开发者模式追加"调试"）：数据源为房间快照投影（随 SSE 事件由 room.ts
 // 防抖重取），无手动刷新。请优先发言沿用 endorse_intent 命令链（room.endorse 内部做版本校准+409 重试）。
-// 成员 Tab 顶部"邀请"沿用 invite_agent 命令链（同校准/重试）；策略 Tab 走 set_policy
-// 命令链（onSetPolicy 由 RoomPage 做版本校准+409 重试）——房间级设置只出现在房间上下文。
+// 成员 Tab 顶部"邀请"沿用 invite_agent 命令链（同校准/重试）——房间级操作只出现在房间上下文。
+// RFC-0012 群聊制：讨论模式/策略 Tab 已退役（房间即群聊，无模式概念）。
 // 内部枚举一律经 lib/copy 映射层转为用户语言，不裸显。
 import { useEffect, useState } from "react";
-import { api, type AgentSeatInfo, type ParticipantView, type PolicyParams } from "../../api/client";
-import type { GraphEdge, PolicyView, ScorecardItem, ThreadItem } from "../../api/room";
+import { api, type AgentSeatInfo, type ParticipantView } from "../../api/client";
+import type { GraphEdge, ScorecardItem, ThreadItem } from "../../api/room";
 import { useDevMode } from "../../state/dev";
 import { DevPanel } from "../DevPanel";
 import {
@@ -22,42 +22,17 @@ import {
 import { displayNameOf, shortId, truncate } from "../../lib/ui";
 import { Avatar } from "./Avatar";
 
-type Tab = "members" | "scorecard" | "graph" | "policy" | "debug";
+type Tab = "members" | "scorecard" | "graph" | "debug";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "members", label: "成员" },
   { id: "scorecard", label: "发言评估" },
   { id: "graph", label: "话题线" },
-  { id: "policy", label: "策略" },
 ];
 
 /** 开发者模式（全局开关）开启时追加"调试"Tab——调试数据是本房间的局部信息。 */
 const DEBUG_TAB: { id: Tab; label: string } = { id: "debug", label: "调试" };
 
-/** 三模式产品面（B1 参数束；review/decision 为收束模式，随 M3 面板开放）。 */
-const MODES: { id: string; label: string; desc: string }[] = [
-  { id: "open_floor", label: "Open Floor", desc: "开放讨论（3 人/轮，20s 窗口，自动续聊 3 轮）" },
-  { id: "roundtable", label: "Roundtable", desc: "圆桌（全员各 1 + 交锋，30s 窗口）" },
-  { id: "deep_dive", label: "Deep Dive", desc: "深潜（2 人/轮，15s 窗口，900 cap，自动续聊 2 轮）" },
-];
-
-/** 模式默认参数束（与房间侧 policyDefaults 同源；提交前服务端再校验）。 */
-function modeDefaults(mode: string): PolicyParams {
-  const base: PolicyParams = {
-    mode: "open_floor",
-    max_speakers: 3,
-    lambda: 0.3,
-    weights: { relevance: 0.3, novelty: 0.2, diversity: 0.15, urgency: 0.1, direct_address: 0.15, floor_share: 0.05, repetition: 0.05 },
-    intent_window: "20s",
-    response_cap: 500,
-    reveal_strategy: "simultaneous",
-    rebuttals: 0,
-    auto_rounds: 3,
-  };
-  if (mode === "roundtable") return { ...base, mode, max_speakers: 8, intent_window: "30s", response_cap: 600, reveal_strategy: "independent_then_cross", rebuttals: 1, auto_rounds: 0 };
-  if (mode === "deep_dive") return { ...base, mode, max_speakers: 2, intent_window: "15s", response_cap: 900, reveal_strategy: "sequential", auto_rounds: 2 };
-  return base;
-}
 
 export function MemberPanel({
   roomID,
@@ -70,9 +45,6 @@ export function MemberPanel({
   onEndorse,
   inviteBusy,
   onInvite,
-  policy,
-  policyBusy,
-  onSetPolicy,
   onTabActive,
   onClose,
   describeEvent,
@@ -89,11 +61,6 @@ export function MemberPanel({
   onEndorse: (intentID: string) => void;
   inviteBusy: string | null;
   onInvite: (participantID: string) => void;
-  /** 当前策略投影（快照 policy 区；null = 尚未载入）。 */
-  policy: PolicyView | null;
-  policyBusy: boolean;
-  /** 应用讨论模式（参数束由本面板 modeDefaults 给出；校准/重试在 RoomPage）。 */
-  onSetPolicy: (params: PolicyParams) => Promise<void>;
   /** Tab 打开/切换时回调（触发投影刷新）。 */
   onTabActive: (tab: Tab) => void;
   onClose: () => void;
@@ -152,7 +119,6 @@ export function MemberPanel({
           />
         )}
         {tab === "graph" && <GraphTab threads={threads} edges={edges} describeEvent={describeEvent} />}
-        {tab === "policy" && <PolicyTab policy={policy} busy={policyBusy} onSetPolicy={onSetPolicy} />}
         {tab === "debug" && (
           <div className="px-3 py-3">
             <DevPanel roomID={roomID} />
@@ -160,62 +126,6 @@ export function MemberPanel({
         )}
       </div>
     </aside>
-  );
-}
-
-/** 策略 Tab：本房间讨论模式（三模式预设，set_policy 命令链）。 */
-function PolicyTab({
-  policy,
-  busy,
-  onSetPolicy,
-}: {
-  policy: PolicyView | null;
-  busy: boolean;
-  onSetPolicy: (params: PolicyParams) => Promise<void>;
-}) {
-  const [msg, setMsg] = useState<string | null>(null);
-
-  const apply = (mode: string) => {
-    if (busy) return;
-    setMsg(null);
-    void onSetPolicy(modeDefaults(mode))
-      .then(() => setMsg("已生效（下一轮起）"))
-      .catch((e) => setMsg(e instanceof Error ? e.message : String(e)));
-  };
-
-  return (
-    <div className="px-3 py-3">
-      <h3 className="pb-1 text-xs font-medium text-dim">讨论模式</h3>
-      <p className="pb-2 text-[11px] text-faint">
-        当前：
-        {policy
-          ? `${policy.mode ?? "—"}（${policy.policy_version ?? "—"}）· 单轮 ≤${policy.max_speakers ?? "—"} 人 · 窗口 ${policy.intent_window ?? "—"} · cap ${policy.response_cap ?? "—"} · reveal ${policy.reveal_strategy ?? "—"} · 续聊 ${(policy.auto_rounds ?? 0) > 0 ? `${policy.auto_rounds} 轮` : "关"}`
-          : "读取中…"}
-      </p>
-      <div className="flex flex-col gap-2">
-        {MODES.map((m) => {
-          const active = policy?.mode === m.id;
-          return (
-            <button
-              key={m.id}
-              type="button"
-              disabled={busy}
-              onClick={() => apply(m.id)}
-              className={`rounded-xl border px-3 py-2 text-left transition-colors disabled:opacity-40 ${
-                active ? "border-accent bg-accent-soft" : "border-border bg-surface-2 hover:border-faint"
-              }`}
-            >
-              <span className={`block text-sm ${active ? "text-accent" : "text-text"}`}>{m.label}</span>
-              <span className="block text-[11px] text-faint">{m.desc}</span>
-            </button>
-          );
-        })}
-      </div>
-      {msg && <p className="pt-2 text-xs text-dim">{msg}</p>}
-      <p className="pt-2 text-[11px] text-faint">
-        作用于本房间，下一轮起生效。自动续聊：一条消息后 agents 自动接力至多 N 轮（静默/暂停/预算即停）。权重/λ 细参数编辑随记分卡面板开放。
-      </p>
-    </div>
   );
 }
 

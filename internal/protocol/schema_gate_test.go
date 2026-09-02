@@ -98,12 +98,10 @@ func TestStrictSchemaValidationGate(t *testing.T) {
 		"envelope-seq-zero.json",                    // seq ≥ 1
 		"envelope-event-id-bad-prefix.json",         // event_id 前缀 pattern
 		"envelope-round-opened-bad-mode.json",       // payload 枚举（mode）
-		"envelope-round-opened-bad-auto-index.json", // payload 数值边界（auto_index ≤6，自动续聊 v1.27）
 		"envelope-intent-recorded-bad-band.json",    // payload 枚举（score_band，反 Goodhart）
 		"envelope-floor-revoked-bad-reason.json",    // payload 枚举（reason）
 		"envelope-floor-granted-unknown-field.json", // additionalProperties: false（严格写）
 		"envelope-message-bad-relation-kind.json",   // payload 枚举（relations.kind，M2 定稿）
-		"envelope-policy-changed-bad-weight.json",   // payload 数值边界（权重单项 ≤0.50，B1）
 		"command-bad-idempotency-key.json",          // 幂等键 UUIDv7 pattern
 		"command-missing-payload.json",              // 命令必填字段
 	}

@@ -307,12 +307,12 @@ func ExtractJSON(text string) (map[string]any, error) {
 
 // ---- 提示词与结果映射 ----
 
-const intentInstruction = `You are a participant in a group discussion. Given the stimulus below, decide whether to speak.
+const intentInstruction = `You are a participant in an ongoing group chat. You have just observed the latest messages. Decide whether to reply; staying silent is a valid, often good choice — reply only when you have something to add.
 Reply with ONLY a JSON object, no prose, no code fences:
 {"action":"speak|react|fork|summarize|silent","type":"answer|extend|challenge|support|question|redirect|synthesize","public_rationale":"<=280 chars","scores":{"relevance":0.0-1.0,"novelty":0.0-1.0,"urgency":0.0-1.0,"confidence":0.0-1.0}}`
 
-const generateInstruction = `You are a participant in a group discussion and have been granted the floor.
-Respond to the discussion below.
+const generateInstruction = `You are a participant in an ongoing group chat and have decided to reply.
+Write your chat message directly below — concise, conversational, addressed to the room (no speeches, no meta commentary).
 Reply with ONLY a JSON object, no prose, no code fences:
 {"body":"your public message","declared_relations":[]}`
 

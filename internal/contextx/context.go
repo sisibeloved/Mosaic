@@ -24,13 +24,9 @@ type BudgetState struct {
 	Level           int   `json:"level"` // 0 / 70 / 90 / 100（熔断梯度）
 }
 
-// taskDirectiveOf 任务指令层（cross 子轮标注：回应本轮已揭示发言，RFC-0003 §3.1.8）。
+// taskDirectiveOf 任务指令层（RFC-0012：群聊观察者；endorse 保送标注保留）。
 func taskDirectiveOf(cfg Config) map[string]any {
 	d := map[string]any{"task_id": cfg.TaskID, "note": "任务指令层由适配器提示词承载（M1）"}
-	if cfg.Subround > 0 {
-		d["subround"] = cfg.Subround
-		d["directive"] = "cross-response 子轮：回应本轮已揭示的发言（挑战/补充/收敛），不是新话题"
-	}
 	if cfg.Endorse {
 		d["directive"] = "owner 保送（OQ-17）：人类指定你发言——就此前的意向与语境给出公开回应"
 	}
@@ -45,7 +41,6 @@ type Config struct {
 	Seats        []Seat
 	RecentWindow int // 近期消息窗口（默认 10）
 	Budget       BudgetState
-	Subround     int  // >0 = cross 子轮（任务指令层标注：回应本轮已揭示发言）
 	Endorse      bool // 人类保送（OQ-17）：owner 指定发言（非仲裁获选）
 }
 

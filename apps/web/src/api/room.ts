@@ -16,7 +16,6 @@ export type Connection = "idle" | "connecting" | "live" | "reconnecting" | "resy
 export type ScorecardItem = Snapshot["scorecard"][number];
 export type ThreadItem = Snapshot["threads"][number];
 export type GraphEdge = Snapshot["graph"][number];
-export type PolicyView = Snapshot["policy"];
 
 export interface TimelineEntry {
   key: string;
@@ -31,7 +30,6 @@ export interface TimelineEntry {
 
 /** 系统事件 → 时间线文案（快照 Timeline 与 SSE 双路共用；outcome 用 ROUND_OUTCOME）。 */
 const SYSTEM_EVENT_TEXT: Record<string, string> = {
-  "round.opened": "新一轮讨论开始",
   "room.paused": "房间已暂停",
   "room.started": "房间已恢复",
 };
@@ -62,16 +60,9 @@ const SUBSCRIBED_EVENTS = [
   "room.paused",
   "room.started",
   "room.renamed",
-  "policy.changed",
   "participant.admitted",
 ] as const;
 
-const ROUND_OUTCOME: Record<string, string> = {
-  published: "本轮讨论结束",
-  quiescent: "本轮无人发言（静默结束）",
-  budget_stopped: "本轮因预算上限停止",
-  revoked_all: "本轮发言被全部撤销",
-};
 
 /** 草稿文本内存上界（展示侧另截断 140 字）。 */
 const DRAFT_TEXT_CAP = 800;
@@ -86,7 +77,6 @@ interface RoomModelState {
   scorecard: ScorecardItem[];
   threads: ThreadItem[];
   edges: GraphEdge[];
-  policy: PolicyView | null;
   roundOpen: boolean;
   paused: boolean;
   /** 入房 Agent 名单（null = 全席模式：建房未选人，所有在席 Agent 均在房内）。 */
@@ -103,7 +93,6 @@ export interface RoomHandle {
   scorecard: ScorecardItem[];
   threads: ThreadItem[];
   edges: GraphEdge[];
-  policy: PolicyView | null;
   roundOpen: boolean;
   paused: boolean;
   roster: string[] | null;
@@ -128,7 +117,6 @@ function projections(snap: Snapshot) {
     scorecard: snap.scorecard,
     threads: snap.threads,
     edges: snap.graph,
-    policy: snap.policy,
     roster: snap.roster ?? null,
   };
 }
@@ -217,23 +205,17 @@ export function useRoom(roomID: string | null): RoomHandle {
             }
             break;
           }
-          case "round.opened": {
-            // 自动续聊轮（v1.27）：payload.auto_index>0 → 接力轮，标签区分
-            const auto = (view.payload as { auto_index?: number } | null)?.auto_index ?? 0;
-            append(systemEntry(view, auto > 0 ? `自动续聊 · 第 ${auto} 轮` : "新一轮讨论开始"));
+          case "round.opened":
+            // RFC-0012：round 内部化——不进时间线，仅维护进行中状态
             next.roundOpen = true;
             scheduleRefresh();
             break;
-          }
-          case "round.closed": {
-            const outcome = (view.payload as { outcome?: string } | null)?.outcome ?? "";
-            append(systemEntry(view, ROUND_OUTCOME[outcome] ?? `本轮结束（${outcome}）`));
+          case "round.closed":
             next.roundOpen = false;
             next.typing = {};
             grantSeatRef.current = {};
             scheduleRefresh();
             break;
-          }
           case "room.paused":
             append(systemEntry(view, "房间已暂停"));
             next.paused = true;
@@ -275,10 +257,6 @@ export function useRoom(roomID: string | null): RoomHandle {
             break;
           }
           case "intent.endorsed":
-          case "policy.changed":
-          case "participant.admitted": // invite_agent 拉人 → 成员/roster 投影刷新
-            scheduleRefresh();
-            break;
         }
         // 开发者模式（v1.25 dogfood #3）：基建事件内联时间线——房间怎么运转、
         // 卡在哪一步，在使用过程中直接可见（瞬态，不入快照）。
@@ -381,12 +359,7 @@ export function useRoom(roomID: string | null): RoomHandle {
                 actorID: item.actor_id,
                 actorKind: item.actor_kind,
                 occurredAt: item.occurred_at,
-                detail:
-                  item.type === "round.closed"
-                    ? (ROUND_OUTCOME[item.outcome ?? ""] ?? `本轮结束（${item.outcome ?? "?"}）`)
-                    : item.type === "round.opened" && (item.auto_index ?? 0) > 0
-                      ? `自动续聊 · 第 ${item.auto_index} 轮`
-                      : (SYSTEM_EVENT_TEXT[item.type] ?? item.type),
+                detail: SYSTEM_EVENT_TEXT[item.type] ?? item.type,
               },
         ),
         typing: {},
@@ -523,7 +496,6 @@ export function useRoom(roomID: string | null): RoomHandle {
     scorecard: state?.scorecard ?? [],
     threads: state?.threads ?? [],
     edges: state?.edges ?? [],
-    policy: state?.policy ?? null,
     roundOpen: state?.roundOpen ?? false,
     paused: state?.paused ?? false,
     roster: state?.roster ?? null,
