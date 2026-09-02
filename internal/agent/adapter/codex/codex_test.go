@@ -120,8 +120,10 @@ func TestExtractJSONVariants(t *testing.T) {
 func TestWSLArgsConstruction(t *testing.T) {
 	got := wslArgs("Ubuntu-22.04", []string{"HOME=/home/u", "PATH=/x"}, []string{"/home/u/.nvm/versions/node/v22/bin/codex", "exec", "-"})
 	// 复审 #7：env -i——发行版默认环境（profile 注入/WSLENV 透传）不在白名单内
+	// --exec（2026-09-01 实证）：`--` 剩余参数经发行版默认 shell 解释，元字符必毁；
+	// 直 exec 消除隐患（stdin 提示词照常流动）。
 	want := []string{
-		"-d", "Ubuntu-22.04", "--", "env", "-i",
+		"-d", "Ubuntu-22.04", "--exec", "env", "-i",
 		"HOME=/home/u", "PATH=/x",
 		"/home/u/.nvm/versions/node/v22/bin/codex", "exec", "-",
 	}

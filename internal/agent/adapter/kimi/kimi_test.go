@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -279,14 +280,21 @@ func TestCancelBeforeResult(t *testing.T) {
 	}
 }
 
-// TestWSLArgvShape：WSL 运行面的 argv 包装（纯函数钉住：env -i 清空 + cd 工作目录）。
+// TestWSLArgvShape：WSL 运行面的 argv 包装（纯函数钉住：--exec 直 exec + env -i 清空
+// + cd 工作目录）。--exec 是 2026-09-01 实证修复：`--` 剩余参数被 wsl.exe 拼接后交
+// 发行版默认 shell 解释（引号剥除/元字符执行），kimi -p 提示词必毁（Kimi 每波评估
+// 静默失败的根因）——含 | 与引号的提示词必须作为单一 argv 元素原样存活。
 func TestWSLArgvShape(t *testing.T) {
-	args := wslArgs("Ubuntu", []string{"HOME=/home/u", "PATH=/x:/bin"}, "/home/u/.mosaic/agent-work/prof_k", []string{"/home/u/.kimi-code/bin/kimi", "-p", "hi", "--output-format", "stream-json"})
-	joined := strings.Join(args, " ")
-	for _, want := range []string{"-d Ubuntu -- env -i", "HOME=/home/u", `cd "$1"`, "/home/u/.mosaic/agent-work/prof_k", "stream-json"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("wsl argv 缺 %q：%v", want, args)
-		}
+	metacharPrompt := `Reply {"action":"speak|silent","body":"pong"} quote"pipe|`
+	args := wslArgs("Ubuntu", []string{"HOME=/home/u", "PATH=/x:/bin"}, "/home/u/.mosaic/agent-work/prof_k", []string{"/home/u/.kimi-code/bin/kimi", "-p", metacharPrompt, "--output-format", "stream-json"})
+	want := []string{
+		"-d", "Ubuntu", "--exec", "env", "-i",
+		"HOME=/home/u", "PATH=/x:/bin",
+		"sh", "-c", `cd "$1" && shift && exec "$@"`, "sh", "/home/u/.mosaic/agent-work/prof_k",
+		"/home/u/.kimi-code/bin/kimi", "-p", metacharPrompt, "--output-format", "stream-json",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("wslArgs = %v\n期望 %v", args, want)
 	}
 }
 

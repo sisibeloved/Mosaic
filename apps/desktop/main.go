@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -44,9 +45,13 @@ func newAssetServerOptions(externalBase string) *assetserver.Options {
 	}
 }
 
+// openLogFile 委托 internal/app（无构建标签，三平台同源可测）：数据目录
+// logs/mosaic.log，超 5MB 启动轮转保一代。
+func openLogFile(dataDir string) (*os.File, error) { return app.OpenLogFile(dataDir) }
+
 func main() {
 	// M2 主线开发默认在开发者模式上进行（计划 v1.8 裁定；设置页有 UI 开关）；
-	// 桌面日志走 stderr。
+	// 桌面日志走 stderr + 数据目录落盘（openLogFile）。
 	logLevel := new(slog.LevelVar)
 	logLevel.Set(slog.LevelDebug)
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
@@ -59,8 +64,15 @@ func main() {
 		logger.Error("user config dir 不可用", "err", err)
 		os.Exit(1)
 	}
+	dataDir := filepath.Join(configDir, "mosaic")
+	if logFile, err := openLogFile(dataDir); err != nil {
+		logger.Warn("桌面日志落盘不可用（仅 stderr）", "err", err)
+	} else {
+		defer logFile.Close()
+		logger = slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stderr, logFile), &slog.HandlerOptions{Level: logLevel}))
+	}
 	srv, err := app.Start(ctx, app.Options{
-		DataDir: filepath.Join(configDir, "mosaic"),
+		DataDir: dataDir,
 		// 回环 TCP：SSE 等流式响应不经 Wails 资产桥（见文件头注释）。
 		Addr:             "127.0.0.1:0",
 		Logger:           logger,

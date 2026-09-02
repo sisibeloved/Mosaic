@@ -501,9 +501,12 @@ type wslExecer struct {
 // wslArgs 构造 wsl.exe 参数（纯函数，UT 覆盖）。
 // env -i（复审 #7）：发行版默认环境（shell profile 注入 + WSLENV 透传）不在白名单内——
 // 清空后仅保留显式注入的 K=V（PATH/HOME/CODEX_HOME/网络配置），白名单外环境不继承。
+// --exec（实证 2026-09-01）：`--` 剩余参数被 wsl.exe 拼接后交发行版默认 shell 解释
+// （引号剥除/元字符执行）；codex 此前仅因 argv 无元字符而幸免——stdin 提示词不受影响，
+// 但统一走 --exec 直 exec 消除该隐患（stdin 经 --exec 照常流动，真机验证）。
 func wslArgs(distro string, env []string, argv []string) []string {
 	args := make([]string, 0, 5+len(env)+len(argv))
-	args = append(args, "-d", distro, "--", "env", "-i")
+	args = append(args, "-d", distro, "--exec", "env", "-i")
 	args = append(args, env...)
 	args = append(args, argv...)
 	return args

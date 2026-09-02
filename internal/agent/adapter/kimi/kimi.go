@@ -470,9 +470,14 @@ type wslExecer struct {
 
 // wslArgs 构造 wsl.exe 参数（纯函数，UT 覆盖）：kimi 无 -C 等价物——
 // 工作目录经 sh -c 'cd "$1" && shift && exec "$@"' 包装进入发行版内 Linux 路径。
+// 实证 2026-09-01（openEuler-24.03）：`--` 剩余参数会被 wsl.exe 拼接后交发行版默认
+// shell 解释——引号剥除、| 等元字符按 shell 语义执行，kimi -p 的提示词（含
+// "speak|react|fork"、JSON 引号）必被毁掉（实测 exit 127，Kimi 每波意图评估静默失败）。
+// `--exec` 绕过默认 shell 直 exec：参数边界完整保留，stdin 照常流动（中文+元字符
+// 提示词真机验证完好）。
 func wslArgs(distro string, env []string, dir string, argv []string) []string {
 	args := make([]string, 0, 10+len(env)+len(argv))
-	args = append(args, "-d", distro, "--", "env", "-i")
+	args = append(args, "-d", distro, "--exec", "env", "-i")
 	args = append(args, env...)
 	if dir != "" {
 		args = append(args, "sh", "-c", `cd "$1" && shift && exec "$@"`, "sh", dir)
