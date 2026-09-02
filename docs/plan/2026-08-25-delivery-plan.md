@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.30 |
+| 版本 | v1.31 |
 | 日期 | 2026-09-01 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -47,6 +47,7 @@
 | v1.28 | 2026-09-01 | Mosaic 项目组 / ZCode | **RFC-0012 群聊交互模型（负责人裁定：交互模型级变更）**。dogfood 反馈：v1.27 自动续聊仍是会议制（轮为结构、引擎选人、轮数上限收链），负责人愿景是群聊制——"agent 自主决定是否回话，从 Agent 视角它处于群聊之中，对所有成员消息观察→判断→回复"（MaiBot 形态）。两项裁定：(1) **群聊制替换为唯一体验**（三模式/reveal 策略/set_policy 退役，不双轨）；(2) **评估触发取去抖聚合**（反应窗口默认 3s、窗内重锚合并，非严格逐条——评估即 CLI 调用，成本闸）。机制映射：意图评估=观察判断、silent=自决沉默（R-01 全记录保留）、round 内部化为反应波（事件骨架/epoch/迟到拒绝/预算原样）、attention.Select 接线退役（记分卡保留作 band 透明与波内排序）、终止=意愿静默（无轮数上限）+发言冷却+对话环检测+预算硬顶；@点名豁免冷却、保送（endorse）语义平移为"人类翻转 silent 决定"。任务指令层重写为群聊观察者语境。M2 条目对齐：三模式/reveal/定向交锋/自动续聊条目标注被 RFC-0012 取代退役；新增群聊模型条目。登记：主动开口（静默后 agent 起话）随 M3 收束/记忆层（OQ-A） |
 | v1.29 | 2026-09-01 | Mosaic 项目组 / ZCode | **RFC-0012 群聊交互模型落地（v1.28 裁定的执行）**。(1) **引擎**：任何 message.posted（人类/agent）触发去抖反应窗口（默认 3s，窗内重锚合并，EngineConfig.ReactionWindow 可注入）；到期开反应波——round.opened（内部化）→ 全员意图评估（观察→判断，silent=自决）→ 意愿全放行（attention.Select 接线退役，记分卡分保留作波内排序与 band 透明）→ sequential 发授/生成/发布（CAS 迟到围栏原样）→ 每条发布再开窗口；终止四闸：意愿静默（quiescent 不再开窗）/发言冷却（上波发言者跳过，@点名豁免）/对话环检测（尾部连续 ≥6 条 agent 消息）/预算 100% 硬顶。(2) **退役拆除**：set_policy 命令与 policy.changed 事件族、PolicyParams、reveal 三策略执行面（simultaneous/ITC/cross）、定向交锋链、auto_rounds 链、快照 policy 区、Timeline 的 round.* 与 outcome/auto_index、SPA 模式选择卡——存量事件日志不动（policy.changed 投影忽略，回放容错）。(3) **语境**：codex/kimi 意图指令改群聊观察者措辞（silent 是合法且常见的选择），生成指令改直书聊天消息。(4) **契约**：round.opened/closed/floor.granted Schema 简化 + fixtures 收敛 + OpenAPI/三生成链重生。(5) **测试**：reveal/directed/policy/parallel 世系测试文件退役（约 7 文件）；新增 engine_chat_test（agent 消息触发后续波/冷却+@豁免/环检测）与去抖重锚专项；ST 改群聊流（TestChatFlow_ST：一消息→一波→冷却终止，Timeline 无 round.*）。门禁全绿（race 三层+六目标+gen 新鲜度）|
 | v1.30 | 2026-09-01 | Mosaic 项目组 / ZCode | **WSL 适配层传参修复（dogfood 定位：Kimi 全程零发言）+ 桌面日志落盘**。dogfood 反馈：群聊制下 Codex 每波发言、Kimi 零输出。定位链（DB 事件流实锤）：kimi 座全程**零 intent.recorded**（连 silent 都没有 → 非沉默意愿、非发言权独占，是评估任务每波失败被引擎"跳过该座"）；CLI 本体/登录/注册表/座位/工作目录全部正常；根因 = **wsl.exe `--` 剩余参数被拼接后交发行版默认 shell 解释**（引号剥除、`\|` 等元字符按 shell 语义执行，实测 exit 127）——kimi `-p` 提示词必含元字符（意图指令自带 `speak\|react\|fork` 与 JSON 引号），每波必毁；codex 因 argv 无元字符、提示词走 stdin 而幸免。修复：kimi/codex wslArgs `--` → `--exec`（直 exec 保参数边界、stdin 照通；中文+元字符提示词真机 A/B 验证：旧形态 127 / 新形态正常回话）；UT 以 DeepEqual 钉住元字符提示词须作为单一 argv 元素存活。可观测性补课（本次定位只能靠 DB 反推——桌面 GUI 模式 stderr 全丢）：`app.OpenLogFile` 落数据目录 `logs/mosaic.log`（stderr 双写、超 5MB 启动轮转保一代；置于无构建标签包，三平台同源可测）。登记：**波内并行发言 slot（多座同时生成）**为评估项——同波各座本就不共享波内增量语境（taskContext 波首组装一次共享，sequential 只买到发布顺序），并行化无语境损失、波时延从 Σ 变 max；风险是同锚点平行应答冗余（可由下一反应窗自然消化），待狗粮观察撞车频率再定优先级 |
+| v1.31 | 2026-09-01 | Mosaic 项目组 / ZCode | **M3 拆细（六切片）+ 观测基座入册（负责人裁定）**。负责人反馈：当前两 agent 且无主动发言，波内并行 slot（v1.30 登记）无典型场景可真实评估。裁定：(1) **M3 拆为六切片**——M3-1 观测与狗粮基座（先行，与 M2 收尾狗粮并行启动）/ M3-2 收束协议（RFC-0005）/ M3-3 记忆层（主动开口 OQ-A 挂本切片出口）/ M3-4 结构投影最小版（RFC-0006）/ M3-5 Evidence Request / M3-6 数据主权（RFC-0010）；M3 总工期维持 3 周（M3-1 为薄先行切片）。(2) **MiniMax 适配器入册 M3-1**（C 轨第三真实适配器，负责人指定）——三 agent 同房才构成真实并行/竞争场景；实证 CLI 形态前置（安装/登录态/非交互调用面/fixtures 钉版本，同 kimi 0.39.1 实证口径；本机暂未安装，nvm bin 无 minimax），无官方 CLI 或登录面不可用时评审替代路径（OQ-20 凭据口径不变：凭据留 CLI 侧，Mosaic 不持有）。(3) **开发者模式持久化入册 M3-1**（dogfood 反馈：重启后开发者模式信息全失）——根因核实：`[dev]` 内联时间线为瞬态（room.ts 注释"瞬态，不入快照"——仅实时 SSE 进内存，重启后无人重放）；改法：事件流重放投影（波链路/意向/记分卡/围栏撤销自持久事件重建，debug 视图按房间+游标分页）+ trace id 可回查（贯通 v1.30 落盘的 mosaic.log）；出口：杀进程重启后任意历史波的开发者视图完整可复盘。(4) **波内并行观测改为贯穿项**：M3-1 起持续记录（同波多意愿频率/串行链时延/同锚点应答冗余率），M3-3 主动开口落地后数据成形，据实裁定并行化（Σ→max）或 sequential+波内上下文增量 |
 
 # 1. 交付目标与"完全可用"定义
 
@@ -163,16 +164,43 @@
 - **M4 backlog**：Windows Job Object（孙进程整组击杀，替代 POSIX Setpgid 空实现）；登录态使用时复核（座位调用前 re-probe，当前为启用时点门控）
 - **出口判据**：连续 5 个工作日真实自用（≥1 场多 agent 讨论含分叉与合并）；零数据丢失；体验阻塞项清单清空或降级记录；**（v1.11 增补）** M1 验收反馈两项——完整设置页面、静默期"正在输入"状态显示——落地并在真实自用中验证。
 
-## M3 收束、记忆与投影（3 周）
+## M3 收束、记忆与投影（3 周，v1.31 拆细为六切片）
 
-目标：讨论能优雅收束、被记住、可检索。
+目标：讨论能优雅收束、被记住、可检索；狗粮可观测（≥3 agent 真实并行场景 + 重启可复盘）。
 
-- [ ] closure round + 合格异议判定 + 六种 Capsule + Pause Capsule + reopen 流程（RFC-0005）
+### M3-1 观测与狗粮基座（先行切片，与 M2 收尾狗粮并行启动；v1.31 增补）
+
+- [ ] MiniMax 适配器（C 轨第三真实适配器，负责人 v1.31 指定）：实证 CLI 形态前置（安装/登录态/非交互调用面/输出格式钉 fixtures——同 kimi 0.39.1 实证口径；本机暂未安装）→ harness 探针增补（BuiltinProbes）→ 适配器（复用 codex/kimi 模式：会话连续性/PublishGate/conformance/IT 三件套）；实证不通过（无官方 CLI 或登录面不可用）则评审替代路径再动手（OQ-20 口径不变：凭据留 CLI 侧，Mosaic 不持有）
+- [ ] 开发者模式持久化（dogfood 反馈 v1.31：重启后开发者模式信息全失）：`[dev]` 内联时间线当前为瞬态（room.ts"瞬态，不入快照"——仅实时 SSE 进内存，无人重放）→ 改为事件流重放投影（波链路/意向/记分卡/围栏撤销自持久事件重建，debug 视图按房间+游标分页）+ trace id 可回查（贯通 v1.30 落盘的 mosaic.log）
+- [ ] 产出：≥3 agent 真实狗粮基座——为波内并行观测（贯穿项）与 M3 各切片验证提供测量面
+- **出口判据**：三 agent 同房真实对话一场；杀进程重启后开发者视图完整还原该场全部波链路。
+
+### M3-2 收束协议（RFC-0005）
+
+- [ ] closure round + 合格异议判定 + 六种 Capsule + Pause Capsule + reopen 流程
+
+### M3-3 记忆层
+
 - [ ] 四层 Memory + 混合检索（sqlite-vec）+ Capsule 一等 Memory；记忆查看/编辑 UI
-- [ ] 结构投影最小版：reply 基图 + 重复检测 + 漂移签名（供 repetition_risk 与重聚焦）；Claim 投影按 flag 离线启用
-- [ ] Evidence Request 创建/认领/解决 + 重开提议
-- [ ] 导出（manifest + NDJSON）与删除级联 + 墓碑（RFC-0010 个人版范围）
-- **出口判据**：一场真实讨论以 bounded_disagreement 收束并成功按新证据重开；导出包在干净环境重放一致；删除后全库无残留（fixture）。
+- [ ] 主动开口（RFC-0012 OQ-A，挂本切片出口）：静默 N 分钟后 agent 自行起话——依赖收束/记忆给定"何时值得说"；落地后与发言冷却/对话环检测的交互需重验
+
+### M3-4 结构投影最小版（RFC-0006）
+
+- [ ] reply 基图 + 重复检测 + 漂移签名（供 repetition_risk 与重聚焦）；Claim 投影按 flag 离线启用；推断边标 inferred 接入 Timeline/Graph（v1.19/v1.28 登记的挂接点）
+
+### M3-5 Evidence Request
+
+- [ ] 创建/认领/解决 + 重开提议
+
+### M3-6 数据主权（RFC-0010 个人版范围）
+
+- [ ] 导出（manifest + NDJSON）与删除级联 + 墓碑
+
+### 贯穿观测（M3-1 起持续记录，M3-3 后数据成形）
+
+- [ ] 波内并行发言 slot 观测（v1.30 登记、v1.31 改贯穿项）：≥3 座 + 主动开口构成真实并行场景；记录同波多意愿频率、串行链时延、同锚点应答冗余率；数据成形后裁定并行化（Σ→max）或 sequential + 波内上下文增量
+
+- **里程碑出口判据**：一场真实讨论以 bounded_disagreement 收束并成功按新证据重开；导出包在干净环境重放一致；删除后全库无残留（fixture）；三 agent 狗粮观测记录归档（波内并行裁定有数据支撑）。
 
 ## M4 产品化——"不是半成品"专项（4 周）
 
