@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"sort"
 	"strconv"
 
 	"github.com/sisibeloved/Mosaic/internal/contextx"
@@ -146,6 +147,60 @@ func (s *server) handleDebugEvents(w http.ResponseWriter, r *http.Request) {
 		items = append(items, map[string]any{"cursor": ev.Cursor, "envelope": ev.Envelope})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": items, "next": next})
+}
+
+// handleDebugWaves 波链路检视（M3-1 开发者模式持久化）：自事件流重建反应波全貌
+// （意图全记录/发授终态/收波结局），重启后历史波完整可复盘——[dev] 内联时间线为
+// 瞬态 SSE 内存态，本端点是持久化的事实源视图。分页：按开波 seq 降序取最新 N 波；
+// cursor = 下一页最老开波 seq（exclusive），空 = 从最新开始。
+func (s *server) handleDebugWaves(w http.ResponseWriter, r *http.Request) {
+	roomID := r.PathValue("room_id")
+	limit := 20
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 100 {
+			writeError(w, http.StatusBadRequest, "bad_limit", "limit 须为 1..100")
+			return
+		}
+		limit = n
+	}
+	before := int64(0)
+	if raw := r.URL.Query().Get("cursor"); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, "bad_cursor", "cursor 须为正整数 seq")
+			return
+		}
+		before = n
+	}
+
+	events, err := s.readAllEvents(r, roomID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "debug_read_failed", err.Error())
+		return
+	}
+	if len(events) == 0 {
+		writeError(w, http.StatusNotFound, "room_not_found", "房间不存在或尚无事件")
+		return
+	}
+	chain := room.WaveChainOf(events)
+
+	// 降序取页：chain 按开波 seq 升序，cursor = exclusive 上界（该 seq 的波不含本页）；
+	// 页内保持时间正序（复盘阅读序），页间 newest-first。
+	hi := len(chain)
+	if before > 0 {
+		hi = sort.Search(len(chain), func(i int) bool { return chain[i].OpenedSeq >= before })
+	}
+	lo := hi - limit
+	if lo < 0 {
+		lo = 0
+	}
+	page := chain[lo:hi]
+	var next string
+	if lo > 0 {
+		next = strconv.FormatInt(chain[lo].OpenedSeq, 10)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"waves": page, "next": next})
 }
 
 // readAllEvents 分页拉取房间全量事件（快照端点与调试面共用）。

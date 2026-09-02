@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.31 |
+| 版本 | v1.32 |
 | 日期 | 2026-09-01 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -48,6 +48,7 @@
 | v1.29 | 2026-09-01 | Mosaic 项目组 / ZCode | **RFC-0012 群聊交互模型落地（v1.28 裁定的执行）**。(1) **引擎**：任何 message.posted（人类/agent）触发去抖反应窗口（默认 3s，窗内重锚合并，EngineConfig.ReactionWindow 可注入）；到期开反应波——round.opened（内部化）→ 全员意图评估（观察→判断，silent=自决）→ 意愿全放行（attention.Select 接线退役，记分卡分保留作波内排序与 band 透明）→ sequential 发授/生成/发布（CAS 迟到围栏原样）→ 每条发布再开窗口；终止四闸：意愿静默（quiescent 不再开窗）/发言冷却（上波发言者跳过，@点名豁免）/对话环检测（尾部连续 ≥6 条 agent 消息）/预算 100% 硬顶。(2) **退役拆除**：set_policy 命令与 policy.changed 事件族、PolicyParams、reveal 三策略执行面（simultaneous/ITC/cross）、定向交锋链、auto_rounds 链、快照 policy 区、Timeline 的 round.* 与 outcome/auto_index、SPA 模式选择卡——存量事件日志不动（policy.changed 投影忽略，回放容错）。(3) **语境**：codex/kimi 意图指令改群聊观察者措辞（silent 是合法且常见的选择），生成指令改直书聊天消息。(4) **契约**：round.opened/closed/floor.granted Schema 简化 + fixtures 收敛 + OpenAPI/三生成链重生。(5) **测试**：reveal/directed/policy/parallel 世系测试文件退役（约 7 文件）；新增 engine_chat_test（agent 消息触发后续波/冷却+@豁免/环检测）与去抖重锚专项；ST 改群聊流（TestChatFlow_ST：一消息→一波→冷却终止，Timeline 无 round.*）。门禁全绿（race 三层+六目标+gen 新鲜度）|
 | v1.30 | 2026-09-01 | Mosaic 项目组 / ZCode | **WSL 适配层传参修复（dogfood 定位：Kimi 全程零发言）+ 桌面日志落盘**。dogfood 反馈：群聊制下 Codex 每波发言、Kimi 零输出。定位链（DB 事件流实锤）：kimi 座全程**零 intent.recorded**（连 silent 都没有 → 非沉默意愿、非发言权独占，是评估任务每波失败被引擎"跳过该座"）；CLI 本体/登录/注册表/座位/工作目录全部正常；根因 = **wsl.exe `--` 剩余参数被拼接后交发行版默认 shell 解释**（引号剥除、`\|` 等元字符按 shell 语义执行，实测 exit 127）——kimi `-p` 提示词必含元字符（意图指令自带 `speak\|react\|fork` 与 JSON 引号），每波必毁；codex 因 argv 无元字符、提示词走 stdin 而幸免。修复：kimi/codex wslArgs `--` → `--exec`（直 exec 保参数边界、stdin 照通；中文+元字符提示词真机 A/B 验证：旧形态 127 / 新形态正常回话）；UT 以 DeepEqual 钉住元字符提示词须作为单一 argv 元素存活。可观测性补课（本次定位只能靠 DB 反推——桌面 GUI 模式 stderr 全丢）：`app.OpenLogFile` 落数据目录 `logs/mosaic.log`（stderr 双写、超 5MB 启动轮转保一代；置于无构建标签包，三平台同源可测）。登记：**波内并行发言 slot（多座同时生成）**为评估项——同波各座本就不共享波内增量语境（taskContext 波首组装一次共享，sequential 只买到发布顺序），并行化无语境损失、波时延从 Σ 变 max；风险是同锚点平行应答冗余（可由下一反应窗自然消化），待狗粮观察撞车频率再定优先级 |
 | v1.31 | 2026-09-01 | Mosaic 项目组 / ZCode | **M3 拆细（六切片）+ 观测基座入册（负责人裁定）**。负责人反馈：当前两 agent 且无主动发言，波内并行 slot（v1.30 登记）无典型场景可真实评估。裁定：(1) **M3 拆为六切片**——M3-1 观测与狗粮基座（先行，与 M2 收尾狗粮并行启动）/ M3-2 收束协议（RFC-0005）/ M3-3 记忆层（主动开口 OQ-A 挂本切片出口）/ M3-4 结构投影最小版（RFC-0006）/ M3-5 Evidence Request / M3-6 数据主权（RFC-0010）；M3 总工期维持 3 周（M3-1 为薄先行切片）。(2) **MiniMax 适配器入册 M3-1**（C 轨第三真实适配器，负责人指定）——三 agent 同房才构成真实并行/竞争场景；实证 CLI 形态前置（安装/登录态/非交互调用面/fixtures 钉版本，同 kimi 0.39.1 实证口径；本机暂未安装，nvm bin 无 minimax），无官方 CLI 或登录面不可用时评审替代路径（OQ-20 凭据口径不变：凭据留 CLI 侧，Mosaic 不持有）。(3) **开发者模式持久化入册 M3-1**（dogfood 反馈：重启后开发者模式信息全失）——根因核实：`[dev]` 内联时间线为瞬态（room.ts 注释"瞬态，不入快照"——仅实时 SSE 进内存，重启后无人重放）；改法：事件流重放投影（波链路/意向/记分卡/围栏撤销自持久事件重建，debug 视图按房间+游标分页）+ trace id 可回查（贯通 v1.30 落盘的 mosaic.log）；出口：杀进程重启后任意历史波的开发者视图完整可复盘。(4) **波内并行观测改为贯穿项**：M3-1 起持续记录（同波多意愿频率/串行链时延/同锚点应答冗余率），M3-3 主动开口落地后数据成形，据实裁定并行化（Σ→max）或 sequential+波内上下文增量 |
+| v1.32 | 2026-09-01 | Mosaic 项目组 / ZCode | **M2 关账（负责人裁定）+ M3-1 开工（开发者模式持久化落地 + MiniMax 实证完成）**。(1) **M2 关账**：剩余条目逐项核实勾选——SPA 真机确认（桌面 exe 多日实用：真实房间/真实适配器发言/SSE 长流稳定）、设置页（harness 管理/开发者开关/主题；Policy 面随 RFC-0012 退役）、正在输入（TypingBar 双相）、Kimi 适配器（0.39.1 交付 + v1.30 WSL 传参修复后对等参与）、历史查询（structured_request 通道：contextx 组装即 HistoryItem 视图 + Receipt 可验证；MCP 不做）；出口判据注记：自用跨 08-28～09-01，"分叉与合并"形态被 RFC-0012 取代，体验阻塞项（Kimi 静默）已修复，群聊制上线当日关账、狗粮连续性由 M3-1 基座结构性承接。(2) **M3-1 开工·开发者模式持久化落地**：`room.WaveChainOf` 事件流重放投影（波骨架/意图全记录/发授终态/未收波可辨）+ `GET /v1/debug/rooms/{id}/waves`（seq 降序分页 + cursor 续读）+ DevPanel 波链路档案区（live 内联时间线与 archive 事实源视图分层）；重启后任意历史波完整可复盘。(3) **MiniMax 实证完成（文档调研）**：官方 CLI = MiniMax Code CLI（mcode，`npm i -g @minimax-ai/code`，Node ≥24 ✓）；调用面优于 kimi（exec 无头 + stream-json + --session 恢复 + --cwd + stdout/stderr 分流 + `--input -` stdin 通道无 argv 上限 + --output-schema 待实证 + acp 演进通道原生）；前置条件=负责人安装并订阅登录，随后 fixtures 钉版本 + 探针 + 适配器实施 |
 
 # 1. 交付目标与"完全可用"定义
 
@@ -146,9 +147,9 @@
 
 目标：日常讨论体验成形，开始自用（dogfood）。开发者模式已随 v1.8 前置至 M1，M2 起全部主线开发默认在其上进行。
 
-- [ ] **真实 SPA 界面先行（v1.7 制度化"界面原型验证"原则）**：SPA 接入 Wails 壳后，先在真实界面复验核心闭环（建房→讨论→断线续传→回放），再铺下述功能面 **（2026-08-31 A 轨主体切片：SPA 落地并经 mosaic-server 嵌入服务，浏览器模式核心闭环实录复验通过（静默期状态/设置页同步落地）；Wails 壳进程内装配完成、双目标交叉编译可编——真机拉起与 SSE 长流验证随 dogfood，勾选待真机确认）**
-- [ ] 完整设置页面（设置菜单，**v1.11 增补·M1 验收反馈**）：统一承载配置面——harness 可执行项管理（启用/禁用/登录态展示，复用 `/v1/harness/executables` 端点）；开发者模式开关说明与调试面板入口（M1 已落地 `-dev` 与 webui 面板，接导航）；Policy/预算参数（三模式条目的"Policy 参数配置面"归入本页）；界面偏好（语言/主题，i18n 文案随 M4 填充）
-- [ ] 发言静默期"正在输入"状态显示（**v1.11 增补·M1 验收反馈**）：相邻发言间隔实测十几至几十秒（exec 批式生成时长），当前 Timeline 仅渲染已发布发言、静默期零反馈；复用既有信号导出进行中状态——`round.opened`→"评估中"（全座位并行 intent 评估）、`floor.granted`→座位级"正在生成"、`message.posted` 解除，经 SSE 事件与 OnDraft 瞬态帧通道渲染，不新增日志事件族；Capabilities.Streaming=false 的适配器（native-codex）以此状态帧代理 draft 流
+- [x] **真实 SPA 界面先行（v1.7 制度化"界面原型验证"原则）**：SPA 接入 Wails 壳后，先在真实界面复验核心闭环（建房→讨论→断线续传→回放），再铺下述功能面 **（2026-08-31 A 轨主体切片：SPA 落地并经 mosaic-server 嵌入服务，浏览器模式核心闭环实录复验通过（静默期状态/设置页同步落地）；Wails 壳进程内装配完成、双目标交叉编译可编——**真机确认随 dogfood 完成（v1.32 勾选）：桌面 exe 实际多日使用（真实房间/真实适配器发言/改名/SSE 长流稳定），核心闭环在真实界面运转****）
+- [x] 完整设置页面（设置菜单，**v1.11 增补·M1 验收反馈**）：统一承载配置面——harness 可执行项管理（启用/禁用/登录态展示，复用 `/v1/harness/executables` 端点）；开发者模式开关说明与调试面板入口（M1 已落地 `-dev` 与 webui 面板，接导航）；Policy/预算参数（三模式条目的"Policy 参数配置面"归入本页）；界面偏好（语言/主题，i18n 文案随 M4 填充）**（v1.32 勾选：harness 可执行项管理 + 开发者开关 + 外观主题（个人中心）已落地并在 dogfood 实用；Policy 参数面随 RFC-0012 退役（策略面已删）；预算水位在调试面板常显）**
+- [x] 发言静默期"正在输入"状态显示（**v1.11 增补·M1 验收反馈**）：相邻发言间隔实测十几至几十秒（exec 批式生成时长），当前 Timeline 仅渲染已发布发言、静默期零反馈；复用既有信号导出进行中状态——`round.opened`→"评估中"（全座位并行 intent 评估）、`floor.granted`→座位级"正在生成"、`message.posted` 解除，经 SSE 事件与 OnDraft 瞬态帧通道渲染，不新增日志事件族；Capabilities.Streaming=false 的适配器（native-codex）以此状态帧代理 draft 流**（v1.32 勾选：TypingBar 落地（评估中/生成中双相，intent.recorded→granted→posted 驱动），dogfood 实用）**
 - [x] ~~三模式（Open Floor / Roundtable 含 rebuttals / Deep Dive）+ Policy 参数配置面~~（B1/B2 交付；**v1.28 RFC-0012 群聊制替换为唯一体验，退役**）
 - [x] ~~自动续聊（轮次自驱动，v1.26 增补）~~（v1.27 落地；**v1.28 RFC-0012 反应窗口链取代——终止从轮数上限改为意愿静默**）**（原注：2026-09-01 落地：auto_rounds 模式参数（Open Floor 默认 3/Deep Dive 2/其余关）+ 引擎 FIFO 链式开轮（人类在轮边界抢占、锚点过期丢弃、上限事件溯源重验）+ 静默/预算即停；Schema/OpenAPI/TS 全链 + UT 6 用例 + ST 真二进制 1+3 轮验证）**：round 收口后按模式参数自动开下一轮——RFC-0003 §3.1.7 表：Open Floor 有限（默认 3 轮）/ Deep Dive 2–6 轮 / Roundtable·Review·Decision 关；停止三条件：轮数上限、静默轮（零公开发言即停）、预算 100% 硬停（§3.4 熔断梯度既有条款）；不依赖 RFC-0005——优雅收束判定/Capsule 归 M3，M2 以有界续聊服务自用（出口判据“连续自用”的体验依赖）
 - [x] 群聊交互模型（RFC-0012，**v1.28 裁定·dogfood 反馈**）**（2026-09-01 落地：去抖反应窗口 + 自决放行 + 冷却/@豁免 + 环检测 + 意愿静默终止；会议制世系退役）**：任何消息（人类/agent）触发去抖反应窗口（3s 重锚聚合）→ 反应波（round 内部化）全员意图评估 → 意愿放行（silent=自决不回，无中央选人）→ sequential 发布 → 逐条再触发；终止=意愿静默/冷却/对话环检测/预算硬顶；@点名豁免冷却、保送平移为翻转 silent；任务语境重写为群聊观察者。**取代并退役**：三模式/set_policy/reveal 三策略/交锋链/auto_rounds（v1.27 交付件随本条目退役，狗粮周期一天）
@@ -156,13 +157,13 @@
 - [x] ~~点名与定向交锋快速通道~~（B3 交付；**v1.28 RFC-0012 简化为 @点名豁免冷却+前置，链机制退役**）
 - [x] 人类保送（intent.endorsed）+ 记分卡面板（band + 未选 Intent 可查）**（2026-08-31 B4：endorse 命令/事件/执行链（人类可追溯）+ 快照 scorecard + SPA 记分卡面板；boost 随 Policy 加权参数定稿）**
 - [x] Thread fork/pause/resume/close/reopen/merge + Timeline/Graph 双视图（显式 vs 推断区分）**（2026-08-31 B5：六命令/六事件/状态机/引擎门控/快照 threads+graph/图谱视图；推断边 M3 接入后标 inferred）**
-- [ ] Kimi Code 适配器晋级（native 或 ACP，按 spike 证据）→ 凑足 2 个真实适配器
-- [ ] 历史查询双通道之一落地（MCP server 或结构化请求，HistoryItem 视图）
+- [x] Kimi Code 适配器晋级（native 或 ACP，按 spike 证据）→ 凑足 2 个真实适配器**（v1.32 勾选：kimi 0.39.1 native exec（-p stream-json + -S 会话恢复）交付并 dogfood 实用；WSL 传参缺陷（wsl.exe `--` shell 拼接毁提示词）v1.30 修复后与 codex 对等参与群聊）**
+- [x] 历史查询双通道之一落地（MCP server 或结构化请求，HistoryItem 视图）**（v1.32 勾选：structured_request 通道落地——contextx.Assemble 近期窗口即 HistoryItem 视图（event_id/actor/kind/body/addressed_to/reply_to），七层摘要入 Context Receipt 可验证；MCP server 不做（个人版无外部消费面））**
 - [x] OpenAPI 3.1 + oapi-codegen strict 生成（ADR-0007 修订：自 M1 延期至此，随 SPA 接入）+ gen/ts 产物新鲜度 CI 校验（Schema 改动未重生成即红）**（2026-08-31 A 轨契约切片落地：api/http-api/openapi.yaml 全表面 + oapi-codegen v2.8.0（go.mod tool 锁版本）生成 ServerInterface/边界模型/内嵌 spec，httpapi 实现接口——操作集一致性编译期保证；strict-server 包装有意不启用（接管解码会静默放行未知字段，与 DisallowUnknownFields 纪律冲突，ADR-0007 登记偏离），请求侧行为由契约测试回填；CI 增 gen-api 漂移门禁。SPA 侧类型消费随 A 轨次切片接入）**
 - [x] `message.posted` payload Schema 定稿（M1 声明未兑现，延期登记；含 addressed_to/relations 严格字段集）**（2026-08-31：events/message.posted.schema.json——严格字段集；relations 按 RFC-0004 类型化（kind 八枚举/provenance 恒 explicit，系统固化、客户端值不收）；agent 路径 declared_relations 封闭投影。运行时同步严格化 + fixtures 双例一反例进门禁）**
 - **M2 backlog（M1 收口审校遗留，随相关切片消化）**：conformance 反例 fixture 集 + chaos 适配器（RFC-0002 §3.5.1 三件套补全）；attention 变异验证留档（CI 门禁化）；崩溃恢复演练深化（轮中途崩溃：重复开轮/永久丢失刺激两个窗口的注入用例）；grant 过期可见态（超时/取消当前都映射 ErrStale，RFC-0003 要 expired 可区分）+ A-03 在途取消 <500ms（当前正确性靠 epoch 兜底，取消动作不发出）
 - **M4 backlog**：Windows Job Object（孙进程整组击杀，替代 POSIX Setpgid 空实现）；登录态使用时复核（座位调用前 re-probe，当前为启用时点门控）
-- **出口判据**：连续 5 个工作日真实自用（≥1 场多 agent 讨论含分叉与合并）；零数据丢失；体验阻塞项清单清空或降级记录；**（v1.11 增补）** M1 验收反馈两项——完整设置页面、静默期"正在输入"状态显示——落地并在真实自用中验证。
+- **出口判据**：连续 5 个工作日真实自用（≥1 场多 agent 讨论含分叉与合并）；零数据丢失；体验阻塞项清单清空或降级记录；**（v1.11 增补）** M1 验收反馈两项——完整设置页面、静默期"正在输入"状态显示——落地并在真实自用中验证。**（v1.32 关账·负责人裁定"收尾 M2"：真实自用跨 2026-08-28～09-01（桌面 exe 多日实用：真实房间/真实适配器发言/改名/暂停恢复）；"分叉与合并"形态被 RFC-0012 群聊制取代（Thread 图谱机制在、讨论形态为群聊）；体验阻塞项（Kimi 全程静默）已修复（v1.30）并补齐日志落盘可观测性；零数据丢失（WAL 存储 + 崩溃即静默不重波语义，无丢失报告）；群聊制上线当日即关账——狗粮连续性由 M3-1 观测基座结构性承接（三 agent 狗粮 + 重启可复盘），不作为 M2 缺件）**
 
 ## M3 收束、记忆与投影（3 周，v1.31 拆细为六切片）
 
@@ -171,7 +172,8 @@
 ### M3-1 观测与狗粮基座（先行切片，与 M2 收尾狗粮并行启动；v1.31 增补）
 
 - [ ] MiniMax 适配器（C 轨第三真实适配器，负责人 v1.31 指定）：实证 CLI 形态前置（安装/登录态/非交互调用面/输出格式钉 fixtures——同 kimi 0.39.1 实证口径；本机暂未安装）→ harness 探针增补（BuiltinProbes）→ 适配器（复用 codex/kimi 模式：会话连续性/PublishGate/conformance/IT 三件套）；实证不通过（无官方 CLI 或登录面不可用）则评审替代路径再动手（OQ-20 口径不变：凭据留 CLI 侧，Mosaic 不持有）
-- [ ] 开发者模式持久化（dogfood 反馈 v1.31：重启后开发者模式信息全失）：`[dev]` 内联时间线当前为瞬态（room.ts"瞬态，不入快照"——仅实时 SSE 进内存，无人重放）→ 改为事件流重放投影（波链路/意向/记分卡/围栏撤销自持久事件重建，debug 视图按房间+游标分页）+ trace id 可回查（贯通 v1.30 落盘的 mosaic.log）
+  **（v1.32 实证完成·文档调研：官方 CLI 为 MiniMax Code CLI（`mcode`）——安装 `npm i -g @minimax-ai/code@latest`（Node ≥22.19<23 或 ≥24<27，本机 v24.14.1 满足）、登录 `mcode login`（需订阅 Token 套餐；`mcode provider` 管 API Key 路由——凭据留 CLI 侧合规 OQ-20）；无头调用面优于 kimi：`mcode exec [prompt] --output-format text|json|stream-json --cwd <dir> --session <id> --permission ask|smart|full|off --timeout --max-steps`，机器输出走 stdout/诊断走 stderr（分流，无混流解析噪声），`--input -` 显式读 stdin（提示词可走 stdin——无 argv 长度上限，规避 kimi 的 6000 rune 护栏类问题），`--output-schema` JSON Schema 校验（codex 实证上游 400 不可用，mcode 待实证——若可用则意图结构化输出可硬校验）；`mcode acp` ACP stdio 通道原生在（演进项）。前置条件=负责人安装并订阅登录；随后真机 fixtures 钉版本（stream-json 行流形状）+ BuiltinProbes 探针 + 适配器实施）**
+- [x] 开发者模式持久化（dogfood 反馈 v1.31：重启后开发者模式信息全失）：`[dev]` 内联时间线当前为瞬态（room.ts"瞬态，不入快照"——仅实时 SSE 进内存，无人重放）→ 改为事件流重放投影（波链路/意向/记分卡/围栏撤销自持久事件重建，debug 视图按房间+游标分页）+ trace id 可回查（贯通 v1.30 落盘的 mosaic.log）**（2026-09-01 v1.32 落地：`room.WaveChainOf` 纯函数投影（波骨架/意图全记录含弃权与未选理由/发授终态含撤销归账/发布计数/未收波可辨）+ `GET /v1/debug/rooms/{id}/waves` 端点（dev 门禁内，seq 降序取页/页内时间正序/limit 1..100/cursor 续读更老）+ DevPanel"波链路（重启可复盘）"档案区（进房加载最新页/加载更早/手动刷新/成员名与锚点摘要解析）；实时增量仍走聊天内 [dev] 内联时间线（live 面），档案区为事实源视图（archive 面）；UT 投影三用例 + 端点用例（直落库波事件可复盘/分页/坏 cursor 400/非 dev 404））**
 - [ ] 产出：≥3 agent 真实狗粮基座——为波内并行观测（贯穿项）与 M3 各切片验证提供测量面
 - **出口判据**：三 agent 同房真实对话一场；杀进程重启后开发者视图完整还原该场全部波链路。
 

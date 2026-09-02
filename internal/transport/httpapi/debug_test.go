@@ -13,6 +13,7 @@ import (
 
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
+	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
 	"github.com/sisibeloved/Mosaic/internal/transport/sse"
 )
@@ -116,6 +117,7 @@ func TestDebugEndpointsHiddenWithoutDev(t *testing.T) {
 	for _, path := range []string{
 		"/v1/debug/rooms/" + roomID + "/state",
 		"/v1/debug/rooms/" + roomID + "/events",
+		"/v1/debug/rooms/" + roomID + "/waves",
 	} {
 		resp, err := http.Get(ts.URL + path)
 		if err != nil {
@@ -232,6 +234,111 @@ func TestDebugEvents(t *testing.T) {
 	if status != http.StatusBadRequest {
 		t.Fatalf("bad cursor status=%d, want 400", status)
 	}
+}
+
+// TestDebugWaves：波链路检视（M3-1 持久化）——人类消息不开波（空链）、直接落库的
+// 波事件可复盘（意图/发授/发布/结局全量投影）、limit 分页给 next 且续读更老、
+// 坏 cursor 400。波事件不经引擎直接进 store（UT 装配无引擎——投影只认事件流，
+// 这正是"重启后可复盘"的语义：任何写入过的事件都能重建视图）。
+func TestDebugWaves(t *testing.T) {
+	ts, store := newDevServer(t, true)
+	roomID, _ := createDevRoom(t, ts)
+
+	// 无波历史：只有建房 → 空链 200（与 404 房间不存在区分）
+	status, doc := getJSON(t, ts.URL+"/v1/debug/rooms/"+roomID+"/waves")
+	if status != 200 {
+		t.Fatalf("waves status=%d body=%v", status, doc)
+	}
+	if waves, _ := doc["waves"].([]any); len(waves) != 0 {
+		t.Fatalf("无波历史应空链：%v", waves)
+	}
+
+	// 直接落库一波完整链路（复盘语义：只要事件在，视图就在）
+	appendWave := func(roundID string, openedSeq int64) {
+		envs := []room.StoredEvent{
+			{Envelope: protocolEnvelope(roomID, openedSeq, protocol.EventRoundOpened, "par_system", "system",
+				fmt.Sprintf(`{"round_id":%q,"stimulus_event_id":"evt_stim_%s"}`, roundID, roundID))},
+			{Envelope: protocolEnvelope(roomID, openedSeq+1, protocol.EventIntentRecorded, "par_codex", "agent",
+				`{"intent_id":"int_x","participant_id":"par_codex","action":"speak","type":"answer","public_rationale":"可补充","score_band":"medium","selected":true}`)},
+			{Envelope: protocolEnvelope(roomID, openedSeq+2, protocol.EventFloorGranted, "par_system", "system",
+				fmt.Sprintf(`{"grant_id":"g_%s","round_id":%q,"participant_id":"par_codex","rank":1}`, roundID, roundID))},
+			{Envelope: protocolEnvelope(roomID, openedSeq+3, protocol.EventMessagePosted, "par_codex", "agent",
+				`{"body":"复盘我"}`)},
+			{Envelope: protocolEnvelope(roomID, openedSeq+4, protocol.EventRoundClosed, "par_system", "system",
+				fmt.Sprintf(`{"round_id":%q,"outcome":"published","selected_count":1,"silent_count":0}`, roundID))},
+		}
+		if _, err := store.AppendEvents(context.Background(), envelopesOf(envs)); err != nil {
+			t.Fatalf("append wave %s: %v", roundID, err)
+		}
+	}
+	appendWave("rnd_a", 10)
+	appendWave("rnd_b", 20)
+
+	status, doc = getJSON(t, ts.URL+"/v1/debug/rooms/"+roomID+"/waves")
+	if status != 200 {
+		t.Fatalf("waves status=%d", status)
+	}
+	waves, _ := doc["waves"].([]any)
+	if len(waves) != 2 {
+		t.Fatalf("waves = %d, want 2", len(waves))
+	}
+	first, _ := waves[0].(map[string]any) // 页内时间正序：rnd_a 在前
+	if first["round_id"] != "rnd_a" || first["outcome"] != "published" {
+		t.Fatalf("波 rnd_a = %v", first)
+	}
+	intents, _ := first["intents"].([]any)
+	if len(intents) != 1 || intents[0].(map[string]any)["participant_id"] != "par_codex" {
+		t.Fatalf("rnd_a 意图 = %v", intents)
+	}
+	grants, _ := first["grants"].([]any)
+	if len(grants) != 1 || grants[0].(map[string]any)["published"] != true {
+		t.Fatalf("rnd_a 发授终态 = %v", grants)
+	}
+
+	// 分页：limit=1 → 只给最新波（rnd_b），next 指向 rnd_a 的开波 seq，续读补齐
+	_, page1 := getJSON(t, ts.URL+"/v1/debug/rooms/"+roomID+"/waves?limit=1")
+	p1, _ := page1["waves"].([]any)
+	if len(p1) != 1 || p1[0].(map[string]any)["round_id"] != "rnd_b" {
+		t.Fatalf("limit=1 最新波 = %v", p1)
+	}
+	next, _ := page1["next"].(string)
+	if next == "" {
+		t.Fatal("limit=1 时 next 不得为空")
+	}
+	_, page2 := getJSON(t, ts.URL+"/v1/debug/rooms/"+roomID+"/waves?limit=1&cursor="+next)
+	p2, _ := page2["waves"].([]any)
+	if len(p2) != 1 || p2[0].(map[string]any)["round_id"] != "rnd_a" {
+		t.Fatalf("续读页 = %v", p2)
+	}
+	if _, hasMore := page2["next"].(string); hasMore && page2["next"] != "" {
+		t.Fatal("仅两波时第二页 next 应为空")
+	}
+
+	// 坏 cursor → 400
+	status, _ = getJSON(t, ts.URL+"/v1/debug/rooms/"+roomID+"/waves?cursor=not-a-seq")
+	if status != http.StatusBadRequest {
+		t.Fatalf("bad cursor status=%d, want 400", status)
+	}
+}
+
+// protocolEnvelope / envelopesOf：波事件直落 store 的构造辅助（调试面投影只认
+// 事件流，不经引擎——重启后可复盘语义的 UT 面即此）。seq 由 MemStore 自派
+// （appendLocked 覆盖），入参仅用于 EventID 去重。
+func protocolEnvelope(roomID string, seq int64, typ, actor, kind, payload string) protocol.Envelope {
+	return protocol.Envelope{
+		EventID: fmt.Sprintf("evt_wv_%d", seq), TenantID: "ten_local", RoomID: roomID,
+		Type: typ, SchemaVersion: 1, OccurredAt: "2026-09-01T09:00:00.000Z",
+		Actor:   protocol.Actor{ParticipantID: actor, Kind: kind},
+		Payload: []byte(payload),
+	}
+}
+
+func envelopesOf(events []room.StoredEvent) []protocol.Envelope {
+	envs := make([]protocol.Envelope, len(events))
+	for i, ev := range events {
+		envs[i] = ev.Envelope
+	}
+	return envs
 }
 
 // TestTraceIDHeader：命令响应回带 X-Trace-Id；客户端提供时透传，缺省时生成。

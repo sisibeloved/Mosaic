@@ -121,7 +121,13 @@ export function MemberPanel({
         {tab === "graph" && <GraphTab threads={threads} edges={edges} describeEvent={describeEvent} />}
         {tab === "debug" && (
           <div className="px-3 py-3">
-            <DevPanel roomID={roomID} />
+            <DevPanel
+              roomID={roomID}
+              nameOf={(pid) =>
+                participants.find((p) => p.participant_id === pid)?.display_name ?? pid
+              }
+              describeEvent={describeEvent}
+            />
           </div>
         )}
       </div>

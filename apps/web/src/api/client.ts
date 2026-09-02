@@ -191,4 +191,8 @@ export const api = {
   debugEvents(roomID: string): Promise<unknown> {
     return request(`/v1/debug/rooms/${encodeURIComponent(roomID)}/events`);
   },
+  debugWaves(roomID: string, cursor?: string): Promise<unknown> {
+    const q = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    return request(`/v1/debug/rooms/${encodeURIComponent(roomID)}/waves${q}`);
+  },
 };

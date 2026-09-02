@@ -70,6 +70,7 @@ func New(deps Deps) http.Handler {
 		// 开发者模式（M1 v1.8）：只读调试面——非 dev 不注册（404 而非 403，不暴露面）
 		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/state", s.handleDebugState)
 		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/events", s.handleDebugEvents)
+		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/waves", s.handleDebugWaves)
 	}
 	return apigen.HandlerWithOptions(s, apigen.StdHTTPServerOptions{BaseRouter: mux})
 }
