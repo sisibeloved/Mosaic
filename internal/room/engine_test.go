@@ -1660,3 +1660,92 @@ func TestClaimOrderingByPosition(t *testing.T) {
 		t.Fatalf("应按 position 升序：[%s %s]", claims[0].StimulusEventID, claims[1].StimulusEventID)
 	}
 }
+
+// 评估相并行回归（dogfood "非常慢" 治理：串行求和 3 座 ≈ 51s）：两座评估必须并发
+// 在途——自释放栅栏在第 2 座进入时放行；串行实现下栅栏永不闭合，轮超时判负。
+func TestEngineEvaluatesSeatsInParallel(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(&parEvalAdapter{gate: make(chan struct{})})
+	defer sup.Shutdown()
+	eng := NewEngine(EngineConfig{
+		Store: store, Reader: store, Agents: sup,
+		Seats: []AgentSeat{
+			{ParticipantID: "par_a", Profile: agent.Profile{ProfileID: "pa", Adapter: "par_eval"}},
+			{ParticipantID: "par_b", Profile: agent.Profile{ProfileID: "pb", Adapter: "par_eval"}},
+		},
+		ReactionWindow: 5 * time.Millisecond,
+		Clock:          testClock, Now: time.Now,
+		NewID: counterNewID(), Tenant: "ten_local",
+	})
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "pe0", TenantID: "ten_local", RoomID: "room_pe", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	deliverHuman(t, store, eng, "room_pe")
+	waitRoundClosed(t, store, "room_pe")
+	intents := 0
+	for _, ev := range store.RoomEvents("room_pe") {
+		if ev.Type == protocol.EventIntentRecorded {
+			intents++
+		}
+	}
+	if intents != 2 {
+		t.Fatalf("两座均应记录 intent：%d", intents)
+	}
+}
+
+type parEvalAdapter struct {
+	mu       sync.Mutex
+	inFlight int
+	gate     chan struct{}
+}
+
+func (*parEvalAdapter) Name() string                     { return "par_eval" }
+func (*parEvalAdapter) Capabilities() agent.Capabilities { return agent.Capabilities{} }
+func (a *parEvalAdapter) Boot(context.Context, agent.Profile) (agent.Session, error) {
+	return &parEvalSession{a: a}, nil
+}
+
+type parEvalSession struct{ a *parEvalAdapter }
+
+func (s *parEvalSession) Run(context.Context, agent.Task) (agent.Handle, error) {
+	return &parEvalHandle{a: s.a}, nil
+}
+func (*parEvalSession) Cancel(string) {}
+func (*parEvalSession) Close()        {}
+
+type parEvalHandle struct{ a *parEvalAdapter }
+
+func (*parEvalHandle) Updates() <-chan agent.DraftUpdate { return nil }
+func (*parEvalHandle) Cancel()                           {}
+func (h *parEvalHandle) Result() (agent.Result, error) {
+	h.a.mu.Lock()
+	h.a.inFlight++
+	if h.a.inFlight == 2 {
+		close(h.a.gate)
+	}
+	h.a.mu.Unlock()
+	<-h.a.gate
+	return agent.Result{Block: "turn_intent", Data: map[string]any{"action": "silent"}}, nil
+}
+
+// 冷却死锁回归（dogfood "输入无回复"）：全员发言一波后，人类新消息必须照常开波——
+// 冷却仅约束 agent 锚点（被跳过的波不落 round.opened，人类锚点若吃冷却，冷却集
+// 永不更新，房间对人类后续输入永久静默）。
+func TestEngineHumanStimulusBypassesCooldown(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(echo.Adapter{})
+	defer sup.Shutdown()
+	eng := newEchoEngine(store, sup, contextx.Limits{}, "echo")
+	store.AppendEvents(context.Background(), []protocol.Envelope{
+		{EventID: "hb0", TenantID: "ten_local", RoomID: "room_hb", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
+	})
+	deliverHuman(t, store, eng, "room_hb")
+	waitRoundClosed(t, store, "room_hb") // 波 1：echo 发言并进冷却（唯一座 = 全员冷却态）
+	deliverHuman2(t, store, eng, "room_hb", "evt_human_hb2")
+	waitRoundsClosed(t, store, "room_hb", 2) // 波 2：人类锚点豁免冷却，必须再开
+	if n := countAgentMsgsOf(store.RoomEvents("room_hb")); n != 2 {
+		t.Fatalf("两波人类刺激应各得一条回复：agent 消息 = %d", n)
+	}
+}

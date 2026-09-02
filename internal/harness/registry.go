@@ -50,6 +50,9 @@ type Executable struct {
 	Priority     int    `json:"priority"`         // PriorityFor 计算；数值小者优先
 	DiscoveredAt string `json:"discovered_at"`
 	Enabled      bool   `json:"enabled"`
+	// EvalModel 评估任务专用模型（手编维护，跨扫描保留；空 = 与生成同模型）。
+	// dogfood 性能治理：评估输出仅几十 token，降档直接降单座评估延迟。
+	EvalModel string `json:"eval_model,omitempty"`
 }
 
 // Registry 域错误。
@@ -309,7 +312,8 @@ func (r *Registry) upsertLocked(exe Executable) {
 	for i := range r.exes {
 		if r.exes[i].ID == exe.ID {
 			prev := r.exes[i]
-			exe.Enabled = prev.Enabled // 启用状态跨扫描保留（登录门控在 SetEnabled 把关）
+			exe.Enabled = prev.Enabled     // 启用状态跨扫描保留（登录门控在 SetEnabled 把关）
+			exe.EvalModel = prev.EvalModel // 手编的评估降档跨扫描保留（扫描不产生该字段）
 			if prev.Source == SourceManual {
 				exe.Source = SourceManual
 				if prev.Channel != "" {

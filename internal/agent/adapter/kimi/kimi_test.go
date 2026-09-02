@@ -346,3 +346,36 @@ func mustJSON(t *testing.T, s string) string {
 	}
 	return string(raw)
 }
+
+// 评估降档（dogfood 性能治理）：评估任务 argv 带 -m <EvalModel>，生成任务不带。
+func TestEvalModelArgsOnlyForEval(t *testing.T) {
+	out := `{"role":"assistant","content":"{\"action\":\"silent\"}"}` + "\n"
+	exec := &fakeExecer{outputs: []string{out, out}}
+	adapter := New(Config{KimiPath: "/bin/kimi", Execer: exec, Timeout: 30 * time.Second, EvalModel: "k2-fast"})
+	session, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "kimi"})
+	defer session.Close()
+	run := func(kind agent.TaskKind) {
+		h, err := session.Run(context.Background(), agent.Task{TaskID: "t", Kind: kind})
+		if err != nil {
+			t.Fatalf("run %s: %v", kind, err)
+		}
+		_, _ = h.Result()
+	}
+	run(agent.KindEvaluateIntent)
+	run(agent.KindGenerate)
+	if !hasArg(exec.calls[0].argv, "-m") || !hasArg(exec.calls[0].argv, "k2-fast") {
+		t.Fatalf("评估任务应带降档模型：%v", exec.calls[0].argv)
+	}
+	if hasArg(exec.calls[1].argv, "-m") || hasArg(exec.calls[1].argv, "k2-fast") {
+		t.Fatalf("生成任务不得带评估模型：%v", exec.calls[1].argv)
+	}
+}
+
+func hasArg(argv []string, v string) bool {
+	for _, a := range argv {
+		if a == v {
+			return true
+		}
+	}
+	return false
+}

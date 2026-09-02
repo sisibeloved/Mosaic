@@ -39,6 +39,11 @@ type ReceiptStore interface {
 // DraftSink 草稿流出口（安全子集：text_delta/stage；广播侧负责可见性，M1 仅 public）。
 type DraftSink func(roomID, participantID string, update agent.DraftUpdate)
 
+// WaveSkipSink 波门控跳过通知出口（reason：paused | ring | thread_inactive | budget |
+// cooldown）。瞬态信号——门控跳过不是语义事件，不落事件日志；广播侧以瞬态帧投递，
+// 供开发者模式在房间内向用户解释"为什么没人说话"。
+type WaveSkipSink func(roomID, reason string)
+
 // EngineConfig 引擎依赖。
 type EngineConfig struct {
 	Store          AtomicStore
@@ -49,6 +54,7 @@ type EngineConfig struct {
 	ReactionWindow time.Duration    // 反应窗口去抖时长（RFC-0012 §2.1；0 = 默认 3s）
 	Receipts       ReceiptStore     // 可选
 	OnDraft        DraftSink        // 可选：草稿流出口
+	OnWaveSkip     WaveSkipSink     // 可选：波门控跳过通知（开发者模式可观测性）
 	Logger         *slog.Logger     // 可选，缺省 slog.Default()（波中止/门控不再静默）
 	Claims         ClaimStore       // 可选：durable handoff（二轮审校 #9；nil = 无声明直驱，测试场景）
 	Clock          func() string    // occurred_at（RFC3339）
@@ -72,6 +78,10 @@ func defaultChatPolicy() chatGrantPolicy {
 // 对话环检测阈值：历史尾部连续 agent 消息 ≥ 该数（无人类介入）即不开新波
 // （双 agent 无限互相客气的强制收口；RFC-0012 §2.3）。
 const maxAgentMessageTail = 6
+
+// 评估近窗（dogfood 性能治理）：评估只判"回不回/怎么回"，无需生成的全量语境；
+// 收小窗口直接降每次评估的输入 token——单座评估延迟的最大构成。
+const evalRecentWindow = 4
 
 // Engine 消费消息流并驱动反应波。
 type Engine struct {
@@ -312,6 +322,14 @@ func (e *Engine) debug(roomID, msg string, args ...any) {
 	e.cfg.Logger.Debug("engine: "+msg, append([]any{"room", roomID}, args...)...)
 }
 
+// waveSkip 门控跳过通知（nil 安全；debug 日志之外的房间内可观测面——
+// 跳过不落任何事件，没有这条路开发者模式只能看到死寂）。
+func (e *Engine) waveSkip(roomID, reason string) {
+	if e.cfg.OnWaveSkip != nil {
+		e.cfg.OnWaveSkip(roomID, reason)
+	}
+}
+
 // Seats 当前座位快照（开发者模式状态端点用；与波执行同一份数据）。
 func (e *Engine) Seats() []AgentSeat { return e.seatsSnapshot() }
 
@@ -394,8 +412,8 @@ type waveTiming struct {
 	TotalMs     int64            `json:"total_ms"`      // 波全程（入 runReaction → 收波）
 	HistoryMs   int64            `json:"history_ms"`    // 历史拉取
 	AssembleMs  int64            `json:"assemble_ms"`   // 上下文组装
-	EvalMs      map[string]int64 `json:"eval_ms"`       // 逐座意图评估（观察→判断，串行逐个）
-	EvalTotalMs int64            `json:"eval_total_ms"` // 评估相合计（串行求和——并行化候选的首要观测位）
+	EvalMs      map[string]int64 `json:"eval_ms"`       // 逐座意图评估（观察→判断；座位间并行）
+	EvalTotalMs int64            `json:"eval_total_ms"` // 评估相墙钟（并行后 ≈ 最慢一座；历史版本为串行求和）
 	GenerateMs  map[string]int64 `json:"generate_ms"`   // 逐发言人生成
 }
 
@@ -445,11 +463,13 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 	// 门控：暂停（人类随时掐断；resume 后经声明重驱动或新消息复活）
 	if roomPaused(history) {
 		e.debug(roomID, "波跳过：房间暂停", "anchor", anchor.EventID)
+		e.waveSkip(roomID, "paused")
 		return
 	}
 	// 门控：对话环检测——尾部连续 agent 消息无人类介入 ≥ 阈值 → 强制收口
 	if tail := agentMessageTail(history); tail >= maxAgentMessageTail {
 		e.debug(roomID, "波跳过：对话环收口", "agent_tail", tail)
+		e.waveSkip(roomID, "ring")
 		return
 	}
 	envs := make([]protocol.Envelope, len(history))
@@ -461,6 +481,7 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 		switch ThreadStateOf(envs, *anchor.ThreadID) {
 		case ThreadPaused, ThreadClosed, ThreadMerged:
 			e.debug(roomID, "波跳过：线程不在活跃态", "thread", *anchor.ThreadID)
+			e.waveSkip(roomID, "thread_inactive")
 			return
 		}
 	}
@@ -469,10 +490,17 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 	if !ledger.Admit(e.cfg.Budget) {
 		e.debug(roomID, "波跳过：预算熔断", "anchor", anchor.EventID,
 			"rounds", ledger.Rounds, "utterances", ledger.Utterances, "tokens", ledger.Tokens)
+		e.waveSkip(roomID, "budget")
 		return
 	}
-	// 冷却：上波发言者跳过评估（防自言自语）；@点名豁免（RFC-0012 §2.3）
-	cooldown := lastWaveSpeakers(history)
+	// 冷却：上波发言者跳过评估（防自言自语）；@点名豁免（RFC-0012 §2.3）。
+	// 仅对 agent 锚点生效——人类消息不受冷却约束：冷却集取自最近 round.opened，
+	// 被跳过的波不落 round.opened，若人类锚点也吃冷却，全员发言一波后冷却集
+	// 永不更新，房间对人类后续输入永久静默（dogfood 实测死锁"输入无回复"）。
+	cooldown := map[string]bool{}
+	if anchor.Actor.Kind != "human" {
+		cooldown = lastWaveSpeakers(history)
+	}
 	addressed := addressedSet(*anchor)
 	roomSeats := e.roomSeats(history)
 	seats := make([]AgentSeat, 0, len(roomSeats))
@@ -485,6 +513,7 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 	}
 	if len(seats) == 0 {
 		e.debug(roomID, "波跳过：全员冷却（静默）", "anchor", anchor.EventID)
+		e.waveSkip(roomID, "cooldown")
 		return
 	}
 
@@ -504,34 +533,46 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 	// 声明清账（群聊语义：波锚定最新语境，覆盖更早刺激——消息是语境不是席位）
 	e.clearRoomClaims(ctx, roomID)
 
-	// 2) 上下文组装（七层最小 + Receipt；同波各任务共享组装、逐任务 Receipt）
+	// 2) 上下文组装（七层最小 + Receipt）。评估与生成各组一份：评估收小近窗
+	// （evalRecentWindow，降输入 token），生成仍用全量近窗；逐组装各落一张
+	// Receipt（溯源按实——评估 Receipt 以 ":eval" 后缀区分任务号）。
 	tStage = time.Now()
 	seatsMin := make([]contextx.Seat, len(seats))
 	for i, s := range seats {
 		seatsMin[i] = contextx.Seat{ParticipantID: s.ParticipantID}
 	}
-	assembled := contextx.Assemble(contextx.Config{
+	assembleCfg := contextx.Config{
 		RoomID: roomID, TaskID: roundID, Mode: "chat", Seats: seatsMin,
 		RecentWindow: 10,
 		Budget: contextx.BudgetState{
 			RemainingTokens: remainingTokens(ledger, e.cfg.Budget),
 			Level:           ledger.Level(e.cfg.Budget),
 		},
-	}, envs, *anchor)
+	}
+	assembled := contextx.Assemble(assembleCfg, envs, *anchor)
+	assembleCfg.TaskID = roundID + ":eval"
+	assembleCfg.RecentWindow = evalRecentWindow
+	evalAssembled := contextx.Assemble(assembleCfg, envs, *anchor)
 	timing.AssembleMs = msSince(tStage)
 	if e.cfg.Receipts != nil {
-		assembled.Receipt.CreatedAt = e.cfg.Clock()
-		if err := e.cfg.Receipts.InsertReceipt(ctx, assembled.Receipt); err != nil {
-			e.warn(roomID, "context receipt 落库失败", "err", err)
+		for _, asm := range []*contextx.Assembled{&assembled, &evalAssembled} {
+			asm.Receipt.CreatedAt = e.cfg.Clock()
+			if err := e.cfg.Receipts.InsertReceipt(ctx, asm.Receipt); err != nil {
+				e.warn(roomID, "context receipt 落库失败", "err", err)
+			}
 		}
 	}
 	taskContext := agent.Context{
 		Inline:     assembled.Inline,
 		ReceiptRef: assembled.Receipt.ReceiptID,
 	}
+	evalContext := agent.Context{
+		Inline:     evalAssembled.Inline,
+		ReceiptRef: evalAssembled.Receipt.ReceiptID,
+	}
 
-	// 3-4) 全员评估（观察→判断）→ intent.recorded 全记录（R-01）→ 意愿清单
-	willing, silentCount, ok := e.evaluateWave(ctx, roomID, roundID, *anchor, history, seats, taskContext, ledger, timing)
+	// 3-4) 全员评估（观察→判断，瘦身上下文）→ intent.recorded 全记录（R-01）→ 意愿清单
+	willing, silentCount, ok := e.evaluateWave(ctx, roomID, roundID, *anchor, history, seats, evalContext, ledger, timing)
 	if !ok {
 		return
 	}
@@ -621,35 +662,62 @@ func (e *Engine) evaluateWave(ctx context.Context, roomID, roundID string, ancho
 	if anchor.ThreadID != nil {
 		anchorThread = *anchor.ThreadID
 	}
-	// 相 1：全部评估先跑完（四轮复审 #10——评估消耗进同一波的 admission 判定）。
+	// 相 1：全部评估并行跑完。座位间无依赖（不同 Profile/Session，thread 连续性
+	// 互不干扰），本相纯适配器调用、零存储写——事件落账与 usage 汇总留在相 1.5/2
+	// 串行做，四轮复审 #10 的 admission 语义不变。串行求和曾是 dogfood "非常慢"
+	// 的最大头（3 座 ≈ 3×17s），并行后评估相墙钟 ≈ 最慢一座。
 	type seatEval struct {
 		seat   AgentSeat
 		result agent.Result
+		ms     int64
+		ok     bool
 	}
-	var evals []seatEval
-	for _, seat := range seats {
-		tEval := time.Now()
-		intentResult, err := e.runTask(ctx, seat.Profile, seat.ParticipantID, agent.Task{
-			TaskID:        e.cfg.NewID("tsk"),
-			Kind:          agent.KindEvaluateIntent,
-			ParticipantID: seat.ParticipantID,
-			RoomID:        roomID,
-			ThreadID:      anchorThread,
-			Epoch:         roundID,
-			Context:       taskContext,
-		})
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, 0, false // Close/取消：整波中止
+	evals := make([]seatEval, len(seats)) // 定址写：保座位序，相 2 记录顺序与串行版一致
+	tPhase := time.Now()
+	var wg sync.WaitGroup
+	for i, seat := range seats {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// 阶段信号（dogfood 静默期反馈）：评估启动即上"正在评估"——
+			// intent.recorded 要等 gather 才批量落地，空窗期 UI 不该死寂。
+			if e.cfg.OnDraft != nil {
+				e.cfg.OnDraft(roomID, seat.ParticipantID, agent.DraftUpdate{Kind: "stage", Stage: "evaluating"})
 			}
-			e.warn(roomID, "意图评估失败，跳过该座", "seat", seat.ParticipantID, "err", err)
+			tEval := time.Now()
+			intentResult, err := e.runTask(ctx, seat.Profile, seat.ParticipantID, agent.Task{
+				TaskID:        e.cfg.NewID("tsk"),
+				Kind:          agent.KindEvaluateIntent,
+				ParticipantID: seat.ParticipantID,
+				RoomID:        roomID,
+				ThreadID:      anchorThread,
+				Epoch:         roundID,
+				Context:       taskContext,
+			})
+			if err != nil {
+				if ctx.Err() == nil { // 取消路径静默——gather 后统一判定整波中止
+					e.warn(roomID, "意图评估失败，跳过该座", "seat", seat.ParticipantID, "err", err)
+				}
+				return
+			}
+			evals[i] = seatEval{seat: seat, result: intentResult, ms: msSince(tEval), ok: true}
+		}()
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		return nil, 0, false // Close/取消：整波中止
+	}
+	timing.EvalTotalMs = msSince(tPhase) // 评估相墙钟（并行后 = max 而非 Σ）
+	kept := evals[:0]
+	for _, ev := range evals {
+		if !ev.ok {
 			continue
 		}
-		evalUsage[seat.ParticipantID] = intentResult.Usage
-		timing.EvalMs[seat.ParticipantID] = msSince(tEval)
-		timing.EvalTotalMs += timing.EvalMs[seat.ParticipantID]
-		evals = append(evals, seatEval{seat: seat, result: intentResult})
+		evalUsage[ev.seat.ParticipantID] = ev.result.Usage
+		timing.EvalMs[ev.seat.ParticipantID] = ev.ms
+		kept = append(kept, ev)
 	}
+	evals = kept
 	// 相 1.5：评估消耗入"现在"的账本。
 	ledgerNow := baseLedger
 	for _, u := range evalUsage {

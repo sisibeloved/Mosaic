@@ -288,7 +288,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 				}
 				switch exe.Adapter {
 				case "codex":
-					cfg := codex.Config{CodexPath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir}
+					cfg := codex.Config{CodexPath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir, EvalModel: exe.EvalModel}
 					if wslHome != "" {
 						cfg.WSLDistro = exe.Distro
 						cfg.WSLHome = wslHome
@@ -304,7 +304,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 					})
 				case "kimi":
 					// C 轨：第二个真实适配器（kimi -p stream-json + -S 会话恢复）。
-					cfg := kimi.Config{KimiPath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir}
+					cfg := kimi.Config{KimiPath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir, EvalModel: exe.EvalModel}
 					if wslHome != "" {
 						cfg.WSLDistro = exe.Distro
 						cfg.WSLHome = wslHome
@@ -320,7 +320,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 				case "minimax":
 					// M3-1 观测基座：第三个真实适配器（mcode exec stream-json + --session 恢复，
 					// 提示词走 stdin——无 argv 上限；三 agent 同房构成真实并行/竞争场景）。
-					cfg := minimax.Config{McodePath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir}
+					cfg := minimax.Config{McodePath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir, EvalModel: exe.EvalModel}
 					if wslHome != "" {
 						cfg.WSLDistro = exe.Distro
 						cfg.WSLHome = wslHome
@@ -338,19 +338,20 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			return seats
 		}
 		engine := room.NewEngine(room.EngineConfig{
-			Store:    store,
-			Reader:   store,
-			Agents:   supervisor,
-			Seats:    syncSeats(),
-			Budget:   budgetLimits,
-			Receipts: store,
-			Claims:   store,
-			OnDraft:  httpapi.DraftConsumer(hub),
-			Logger:   logger,
-			Clock:    clock,
-			Now:      time.Now,
-			NewID:    newID,
-			Tenant:   "ten_local",
+			Store:      store,
+			Reader:     store,
+			Agents:     supervisor,
+			Seats:      syncSeats(),
+			Budget:     budgetLimits,
+			Receipts:   store,
+			Claims:     store,
+			OnDraft:    httpapi.DraftConsumer(hub),
+			OnWaveSkip: httpapi.WaveSkipConsumer(hub),
+			Logger:     logger,
+			Clock:      clock,
+			Now:        time.Now,
+			NewID:      newID,
+			Tenant:     "ten_local",
 		})
 		enginePtr.Store(engine)
 		engine.RecoverClaims() // 崩溃窗口重驱动（二轮审校 #9）

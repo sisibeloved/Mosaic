@@ -39,6 +39,9 @@ type Config struct {
 	// MaxPromptRunes 提示词 argv 安全上限（默认 6000）：kimi -p 不读 stdin（实证），
 	// 提示词全量进 argv；超限 fail fast 报明确错误，胜过 OS spawn 失败。
 	MaxPromptRunes int
+	// EvalModel 评估任务专用模型（-m；空 = 与生成同模型）。dogfood 性能治理：
+	// 评估输出仅几十 token，单座延迟瓶颈在模型档位——评估可降档、生成保持主模型。
+	EvalModel string
 }
 
 // Execer 进程执行抽象（UT 捕获/阻塞；生产为真实 kimi 子进程）。
@@ -134,6 +137,7 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 
 	argv := []string{s.adapter.cfg.KimiPath}
 	argv = append(argv, s.adapter.cfg.ExtraArgs...)
+	argv = append(argv, s.evalModelArgs(task)...)
 	argv = append(argv, "-p", prompt, "--output-format", "stream-json")
 	if sessID != "" {
 		argv = append(argv, "-S", sessID) // 连续性（实证：-p 与 -S 可组合）
@@ -188,6 +192,14 @@ func (s *session) execer() Execer {
 		return &wslExecer{distro: s.adapter.cfg.WSLDistro}
 	}
 	return &processExecer{}
+}
+
+// evalModelArgs 评估降档（dogfood 性能治理）：评估任务追加 -m <EvalModel>。
+func (s *session) evalModelArgs(task agent.Task) []string {
+	if task.Kind == agent.KindEvaluateIntent && s.adapter.cfg.EvalModel != "" {
+		return []string{"-m", s.adapter.cfg.EvalModel}
+	}
+	return nil
 }
 
 // envFor 按运行面构造子进程环境（native 用宿主 HOME；wsl 用发行版内 HOME）。

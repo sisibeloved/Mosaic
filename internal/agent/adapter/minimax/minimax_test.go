@@ -278,3 +278,35 @@ func mustJSON(t *testing.T, s string) string {
 	}
 	return string(raw)
 }
+
+// 评估降档（dogfood 性能治理）：评估任务 argv 带 --model <EvalModel>，生成任务不带。
+func TestEvalModelArgsOnlyForEval(t *testing.T) {
+	exec := &fakeExecer{outputs: []string{readFixture(t, "exec-intent.jsonl"), readFixture(t, "exec-generate.jsonl")}}
+	adapter := New(Config{McodePath: "/bin/mcode", Execer: exec, Timeout: 30 * time.Second, EvalModel: "minimax/m2-fast"})
+	session, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "minimax"})
+	defer session.Close()
+	run := func(kind agent.TaskKind) {
+		h, err := session.Run(context.Background(), agent.Task{TaskID: "t", Kind: kind})
+		if err != nil {
+			t.Fatalf("run %s: %v", kind, err)
+		}
+		_, _ = h.Result()
+	}
+	run(agent.KindEvaluateIntent)
+	run(agent.KindGenerate)
+	if !hasArg(exec.calls[0].argv, "--model") || !hasArg(exec.calls[0].argv, "minimax/m2-fast") {
+		t.Fatalf("评估任务应带降档模型：%v", exec.calls[0].argv)
+	}
+	if hasArg(exec.calls[1].argv, "--model") || hasArg(exec.calls[1].argv, "minimax/m2-fast") {
+		t.Fatalf("生成任务不得带评估模型：%v", exec.calls[1].argv)
+	}
+}
+
+func hasArg(argv []string, v string) bool {
+	for _, a := range argv {
+		if a == v {
+			return true
+		}
+	}
+	return false
+}

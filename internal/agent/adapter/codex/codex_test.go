@@ -548,3 +548,31 @@ func envHasPATHPrefix(env []string, dir string) bool {
 }
 
 var _ = json.Marshal
+
+// 评估降档（dogfood 性能治理）：评估任务 argv 带 -m <EvalModel>（首轮与 resume 均带），
+// 生成任务不带。
+func TestEvalModelArgsOnlyForEval(t *testing.T) {
+	msg := `{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"{\"action\":\"silent\"}"}}` + "\n" +
+		`{"type":"turn.completed"}`
+	first := `{"type":"thread.started","thread_id":"thr_1"}` + "\n" + msg
+	exec := &fakeExecer{outputs: []string{first, msg, msg}}
+	adapter := New(Config{CodexPath: "/nvm/bin/codex", Execer: exec, Timeout: 30 * time.Second, EvalModel: "mini-x"})
+	session, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "codex"})
+	defer session.Close()
+	run := func(kind agent.TaskKind) {
+		h, err := session.Run(context.Background(), agent.Task{TaskID: "t", Kind: kind})
+		if err != nil {
+			t.Fatalf("run %s: %v", kind, err)
+		}
+		_, _ = h.Result()
+	}
+	run(agent.KindEvaluateIntent) // 首轮 exec
+	run(agent.KindEvaluateIntent) // resume
+	run(agent.KindGenerate)       // resume
+	for i, want := range []bool{true, true, false} {
+		got := contains(exec.calls[i].argv, "-m") && contains(exec.calls[i].argv, "mini-x")
+		if got != want {
+			t.Fatalf("calls[%d] 评估降档标记 = %v, want %v：%v", i, got, want, exec.calls[i].argv)
+		}
+	}
+}

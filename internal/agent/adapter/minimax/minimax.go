@@ -39,6 +39,9 @@ type Config struct {
 	WSLHome   string // 发行版内 HOME（登录态在 $HOME/.minimax——实证 cli-auth）
 	// MaxOutputRunes 发布正文硬上限（runes；与 codex/kimi 同一发布门）。
 	MaxOutputRunes int
+	// EvalModel 评估任务专用模型（--model provider/model；空 = 与生成同模型）。
+	// dogfood 性能治理：评估输出仅几十 token，评估可降档、生成保持主模型。
+	EvalModel string
 }
 
 // Execer 进程执行抽象（UT 捕获/阻塞；生产为真实 mcode 子进程）。
@@ -126,6 +129,7 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 
 	argv := []string{s.adapter.cfg.McodePath, "exec", "--output-format", "stream-json", "--input", "-"}
 	argv = append(argv, s.adapter.cfg.ExtraArgs...)
+	argv = append(argv, s.evalModelArgs(task)...)
 	if s.adapter.cfg.WorkDir != "" {
 		argv = append(argv, "--cwd", s.adapter.cfg.WorkDir) // 与 --session 可共存（实证）
 	}
@@ -186,6 +190,14 @@ func (s *session) execer() Execer {
 		return &wslExecer{distro: s.adapter.cfg.WSLDistro}
 	}
 	return &processExecer{}
+}
+
+// evalModelArgs 评估降档（dogfood 性能治理）：评估任务追加 --model <EvalModel>。
+func (s *session) evalModelArgs(task agent.Task) []string {
+	if task.Kind == agent.KindEvaluateIntent && s.adapter.cfg.EvalModel != "" {
+		return []string{"--model", s.adapter.cfg.EvalModel}
+	}
+	return nil
 }
 
 // envFor 按运行面构造子进程环境（native 用宿主 HOME；wsl 用发行版内 HOME）。

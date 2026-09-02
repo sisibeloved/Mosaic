@@ -646,3 +646,15 @@ func DraftConsumer(hub *sse.Hub) room.DraftSink {
 		hub.Publish(roomID, sse.ViewEvent{Cursor: "", Type: "draft.update", Data: data})
 	}
 }
+
+// WaveSkipConsumer 把引擎波跳过通知桥到 SSE（wave.skipped 瞬态帧：同 draft.update
+// 的瞬态语义——门控跳过不落事件日志，开发者模式据此在房间内解释静默原因）。
+func WaveSkipConsumer(hub *sse.Hub) room.WaveSkipSink {
+	return func(roomID, reason string) {
+		data, err := json.Marshal(map[string]any{"room_id": roomID, "reason": reason})
+		if err != nil {
+			return
+		}
+		hub.Publish(roomID, sse.ViewEvent{Cursor: "", Type: "wave.skipped", Data: data})
+	}
+}

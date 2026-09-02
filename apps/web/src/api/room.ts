@@ -64,6 +64,21 @@ const SUBSCRIBED_EVENTS = [
 ] as const;
 
 
+/** 波跳过原因 → 开发者模式文案（engine.waveSkip 的 reason 集合）。 */
+const WAVE_SKIP_TEXT: Record<string, string> = {
+  paused: "波未开启：房间已暂停",
+  ring: "波未开启：对话环收口（连续 agent 发言无人类介入）",
+  thread_inactive: "波未开启：锚点线程已暂停/关闭/合并",
+  budget: "波未开启：预算熔断（100% 硬顶）",
+  cooldown: "波未开启：全员冷却（上波发言者自决静默）",
+};
+
+/** wave.skipped 线上帧（httpapi.WaveSkipConsumer → SSE 瞬态帧：无 id、不补发）。 */
+interface WaveSkipFrame {
+  room_id: string;
+  reason?: string;
+}
+
 /** 草稿文本内存上界（展示侧另截断 140 字）。 */
 const DRAFT_TEXT_CAP = 800;
 
@@ -133,6 +148,8 @@ export function useRoom(roomID: string | null): RoomHandle {
   const reloadRef = useRef<(id: string) => Promise<void>>(async () => {});
   /** floor.granted 的 grant_id → 座位（floor.revoked 载荷无 participant_id，靠它回收打字态）。 */
   const grantSeatRef = useRef<Record<string, string>>({});
+  /** wave.skipped 瞬态条目的本地序号（无 event_id，React key 需自造唯一值）。 */
+  const waveSkipSeqRef = useRef(0);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshBusyRef = useRef(false);
 
@@ -251,8 +268,15 @@ export function useRoom(roomID: string | null): RoomHandle {
             break;
           }
           case "intent.recorded": {
-            const pid = (view.payload as { participant_id?: string } | null)?.participant_id;
-            if (pid && !next.typing[pid]) next.typing[pid] = { phase: "evaluating" };
+            const p = view.payload as { participant_id?: string; action?: string } | null;
+            const pid = p?.participant_id;
+            // 意愿座保留/补置"正在评估"直至 floor.granted 转生成；非意愿座
+            // （silent/弃权/fork/summarize）自决不回——立即撤下，不留虚影。
+            if (pid && (p?.action === "speak" || p?.action === "react")) {
+              if (!next.typing[pid]) next.typing[pid] = { phase: "evaluating" };
+            } else if (pid) {
+              delete next.typing[pid];
+            }
             scheduleRefresh();
             break;
           }
@@ -321,6 +345,28 @@ export function useRoom(roomID: string | null): RoomHandle {
       return { ...prev, typing };
     });
   }, []);
+
+  /** wave.skipped 瞬态帧：开发者模式下内联静默原因（门控跳过不落事件——
+      没有这条路房间里只剩死寂；瞬态不入快照，刷新后不重现）。 */
+  const applyWaveSkip = useCallback(
+    (frame: WaveSkipFrame) => {
+      if (!devMode) return;
+      setState((prev) => {
+        if (!prev || frame.room_id !== prev.roomID) return prev;
+        waveSkipSeqRef.current += 1;
+        const entry: TimelineEntry = {
+          key: `wave-skip-${waveSkipSeqRef.current}`,
+          kind: "system",
+          actorID: "",
+          actorKind: "system",
+          occurredAt: new Date().toISOString(),
+          detail: WAVE_SKIP_TEXT[frame.reason ?? ""] ?? `波未开启（原因 ${frame.reason ?? "未知"}）`,
+        };
+        return { ...prev, entries: [...prev.entries, entry] };
+      });
+    },
+    [devMode],
+  );
 
   /** 快照重建 + 自水位订阅（初载与 resync_required 共用路径）。 */
   const loadAndSubscribe = useCallback(
@@ -393,12 +439,15 @@ export function useRoom(roomID: string | null): RoomHandle {
       es.addEventListener("draft.update", (ev) => {
         applyDraft(JSON.parse((ev as MessageEvent).data) as DraftFrame);
       });
+      es.addEventListener("wave.skipped", (ev) => {
+        applyWaveSkip(JSON.parse((ev as MessageEvent).data) as WaveSkipFrame);
+      });
       es.addEventListener("resync_required", () => {
         setConnection("resync");
         void loadAndSubscribe(id);
       });
     },
-    [applyEvent, applyDraft, closeStream],
+    [applyEvent, applyDraft, applyWaveSkip, closeStream],
   );
 
   useEffect(() => {

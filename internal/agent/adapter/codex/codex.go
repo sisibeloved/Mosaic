@@ -34,6 +34,9 @@ type Config struct {
 	// MaxOutputRunes 发布正文硬上限（runes；二轮审校 #4/#6：不可信输出的发布边界。
 	// token 级 ResponseCap 需流式计数，exec 批式路径以 rune 上限代理，M1 裁剪登记）。
 	MaxOutputRunes int
+	// EvalModel 评估任务专用模型（-m；空 = 与生成同模型）。dogfood 性能治理：
+	// 评估输出仅几十 token，单座延迟瓶颈在模型档位——评估可降档、生成保持主模型。
+	EvalModel string
 }
 
 // Execer 进程执行抽象（UT 捕获/阻塞；生产为真实 codex 子进程）。
@@ -122,13 +125,15 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 
 	argv := []string{s.adapter.cfg.CodexPath, "exec", "--json", "--skip-git-repo-check", "-s", "read-only"}
 	argv = append(argv, s.adapter.cfg.ExtraArgs...)
+	argv = append(argv, s.evalModelArgs(task)...)
 	if s.adapter.cfg.WorkDir != "" {
 		argv = append(argv, "-C", s.adapter.cfg.WorkDir) // 工作目录隔离（仅首轮）
 	}
 	if thread != "" {
 		// 连续性：resume <thread_id>（子命令不接受 -s 与 -C——实证 resume 传 -C 即
-		// exit 2 "unexpected argument"，沙箱/工作目录随会话首轮固定）
+		// exit 2 "unexpected argument"，沙箱/工作目录随会话首轮固定；-m 接受，0.151 实证）
 		argv = []string{s.adapter.cfg.CodexPath, "exec", "resume", "--json", "--skip-git-repo-check", thread}
+		argv = append(argv, s.evalModelArgs(task)...)
 	}
 	argv = append(argv, "-") // 提示词走 stdin：避免 argv 转义与长度问题
 
@@ -186,6 +191,14 @@ func (s *session) execer() Execer {
 		return &wslExecer{distro: s.adapter.cfg.WSLDistro}
 	}
 	return &processExecer{}
+}
+
+// evalModelArgs 评估降档（dogfood 性能治理）：评估任务追加 -m <EvalModel>。
+func (s *session) evalModelArgs(task agent.Task) []string {
+	if task.Kind == agent.KindEvaluateIntent && s.adapter.cfg.EvalModel != "" {
+		return []string{"-m", s.adapter.cfg.EvalModel}
+	}
+	return nil
 }
 
 // envFor 按运行面构造子进程环境（native 用宿主 HOME；wsl 用发行版内 HOME）。
