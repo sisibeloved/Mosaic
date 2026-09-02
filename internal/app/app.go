@@ -28,6 +28,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/agent"
 	"github.com/sisibeloved/Mosaic/internal/agent/adapter/codex"
 	"github.com/sisibeloved/Mosaic/internal/agent/adapter/kimi"
+	"github.com/sisibeloved/Mosaic/internal/agent/adapter/minimax"
 	"github.com/sisibeloved/Mosaic/internal/agent/echo"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/harness"
@@ -315,6 +316,22 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 					seats = append(seats, room.AgentSeat{
 						ParticipantID: "par_kimi_" + exeKey,
 						Profile:       agent.Profile{ProfileID: profileID, Adapter: "kimi", DisplayName: "Kimi", Channel: channel},
+					})
+				case "minimax":
+					// M3-1 观测基座：第三个真实适配器（mcode exec stream-json + --session 恢复，
+					// 提示词走 stdin——无 argv 上限；三 agent 同房构成真实并行/竞争场景）。
+					cfg := minimax.Config{McodePath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir}
+					if wslHome != "" {
+						cfg.WSLDistro = exe.Distro
+						cfg.WSLHome = wslHome
+					}
+					if err := supervisor.RegisterFor(profileID, minimax.New(cfg)); err != nil {
+						logger.Warn("minimax adapter register failed", "profile", profileID, "err", err)
+						continue
+					}
+					seats = append(seats, room.AgentSeat{
+						ParticipantID: "par_minimax_" + exeKey,
+						Profile:       agent.Profile{ProfileID: profileID, Adapter: "minimax", DisplayName: "MiniMax", Channel: channel},
 					})
 				}
 			}

@@ -1,0 +1,9 @@
+{
+  "cli_version": "0.2.7",
+  "captured_at": "2026-09-02",
+  "note": "mcode exec --input - --output-format stream-json 事件流（真机捕获：意图/生成两形态，agent_message 为完整 content 而非 delta）。事件 schema 无上游稳定性承诺——conformance 以本 manifest 钉住捕获版本与文件哈希，重捕获必须更新本文件（fixture_gate 测试机器可检，漂移即红）。",
+  "files": {
+    "exec-intent.jsonl": "sha256:a2f0689b0eba247ba201ee0a4e9b96b652db5b66cb9cc366e6cb819b548d219a",
+    "exec-generate.jsonl": "sha256:4ba512468cea8be0f37f193b367497c3f1f5e137256d69d815e902d1581067c3"
+  }
+}

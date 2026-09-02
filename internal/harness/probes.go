@@ -108,6 +108,23 @@ var BuiltinProbes = []ProbeSpec{
 		},
 	},
 	{
+		// 实证 2026-09-02：mcode --version → "0.2.7"；无 login status 子命令，
+		// 登录态以 ~/.minimax/cli-auth 存在性判定（目录形态，test -e 兼容）。
+		// npm 全局装于 nvm 版本目录（bin 与 node 同目录——适配器 env PATH 前置即可用）。
+		Adapter:     "minimax",
+		Binary:      "mcode",
+		VersionArgs: []string{"--version"},
+		CredFile:    ".minimax/cli-auth",
+		KnownDirGlobs: []string{
+			".nvm/versions/node/*/bin",
+			".fnm/node-versions/*/installation/bin",
+			".local/share/fnm/aliases/default/bin",
+			".volta/bin",
+			".npm-global/bin",
+			".local/bin",
+		},
+	},
+	{
 		// headless 缺口（调研 issue #29）：仅登记存在性与版本，登录探测待 headless 落地后补
 		Adapter:     "zcode",
 		Binary:      "zcode",

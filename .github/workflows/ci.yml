@@ -84,6 +84,27 @@ jobs:
           STUB
           chmod +x "$stub_dir/kimi"
           MOSAIC_ST_KIMI_STUB="$stub_dir/kimi" go test -race -tags st ./cmd/mosaic-server/ -run TestKimiProductionPath_ST -v
+      # M3-1 观测基座：生产 minimax 路径同制门禁（真二进制+真适配器+真子进程+真发布门）。
+      - name: Production minimax path ST (stub CLI)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          stub_dir="$(mktemp -d)"
+          cat > "$stub_dir/mcode" <<'STUB'
+          #!/usr/bin/env bash
+          # mcode 桩：仅实现 exec --input - --output-format stream-json 的最小行流契约
+          #（提示词走 stdin——实证 mcode 读 stdin；行流形状钉 0.2.7 fixtures）。
+          prompt="$(cat)"
+          printf '%s\n' '{"type":"session.started","sessionId":"mvs_stub_1"}'
+          if printf '%s' "$prompt" | grep -q '"scores"'; then
+            printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","content":"{\"action\":\"speak\",\"type\":\"answer\",\"public_rationale\":\"stub intent\",\"scores\":{\"relevance\":0.9,\"novelty\":0.5,\"urgency\":0.7,\"confidence\":0.8}}"}}'
+          else
+            printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","content":"{\"body\":\"stub 回答：1+1=2\",\"declared_relations\":[]}"}}'
+          fi
+          printf '%s\n' '{"type":"turn.completed","usage":{"inputTokens":12,"outputTokens":5}}'
+          printf '%s\n' '{"type":"exec.completed","result":{"status":"succeeded"}}'
+          STUB
+          chmod +x "$stub_dir/mcode"
+          MOSAIC_ST_MINIMAX_STUB="$stub_dir/mcode" go test -race -tags st ./cmd/mosaic-server/ -run TestMinimaxProductionPath_ST -v
       - name: Build mosaic-server
         run: go build ./cmd/mosaic-server
       - name: Cross-compile gate (darwin amd64/arm64 + windows amd64)
