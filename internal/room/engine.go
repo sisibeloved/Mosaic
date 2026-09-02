@@ -50,18 +50,21 @@ type EngineConfig struct {
 	Reader         EventReader // 历史读取（floor share / epoch / 预算账本重建）
 	Agents         *agent.Supervisor
 	Seats          []AgentSeat
-	Budget         contextx.Limits  // 预算上限（0 = 不限；防失控而非精确计费）
-	ReactionWindow time.Duration    // 反应窗口去抖时长（RFC-0012 §2.1；0 = 默认 3s）
-	Receipts       ReceiptStore     // 可选
-	OnDraft        DraftSink        // 可选：草稿流出口
-	OnWaveSkip     WaveSkipSink     // 可选：波门控跳过通知（开发者模式可观测性）
-	Logger         *slog.Logger     // 可选，缺省 slog.Default()（波中止/门控不再静默）
-	Claims         ClaimStore       // 可选：durable handoff（二轮审校 #9；nil = 无声明直驱，测试场景）
-	Clock          func() string    // occurred_at（RFC3339）
-	Now            func() time.Time // 过期时刻计算
-	NewID          func(prefix string) string
-	Tenant         string
-	RoomID         string // 非空 = 只处理该房间；空 = 全部房间（M1 默认）
+	Budget         contextx.Limits // 预算上限（0 = 不限；防失控而非精确计费）
+	ReactionWindow time.Duration   // 反应窗口去抖时长（RFC-0012 §2.1；0 = 默认 3s）
+	// ProactiveSilence 主动开口静默期（OQ-A/M3-3，MaiBot 式）：波链静默（quiescent
+	// 收波）后该时长无人类消息，则主动开一波（agent 自决是否起话）。0 = 关闭。
+	ProactiveSilence time.Duration
+	Receipts         ReceiptStore     // 可选
+	OnDraft          DraftSink        // 可选：草稿流出口
+	OnWaveSkip       WaveSkipSink     // 可选：波门控跳过通知（开发者模式可观测性）
+	Logger           *slog.Logger     // 可选，缺省 slog.Default()（波中止/门控不再静默）
+	Claims           ClaimStore       // 可选：durable handoff（二轮审校 #9；nil = 无声明直驱，测试场景）
+	Clock            func() string    // occurred_at（RFC3339）
+	Now              func() time.Time // 过期时刻计算
+	NewID            func(prefix string) string
+	Tenant           string
+	RoomID           string // 非空 = 只处理该房间；空 = 全部房间（M1 默认）
 }
 
 // chatGrantPolicy 群聊模型的引擎内固定策略（RFC-0012：无房间策略面——
@@ -96,6 +99,9 @@ type Engine struct {
 	roomLocks  sync.Map
 	// reactionTimers per-room 去抖计时器（RFC-0012 §2.1：新消息重置并重锚）。
 	reactionTimers sync.Map
+	// proactiveTimers per-room 主动开口计时器（M3-3 OQ-A：静默期到点自起一波；
+	// 人类消息即取消——人在场就不需要 agent 暖场）。
+	proactiveTimers sync.Map
 	// seats 动态座位（二轮审校 #1：运行时启用的适配器要能加入当前引擎）。
 	seatsMu sync.RWMutex
 	seats   []AgentSeat
@@ -106,6 +112,7 @@ type Engine struct {
 type queueJob struct {
 	roomID         string
 	closureEventID string
+	proactive      bool
 }
 
 // roomQueue 单房间串行队列：FIFO channel + 懒启动常驻 worker。
@@ -145,6 +152,10 @@ func (e *Engine) seatsSnapshot() []AgentSeat {
 func (e *Engine) Close() {
 	e.stop()
 	e.reactionTimers.Range(func(_, t any) bool {
+		t.(*time.Timer).Stop()
+		return true
+	})
+	e.proactiveTimers.Range(func(_, t any) bool {
 		t.(*time.Timer).Stop()
 		return true
 	})
@@ -201,6 +212,10 @@ func (e *Engine) scheduleReaction(roomID string) {
 	if e.lifecycle.Err() != nil {
 		return
 	}
+	if t, ok := e.proactiveTimers.Load(roomID); ok { // 人在场：取消主动开口
+		t.(*time.Timer).Stop()
+		e.proactiveTimers.Delete(roomID)
+	}
 	if t, ok := e.reactionTimers.Load(roomID); ok {
 		t.(*time.Timer).Stop()
 	}
@@ -209,6 +224,22 @@ func (e *Engine) scheduleReaction(roomID string) {
 		e.enqueue(queueJob{roomID: roomID})
 	})
 	e.reactionTimers.Store(roomID, t)
+}
+
+// scheduleProactive 主动开口计时（OQ-A）：静默期到点自起一波（proactive 标记
+// 绕开同锚幂等护栏——锚点仍是最新消息，语境不变、自决权在 agent）。
+func (e *Engine) scheduleProactive(roomID string) {
+	if e.cfg.ProactiveSilence <= 0 || e.lifecycle.Err() != nil {
+		return
+	}
+	if t, ok := e.proactiveTimers.Load(roomID); ok {
+		t.(*time.Timer).Stop()
+	}
+	t := time.AfterFunc(e.cfg.ProactiveSilence, func() {
+		e.proactiveTimers.Delete(roomID)
+		e.enqueue(queueJob{roomID: roomID, proactive: true})
+	})
+	e.proactiveTimers.Store(roomID, t)
 }
 
 // enqueue 入队并确保该房间 worker 存活（反应波/收束评估共用串行执行面）。
@@ -233,7 +264,7 @@ func (e *Engine) roomWorker(q *roomQueue) {
 				e.runClosure(e.lifecycle, job.roomID, job.closureEventID)
 				continue
 			}
-			e.runReaction(e.lifecycle, job.roomID)
+			e.runReaction(e.lifecycle, job.roomID, job.proactive)
 		}
 	}
 }
@@ -444,7 +475,7 @@ func msSince(start time.Time) int64 {
 // runReaction 一个反应波（RFC-0012 §2.2）：门控 → 开波 → 全员评估（观察→判断）
 // → 意愿放行 → sequential 发布 → 收波。锚点 = 最新 message.posted（事件溯源，
 // timer 入队时的快照不作数）。
-func (e *Engine) runReaction(ctx context.Context, roomID string) {
+func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool) {
 	if ctx.Err() != nil { // 已 Close：不再开波
 		return
 	}
@@ -472,8 +503,8 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 	if anchor == nil {
 		return
 	}
-	// 幂等护栏：该锚已开过波（timer 竞态/重投）——不双开
-	if roundOpenedForStimulus(history, anchor.EventID) {
+	// 幂等护栏：该锚已开过波（timer 竞态/重投）——不双开（主动波豁免：静默自起）
+	if !proactive && roundOpenedForStimulus(history, anchor.EventID) {
 		return
 	}
 	// 门控：暂停（人类随时掐断；resume 后经声明重驱动或新消息复活）
@@ -518,7 +549,9 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 	// 被跳过的波不落 round.opened，若人类锚点也吃冷却，全员发言一波后冷却集
 	// 永不更新，房间对人类后续输入永久静默（dogfood 实测死锁"输入无回复"）。
 	cooldown := map[string]bool{}
-	if anchor.Actor.Kind != "human" {
+	if anchor.Actor.Kind != "human" && !proactive {
+		// 主动波（OQ-A）豁免冷却——静默后自起话本就要允许上波发言者再开口；
+		// 自言自语防线由对话环检测（尾部 ≥6 条 agent 消息不开波）与意愿静默兜底。
 		cooldown = lastWaveSpeakers(history)
 	}
 	addressed := addressedSet(*anchor)
@@ -534,6 +567,7 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 	if len(seats) == 0 {
 		e.debug(roomID, "波跳过：全员冷却（静默）", "anchor", anchor.EventID)
 		e.waveSkip(roomID, "cooldown")
+		e.scheduleProactive(roomID) // OQ-A：静默即排主动计时（上波发言者冷却=当前静默态）
 		return
 	}
 
@@ -582,6 +616,10 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 			}
 		}
 	}
+	if proactive { // OQ-A：静默期自起的波——语境标记（适配器据此知道无新刺激）
+		assembled.Inline["proactive"] = true
+		assembled.Inline["silence_minutes"] = int(e.cfg.ProactiveSilence.Minutes())
+	}
 	taskContext := agent.Context{
 		Inline:     assembled.Inline,
 		ReceiptRef: assembled.Receipt.ReceiptID,
@@ -629,6 +667,9 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 		})
 	closed.Metadata = map[string]any{"timing": timing}
 	_, _ = e.append(ctx, closed)
+	if e.cfg.ProactiveSilence > 0 && len(e.roomSeats(history)) > 0 && agentMessageTail(history) < maxAgentMessageTail {
+		e.scheduleProactive(roomID) // OQ-A：静默期后 agent 可自起一波
+	}
 	e.debug(roomID, "波结束", "round", roundID, "outcome", outcome,
 		"published", published, "silent", silentCount,
 		"total_ms", timing.TotalMs, "eval_total_ms", timing.EvalTotalMs)
@@ -677,6 +718,7 @@ func (e *Engine) evaluateWave(ctx context.Context, roomID, roundID string, ancho
 ) (willing []willingIntent, silentCount int, ok bool) {
 	policy := defaultChatPolicy()
 	weights := attention.DefaultWeights
+	histEnvs := envelopesOfStored(history) // M3-4：结构特征输入（推断边/重复风险/多样性）
 	evalUsage := map[string]*agent.Usage{}
 	anchorThread := ""
 	if anchor.ThreadID != nil {
@@ -777,8 +819,9 @@ func (e *Engine) evaluateWave(ctx context.Context, roomID, roundID string, ancho
 			cand := attention.Candidate{
 				Intent: intent,
 				Ctx: attention.ContextFeatures{
-					ViewpointDiversity: 0.5, // M1 中性；结构投影 M3 接入（RFC-0006 降级路径）
+					ViewpointDiversity: ViewpointDiversityOf(histEnvs), // M3-4 结构投影接入（近期作者多样性）
 					RecentFloorShare:   recentFloorShare(history, ev.seat.ParticipantID),
+					RepetitionRisk:     RepetitionRiskOf(histEnvs, ev.seat.ParticipantID), // M3-4：撞车率高 → 排序降权
 					DirectAddress:      directAddress(anchor, ev.seat.ParticipantID),
 				},
 			}
@@ -1273,4 +1316,24 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return string(runes[:max])
+}
+
+// capsuleMemoriesOf 历史胶囊 → 上下文记忆项（最多前 5 个：旧胶囊渐远）。
+func capsuleMemoriesOf(history []StoredEvent) []contextx.CapsuleMemory {
+	capsules := AcceptedCapsulesOf(history)
+	if len(capsules) > 5 {
+		capsules = capsules[:5]
+	}
+	out := make([]contextx.CapsuleMemory, 0, len(capsules))
+	for _, c := range capsules {
+		mem := contextx.CapsuleMemory{
+			ClosureID: c.ClosureID, Type: c.ClosureType, ThreadID: c.ThreadID,
+			Conclusions: c.Conclusions, Assumptions: c.Assumptions,
+		}
+		for _, d := range c.NamedDissent {
+			mem.Dissent = append(mem.Dissent, d.ParticipantID+": "+d.Basis)
+		}
+		out = append(out, mem)
+	}
+	return out
 }

@@ -126,6 +126,23 @@ paths:
                   issued_at: "2026-08-31T09:05:00.000Z"
                   payload:
                     display_name: 新房间名
+              propose_closure:
+                value:
+                  command_kind: propose_closure
+                  expected_room_version: 14
+                  idempotency_key: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d9006"
+                  issued_at: "2026-09-02T02:00:00.000Z"
+                  payload:
+                    thread_id: null
+                    closure_hint: bounded_disagreement
+              accept_closure:
+                value:
+                  command_kind: accept_closure
+                  expected_room_version: 18
+                  idempotency_key: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d9007"
+                  issued_at: "2026-09-02T02:05:00.000Z"
+                  payload:
+                    closure_id: null
       responses:
         "200":
           description: 命令受理（含幂等回放）
@@ -663,6 +680,24 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/TimelineItem"
+        closures:
+          type: array
+          description: 收束清单（M3-2：pending 可接受 / accepted / rejected 各一条摘要）。
+          items:
+            $ref: "#/components/schemas/ClosureSummary"
+    ClosureSummary:
+      type: object
+      required: [closure_id, thread_id, state, ready, evaluated, concluded, objected]
+      properties:
+        closure_id: { type: string }
+        thread_id: { type: string }
+        state: { type: string, enum: [pending, rejected, accepted] }
+        closure_type: { type: string, enum: [consensus, bounded_disagreement] }
+        ready: { type: boolean }
+        evaluated: { type: integer }
+        concluded: { type: integer }
+        objected: { type: integer }
+        reason: { type: string }
     ParticipantView:
       type: object
       required: [participant_id, kind, display_name, seat_status]

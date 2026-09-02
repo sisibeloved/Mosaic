@@ -14,6 +14,45 @@ import (
 	"github.com/oapi-codegen/runtime"
 )
 
+// Defines values for ClosureSummaryClosureType.
+const (
+	BoundedDisagreement ClosureSummaryClosureType = "bounded_disagreement"
+	Consensus           ClosureSummaryClosureType = "consensus"
+)
+
+// Valid indicates whether the value is a known member of the ClosureSummaryClosureType enum.
+func (e ClosureSummaryClosureType) Valid() bool {
+	switch e {
+	case BoundedDisagreement:
+		return true
+	case Consensus:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClosureSummaryState.
+const (
+	Accepted ClosureSummaryState = "accepted"
+	Pending  ClosureSummaryState = "pending"
+	Rejected ClosureSummaryState = "rejected"
+)
+
+// Valid indicates whether the value is a known member of the ClosureSummaryState enum.
+func (e ClosureSummaryState) Valid() bool {
+	switch e {
+	case Accepted:
+		return true
+	case Pending:
+		return true
+	case Rejected:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ParticipantViewKind.
 const (
 	Agent  ParticipantViewKind = "agent"
@@ -170,6 +209,25 @@ func (e EnableHarnessExecutable200JSONResponseBodyEnabled) Valid() bool {
 	}
 }
 
+// ClosureSummary defines model for ClosureSummary.
+type ClosureSummary struct {
+	ClosureId   string                     `json:"closure_id"`
+	ClosureType *ClosureSummaryClosureType `json:"closure_type,omitempty"`
+	Concluded   int                        `json:"concluded"`
+	Evaluated   int                        `json:"evaluated"`
+	Objected    int                        `json:"objected"`
+	Ready       bool                       `json:"ready"`
+	Reason      *string                    `json:"reason,omitempty"`
+	State       ClosureSummaryState        `json:"state"`
+	ThreadId    string                     `json:"thread_id"`
+}
+
+// ClosureSummaryClosureType defines model for ClosureSummary.ClosureType.
+type ClosureSummaryClosureType string
+
+// ClosureSummaryState defines model for ClosureSummary.State.
+type ClosureSummaryState string
+
 // CommandResponse defines model for CommandResponse.
 type CommandResponse struct {
 	EventId     string `json:"event_id"`
@@ -299,6 +357,9 @@ type RoomSummary struct {
 // Snapshot defines model for Snapshot.
 type Snapshot struct {
 	AlgorithmVersion int64 `json:"algorithm_version"`
+
+	// Closures 收束清单（M3-2：pending 可接受 / accepted / rejected 各一条摘要）。
+	Closures *[]ClosureSummary `json:"closures,omitempty"`
 
 	// DisplayName 房间名（room.created/room.renamed 投影产物）
 	DisplayName string `json:"display_name"`

@@ -355,3 +355,20 @@
 - 评审期（Draft → Reviewing）：收敛未解决问题 1–4；
 - Accepted 后：Closure 事件族 fixture 与 CI 四断言门禁；`internal/room` 收束路径实现排期；
 - 后续：RFC-0006/0011 落地时同步修订快照引用与指标定义。
+
+
+# 附录 B：M3-2 群聊制落地裁剪（计划 v1.35/v1.36；正文为轮次模型时代规格）
+
+RFC-0012 群聊制取代轮次模型后，本 RFC 按以下裁剪口径落地（语义不变量保留，机制面适配）：
+
+| 规格点 | 裁剪落地 | 理由 |
+|---|---|---|
+| 触发三源 | 仅人类显式 `propose_closure` | Policy 收敛信号依赖 RFC-0006（M3-4）；budget_tail 取消（群聊无轮次计数）；预算熔断永不触发收束——只产 Pause Capsule |
+| Closure Round | 收束评估路径（与反应波共用房间串行队列互斥）；全员三态评估（KindEvaluateIntent→KindEvaluateClosure 结构化块） | round 已内部化为波；三适配器与 echo 均已承载 closure_intent |
+| 合格性判定 | 确定性：新证据或新假设（至少一项）+ 预期影响；claim_id 可选 | Claim 快照随 RFC-0006/M3-4；规则确定性不变量保留 |
+| Capsule 组装 | 接受时自事件流确定性组装（conclusion=conclude 理由/dissent=不合格 object/assumptions/falsifiers=预期影响+兜底/reopen_triggers 强制非空） | 摘要者 Floor 机制随轮次模型退役；无模型参与的可审计组装 |
+| 接受权 | 人类确认（个人版单 owner）；quorum/同构折算不适用 | RFC-0012 已退役 Policy 面；纯 Agent 房间非个人版形态 |
+| closure_type | consensus / bounded_disagreement 两型（自动判定：有异议/开放问题→bounded_disagreement；hint 可指定）；其余四型随 Policy/RFC-0006 后续 | 个人版最小可用；M3 出口判据仅需 bounded_disagreement |
+| Pause Capsule | 预算熔断即写（在位去重、恢复清位）；不写 closure.accepted、不关线程 | §11.3 适应度断言保留 |
+| Evidence Request | 随 M3-5 独立落地（create/resolve/dismiss；重开=人类 reopen_thread，新证据留痕首条消息） | "满足后系统只能提议重开"裁剪为时间线提示，不做自动重开 |
+| 剩余轮次注入/horizon | 不适用 | 群聊无轮次；收束评估上下文已含近期窗口 |

@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -136,11 +137,26 @@ func specExample(t *testing.T, op any) map[string]any {
 		ex, _ := ct.Example.(map[string]any)
 		return ex
 	}
-	// 具名例取第一个
-	for _, v := range ct.Examples {
-		ev, _ := v.(map[string]any)
-		if val, ok := ev["value"]; ok {
-			ex, _ := val.(map[string]any)
+	// 具名例按名字稳定选择（map 迭代随机——多例后不可首个乱取）：优先
+	// post_message（契约测试的基准例），否则字典序首名（确定性）。
+	names := make([]string, 0, len(ct.Examples))
+	for k := range ct.Examples {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	pick := func(name string) map[string]any {
+		ev, _ := ct.Examples[name].(map[string]any)
+		if ev == nil {
+			return nil
+		}
+		val, _ := ev["value"].(map[string]any)
+		return val
+	}
+	if ex := pick("post_message"); ex != nil {
+		return ex
+	}
+	for _, n := range names {
+		if ex := pick(n); ex != nil {
 			return ex
 		}
 	}

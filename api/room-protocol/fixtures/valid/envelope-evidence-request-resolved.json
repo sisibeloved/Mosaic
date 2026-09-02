@@ -1,0 +1,29 @@
+{
+  "event_id": "evt_evidencerequ01",
+  "tenant_id": "ten_local",
+  "room_id": "room_fixture01",
+  "type": "evidence_request.resolved",
+  "schema_version": 1,
+  "occurred_at": "2026-09-02T03:00:00.000Z",
+  "actor": {
+    "participant_id": "par_owner",
+    "kind": "human"
+  },
+  "visibility": {
+    "kind": "public"
+  },
+  "payload": {
+    "request_id": "ereq_01H8X",
+    "evidence_refs": [
+      "evt_ab1"
+    ],
+    "resolution": "resolved",
+    "note": "三轮结果一致"
+  },
+  "seq": 103,
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "causation_id": null,
+  "correlation_id": null,
+  "metadata": {}
+}

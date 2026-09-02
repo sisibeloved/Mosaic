@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/closure.proposed.schema.json",
+  "title": "ClosureProposedPayload",
+  "description": "收束提议（RFC-0005 / M3-2 群聊制裁剪：人类显式触发；评估经 outbox 驱动）。",
+  "type": "object",
+  "required": [
+    "closure_id",
+    "thread_id",
+    "trigger",
+    "watermark"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "closure_id": {
+      "type": "string",
+      "pattern": "^clo_[0-9A-Za-z_-]+$"
+    },
+    "thread_id": {
+      "type": "string",
+      "pattern": "^thr_[0-9A-Za-z_-]+$"
+    },
+    "trigger": {
+      "type": "string",
+      "enum": [
+        "human"
+      ]
+    },
+    "closure_hint": {
+      "type": "string",
+      "enum": [
+        "consensus",
+        "bounded_disagreement"
+      ]
+    },
+    "watermark": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

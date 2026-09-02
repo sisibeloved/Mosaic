@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { api, type AgentSeatInfo, type ParticipantView } from "../../api/client";
 import type { GraphEdge, ScorecardItem, ThreadItem } from "../../api/room";
 import { useDevMode } from "../../state/dev";
+import type { ClosureSummary } from "../../api/room";
 import { DevPanel } from "../DevPanel";
 import {
   adapterLabel,
@@ -41,10 +42,14 @@ export function MemberPanel({
   scorecard,
   threads,
   edges,
+  closures,
   endorseBusy,
   onEndorse,
   inviteBusy,
   onInvite,
+  onProposeClosure,
+  onAcceptClosure,
+  closureBusy,
   onTabActive,
   onClose,
   describeEvent,
@@ -57,10 +62,16 @@ export function MemberPanel({
   scorecard: ScorecardItem[];
   threads: ThreadItem[];
   edges: GraphEdge[];
+  /** M3-2 收束清单（快照 closures 视图）。 */
+  closures: ClosureSummary[];
   endorseBusy: string | null;
   onEndorse: (intentID: string) => void;
   inviteBusy: string | null;
   onInvite: (participantID: string) => void;
+  /** M3-2 收束：提议（threadID 空 = 根线程）/ 接受待决。 */
+  onProposeClosure: (threadID: string | null) => void;
+  onAcceptClosure: (closureID: string) => void;
+  closureBusy: boolean;
   /** Tab 打开/切换时回调（触发投影刷新）。 */
   onTabActive: (tab: Tab) => void;
   onClose: () => void;
@@ -118,7 +129,17 @@ export function MemberPanel({
             onEndorse={onEndorse}
           />
         )}
-        {tab === "graph" && <GraphTab threads={threads} edges={edges} describeEvent={describeEvent} />}
+        {tab === "graph" && (
+          <GraphTab
+            threads={threads}
+            edges={edges}
+            describeEvent={describeEvent}
+            closures={closures}
+            onProposeClosure={onProposeClosure}
+            onAcceptClosure={onAcceptClosure}
+            closureBusy={closureBusy}
+          />
+        )}
         {tab === "debug" && (
           <div className="px-3 py-3">
             <DevPanel
@@ -316,14 +337,66 @@ function GraphTab({
   threads,
   edges,
   describeEvent,
+  closures,
+  onProposeClosure,
+  onAcceptClosure,
+  closureBusy,
 }: {
   threads: ThreadItem[];
   edges: GraphEdge[];
   describeEvent: (eventID: string) => string | null;
+  closures: ClosureSummary[];
+  onProposeClosure: (threadID: string | null) => void;
+  onAcceptClosure: (closureID: string) => void;
+  closureBusy: boolean;
 }) {
+  const pending = closures.find((c) => c.state === "pending");
+  const rootThread = threads.find((th) => !th.parent);
   return (
     <div className="py-1">
       <h3 className="px-3 pb-1 pt-2 text-xs font-medium text-dim">话题线（{threads.length}）</h3>
+      {/* M3-2 收束：提议/接受（话题线是收束的操作面——收束是线程级终态） */}
+      <div className="mx-3 mb-2 flex flex-col gap-1.5 rounded-lg bg-surface p-2.5 text-xs">
+        {pending ? (
+          pending.ready ? (
+            <button
+              type="button"
+              disabled={closureBusy}
+              onClick={() => onAcceptClosure(pending.closure_id)}
+              className="rounded-lg bg-surface-3 px-2.5 py-1 text-xs text-text transition-opacity hover:opacity-85 disabled:opacity-40"
+            >
+              接受收束（{pending.evaluated} 表态 · {pending.objected} 异议）
+            </button>
+          ) : (
+            <p className="text-faint">收束评估中…（{pending.evaluated}/{threads.length > 0 ? "" : ""}已表态）</p>
+          )
+        ) : (
+          <button
+            type="button"
+            disabled={closureBusy}
+            onClick={() => onProposeClosure(rootThread?.thread_id ?? null)}
+            className="rounded-lg bg-surface-3 px-2.5 py-1 text-xs text-text transition-opacity hover:opacity-85 disabled:opacity-40"
+          >
+            提议收束{rootThread ? "（主话题）" : ""}
+          </button>
+        )}
+        {closures.length > 0 && (
+          <ul className="text-faint">
+            {closures.slice(-3).reverse().map((c) => (
+              <li key={c.closure_id}>
+                收束 {shortId(c.closure_id)}：
+                {c.state === "accepted"
+                  ? `已接受（${c.closure_type ?? "?"}）`
+                  : c.state === "rejected"
+                    ? `被合格异议中止（${c.reason ?? "?"}）`
+                    : c.ready
+                      ? "待接受"
+                      : "评估中"}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       {threads.length === 0 ? (
         <p className="px-3 py-1 text-xs text-faint">暂无话题线。</p>
       ) : (

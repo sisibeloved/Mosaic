@@ -153,6 +153,18 @@ export const api = {
       }),
     );
   },
+  proposeClosure(roomID: string, version: number, threadID: string | null, hint?: string): Promise<CommandResponse> {
+    return post(
+      `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
+      commandBody("propose_closure", version, { thread_id: threadID, closure_hint: hint ?? null }),
+    );
+  },
+  acceptClosure(roomID: string, version: number, closureID: string | null): Promise<CommandResponse> {
+    return post(
+      `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
+      commandBody("accept_closure", version, { closure_id: closureID }),
+    );
+  },
   pauseRoom(roomID: string, version: number, reason: string): Promise<CommandResponse> {
     return post(
       `/v1/rooms/${encodeURIComponent(roomID)}/commands`,

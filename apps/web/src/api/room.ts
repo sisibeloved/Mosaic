@@ -49,6 +49,9 @@ interface DraftFrame {
   stage?: "queued" | "evaluating" | "generating" | "validating";
 }
 
+/** M3-2 收束摘要（快照 closures 视图）。 */
+export type ClosureSummary = NonNullable<Snapshot["closures"]>[number];
+
 const SUBSCRIBED_EVENTS = [
   "message.posted",
   "round.opened",
@@ -61,6 +64,11 @@ const SUBSCRIBED_EVENTS = [
   "room.started",
   "room.renamed",
   "participant.admitted",
+  "closure.proposed",
+  "closure.evaluated",
+  "closure.rejected",
+  "closure.accepted",
+  "pause_capsule.created",
 ] as const;
 
 
@@ -92,6 +100,7 @@ interface RoomModelState {
   scorecard: ScorecardItem[];
   threads: ThreadItem[];
   edges: GraphEdge[];
+  closures: ClosureSummary[];
   roundOpen: boolean;
   paused: boolean;
   /** 入房 Agent 名单（null = 全席模式：建房未选人，所有在席 Agent 均在房内）。 */
@@ -108,6 +117,7 @@ export interface RoomHandle {
   scorecard: ScorecardItem[];
   threads: ThreadItem[];
   edges: GraphEdge[];
+  closures: ClosureSummary[];
   roundOpen: boolean;
   paused: boolean;
   roster: string[] | null;
@@ -120,6 +130,9 @@ export interface RoomHandle {
   endorse(intentID: string): Promise<void>;
   /** invite_agent 拉人入房（RFC-0001 Membership：participant.admitted）。 */
   invite(participantID: string): Promise<void>;
+  /** M3-2 收束：提议（threadID 空 = 根线程）；接受待决收束（closureID 空 = 唯一待决）。 */
+  proposeClosure(threadID: string | null, hint?: string): Promise<void>;
+  acceptClosure(closureID?: string): Promise<void>;
   /** 重取快照投影区（成员/记分卡/谱系/策略）——抽屉 Tab 打开时调用。 */
   refreshProjections(): Promise<void>;
 }
@@ -132,6 +145,7 @@ function projections(snap: Snapshot) {
     scorecard: snap.scorecard,
     threads: snap.threads,
     edges: snap.graph,
+    closures: snap.closures ?? [],
     roster: snap.roster ?? null,
   };
 }
@@ -280,7 +294,22 @@ export function useRoom(roomID: string | null): RoomHandle {
             scheduleRefresh();
             break;
           }
-          case "intent.endorsed":
+          case "closure.proposed":
+          scheduleRefresh();
+          break;
+        case "closure.evaluated":
+          scheduleRefresh();
+          break;
+        case "closure.rejected":
+          scheduleRefresh();
+          break;
+        case "closure.accepted":
+          scheduleRefresh();
+          break;
+        case "pause_capsule.created":
+          scheduleRefresh();
+          break;
+        case "intent.endorsed":
         }
         // 开发者模式（v1.25 dogfood #3）：基建事件内联时间线——房间怎么运转、
         // 卡在哪一步，在使用过程中直接可见（瞬态，不入快照）。
@@ -534,6 +563,15 @@ export function useRoom(roomID: string | null): RoomHandle {
     (participantID: string) => runCommand((id, v) => api.inviteAgent(id, v, participantID)),
     [runCommand],
   );
+  const proposeClosure = useCallback(
+    (threadID: string | null, hint?: string) =>
+      runCommand((id, v) => api.proposeClosure(id, v, threadID, hint)),
+    [runCommand],
+  );
+  const acceptClosure = useCallback(
+    (closureID?: string) => runCommand((id, v) => api.acceptClosure(id, v, closureID ?? null)),
+    [runCommand],
+  );
 
   return {
     roomID: state?.roomID ?? null,
@@ -545,6 +583,7 @@ export function useRoom(roomID: string | null): RoomHandle {
     scorecard: state?.scorecard ?? [],
     threads: state?.threads ?? [],
     edges: state?.edges ?? [],
+    closures: state?.closures ?? [],
     roundOpen: state?.roundOpen ?? false,
     paused: state?.paused ?? false,
     roster: state?.roster ?? null,
@@ -556,6 +595,8 @@ export function useRoom(roomID: string | null): RoomHandle {
     rename,
     endorse,
     invite,
+    proposeClosure,
+    acceptClosure,
     refreshProjections: refreshProjectionsNow,
   };
 }

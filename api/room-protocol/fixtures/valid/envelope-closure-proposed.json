@@ -1,0 +1,28 @@
+{
+  "event_id": "evt_closurepropo01",
+  "tenant_id": "ten_local",
+  "room_id": "room_fixture01",
+  "type": "closure.proposed",
+  "schema_version": 1,
+  "occurred_at": "2026-09-02T02:00:00.000Z",
+  "actor": {
+    "participant_id": "par_owner",
+    "kind": "human"
+  },
+  "visibility": {
+    "kind": "public"
+  },
+  "payload": {
+    "closure_id": "clo_01H8X",
+    "thread_id": "thr_01H8X",
+    "trigger": "human",
+    "closure_hint": "bounded_disagreement",
+    "watermark": 12
+  },
+  "seq": 100,
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "causation_id": null,
+  "correlation_id": null,
+  "metadata": {}
+}

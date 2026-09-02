@@ -407,3 +407,19 @@ func (e *Engine) emitPauseCapsule(ctx context.Context, roomID string, history []
 	e.warn(roomID, "预算熔断：已写暂停胶囊（未收敛快照，非结论；恢复后可继续）",
 		"watermark", watermark)
 }
+
+// AcceptedCapsulesOf 已接受胶囊（M3-3：Capsule 一等 Memory——按接受序，最新在前
+// 供上下文组装注入）。
+func AcceptedCapsulesOf(events []StoredEvent) []protocol.ClosureCapsule {
+	var out []protocol.ClosureCapsule
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Envelope.Type != protocol.EventClosureAccepted {
+			continue
+		}
+		var p protocol.ClosureAcceptedPayload
+		if json.Unmarshal(events[i].Envelope.Payload, &p) == nil && p.Capsule.ClosureID != "" {
+			out = append(out, p.Capsule)
+		}
+	}
+	return out
+}

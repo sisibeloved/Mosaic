@@ -1,0 +1,67 @@
+{
+  "event_id": "evt_closureaccep01",
+  "tenant_id": "ten_local",
+  "room_id": "room_fixture01",
+  "type": "closure.accepted",
+  "schema_version": 1,
+  "occurred_at": "2026-09-02T02:00:00.000Z",
+  "actor": {
+    "participant_id": "par_owner",
+    "kind": "human"
+  },
+  "visibility": {
+    "kind": "public"
+  },
+  "payload": {
+    "closure_id": "clo_01H8X",
+    "closure_type": "bounded_disagreement",
+    "thread_id": "thr_01H8X",
+    "accepted_by": "par_owner",
+    "capsule": {
+      "closure_id": "clo_01H8X",
+      "closure_type": "bounded_disagreement",
+      "thread_id": "thr_01H8X",
+      "watermark": 12,
+      "conclusions": [
+        "方向收敛"
+      ],
+      "named_dissent": [
+        {
+          "participant_id": "par_cs_a",
+          "basis": "成本边界异议"
+        }
+      ],
+      "assumptions": [
+        "成本假设在并发场景不成立"
+      ],
+      "evidence": {
+        "support": [],
+        "oppose": []
+      },
+      "open_questions": [],
+      "falsifiers": [
+        "并发 A/B 结果相反则重开"
+      ],
+      "reopen_triggers": [
+        "任一 falsifier 成立时人类 reopen_thread"
+      ],
+      "participation": {
+        "concluded": [
+          "par_cs_b"
+        ],
+        "objected": [
+          "par_cs_a"
+        ],
+        "abstained": [],
+        "timeout": [],
+        "unavailable": []
+      }
+    }
+  },
+  "seq": 102,
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "causation_id": null,
+  "correlation_id": null,
+  "metadata": {}
+}

@@ -371,6 +371,21 @@ export interface components {
                 occurred_at?: string;
             }[];
             timeline: components["schemas"]["TimelineItem"][];
+            /** @description 收束清单（M3-2：pending 可接受 / accepted / rejected 各一条摘要）。 */
+            closures?: components["schemas"]["ClosureSummary"][];
+        };
+        ClosureSummary: {
+            closure_id: string;
+            thread_id: string;
+            /** @enum {string} */
+            state: "pending" | "rejected" | "accepted";
+            /** @enum {string} */
+            closure_type?: "consensus" | "bounded_disagreement";
+            ready: boolean;
+            evaluated: number;
+            concluded: number;
+            objected: number;
+            reason?: string;
         };
         ParticipantView: {
             participant_id: string;

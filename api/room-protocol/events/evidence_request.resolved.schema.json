@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/evidence_request.resolved.schema.json",
+  "title": "EvidenceRequestResolvedPayload",
+  "description": "证据需求单解决/驳回；resolved 必带 evidence_refs；满足后不自动重开——人类 reopen_thread 留痕。",
+  "type": "object",
+  "required": [
+    "request_id",
+    "evidence_refs",
+    "resolution"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "request_id": {
+      "type": "string",
+      "pattern": "^ereq_[0-9A-Za-z_-]+$"
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "resolution": {
+      "type": "string",
+      "enum": [
+        "resolved",
+        "dismissed"
+      ]
+    },
+    "note": {
+      "type": "string"
+    }
+  }
+}

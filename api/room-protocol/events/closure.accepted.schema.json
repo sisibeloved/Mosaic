@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/closure.accepted.schema.json",
+  "title": "ClosureAcceptedPayload",
+  "description": "人类接受收束：确定性组装的 Capsule（不可变；reopen_triggers 强制非空）；与 thread.closed 同事务。",
+  "type": "object",
+  "required": [
+    "closure_id",
+    "closure_type",
+    "thread_id",
+    "capsule",
+    "accepted_by"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "closure_id": {
+      "type": "string",
+      "pattern": "^clo_[0-9A-Za-z_-]+$"
+    },
+    "closure_type": {
+      "type": "string",
+      "enum": [
+        "consensus",
+        "bounded_disagreement"
+      ]
+    },
+    "thread_id": {
+      "type": "string",
+      "pattern": "^thr_[0-9A-Za-z_-]+$"
+    },
+    "accepted_by": {
+      "type": "string"
+    },
+    "capsule": {
+      "type": "object",
+      "required": [
+        "closure_id",
+        "closure_type",
+        "thread_id",
+        "reopen_triggers",
+        "participation"
+      ],
+      "properties": {
+        "closure_id": {
+          "type": "string"
+        },
+        "closure_type": {
+          "type": "string"
+        },
+        "thread_id": {
+          "type": "string"
+        },
+        "watermark": {
+          "type": "integer"
+        },
+        "conclusions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "named_dissent": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "participant_id",
+              "basis"
+            ],
+            "properties": {
+              "participant_id": {
+                "type": "string"
+              },
+              "basis": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence": {
+          "type": "object",
+          "properties": {
+            "support": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "oppose": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "falsifiers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reopen_triggers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "participation": {
+          "type": "object",
+          "required": [
+            "concluded",
+            "objected",
+            "abstained",
+            "timeout",
+            "unavailable"
+          ],
+          "properties": {
+            "concluded": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "objected": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "abstained": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "timeout": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "unavailable": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

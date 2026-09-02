@@ -26,7 +26,8 @@ func ev(typ string, seq int64, actorKind, body string, md map[string]any) protoc
 
 func stored(events ...protocol.Envelope) []protocol.Envelope { return events }
 
-// 七层最小：章程/参与者/刺激/近期窗口/关系/预算水位/任务指令占位——全部出现且有序
+// 八层（M3-3：+capsule_memory）最小：章程/参与者/刺激/近期窗口/关系/预算水位/任务指令占位——全部出现且有序
+// M3-3：胶囊记忆入层（八层最小版——RFC-0007 全量记忆层随后续切片）。
 func TestAssembleSevenLayers(t *testing.T) {
 	history := stored(
 		ev(protocol.EventRoomCreated, 1, "human", "room", nil),
@@ -39,7 +40,7 @@ func TestAssembleSevenLayers(t *testing.T) {
 	}
 	assembled := Assemble(cfg, history, history[1])
 	names := layerNames(assembled.Layers)
-	want := []string{"charter", "participants", "stimulus", "recent_messages", "relations", "budget_watermark", "task_directive"}
+	want := []string{"charter", "participants", "stimulus", "recent_messages", "relations", "budget_watermark", "task_directive", "capsule_memory"}
 	if len(names) != len(want) {
 		t.Fatalf("层数 = %d（%v）", len(names), names)
 	}

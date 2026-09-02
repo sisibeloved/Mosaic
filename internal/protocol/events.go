@@ -28,11 +28,14 @@ const (
 	EventRoomStarted         = "room.started"
 	EventRoomRenamed         = "room.renamed"
 	// 收束协议（RFC-0005，M3-2 落地为群聊制裁剪口径——见 RFC 附录 B）
-	EventClosureProposed     = "closure.proposed"
-	EventClosureEvaluated    = "closure.evaluated"
-	EventClosureRejected     = "closure.rejected"
-	EventClosureAccepted     = "closure.accepted"
-	EventPauseCapsuleCreated = "pause_capsule.created"
+	EventClosureProposed         = "closure.proposed"
+	EventClosureEvaluated        = "closure.evaluated"
+	EventClosureRejected         = "closure.rejected"
+	EventClosureAccepted         = "closure.accepted"
+	EventPauseCapsuleCreated     = "pause_capsule.created"
+	EventEvidenceRequestCreated  = "evidence_request.created"
+	EventEvidenceRequestResolved = "evidence_request.resolved"
+	EventRoomDeleted             = "room.deleted"
 )
 
 // Envelope 是 room_events 的权威/内部形态（RFC-0001 v0.4）。
@@ -256,4 +259,24 @@ type PauseCapsuleCreatedPayload struct {
 	ThreadID      string   `json:"thread_id,omitempty"`
 	Watermark     int64    `json:"watermark"`
 	OpenQuestions []string `json:"open_questions"`
+}
+
+// Evidence Request（RFC-0005 §3.1.9，M3-5 落地）：争议依赖外部事实的证据需求单。
+// 生命周期 open → resolved / dismissed；满足后系统不自动重开——时间线提示人类
+// reopen_thread（新证据留痕于重开首条消息）。
+type EvidenceRequestCreatedPayload struct {
+	RequestID          string   `json:"request_id"`
+	ClaimID            string   `json:"claim_id,omitempty"`
+	Question           string   `json:"question"`
+	RequiredEvidence   []string `json:"required_evidence"`
+	AcceptanceCriteria string   `json:"acceptance_criteria"`
+	Owners             []string `json:"owners"`
+	ReopenOnResolution bool     `json:"reopen_thread_on_resolution"`
+}
+
+type EvidenceRequestResolvedPayload struct {
+	RequestID    string   `json:"request_id"`
+	EvidenceRefs []string `json:"evidence_refs"`
+	Resolution   string   `json:"resolution"` // resolved | dismissed
+	Note         string   `json:"note,omitempty"`
 }

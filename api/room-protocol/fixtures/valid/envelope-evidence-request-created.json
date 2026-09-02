@@ -1,0 +1,31 @@
+{
+  "event_id": "evt_evidencerequ01",
+  "tenant_id": "ten_local",
+  "room_id": "room_fixture01",
+  "type": "evidence_request.created",
+  "schema_version": 1,
+  "occurred_at": "2026-09-02T03:00:00.000Z",
+  "actor": {
+    "participant_id": "par_owner",
+    "kind": "human"
+  },
+  "visibility": {
+    "kind": "public"
+  },
+  "payload": {
+    "request_id": "ereq_01H8X",
+    "question": "需要并发 A/B 三轮数据",
+    "required_evidence": [
+      "benchmark"
+    ],
+    "acceptance_criteria": "相同环境至少三轮",
+    "owners": [],
+    "reopen_thread_on_resolution": true
+  },
+  "seq": 101,
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "causation_id": null,
+  "correlation_id": null,
+  "metadata": {}
+}

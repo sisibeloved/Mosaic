@@ -42,6 +42,19 @@ type Config struct {
 	RecentWindow int // 近期消息窗口（默认 10）
 	Budget       BudgetState
 	Endorse      bool // 人类保送（OQ-17）：owner 指定发言（非仲裁获选）
+	// Capsules 一等 Memory（M3-3，RFC-0007 最小接入）：已接受收束胶囊注入上下文
+	//（结论/假设/异议边界——"这个房间已经聊定过什么"）。
+	Capsules []CapsuleMemory
+}
+
+// CapsuleMemory 胶囊记忆项（注入用最小投影；全文走 debug memory 查询面）。
+type CapsuleMemory struct {
+	ClosureID   string   `json:"closure_id"`
+	Type        string   `json:"closure_type"`
+	ThreadID    string   `json:"thread_id"`
+	Conclusions []string `json:"conclusions"`
+	Assumptions []string `json:"assumptions"`
+	Dissent     []string `json:"named_dissent_brief"`
 }
 
 // Receipt 上下文回执（落库可查：给了什么水位、哪些层、摘要为何）。
@@ -112,8 +125,17 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 	}
 
 	relations := map[string]any{"reply_edges": countReplies(messages), "addressed_edges": countAddressed(messages)}
+	capsuleBrief := make([]map[string]any, 0, len(cfg.Capsules))
+	for _, c := range cfg.Capsules {
+		dissent := append([]string(nil), c.Dissent...)
+		capsuleBrief = append(capsuleBrief, map[string]any{
+			"closure_id": c.ClosureID, "closure_type": c.Type, "thread_id": c.ThreadID,
+			"conclusions": c.Conclusions, "assumptions": c.Assumptions, "named_dissent": dissent,
+		})
+	}
 	inline := map[string]any{
 		"room_id":                 cfg.RoomID,
+		"capsules":                capsuleBrief,
 		"mode":                    cfg.Mode,
 		"participants":            participants,
 		"stimulus_body":           stimulusBody,
@@ -136,6 +158,7 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 		{"relations", relations},
 		{"budget_watermark", map[string]any{"watermark": watermark, "budget": cfg.Budget}},
 		{"task_directive", taskDirectiveOf(cfg)},
+		{"capsule_memory", capsuleBrief}, // M3-3：七层之外的第八层（记忆）最小版
 	}
 	layers := make([]Layer, 0, len(layerDefs))
 	digests := make([]string, 0, len(layerDefs))
@@ -304,4 +327,12 @@ func (l Ledger) ReserveOK(limits Limits, speakers int, responseCap int64) bool {
 		return true
 	}
 	return l.Tokens+int64(speakers)*responseCap <= limits.MaxTokens
+}
+
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }

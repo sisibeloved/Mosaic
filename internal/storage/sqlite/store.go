@@ -75,6 +75,11 @@ CREATE TABLE IF NOT EXISTS engine_claims (
 	claimed_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
 	PRIMARY KEY (room_id, stimulus_event_id)
 );
+CREATE TABLE IF NOT EXISTS room_tombstones (
+  room_id TEXT PRIMARY KEY,
+  reason TEXT NOT NULL,
+  deleted_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS migrations (
 	version    INTEGER PRIMARY KEY,
 	applied_at TEXT NOT NULL
@@ -530,4 +535,29 @@ func (s *Store) InsertReceipt(ctx context.Context, receipt contextx.Receipt) err
 		return fmt.Errorf("sqlite: insert receipt: %w", err)
 	}
 	return nil
+}
+
+// DeleteRoom 删除级联（M3-6，RFC-0010）：事务内清事件/outbox/回执/声明，并落
+// 墓碑行——"曾存在"可审计、内容不可恢复。
+func (s *Store) DeleteRoom(ctx context.Context, roomID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var reason string
+	_ = tx.QueryRowContext(ctx,
+		"SELECT json_extract(envelope, '$.payload.reason') FROM room_events WHERE room_id=? AND type='room.deleted' LIMIT 1",
+		roomID).Scan(&reason)
+	if _, err := tx.ExecContext(ctx,
+		"INSERT OR REPLACE INTO room_tombstones(room_id, reason, deleted_at) VALUES(?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+		roomID, reason); err != nil {
+		return err
+	}
+	for _, table := range []string{"room_events", "outbox", "command_receipts", "engine_claims"} {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE room_id=?", roomID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

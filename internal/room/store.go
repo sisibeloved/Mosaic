@@ -43,6 +43,9 @@ type CommandReceipt struct {
 
 // AtomicStore 是命令处理域的存储端口：事件追加与回执写入必须同事务原子完成。
 type AtomicStore interface {
+	// DeleteRoom 删除级联（M3-6，RFC-0010）：本房间事件/outbox/回执/声明全清——
+	// 物理删除不留可读残留；墓碑事件由命令面先落（room.deleted）再触发本清理。
+	DeleteRoom(ctx context.Context, roomID string) error
 	// AppendEvents 追加事件（seq 由存储按房间分配），并同事务写 outbox。
 	AppendEvents(ctx context.Context, envelopes []protocol.Envelope) ([]protocol.Envelope, error)
 	// AppendWithReceipt 事件 + 幂等回执同事务落库。事务内依次：回执键已存在 →

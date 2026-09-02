@@ -141,7 +141,7 @@ func TestChatRingDetectionClosesStream(t *testing.T) {
 	}
 
 	// 白盒直驱反应波（尾部全是 agent 消息 → 环检测命中，不开波零事件）
-	eng.runReaction(context.Background(), "room_ring")
+	eng.runReaction(context.Background(), "room_ring", false)
 	time.Sleep(50 * time.Millisecond)
 	if n := countType(store.RoomEvents("room_ring"), protocol.EventRoundOpened); n != 0 {
 		t.Fatalf("对话环应强制收口：round.opened = %d（期望 0）", n)

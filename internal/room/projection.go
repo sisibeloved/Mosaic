@@ -32,19 +32,20 @@ type TimelineItem struct {
 // DisplayName 为投影产物（room.created/room.renamed）；Participants 由装配层注入
 // （ADR-0011 注记：非投影产物，不进 room_version/水位语义，投影恒为空切片）。
 type Snapshot struct {
-	RoomID            string            `json:"room_id"`
-	RoomVersion       int64             `json:"room_version"`
-	Watermark         string            `json:"watermark"`
-	ProjectionVersion int               `json:"projection_version"`
-	AlgorithmVersion  int               `json:"algorithm_version"`
-	DisplayName       string            `json:"display_name"`
-	Timeline          []TimelineItem    `json:"timeline"`
-	Closures          []ClosureSummary  `json:"closures"`
-	Scorecard         []ScorecardItem   `json:"scorecard"`
-	Threads           []ThreadView      `json:"threads"`
-	Roster            []string          `json:"roster"`
-	Graph             []GraphEdge       `json:"graph"`
-	Participants      []ParticipantView `json:"participants"`
+	RoomID            string                `json:"room_id"`
+	RoomVersion       int64                 `json:"room_version"`
+	Watermark         string                `json:"watermark"`
+	ProjectionVersion int                   `json:"projection_version"`
+	AlgorithmVersion  int                   `json:"algorithm_version"`
+	DisplayName       string                `json:"display_name"`
+	Timeline          []TimelineItem        `json:"timeline"`
+	Closures          []ClosureSummary      `json:"closures"`
+	EvidenceRequests  []EvidenceRequestView `json:"evidence_requests"`
+	Scorecard         []ScorecardItem       `json:"scorecard"`
+	Threads           []ThreadView          `json:"threads"`
+	Roster            []string              `json:"roster"`
+	Graph             []GraphEdge           `json:"graph"`
+	Participants      []ParticipantView     `json:"participants"`
 }
 
 // ParticipantView 快照参与者视图项（装配层注入：本地 owner + 引擎座位）。
@@ -84,6 +85,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 		AlgorithmVersion:  AlgorithmVersion,
 		Timeline:          []TimelineItem{},
 		Closures:          []ClosureSummary{},
+		EvidenceRequests:  []EvidenceRequestView{},
 		Scorecard:         []ScorecardItem{},
 		Participants:      []ParticipantView{}, // 装配层注入位：投影恒空（ADR-0011 注记）
 	}
@@ -114,7 +116,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 	for _, th := range threads {
 		snap.Threads = append(snap.Threads, *th)
 	}
-	snap.Graph = graph
+	snap.Graph = append(graph, InferredEchoEdges(envs)...) // M3-4：推断边（inferred=true）
 	for _, ev := range events {
 		if ev.Envelope.Seq > snap.RoomVersion {
 			snap.RoomVersion = ev.Envelope.Seq
@@ -190,6 +192,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 		})
 	}
 	snap.Closures = closuresOf(events)
+	snap.EvidenceRequests = EvidenceRequestsOf(events)
 	return snap
 }
 

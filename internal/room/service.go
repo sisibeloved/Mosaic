@@ -99,6 +99,16 @@ func (s *Service) ExecuteCommand(ctx context.Context, actor Actor, cmd Command) 
 		return s.endorseIntent(ctx, actor, cmd)
 	case "invite_agent":
 		return s.inviteAgent(ctx, actor, cmd)
+	case "propose_closure":
+		return s.proposeClosure(ctx, actor, cmd)
+	case "accept_closure":
+		return s.acceptClosure(ctx, actor, cmd)
+	case "create_evidence_request":
+		return s.createEvidenceRequest(ctx, actor, cmd)
+	case "resolve_evidence_request":
+		return s.resolveEvidenceRequest(ctx, actor, cmd)
+	case "delete_room":
+		return s.deleteRoom(ctx, actor, cmd)
 	case "fork_thread", "pause_thread", "resume_thread", "close_thread", "reopen_thread", "merge_thread":
 		eventType := map[string]string{
 			"fork_thread": "thread.forked", "pause_thread": "thread.paused",
@@ -588,13 +598,19 @@ func (s *Service) ListRooms(ctx context.Context) ([]RoomSummary, error) {
 
 // historyOf 全量房间事件（收束命令面读取；分页拉全）。
 func (s *Service) historyOf(ctx context.Context, roomID string) ([]StoredEvent, error) {
-	if s.cfg.Reader == nil {
+	reader := s.cfg.Reader
+	if reader == nil {
+		if r, ok := s.cfg.Store.(EventReader); ok {
+			reader = r
+		}
+	}
+	if reader == nil {
 		return nil, fmt.Errorf("room: reader 不可用")
 	}
 	var all []StoredEvent
 	cursor := ""
 	for {
-		events, next, err := s.cfg.Reader.EventsAfter(ctx, roomID, cursor, 1000)
+		events, next, err := reader.EventsAfter(ctx, roomID, cursor, 1000)
 		if err != nil {
 			return nil, err
 		}
@@ -827,4 +843,99 @@ func RootThreadOf(events []StoredEvent) string {
 		}
 	}
 	return ""
+}
+
+// roomVersionPrecheck 通用前置：存在性 + 乐观并发（同键竞态回放优先）。
+func (s *Service) roomVersionPrecheck(ctx context.Context, cmd Command, actor Actor) (*CommandResult, error) {
+	exists, err := s.cfg.Store.RoomExists(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room exists: %w", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrRoomNotFound, cmd.RoomID)
+	}
+	version, err := s.cfg.Store.RoomVersion(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room version: %w", err)
+	}
+	if cmd.ExpectedRoomVersion != version {
+		if res, rerr := s.replayIfReceived(ctx, cmd, actor); res != nil || rerr != nil {
+			return res, rerr
+		}
+		return nil, fmt.Errorf("%w: expected=%d current=%d", ErrVersionConflict, cmd.ExpectedRoomVersion, version)
+	}
+	return nil, nil
+}
+
+// commitWith 单事件提交 + 回执（证据需求单命令共用）。
+func (s *Service) commitWith(ctx context.Context, cmd Command, actor Actor, env protocol.Envelope) (*CommandResult, error) {
+	receipt := CommandReceipt{
+		TenantID:            s.cfg.Tenant,
+		RoomID:              cmd.RoomID,
+		IdempotencyKey:      cmd.IdempotencyKey,
+		CommandKind:         cmd.CommandKind,
+		RequestFingerprint:  fingerprint(cmd, actor),
+		EventID:             env.EventID,
+		ExpectedRoomVersion: cmd.ExpectedRoomVersion,
+		ExecutedAt:          s.cfg.Clock(),
+	}
+	return s.commit(ctx, env, receipt)
+}
+
+// deleteRoom 删除房间（M3-6，RFC-0010 个人版）：先落墓碑事件（room.deleted——
+// 全库审计可回溯"曾存在"），再级联清理（事件/outbox/回执/声明）——墓碑本身
+// 随级联一并清除后以独立墓碑表留痕（SQLite 实现）；返回结果后房间不可再访问。
+func (s *Service) deleteRoom(ctx context.Context, actor Actor, cmd Command) (*CommandResult, error) {
+	if res, err := s.replayIfReceived(ctx, cmd, actor); res != nil || err != nil {
+		return res, err
+	}
+	exists, err := s.cfg.Store.RoomExists(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room exists: %w", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrRoomNotFound, cmd.RoomID)
+	}
+	version, err := s.cfg.Store.RoomVersion(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room version: %w", err)
+	}
+	if cmd.ExpectedRoomVersion != version {
+		return nil, fmt.Errorf("%w: expected=%d current=%d", ErrVersionConflict, cmd.ExpectedRoomVersion, version)
+	}
+	var payload struct {
+		Reason string `json:"reason"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(cmd.Payload)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("%w: delete_room payload: %v", ErrInvalidCommand, err)
+	}
+	if len([]rune(payload.Reason)) < 1 || len([]rune(payload.Reason)) > 280 {
+		return nil, fmt.Errorf("%w: reason 必填 1..280 字（删除不可逆，理由留痕）", ErrInvalidCommand)
+	}
+	env := protocol.Envelope{
+		EventID:  s.cfg.NewID("evt"),
+		TenantID: s.cfg.Tenant, RoomID: cmd.RoomID,
+		Type: protocol.EventRoomDeleted, SchemaVersion: 1,
+		OccurredAt: s.cfg.Clock(),
+		Actor:      protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
+		Visibility: protocol.Visibility{Kind: "public"},
+		Payload:    mustJSON(map[string]any{"room_id": cmd.RoomID, "reason": payload.Reason}),
+		Metadata:   map[string]any{},
+	}
+	receipt := CommandReceipt{
+		TenantID: s.cfg.Tenant, RoomID: cmd.RoomID,
+		IdempotencyKey: cmd.IdempotencyKey, CommandKind: cmd.CommandKind,
+		RequestFingerprint: fingerprint(cmd, actor), EventID: env.EventID,
+		ExpectedRoomVersion: cmd.ExpectedRoomVersion, ExecutedAt: s.cfg.Clock(),
+	}
+	res, err := s.commit(ctx, env, receipt)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.cfg.Store.DeleteRoom(ctx, cmd.RoomID); err != nil {
+		return nil, fmt.Errorf("room: delete cascade: %w", err)
+	}
+	return res, nil
 }

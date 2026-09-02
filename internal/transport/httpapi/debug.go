@@ -7,9 +7,11 @@ package httpapi
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
@@ -201,6 +203,66 @@ func (s *server) handleDebugWaves(w http.ResponseWriter, r *http.Request) {
 		next = strconv.FormatInt(chain[lo].OpenedSeq, 10)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"waves": page, "next": next})
+}
+
+// handleDebugMemory 记忆查询面（M3-3）：胶囊记忆 + 证据需求单 + 漂移签名 +
+// 逐座重复风险——记忆侧可观测（查看面；编辑不适用：胶囊不可变，登记 RFC-0007）。
+func (s *server) handleDebugMemory(w http.ResponseWriter, r *http.Request) {
+	roomID := r.PathValue("room_id")
+	events, err := s.readAllEvents(r, roomID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "debug_read_failed", err.Error())
+		return
+	}
+	if len(events) == 0 {
+		writeError(w, http.StatusNotFound, "room_not_found", "房间不存在或尚无事件")
+		return
+	}
+	envs := make([]protocol.Envelope, len(events))
+	for i := range events {
+		envs[i] = events[i].Envelope
+	}
+	seats := map[string]float64{}
+	if s.deps.Seats != nil {
+		for _, seat := range s.deps.Seats() {
+			seats[seat.ParticipantID] = room.RepetitionRiskOf(envs, seat.ParticipantID)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"room_id":           roomID,
+		"capsules":          room.AcceptedCapsulesOf(events),
+		"evidence_requests": room.EvidenceRequestsOf(events),
+		"drift_signature":   room.DriftSignature(envs, 20),
+		"repetition_risk":   seats,
+	})
+}
+
+// handleDebugExport 导出（M3-6，RFC-0010 个人版）：NDJSON 事件流 + 首行 manifest——
+// 干净环境按序重放即可重建全部投影（幂等事件流即权威账本）。
+func (s *server) handleDebugExport(w http.ResponseWriter, r *http.Request) {
+	roomID := r.PathValue("room_id")
+	events, err := s.readAllEvents(r, roomID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "debug_read_failed", err.Error())
+		return
+	}
+	if len(events) == 0 {
+		writeError(w, http.StatusNotFound, "room_not_found", "房间不存在或尚无事件")
+		return
+	}
+	manifest := map[string]any{
+		"kind": "mosaic.room.export", "version": 1, "room_id": roomID,
+		"event_count": len(events),
+		"watermark":   events[len(events)-1].Envelope.Seq,
+		"exported_at": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	first, _ := json.Marshal(manifest)
+	w.Write(append(first, '\n'))
+	for _, ev := range events {
+		line, _ := json.Marshal(ev.Envelope)
+		w.Write(append(line, '\n'))
+	}
 }
 
 // readAllEvents 分页拉取房间全量事件（快照端点与调试面共用）。

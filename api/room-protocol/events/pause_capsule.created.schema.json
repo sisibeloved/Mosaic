@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/pause_capsule.created.schema.json",
+  "title": "PauseCapsuleCreatedPayload",
+  "description": "预算熔断的未收敛快照（不写 closure.accepted、不关线程；在位去重、恢复清位）。",
+  "type": "object",
+  "required": [
+    "pause_id",
+    "pause_reason",
+    "watermark",
+    "open_questions"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "pause_id": {
+      "type": "string",
+      "pattern": "^pse_[0-9A-Za-z_-]+$"
+    },
+    "pause_reason": {
+      "type": "string",
+      "enum": [
+        "budget"
+      ]
+    },
+    "thread_id": {
+      "type": "string"
+    },
+    "watermark": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

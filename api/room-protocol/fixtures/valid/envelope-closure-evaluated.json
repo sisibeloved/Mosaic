@@ -1,0 +1,32 @@
+{
+  "event_id": "evt_closureevalu01",
+  "tenant_id": "ten_local",
+  "room_id": "room_fixture01",
+  "type": "closure.evaluated",
+  "schema_version": 1,
+  "occurred_at": "2026-09-02T02:00:00.000Z",
+  "actor": {
+    "participant_id": "par_owner",
+    "kind": "human"
+  },
+  "visibility": {
+    "kind": "public"
+  },
+  "payload": {
+    "closure_id": "clo_01H8X",
+    "participant_id": "par_cs_a",
+    "action": "object",
+    "new_assumptions": [
+      "成本假设在并发场景不成立"
+    ],
+    "expected_impact": "推翻成本边界",
+    "rationale": "新假设改变结论边界",
+    "qualified": true
+  },
+  "seq": 105,
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "causation_id": null,
+  "correlation_id": null,
+  "metadata": {}
+}

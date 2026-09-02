@@ -265,3 +265,24 @@ func (m *MemStore) EventsAfter(ctx context.Context, roomID, cursor string, limit
 	}
 	return events, next, nil
 }
+
+// DeleteRoom 删除级联（M3-6）：事件/按房索引/回执/声明全清。
+func (m *MemStore) DeleteRoom(ctx context.Context, roomID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.byRoom, roomID)
+	delete(m.nextSeq, roomID)
+	events := m.events[:0]
+	for _, ev := range m.events {
+		if ev.RoomID != roomID {
+			events = append(events, ev)
+		}
+	}
+	m.events = events
+	for k, rc := range m.receipts {
+		if rc.RoomID == roomID {
+			delete(m.receipts, k)
+		}
+	}
+	return nil
+}

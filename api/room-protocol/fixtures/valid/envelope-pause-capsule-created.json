@@ -1,0 +1,27 @@
+{
+  "event_id": "evt_pausecapsule01",
+  "tenant_id": "ten_local",
+  "room_id": "room_fixture01",
+  "type": "pause_capsule.created",
+  "schema_version": 1,
+  "occurred_at": "2026-09-02T02:00:00.000Z",
+  "actor": {
+    "participant_id": "par_system",
+    "kind": "system"
+  },
+  "visibility": {
+    "kind": "public"
+  },
+  "payload": {
+    "pause_id": "pse_01H8X",
+    "pause_reason": "budget",
+    "watermark": 1480,
+    "open_questions": []
+  },
+  "seq": 106,
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "causation_id": null,
+  "correlation_id": null,
+  "metadata": {}
+}

@@ -204,10 +204,14 @@ export function RoomPage() {
             scorecard={room.scorecard}
             threads={room.threads}
             edges={room.edges}
+            closures={room.closures}
             endorseBusy={endorseBusy}
             onEndorse={onEndorse}
             inviteBusy={inviteBusy}
             onInvite={onInvite}
+            onProposeClosure={(threadID) => void room.proposeClosure(threadID)}
+            onAcceptClosure={(closureID) => void room.acceptClosure(closureID)}
+            closureBusy={false}
             onTabActive={onTabActive}
             onClose={() => setDrawerOpen(false)}
             describeEvent={describeEvent}

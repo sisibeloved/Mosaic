@@ -1,0 +1,27 @@
+{
+  "event_id": "evt_closurerejec01",
+  "tenant_id": "ten_local",
+  "room_id": "room_fixture01",
+  "type": "closure.rejected",
+  "schema_version": 1,
+  "occurred_at": "2026-09-02T02:00:00.000Z",
+  "actor": {
+    "participant_id": "par_system",
+    "kind": "system"
+  },
+  "visibility": {
+    "kind": "public"
+  },
+  "payload": {
+    "closure_id": "clo_01H8X",
+    "qualified_objection": "evt_clo_eval01",
+    "reason": "new_assumptions",
+    "phase_to": "active"
+  },
+  "seq": 104,
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "causation_id": null,
+  "correlation_id": null,
+  "metadata": {}
+}

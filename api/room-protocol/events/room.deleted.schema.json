@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/room.deleted.schema.json",
+  "title": "RoomDeletedPayload",
+  "description": "删除墓碑（M3-6，RFC-0010）：级联清理前落库——曾存在可审计、内容不可恢复。",
+  "type": "object",
+  "required": [
+    "room_id",
+    "reason"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "room_id": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    }
+  }
+}
