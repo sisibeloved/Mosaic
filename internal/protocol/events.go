@@ -27,6 +27,12 @@ const (
 	EventRoomPaused          = "room.paused"
 	EventRoomStarted         = "room.started"
 	EventRoomRenamed         = "room.renamed"
+	// 收束协议（RFC-0005，M3-2 落地为群聊制裁剪口径——见 RFC 附录 B）
+	EventClosureProposed     = "closure.proposed"
+	EventClosureEvaluated    = "closure.evaluated"
+	EventClosureRejected     = "closure.rejected"
+	EventClosureAccepted     = "closure.accepted"
+	EventPauseCapsuleCreated = "pause_capsule.created"
 )
 
 // Envelope 是 room_events 的权威/内部形态（RFC-0001 v0.4）。
@@ -163,4 +169,91 @@ func (e *Envelope) DecodePayload() any {
 	default:
 		return nil
 	}
+}
+
+// ClosureProposedPayload closure.proposed：人类显式提议收束（裁剪口径：唯一触发源；
+// Policy 收敛信号随 RFC-0006/M3-4，budget_tail 不触发收束——预算只产暂停胶囊）。
+type ClosureProposedPayload struct {
+	ClosureID   string `json:"closure_id"`
+	ThreadID    string `json:"thread_id"`
+	Trigger     string `json:"trigger"`                // human（裁剪口径下恒为 human）
+	ClosureHint string `json:"closure_hint,omitempty"` // 提议时的类型倾向（缺省=接受时按异议面自动判定）
+	Watermark   int64  `json:"watermark"`
+}
+
+// ClosureEvaluatedPayload closure.evaluated：一个座的三态表态（conclude/object/abstain）。
+// qualified 仅对 object 有意义：确定性合格性判定（新证据/新假设 + 预期影响；
+// claim 快照随 RFC-0006，裁剪期 claim_id 可选）。不合格 object 记具名异议不阻塞。
+type ClosureEvaluatedPayload struct {
+	ClosureID      string   `json:"closure_id"`
+	ParticipantID  string   `json:"participant_id"`
+	Action         string   `json:"action"` // conclude | object | abstain
+	ClaimID        string   `json:"claim_id,omitempty"`
+	NewEvidence    []string `json:"new_evidence,omitempty"`
+	NewAssumptions []string `json:"new_assumptions,omitempty"`
+	ExpectedImpact string   `json:"expected_impact,omitempty"`
+	Rationale      string   `json:"rationale"`
+	Qualified      bool     `json:"qualified,omitempty"`
+	ParkedReason   string   `json:"parked_reason,omitempty"` // 不合格 object 的停放理由
+}
+
+// ClosureRejectedPayload closure.rejected：合格异议中止收束（线程回 active，不关不暂停）。
+type ClosureRejectedPayload struct {
+	ClosureID          string `json:"closure_id"`
+	QualifiedObjection string `json:"qualified_objection"` // 合格 object 的 closure.evaluated 事件 id
+	Reason             string `json:"reason"`              // new_evidence | new_assumptions
+	PhaseTo            string `json:"phase_to"`            // active
+}
+
+// ClosureCapsule 收束胶囊（接受时确定性组装自收束轮三态与结构化异议；不可变）。
+type ClosureCapsule struct {
+	ClosureID      string               `json:"closure_id"`
+	ClosureType    string               `json:"closure_type"` // consensus | bounded_disagreement
+	ThreadID       string               `json:"thread_id"`
+	Watermark      int64                `json:"watermark"`
+	Conclusions    []string             `json:"conclusions"`
+	NamedDissent   []CapsuleDissent     `json:"named_dissent"`
+	Assumptions    []string             `json:"assumptions"`
+	Evidence       CapsuleEvidence      `json:"evidence"`
+	OpenQuestions  []string             `json:"open_questions"`
+	Falsifiers     []string             `json:"falsifiers"`
+	ReopenTriggers []string             `json:"reopen_triggers"`
+	Participation  CapsuleParticipation `json:"participation"`
+}
+
+type CapsuleDissent struct {
+	ParticipantID string `json:"participant_id"`
+	Basis         string `json:"basis"`
+}
+
+type CapsuleEvidence struct {
+	Support []string `json:"support"`
+	Oppose  []string `json:"oppose"`
+}
+
+type CapsuleParticipation struct {
+	Concluded   []string `json:"concluded"`
+	Objected    []string `json:"objected"`
+	Abstained   []string `json:"abstained"`
+	Timeout     []string `json:"timeout"`
+	Unavailable []string `json:"unavailable"`
+}
+
+// ClosureAcceptedPayload closure.accepted：人类接受收束（个人版默认接受权）。
+type ClosureAcceptedPayload struct {
+	ClosureID   string         `json:"closure_id"`
+	ClosureType string         `json:"closure_type"`
+	ThreadID    string         `json:"thread_id"`
+	Capsule     ClosureCapsule `json:"capsule"`
+	AcceptedBy  string         `json:"accepted_by"`
+}
+
+// PauseCapsuleCreatedPayload pause_capsule.created：预算熔断的未收敛快照
+// （不写 closure.accepted、不关线程——只标记"因预算停"）。
+type PauseCapsuleCreatedPayload struct {
+	PauseID       string   `json:"pause_id"`
+	PauseReason   string   `json:"pause_reason"` // budget
+	ThreadID      string   `json:"thread_id,omitempty"`
+	Watermark     int64    `json:"watermark"`
+	OpenQuestions []string `json:"open_questions"`
 }

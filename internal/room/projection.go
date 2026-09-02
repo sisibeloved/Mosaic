@@ -39,6 +39,7 @@ type Snapshot struct {
 	AlgorithmVersion  int               `json:"algorithm_version"`
 	DisplayName       string            `json:"display_name"`
 	Timeline          []TimelineItem    `json:"timeline"`
+	Closures          []ClosureSummary  `json:"closures"`
 	Scorecard         []ScorecardItem   `json:"scorecard"`
 	Threads           []ThreadView      `json:"threads"`
 	Roster            []string          `json:"roster"`
@@ -82,6 +83,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 		ProjectionVersion: ProjectionVersion,
 		AlgorithmVersion:  AlgorithmVersion,
 		Timeline:          []TimelineItem{},
+		Closures:          []ClosureSummary{},
 		Scorecard:         []ScorecardItem{},
 		Participants:      []ParticipantView{}, // 装配层注入位：投影恒空（ADR-0011 注记）
 	}
@@ -155,7 +157,10 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 			// 系统提醒入 Timeline（暂停/恢复——SSE 瞬态不是唯一来源；
 			// RFC-0012：round.* 内部化，不入用户可见时间线）
 			switch ev.Envelope.Type {
-			case protocol.EventRoomPaused, protocol.EventRoomStarted:
+			case protocol.EventRoomPaused, protocol.EventRoomStarted,
+				protocol.EventClosureProposed, protocol.EventClosureEvaluated,
+				protocol.EventClosureRejected, protocol.EventClosureAccepted,
+				protocol.EventPauseCapsuleCreated:
 				item := TimelineItem{
 					Position:   ev.Cursor,
 					EventID:    ev.Envelope.EventID,
@@ -184,5 +189,72 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 			OccurredAt: ev.Envelope.OccurredAt,
 		})
 	}
+	snap.Closures = closuresOf(events)
 	return snap
+}
+
+// ClosureSummary 快照收束视图：待决（可接受）与已定（接受/中止）各一条摘要。
+type ClosureSummary struct {
+	ClosureID   string `json:"closure_id"`
+	ThreadID    string `json:"thread_id"`
+	State       string `json:"state"` // pending | rejected | accepted
+	ClosureType string `json:"closure_type,omitempty"`
+	Ready       bool   `json:"ready"`
+	Evaluated   int    `json:"evaluated"`
+	Concluded   int    `json:"concluded"`
+	Objected    int    `json:"objected"`
+	Reason      string `json:"reason,omitempty"`
+}
+
+// closuresOf 自事件流投影收束清单（每提议一条；pending 在最后）。
+func closuresOf(events []StoredEvent) []ClosureSummary {
+	out := []ClosureSummary{}
+	index := map[string]int{}
+	ensure := func(id string) int {
+		if i, ok := index[id]; ok {
+			return i
+		}
+		out = append(out, ClosureSummary{ClosureID: id, State: "pending"})
+		index[id] = len(out) - 1
+		return len(out) - 1
+	}
+	for _, ev := range events {
+		env := ev.Envelope
+		switch env.Type {
+		case protocol.EventClosureProposed:
+			var p protocol.ClosureProposedPayload
+			if json.Unmarshal(env.Payload, &p) == nil {
+				i := ensure(p.ClosureID)
+				out[i].ThreadID = p.ThreadID
+			}
+		case protocol.EventClosureEvaluated:
+			var p protocol.ClosureEvaluatedPayload
+			if json.Unmarshal(env.Payload, &p) == nil {
+				i := ensure(p.ClosureID)
+				out[i].Evaluated++
+				switch p.Action {
+				case "conclude":
+					out[i].Concluded++
+				case "object":
+					out[i].Objected++
+				}
+				out[i].Ready = true
+			}
+		case protocol.EventClosureRejected:
+			var p protocol.ClosureRejectedPayload
+			if json.Unmarshal(env.Payload, &p) == nil {
+				i := ensure(p.ClosureID)
+				out[i].State = "rejected"
+				out[i].Reason = p.Reason
+			}
+		case protocol.EventClosureAccepted:
+			var p protocol.ClosureAcceptedPayload
+			if json.Unmarshal(env.Payload, &p) == nil {
+				i := ensure(p.ClosureID)
+				out[i].State = "accepted"
+				out[i].ClosureType = p.ClosureType
+			}
+		}
+	}
+	return out
 }

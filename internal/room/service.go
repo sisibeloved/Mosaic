@@ -585,3 +585,246 @@ func (s *Service) ListRooms(ctx context.Context) ([]RoomSummary, error) {
 	}
 	return s.cfg.Lister.ListRooms(ctx)
 }
+
+// historyOf 全量房间事件（收束命令面读取；分页拉全）。
+func (s *Service) historyOf(ctx context.Context, roomID string) ([]StoredEvent, error) {
+	if s.cfg.Reader == nil {
+		return nil, fmt.Errorf("room: reader 不可用")
+	}
+	var all []StoredEvent
+	cursor := ""
+	for {
+		events, next, err := s.cfg.Reader.EventsAfter(ctx, roomID, cursor, 1000)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, events...)
+		if next == "" || len(events) == 0 {
+			return all, nil
+		}
+		cursor = next
+	}
+}
+
+// propose_closure 人类显式提议收束（M3-2 裁剪口径：唯一触发源；引擎经 outbox
+// 驱动全员三态评估——合格异议中止，否则待人类接受）。
+func (s *Service) proposeClosure(ctx context.Context, actor Actor, cmd Command) (*CommandResult, error) {
+	if res, err := s.replayIfReceived(ctx, cmd, actor); res != nil || err != nil {
+		return res, err
+	}
+	exists, err := s.cfg.Store.RoomExists(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room exists: %w", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrRoomNotFound, cmd.RoomID)
+	}
+	version, err := s.cfg.Store.RoomVersion(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room version: %w", err)
+	}
+	if cmd.ExpectedRoomVersion != version {
+		if res, rerr := s.replayIfReceived(ctx, cmd, actor); res != nil || rerr != nil {
+			return res, rerr
+		}
+		return nil, fmt.Errorf("%w: expected=%d current=%d", ErrVersionConflict, cmd.ExpectedRoomVersion, version)
+	}
+	var payload struct {
+		ThreadID    string `json:"thread_id"`
+		ClosureHint string `json:"closure_hint"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(cmd.Payload)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("%w: propose_closure payload: %v", ErrInvalidCommand, err)
+	}
+	if payload.ClosureHint != "" && payload.ClosureHint != "consensus" && payload.ClosureHint != "bounded_disagreement" {
+		return nil, fmt.Errorf("%w: closure_hint 取值 consensus | bounded_disagreement", ErrInvalidCommand)
+	}
+	history, err := s.historyOf(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: history: %w", err)
+	}
+	threadID := payload.ThreadID
+	if threadID == "" {
+		threadID = RootThreadOf(history)
+	}
+	if threadID == "" {
+		return nil, fmt.Errorf("%w: 无目标线程且房间无根线程", ErrInvalidCommand)
+	}
+	envs := make([]protocol.Envelope, len(history))
+	for i := range history {
+		envs[i] = history[i].Envelope
+	}
+	if ThreadStateOf(envs, threadID) != ThreadActive {
+		return nil, fmt.Errorf("%w: 线程不在活跃态（活跃线程才可收束）", ErrInvalidCommand)
+	}
+	if _, pending := PendingClosureOf(history); pending {
+		return nil, fmt.Errorf("%w: 已有待决收束（先接受或由合格异议中止）", ErrInvalidCommand)
+	}
+	env := protocol.Envelope{
+		EventID:       s.cfg.NewID("evt"),
+		TenantID:      s.cfg.Tenant,
+		RoomID:        cmd.RoomID,
+		Type:          protocol.EventClosureProposed,
+		SchemaVersion: 1,
+		OccurredAt:    s.cfg.Clock(),
+		Actor:         protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
+		Visibility:    protocol.Visibility{Kind: "public"},
+		Payload: mustJSON(protocol.ClosureProposedPayload{
+			ClosureID:   s.cfg.NewID("clo"),
+			ThreadID:    threadID,
+			Trigger:     "human",
+			ClosureHint: payload.ClosureHint,
+			Watermark:   version,
+		}),
+		Metadata: map[string]any{},
+	}
+	receipt := CommandReceipt{
+		TenantID:            s.cfg.Tenant,
+		RoomID:              cmd.RoomID,
+		IdempotencyKey:      cmd.IdempotencyKey,
+		CommandKind:         cmd.CommandKind,
+		RequestFingerprint:  fingerprint(cmd, actor),
+		EventID:             env.EventID,
+		ExpectedRoomVersion: cmd.ExpectedRoomVersion,
+		ExecutedAt:          s.cfg.Clock(),
+	}
+	return s.commit(ctx, env, receipt)
+}
+
+// accept_closure 人类接受收束：自事件流确定性组装 Capsule，与线程关闭同事务提交
+// （收束即线程终态；重开走 reopen_thread——新证据留痕于重开首条消息）。
+func (s *Service) acceptClosure(ctx context.Context, actor Actor, cmd Command) (*CommandResult, error) {
+	if res, err := s.replayIfReceived(ctx, cmd, actor); res != nil || err != nil {
+		return res, err
+	}
+	exists, err := s.cfg.Store.RoomExists(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room exists: %w", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrRoomNotFound, cmd.RoomID)
+	}
+	version, err := s.cfg.Store.RoomVersion(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room version: %w", err)
+	}
+	if cmd.ExpectedRoomVersion != version {
+		if res, rerr := s.replayIfReceived(ctx, cmd, actor); res != nil || rerr != nil {
+			return res, rerr
+		}
+		return nil, fmt.Errorf("%w: expected=%d current=%d", ErrVersionConflict, cmd.ExpectedRoomVersion, version)
+	}
+	var payload struct {
+		ClosureID string `json:"closure_id"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(cmd.Payload)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("%w: accept_closure payload: %v", ErrInvalidCommand, err)
+	}
+	history, err := s.historyOf(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: history: %w", err)
+	}
+	pending, ok := PendingClosureOf(history)
+	if !ok || (payload.ClosureID != "" && payload.ClosureID != pending.ClosureID) {
+		return nil, fmt.Errorf("%w: 无此待决收束", ErrInvalidCommand)
+	}
+	if !pending.Ready {
+		return nil, fmt.Errorf("%w: 收束评估未完成（尚无表态，稍后再试）", ErrInvalidCommand)
+	}
+	capsule, ok := BuildCapsule(history, pending.ClosureID)
+	if !ok {
+		return nil, fmt.Errorf("%w: 胶囊组装失败（提议事件缺失）", ErrInvalidCommand)
+	}
+	mk := func(eventType, causation, correlation string, payload any) protocol.Envelope {
+		return protocol.Envelope{
+			EventID:       s.cfg.NewID("evt"),
+			TenantID:      s.cfg.Tenant,
+			RoomID:        cmd.RoomID,
+			Type:          eventType,
+			SchemaVersion: 1,
+			OccurredAt:    s.cfg.Clock(),
+			Actor:         protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
+			Visibility:    protocol.Visibility{Kind: "public"},
+			Payload:       mustJSON(payload),
+			Metadata:      map[string]any{},
+		}
+	}
+	_ = mk // 占位防未用（下方直接构造，见 accepted/closed）
+	accepted := protocol.Envelope{
+		EventID:       s.cfg.NewID("evt"),
+		TenantID:      s.cfg.Tenant,
+		RoomID:        cmd.RoomID,
+		Type:          protocol.EventClosureAccepted,
+		SchemaVersion: 1,
+		OccurredAt:    s.cfg.Clock(),
+		Actor:         protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
+		Visibility:    protocol.Visibility{Kind: "public"},
+		Payload: mustJSON(protocol.ClosureAcceptedPayload{
+			ClosureID:   pending.ClosureID,
+			ClosureType: capsule.ClosureType,
+			ThreadID:    capsule.ThreadID,
+			Capsule:     capsule,
+			AcceptedBy:  actor.ParticipantID,
+		}),
+		Metadata: map[string]any{},
+	}
+	causation := accepted.EventID
+	closed := protocol.Envelope{
+		EventID:       s.cfg.NewID("evt"),
+		TenantID:      s.cfg.Tenant,
+		RoomID:        cmd.RoomID,
+		ThreadID:      &capsule.ThreadID,
+		Type:          protocol.EventThreadClosed,
+		SchemaVersion: 1,
+		OccurredAt:    s.cfg.Clock(),
+		Actor:         protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
+		Visibility:    protocol.Visibility{Kind: "public"},
+		Payload:       mustJSON(map[string]any{"thread_id": capsule.ThreadID, "reason": "closure_accepted"}),
+		Metadata:      map[string]any{},
+	}
+	closed.CausationID = &causation
+	receipt := CommandReceipt{
+		TenantID:            s.cfg.Tenant,
+		RoomID:              cmd.RoomID,
+		IdempotencyKey:      cmd.IdempotencyKey,
+		CommandKind:         cmd.CommandKind,
+		RequestFingerprint:  fingerprint(cmd, actor),
+		EventID:             accepted.EventID,
+		ExpectedRoomVersion: cmd.ExpectedRoomVersion,
+		ExecutedAt:          s.cfg.Clock(),
+	}
+	appended, err := s.cfg.Store.AppendWithReceipt(ctx, []protocol.Envelope{accepted, closed}, receipt)
+	if err != nil {
+		if errors.Is(err, ErrDuplicateReceipt) {
+			if res, rerr := s.replayByReceipt(ctx, receipt); res != nil || rerr != nil {
+				return res, rerr
+			}
+		}
+		return nil, fmt.Errorf("room: append: %w", err)
+	}
+	return &CommandResult{
+		RoomID:      appended[0].RoomID,
+		EventID:     appended[0].EventID,
+		RoomVersion: appended[len(appended)-1].Seq,
+	}, nil
+}
+
+// RootThreadOf 房间根线程（room.created payload 的 thread_id）。
+func RootThreadOf(events []StoredEvent) string {
+	for _, ev := range events {
+		if ev.Envelope.Type != protocol.EventRoomCreated {
+			continue
+		}
+		var p struct {
+			ThreadID string `json:"thread_id"`
+		}
+		if json.Unmarshal(ev.Envelope.Payload, &p) == nil {
+			return p.ThreadID
+		}
+	}
+	return ""
+}

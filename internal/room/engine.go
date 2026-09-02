@@ -101,9 +101,16 @@ type Engine struct {
 	seats   []AgentSeat
 }
 
+// queueJob 房间串行队列作业：closureEventID 空 = 反应波；非空 = 收束评估
+// （M3-2：与波共用队列天然互斥——收束评估期间不开新波）。
+type queueJob struct {
+	roomID         string
+	closureEventID string
+}
+
 // roomQueue 单房间串行队列：FIFO channel + 懒启动常驻 worker。
 type roomQueue struct {
-	ch    chan string
+	ch    chan queueJob
 	start sync.Once
 }
 
@@ -165,6 +172,11 @@ func (e *Engine) Deliver(ctx context.Context, entry outbox.Entry) error {
 	case env.Type == protocol.EventIntentEndorsed:
 		e.runEndorse(ctx, env)
 		return nil
+	case env.Type == protocol.EventClosureProposed:
+		// 收束评估（M3-2）：与反应波共用房间串行队列（互斥，评估期间不开新波）
+		e.enqueue(queueJob{roomID: env.RoomID, closureEventID: env.EventID})
+		e.debug(env.RoomID, "收束评估已入队", "closure_event", env.EventID)
+		return nil
 	case env.Type != protocol.EventMessagePosted || env.Actor.Kind != "human":
 		return nil
 	}
@@ -194,30 +206,34 @@ func (e *Engine) scheduleReaction(roomID string) {
 	}
 	t := time.AfterFunc(e.cfg.ReactionWindow, func() {
 		e.reactionTimers.Delete(roomID)
-		e.enqueue(roomID)
+		e.enqueue(queueJob{roomID: roomID})
 	})
 	e.reactionTimers.Store(roomID, t)
 }
 
-// enqueue 入队并确保该房间 worker 存活（反应波串行执行面）。
-func (e *Engine) enqueue(roomID string) {
-	qAny, _ := e.roomQueues.LoadOrStore(roomID, &roomQueue{ch: make(chan string, 256)})
+// enqueue 入队并确保该房间 worker 存活（反应波/收束评估共用串行执行面）。
+func (e *Engine) enqueue(job queueJob) {
+	qAny, _ := e.roomQueues.LoadOrStore(job.roomID, &roomQueue{ch: make(chan queueJob, 256)})
 	q := qAny.(*roomQueue)
 	q.start.Do(func() { go e.roomWorker(q) })
 	select {
-	case q.ch <- roomID:
+	case q.ch <- job:
 	case <-e.lifecycle.Done():
 	}
 }
 
-// roomWorker 单房间常驻消费者：逐波执行（天然串行）。
+// roomWorker 单房间常驻消费者：逐作业执行（天然串行；波与收束互斥）。
 func (e *Engine) roomWorker(q *roomQueue) {
 	for {
 		select {
 		case <-e.lifecycle.Done():
 			return
-		case roomID := <-q.ch:
-			e.runReaction(e.lifecycle, roomID)
+		case job := <-q.ch:
+			if job.closureEventID != "" {
+				e.runClosure(e.lifecycle, job.roomID, job.closureEventID)
+				continue
+			}
+			e.runReaction(e.lifecycle, job.roomID)
 		}
 	}
 }
@@ -485,9 +501,13 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 			return
 		}
 	}
-	// 门控：预算 admission（100% 硬停——群聊的最终硬顶）
+	// 门控：预算 admission（100% 硬停——群聊的最终硬顶）。熔断即写暂停胶囊
+	//（M3-2：未收敛快照，非结论——不写 closure.accepted、不关线程；恢复即清位）。
 	ledger := contextx.RebuildBudget(envs)
 	if !ledger.Admit(e.cfg.Budget) {
+		if !pauseCapsuleActive(history) {
+			e.emitPauseCapsule(ctx, roomID, history)
+		}
 		e.debug(roomID, "波跳过：预算熔断", "anchor", anchor.EventID,
 			"rounds", ledger.Rounds, "utterances", ledger.Utterances, "tokens", ledger.Tokens)
 		e.waveSkip(roomID, "budget")

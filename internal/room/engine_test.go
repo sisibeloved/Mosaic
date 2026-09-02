@@ -448,8 +448,19 @@ func TestEngineBudgetHardStop(t *testing.T) {
 	}
 	deliverHuman(t, store, eng, "room_b")
 	time.Sleep(150 * time.Millisecond)
-	if n := len(store.RoomEvents("room_b")); n != 4 {
-		t.Fatalf("预算硬停后不得开轮，事件数 = %d：%v", n, typesOf(store.RoomEvents("room_b")))
+	// M3-2：预算熔断写暂停胶囊（未收敛快照，非结论——不写 closure.accepted/不关线程）
+	events := store.RoomEvents("room_b")
+	if n := len(events); n != 5 {
+		t.Fatalf("预算硬停后不得开轮（但写暂停胶囊），事件数 = %d：%v", n, typesOf(events))
+	}
+	if events[len(events)-1].Type != protocol.EventPauseCapsuleCreated {
+		t.Fatalf("末事件应为 pause_capsule.created：%v", typesOf(events))
+	}
+	// 暂停胶囊去重：再投一条人类消息不重复写胶囊（在位即不补）
+	deliverHuman2(t, store, eng, "room_b", "evt_human_b2")
+	time.Sleep(100 * time.Millisecond)
+	if n := len(store.RoomEvents("room_b")); n != 6 {
+		t.Fatalf("胶囊在位不重复写（只多一条人类消息），事件数 = %d", n)
 	}
 }
 
