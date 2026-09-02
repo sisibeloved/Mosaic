@@ -66,7 +66,10 @@ func unselectedIntent(t *testing.T, store *MemStore, roomID string) string {
 func TestEndorseCommandAndExecution(t *testing.T) {
 	store, eng, svc, roomID := endorseEnv(t)
 	deliverHuman(t, store, eng, roomID)
-	waitRoundClosed(t, store, roomID)
+	// 群聊制：波1（echo 发言 + quiet silent）后还有波2（echo 冷却、quiet silent 意图
+	// → quiescent 收口）——必须等流完全静默再快照版本，否则波2 开启会撞 409。
+	waitRoundsClosed(t, store, roomID, 2)
+	time.Sleep(50 * time.Millisecond)
 
 	intentID := unselectedIntent(t, store, roomID)
 	if intentID == "" {
@@ -158,7 +161,8 @@ func TestEndorseCommandAndExecution(t *testing.T) {
 func TestEndorseValidation(t *testing.T) {
 	store, eng, svc, roomID := endorseEnv(t)
 	deliverHuman(t, store, eng, roomID)
-	waitRoundClosed(t, store, roomID)
+	waitRoundsClosed(t, store, roomID, 2) // 等流收口（波2 quiescent）——见上注
+	time.Sleep(50 * time.Millisecond)
 	actor := Actor{ParticipantID: "par_owner", Kind: "human"}
 	version := int64(0)
 	for _, ev := range store.RoomEvents(roomID) {
