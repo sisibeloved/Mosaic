@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.33 |
+| 版本 | v1.34 |
 | 日期 | 2026-09-01 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -50,6 +50,7 @@
 | v1.31 | 2026-09-01 | Mosaic 项目组 / ZCode | **M3 拆细（六切片）+ 观测基座入册（负责人裁定）**。负责人反馈：当前两 agent 且无主动发言，波内并行 slot（v1.30 登记）无典型场景可真实评估。裁定：(1) **M3 拆为六切片**——M3-1 观测与狗粮基座（先行，与 M2 收尾狗粮并行启动）/ M3-2 收束协议（RFC-0005）/ M3-3 记忆层（主动开口 OQ-A 挂本切片出口）/ M3-4 结构投影最小版（RFC-0006）/ M3-5 Evidence Request / M3-6 数据主权（RFC-0010）；M3 总工期维持 3 周（M3-1 为薄先行切片）。(2) **MiniMax 适配器入册 M3-1**（C 轨第三真实适配器，负责人指定）——三 agent 同房才构成真实并行/竞争场景；实证 CLI 形态前置（安装/登录态/非交互调用面/fixtures 钉版本，同 kimi 0.39.1 实证口径；本机暂未安装，nvm bin 无 minimax），无官方 CLI 或登录面不可用时评审替代路径（OQ-20 凭据口径不变：凭据留 CLI 侧，Mosaic 不持有）。(3) **开发者模式持久化入册 M3-1**（dogfood 反馈：重启后开发者模式信息全失）——根因核实：`[dev]` 内联时间线为瞬态（room.ts 注释"瞬态，不入快照"——仅实时 SSE 进内存，重启后无人重放）；改法：事件流重放投影（波链路/意向/记分卡/围栏撤销自持久事件重建，debug 视图按房间+游标分页）+ trace id 可回查（贯通 v1.30 落盘的 mosaic.log）；出口：杀进程重启后任意历史波的开发者视图完整可复盘。(4) **波内并行观测改为贯穿项**：M3-1 起持续记录（同波多意愿频率/串行链时延/同锚点应答冗余率），M3-3 主动开口落地后数据成形，据实裁定并行化（Σ→max）或 sequential+波内上下文增量 |
 | v1.32 | 2026-09-01 | Mosaic 项目组 / ZCode | **M2 关账（负责人裁定）+ M3-1 开工（开发者模式持久化落地 + MiniMax 实证完成）**。(1) **M2 关账**：剩余条目逐项核实勾选——SPA 真机确认（桌面 exe 多日实用：真实房间/真实适配器发言/SSE 长流稳定）、设置页（harness 管理/开发者开关/主题；Policy 面随 RFC-0012 退役）、正在输入（TypingBar 双相）、Kimi 适配器（0.39.1 交付 + v1.30 WSL 传参修复后对等参与）、历史查询（structured_request 通道：contextx 组装即 HistoryItem 视图 + Receipt 可验证；MCP 不做）；出口判据注记：自用跨 08-28～09-01，"分叉与合并"形态被 RFC-0012 取代，体验阻塞项（Kimi 静默）已修复，群聊制上线当日关账、狗粮连续性由 M3-1 基座结构性承接。(2) **M3-1 开工·开发者模式持久化落地**：`room.WaveChainOf` 事件流重放投影（波骨架/意图全记录/发授终态/未收波可辨）+ `GET /v1/debug/rooms/{id}/waves`（seq 降序分页 + cursor 续读）+ DevPanel 波链路档案区（live 内联时间线与 archive 事实源视图分层）；重启后任意历史波完整可复盘。(3) **MiniMax 实证完成（文档调研）**：官方 CLI = MiniMax Code CLI（mcode，`npm i -g @minimax-ai/code`，Node ≥24 ✓）；调用面优于 kimi（exec 无头 + stream-json + --session 恢复 + --cwd + stdout/stderr 分流 + `--input -` stdin 通道无 argv 上限 + --output-schema 待实证 + acp 演进通道原生）；前置条件=负责人安装并订阅登录，随后 fixtures 钉版本 + 探针 + 适配器实施 |
 | v1.33 | 2026-09-02 | Mosaic 项目组 / ZCode | **M3-1 MiniMax 适配器落地（负责人已安装订阅登录 mcode 0.2.7）——三 agent 观测基座成形**。(1) **真机实证钉死**：`mcode exec --input - --output-format stream-json [--session mvs_*] [--cwd]`——提示词走 stdin（无 argv 上限）、机器输出 stdout/诊断 stderr 分流（实证 stderr 恒空）、`--session` 跨任务回忆实证、usage 含 input/output（cache/reasoning 细分在原始流）、权限面无头默认 smart（ask 需 TUI/ACP）；登录态 = `~/.minimax/cli-auth` 存在性（无 login status 子命令）。(2) **适配器**：internal/agent/adapter/minimax——codex 同构（stdin 提示词/会话恢复/超时击杀进程组/发布门委托），提示词与 codex/kimi 同一措辞（三座狗粮口径一致）；WSL 面 wslArgs 直用 `--exec`（mcode 自带 --cwd，无需 sh -c 包装）；reasoning 项不外发（仅 agent_message）。(3) **契约链**：fixtures 真机捕获两形态（intent/generate）+ manifest 哈希门禁；harness BuiltinProbes 增 minimax 探针（nvm/fnm/volta 等 glob + cli-auth 登录判定）；装配 syncSeats 增 minimax 座位（par_minimax_*，DisplayName MiniMax）。(4) **测试**：UT（fixtures 解析/argv 契约含 stdin 与 resume/发布 cap/取消/conformance）+ IT 真机三件套（意图结构/会话回忆/可发布生成，本机全绿）+ 生产路径 ST（桩走 CI、真机走 MOSAIC_ST_MINIMAX——本机真机绿：真实链路 24.8s 发布）。M3-1 出口判据的"三 agent 同房真实对话"待负责人狗粮（重启桌面 exe 即得三座） |
+| v1.34 | 2026-09-02 | Mosaic 项目组 / ZCode | **性能链路定位套件 v1 + 桌面日志恒空修复（dogfood 反馈：三座正常发言但"非常慢"；mosaic.log 空）**。(1) **耗时粗账先行**（DB 事件时间戳，15 波）：去抖窗恒 3.0s；评估相（逐座意图评估，当前串行逐个）三座房最高 **51.4s**（codex+kimi+mcode 排队求和）；生成串行次之（第二发言人在第一发言人之后全量追加）；波全程最高 **86.8s**；"发消息→首条回复"≈ 3s + 评估Σ + rank1 生成 ≈ 65s+。(2) **套件落地**：引擎分段计时（history/assemble/eval 逐座/generate 逐发言人/total）落 `round.closed.metadata.timing`（度量非语义，事件可审计性不变）；WaveChainOf 投影 + window_ms（锚点→开波）；DevPanel 波卡片耗时行 + 近波均值；波结束日志带 total/eval_total。(3) **日志修复**：GUI 子系统（wails windowsgui）stderr 无有效句柄——io.MultiWriter 首路失败即中止、文件路永远收不到写入（mosaic.log 0 字节实证）；app.TeeWriter 逐路写、单路失败不阻断（UT 钉住）。**裁定候选登记**：评估相并行化（不改发布语义，仅评估并发——Σ→max 省 ~30s）与发布并行化（v1.30 登记项）是两个可分离裁定，待套件持续读数后定 |
 
 # 1. 交付目标与"完全可用"定义
 
@@ -176,7 +177,9 @@
   **（v1.32 实证完成·文档调研：官方 CLI 为 MiniMax Code CLI（`mcode`）——安装 `npm i -g @minimax-ai/code@latest`（Node ≥22.19<23 或 ≥24<27，本机 v24.14.1 满足）、登录 `mcode login`（需订阅 Token 套餐；`mcode provider` 管 API Key 路由——凭据留 CLI 侧合规 OQ-20）；无头调用面优于 kimi：`mcode exec [prompt] --output-format text|json|stream-json --cwd <dir> --session <id> --permission ask|smart|full|off --timeout --max-steps`，机器输出走 stdout/诊断走 stderr（分流，无混流解析噪声），`--input -` 显式读 stdin（提示词可走 stdin——无 argv 长度上限，规避 kimi 的 6000 rune 护栏类问题），`--output-schema` JSON Schema 校验（codex 实证上游 400 不可用，mcode 待实证——若可用则意图结构化输出可硬校验）；`mcode acp` ACP stdio 通道原生在（演进项）。前置条件=负责人安装并订阅登录；随后真机 fixtures 钉版本（stream-json 行流形状）+ BuiltinProbes 探针 + 适配器实施）**
   **（2026-09-02 v1.33 落地：负责人安装订阅登录（mcode 0.2.7）→ 真机实证钉死（stdin 提示词/--session 回忆/stderr 恒空/登录态=~/.minimax/cli-auth）→ fixtures 两形态真机捕获 + manifest 哈希门禁 → internal/agent/adapter/minimax（codex 同构 + WSL --exec 直传）→ BuiltinProbes 探针 + syncSeats 座位（par_minimax_*）→ UT/IT 真机三件套/生产路径 ST（桩 CI + 真机 24.8s 闭环）全绿）**
 - [x] 开发者模式持久化（dogfood 反馈 v1.31：重启后开发者模式信息全失）：`[dev]` 内联时间线当前为瞬态（room.ts"瞬态，不入快照"——仅实时 SSE 进内存，无人重放）→ 改为事件流重放投影（波链路/意向/记分卡/围栏撤销自持久事件重建，debug 视图按房间+游标分页）+ trace id 可回查（贯通 v1.30 落盘的 mosaic.log）**（2026-09-01 v1.32 落地：`room.WaveChainOf` 纯函数投影（波骨架/意图全记录含弃权与未选理由/发授终态含撤销归账/发布计数/未收波可辨）+ `GET /v1/debug/rooms/{id}/waves` 端点（dev 门禁内，seq 降序取页/页内时间正序/limit 1..100/cursor 续读更老）+ DevPanel"波链路（重启可复盘）"档案区（进房加载最新页/加载更早/手动刷新/成员名与锚点摘要解析）；实时增量仍走聊天内 [dev] 内联时间线（live 面），档案区为事实源视图（archive 面）；UT 投影三用例 + 端点用例（直落库波事件可复盘/分页/坏 cursor 400/非 dev 404））**
-- [ ] 产出：≥3 agent 真实狗粮基座——为波内并行观测（贯穿项）与 M3 各切片验证提供测量面
+- [ ] 产出：≥3 agent 真实狗粮基座——为波内并行观测（贯穿项）与 M3 各切片验证提供测量面 **（v1.34：三座同房狗粮已运行——MiniMax/Codex/Kimi 均正常发言；负责人反馈"非常慢"，性能链路定位套件 v1 随之落地）**
+- [x] 性能链路定位套件 v1（dogfood 反馈"非常慢"，v1.34 落地）：引擎分段计时（历史拉取/上下文组装/逐座意图评估/逐发言人生成/波全程）落 `round.closed.metadata.timing`——波链路投影透出（window_ms = 锚点→开波）+ DevPanel 波卡片耗时行与近波均值 + 波结束日志带 total/eval_total；**首轮粗账（DB 时间戳，15 波）**：三座房评估相串行合计最高 51.4s（codex+kimi+mcode 逐个排队）、波全程最高 86.8s、去抖窗恒 3.0s——评估相并行化是最大候选（max≈20s 可省 ~30s），生成串行次之；逐座精确数字由套件持续供给
+- [x] 桌面日志恒空修复（dogfood 反馈，v1.34）：GUI 子系统进程 stderr 无有效句柄——`io.MultiWriter` 首路失败即中止，日志文件路永远收不到写入（mosaic.log 0 字节实证）；`app.TeeWriter` 逐路写入单路失败不阻断 + UT 钉住
 - **出口判据**：三 agent 同房真实对话一场；杀进程重启后开发者视图完整还原该场全部波链路。
 
 ### M3-2 收束协议（RFC-0005）
@@ -202,7 +205,7 @@
 
 ### 贯穿观测（M3-1 起持续记录，M3-3 后数据成形）
 
-- [ ] 波内并行发言 slot 观测（v1.30 登记、v1.31 改贯穿项）：≥3 座 + 主动开口构成真实并行场景；记录同波多意愿频率、串行链时延、同锚点应答冗余率；数据成形后裁定并行化（Σ→max）或 sequential + 波内上下文增量
+- [ ] 波内并行发言 slot 观测（v1.30 登记、v1.31 改贯穿项）：≥3 座 + 主动开口构成真实并行场景；记录同波多意愿频率、串行链时延、同锚点应答冗余率；数据成形后裁定并行化（Σ→max）或 sequential + 波内上下文增量 **（v1.34 首轮读数：评估相串行 Σ51.4s 是波内最大时延段——评估相并行化（不改发布语义，仅相 1 并发）与发布并行化是两个可分离的裁定项；套件已就位，持续读数后裁定）**
 
 - **里程碑出口判据**：一场真实讨论以 bounded_disagreement 收束并成功按新证据重开；导出包在干净环境重放一致；删除后全库无残留（fixture）；三 agent 狗粮观测记录归档（波内并行裁定有数据支撑）。
 

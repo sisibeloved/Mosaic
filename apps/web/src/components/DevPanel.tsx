@@ -37,6 +37,15 @@ interface WaveGrant {
   revoke_reason?: string;
 }
 
+interface WaveTiming {
+  total_ms: number;
+  history_ms: number;
+  assemble_ms: number;
+  eval_ms: Record<string, number>;
+  eval_total_ms: number;
+  generate_ms: Record<string, number>;
+}
+
 interface Wave {
   round_id: string;
   stimulus_event_id: string;
@@ -45,6 +54,8 @@ interface Wave {
   outcome?: string;
   published: number;
   silent_count: number;
+  window_ms?: number;
+  timing?: WaveTiming;
   intents: WaveIntent[];
   grants: WaveGrant[];
 }
@@ -70,10 +81,23 @@ const ACTION_LABEL: Record<string, string> = {
   silent: "不发言",
 };
 
+const sec = (ms?: number) => (ms === undefined ? "—" : `${(ms / 1000).toFixed(1)}s`);
+
 function waveOutcomeBadge(w: Wave): { text: string; cls: string } {
   if (!w.outcome) return { text: "未收波", cls: "text-warn" };
   const label = OUTCOME_LABEL[w.outcome] ?? w.outcome;
   return { text: label, cls: w.outcome === "published" ? "text-ok" : "text-dim" };
+}
+
+/** 近波均值（仅计带 timing 的波）——性能观测速览。 */
+function avgTotalMs(waves: Wave[]): number {
+  const t = waves.filter((w) => w.timing);
+  return t.length ? t.reduce((s, w) => s + (w.timing?.total_ms ?? 0), 0) / t.length : 0;
+}
+
+function avgEvalMs(waves: Wave[]): number {
+  const t = waves.filter((w) => w.timing);
+  return t.length ? t.reduce((s, w) => s + (w.timing?.eval_total_ms ?? 0), 0) / t.length : 0;
 }
 
 export function DevPanel({
@@ -212,7 +236,14 @@ export function DevPanel({
 
       {/* 波链路档案（M3-1 持久化）：事件流重建，重启不丢；实时增量走聊天内 [dev] 内联时间线 */}
       <div className="flex items-center justify-between">
-        <h4 className="text-xs font-medium text-dim">波链路（重启可复盘）</h4>
+        <h4 className="text-xs font-medium text-dim">
+          波链路（重启可复盘）
+          {waves.some((w) => w.timing) && (
+            <span className="ml-1 text-faint">
+              · 均全程 {sec(avgTotalMs(waves))} / 评估Σ {sec(avgEvalMs(waves))}
+            </span>
+          )}
+        </h4>
         <button
           type="button"
           disabled={!roomID}
@@ -242,6 +273,18 @@ export function DevPanel({
                 </div>
                 <p className="text-faint">
                   锚点：{describeEvent(w.stimulus_event_id) ?? w.stimulus_event_id.slice(-10)}
+                </p>
+                {/* 性能定位套件 v1：分段耗时（窗口/评估逐座/生成/全程） */}
+                <p className="text-faint">
+                  耗时 窗口 {sec(w.window_ms)}
+                  {w.timing
+                    ? ` ｜ 评估Σ ${sec(w.timing.eval_total_ms)}（${Object.entries(w.timing.eval_ms)
+                        .map(([pid, ms]) => `${nameOf(pid).slice(0, 8)} ${sec(ms)}`)
+                        .join(" / ")}）` +
+                      `｜ 生成 ${Object.entries(w.timing.generate_ms)
+                        .map(([pid, ms]) => `${nameOf(pid).slice(0, 8)} ${sec(ms)}`)
+                        .join(" / ") || "—"} ｜ 全程 ${sec(w.timing.total_ms)}`
+                    : " ｜（无计时：旧版本波）"}
                 </p>
                 {w.intents.map((it) => (
                   <p key={it.event_id} className="text-dim">

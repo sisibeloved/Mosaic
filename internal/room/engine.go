@@ -387,6 +387,26 @@ func pausedAfter(events []StoredEvent, anchorSeq int64) bool {
 	return false
 }
 
+// waveTiming 波链路分段耗时（性能定位套件 v1，dogfood 反馈"非常慢"）：事件正文
+// 之外的时间维度落 round.closed.metadata.timing——开发者面板波链路视图与波结束
+// 日志双面可查；事件溯源的可审计性不受影响（timing 是度量不是语义）。
+type waveTiming struct {
+	TotalMs     int64            `json:"total_ms"`      // 波全程（入 runReaction → 收波）
+	HistoryMs   int64            `json:"history_ms"`    // 历史拉取
+	AssembleMs  int64            `json:"assemble_ms"`   // 上下文组装
+	EvalMs      map[string]int64 `json:"eval_ms"`       // 逐座意图评估（观察→判断，串行逐个）
+	EvalTotalMs int64            `json:"eval_total_ms"` // 评估相合计（串行求和——并行化候选的首要观测位）
+	GenerateMs  map[string]int64 `json:"generate_ms"`   // 逐发言人生成
+}
+
+func newWaveTiming() *waveTiming {
+	return &waveTiming{EvalMs: map[string]int64{}, GenerateMs: map[string]int64{}}
+}
+
+func msSince(start time.Time) int64 {
+	return time.Since(start).Milliseconds()
+}
+
 // runReaction 一个反应波（RFC-0012 §2.2）：门控 → 开波 → 全员评估（观察→判断）
 // → 意愿放行 → sequential 发布 → 收波。锚点 = 最新 message.posted（事件溯源，
 // timer 入队时的快照不作数）。
@@ -395,12 +415,19 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 		return
 	}
 	roundID := e.cfg.NewID("rnd")
+	timing := newWaveTiming()
+	tWave := time.Now()
+	// 注意：timing 指针会进 round.closed 事件 metadata（出站盒/SSE 在其它 goroutine
+	// marshal 该事件）——收波后不得再写 timing（曾以 defer 补写 TotalMs，race 检测
+	// 抓回：落库后的写与异步 marshal 竞态）。中止路径无收波事件，不补账。
 
 	mu := e.lockRoom(roomID)
 	mu.Lock()
 	defer mu.Unlock()
 
+	tStage := time.Now()
 	history, err := e.roomHistory(ctx, roomID)
+	timing.HistoryMs = msSince(tStage)
 	if err != nil {
 		e.warn(roomID, "history 读取失败，波中止", "err", err)
 		return
@@ -478,6 +505,7 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 	e.clearRoomClaims(ctx, roomID)
 
 	// 2) 上下文组装（七层最小 + Receipt；同波各任务共享组装、逐任务 Receipt）
+	tStage = time.Now()
 	seatsMin := make([]contextx.Seat, len(seats))
 	for i, s := range seats {
 		seatsMin[i] = contextx.Seat{ParticipantID: s.ParticipantID}
@@ -490,6 +518,7 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 			Level:           ledger.Level(e.cfg.Budget),
 		},
 	}, envs, *anchor)
+	timing.AssembleMs = msSince(tStage)
 	if e.cfg.Receipts != nil {
 		assembled.Receipt.CreatedAt = e.cfg.Clock()
 		if err := e.cfg.Receipts.InsertReceipt(ctx, assembled.Receipt); err != nil {
@@ -502,7 +531,7 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 	}
 
 	// 3-4) 全员评估（观察→判断）→ intent.recorded 全记录（R-01）→ 意愿清单
-	willing, silentCount, ok := e.evaluateWave(ctx, roomID, roundID, *anchor, history, seats, taskContext, ledger)
+	willing, silentCount, ok := e.evaluateWave(ctx, roomID, roundID, *anchor, history, seats, taskContext, ledger, timing)
 	if !ok {
 		return
 	}
@@ -510,7 +539,7 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 	// 5) 意愿放行 + sequential 发布（记分卡分排序，@点名前置；CAS 迟到围栏）
 	published := 0
 	for _, w := range willing {
-		outcome := e.revealCandidate(ctx, roomID, roundID, *anchor, w.selection(), epoch, w.intentEventID, taskContext, policy)
+		outcome := e.revealCandidate(ctx, roomID, roundID, *anchor, w.selection(), epoch, w.intentEventID, taskContext, policy, timing)
 		switch outcome {
 		case revealPublished:
 			published++
@@ -528,6 +557,7 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 	if published > 0 {
 		outcome = "published"
 	}
+	timing.TotalMs = msSince(tWave)
 	closed := e.newEnv(roomID, protocol.EventRoundClosed,
 		protocol.Actor{ParticipantID: "par_system", Kind: "system"}, anchor.EventID, roundID,
 		protocol.RoundClosedPayload{
@@ -536,9 +566,11 @@ func (e *Engine) runReaction(ctx context.Context, roomID string) {
 			SelectedCount: published,
 			SilentCount:   silentCount,
 		})
+	closed.Metadata = map[string]any{"timing": timing}
 	_, _ = e.append(ctx, closed)
 	e.debug(roomID, "波结束", "round", roundID, "outcome", outcome,
-		"published", published, "silent", silentCount)
+		"published", published, "silent", silentCount,
+		"total_ms", timing.TotalMs, "eval_total_ms", timing.EvalTotalMs)
 }
 
 // clearRoomClaims 波开后的声明清账：本房间全部 pending 声明清除——锚点已覆盖
@@ -580,6 +612,7 @@ func (w willingIntent) selection() attention.Selection {
 // 排序：@点名前置，其余按记分卡分降序（band 透明保留，反 Goodhart：不外发精确分）。
 func (e *Engine) evaluateWave(ctx context.Context, roomID, roundID string, anchor protocol.Envelope,
 	history []StoredEvent, seats []AgentSeat, taskContext agent.Context, baseLedger contextx.Ledger,
+	timing *waveTiming,
 ) (willing []willingIntent, silentCount int, ok bool) {
 	policy := defaultChatPolicy()
 	weights := attention.DefaultWeights
@@ -595,6 +628,7 @@ func (e *Engine) evaluateWave(ctx context.Context, roomID, roundID string, ancho
 	}
 	var evals []seatEval
 	for _, seat := range seats {
+		tEval := time.Now()
 		intentResult, err := e.runTask(ctx, seat.Profile, seat.ParticipantID, agent.Task{
 			TaskID:        e.cfg.NewID("tsk"),
 			Kind:          agent.KindEvaluateIntent,
@@ -612,6 +646,8 @@ func (e *Engine) evaluateWave(ctx context.Context, roomID, roundID string, ancho
 			continue
 		}
 		evalUsage[seat.ParticipantID] = intentResult.Usage
+		timing.EvalMs[seat.ParticipantID] = msSince(tEval)
+		timing.EvalTotalMs += timing.EvalMs[seat.ParticipantID]
 		evals = append(evals, seatEval{seat: seat, result: intentResult})
 	}
 	// 相 1.5：评估消耗入"现在"的账本。
@@ -801,7 +837,7 @@ func addressedSet(anchor protocol.Envelope) map[string]bool {
 // revealCandidate sequential 揭示链：发授（水位取当下）→ 生成 → 发布。
 func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, stimulus protocol.Envelope,
 	sel attention.Selection, epoch int64, intentEventID string, taskContext agent.Context,
-	policy chatGrantPolicy) revealOutcome {
+	policy chatGrantPolicy, timing *waveTiming) revealOutcome {
 
 	version, err := e.cfg.Store.RoomVersion(ctx, roomID)
 	if err != nil {
@@ -811,7 +847,9 @@ func (e *Engine) revealCandidate(ctx context.Context, roomID, roundID string, st
 	if !ok {
 		return revealAbort
 	}
+	tGen := time.Now()
 	draft, genOK := e.runGenerate(ctx, roomID, roundID, stimulus, sel, grantEnv, grantID, taskContext, policy)
+	timing.GenerateMs[sel.ParticipantID] = msSince(tGen)
 	if !genOK {
 		return revealRevoked
 	}

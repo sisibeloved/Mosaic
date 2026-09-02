@@ -6,6 +6,7 @@ package room
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 )
@@ -33,6 +34,17 @@ type WaveGrantView struct {
 	RevokeReason  string `json:"revoke_reason,omitempty"`
 }
 
+// WaveTimingView 波链路分段耗时（性能定位套件 v1，自 round.closed.metadata.timing
+// 投影）。EvalTotalMs 是串行求和——波内并行化候选的首要观测位。
+type WaveTimingView struct {
+	TotalMs     int64            `json:"total_ms"`
+	HistoryMs   int64            `json:"history_ms"`
+	AssembleMs  int64            `json:"assemble_ms"`
+	EvalMs      map[string]int64 `json:"eval_ms"`
+	EvalTotalMs int64            `json:"eval_total_ms"`
+	GenerateMs  map[string]int64 `json:"generate_ms"`
+}
+
 // WaveView 一个反应波的全貌（round.opened → round.closed 间的引擎足迹）。
 type WaveView struct {
 	RoundID         string           `json:"round_id"`
@@ -42,6 +54,8 @@ type WaveView struct {
 	Outcome         string           `json:"outcome,omitempty"`    // published | quiescent | revoked_all
 	Published       int              `json:"published"`
 	SilentCount     int              `json:"silent_count"`
+	WindowMs        int64            `json:"window_ms,omitempty"` // 锚点消息→开波（去抖窗+队列等待）
+	Timing          *WaveTimingView  `json:"timing,omitempty"`
 	Intents         []WaveIntentView `json:"intents"`
 	Grants          []WaveGrantView  `json:"grants"`
 }
@@ -52,6 +66,7 @@ type WaveView struct {
 // 不在本投影内——记分卡面板已覆盖）。开波前的事件忽略。
 func WaveChainOf(events []StoredEvent) []WaveView {
 	var waves []WaveView
+	var openedAts []string // 与 waves 平行：开波事件 occurred_at（窗口耗时计算用）
 	var cur *WaveView
 	for _, ev := range events {
 		env := ev.Envelope
@@ -68,6 +83,7 @@ func WaveChainOf(events []StoredEvent) []WaveView {
 				Intents:         []WaveIntentView{},
 				Grants:          []WaveGrantView{},
 			})
+			openedAts = append(openedAts, env.OccurredAt)
 			cur = &waves[len(waves)-1]
 		case protocol.EventIntentRecorded:
 			if cur == nil {
@@ -137,7 +153,44 @@ func WaveChainOf(events []StoredEvent) []WaveView {
 			cur.ClosedSeq = env.Seq
 			cur.Outcome = p.Outcome
 			cur.SilentCount = p.SilentCount
+			cur.Timing = timingViewOf(env.Metadata["timing"])
+		}
+	}
+	// 窗口耗时：锚点消息 → 开波（去抖窗 + 队列等待）。锚点定位按刺激事件 id 回溯。
+	for i := range waves {
+		if waves[i].StimulusEventID == "" {
+			continue
+		}
+		if anchor := findEvent(events, waves[i].StimulusEventID); anchor != nil {
+			waves[i].WindowMs = occurredMsDiff(anchor.OccurredAt, openedAts[i])
 		}
 	}
 	return waves
+}
+
+// timingViewOf metadata.timing → 视图（双重表示兼容：内存 Store 存原结构体、
+// 持久层 JSON 往返后是 map[string]any——经重新序列化统一解析）。
+func timingViewOf(raw any) *WaveTimingView {
+	if raw == nil {
+		return nil
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var tv WaveTimingView
+	if json.Unmarshal(b, &tv) != nil {
+		return nil
+	}
+	return &tv
+}
+
+// occurredMsDiff 两个 RFC3339 时间戳的毫秒差（解析失败返回 0）。
+func occurredMsDiff(a, b string) int64 {
+	ta, err1 := time.Parse(time.RFC3339Nano, a)
+	tb, err2 := time.Parse(time.RFC3339Nano, b)
+	if err1 != nil || err2 != nil {
+		return 0
+	}
+	return tb.Sub(ta).Milliseconds()
 }

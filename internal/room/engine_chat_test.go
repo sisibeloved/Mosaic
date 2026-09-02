@@ -153,3 +153,64 @@ func outboxEntryOf(env protocol.Envelope) outbox.Entry {
 	raw, _ := json.Marshal(env)
 	return outbox.Entry{RoomID: env.RoomID, Envelope: raw}
 }
+
+// TestWaveTimingRecorded 性能定位套件 v1：round.closed.metadata.timing 落库——
+// 逐座评估耗时与汇总（串行求和）齐备；重启后经波链路投影可查。
+func TestWaveTimingRecorded(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(echo.Adapter{})
+	_ = sup.Register(silentAdapter{})
+	defer sup.Shutdown()
+	eng := NewEngine(EngineConfig{
+		Store: store, Reader: store, Agents: sup,
+		Seats: []AgentSeat{
+			{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "pe", Adapter: "echo"}},
+			{ParticipantID: "par_quiet", Profile: agent.Profile{ProfileID: "pq", Adapter: "silent_stub"}},
+		},
+		Budget:         contextx.Limits{},
+		ReactionWindow: 5 * time.Millisecond,
+		Clock:          testClock, Now: time.Now,
+		NewID: counterNewID(), Tenant: "ten_local",
+	})
+	defer eng.Close()
+
+	seedRoomCreatedFor(t, store, "room_timing")
+	deliverHuman(t, store, eng, "room_timing")
+	waitRoundsClosed(t, store, "room_timing", 1)
+
+	events, _, err := store.EventsAfter(context.Background(), "room_timing", "", 1000)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	for _, ev := range events {
+		if ev.Envelope.Type != protocol.EventRoundClosed {
+			continue
+		}
+		raw, ok := ev.Envelope.Metadata["timing"]
+		if !ok {
+			t.Fatalf("round.closed 缺 metadata.timing：%+v", ev.Envelope.Metadata)
+		}
+		b, _ := json.Marshal(raw)
+		var tv struct {
+			TotalMs     int64            `json:"total_ms"`
+			EvalMs      map[string]int64 `json:"eval_ms"`
+			EvalTotalMs int64            `json:"eval_total_ms"`
+			GenerateMs  map[string]int64 `json:"generate_ms"`
+		}
+		if err := json.Unmarshal(b, &tv); err != nil {
+			t.Fatalf("timing 解析: %v（%s）", err, b)
+		}
+		if tv.TotalMs < 0 || tv.EvalTotalMs < 0 {
+			t.Fatalf("timing 汇总为负：%+v", tv)
+		}
+		if _, ok := tv.EvalMs["par_echo"]; !ok {
+			t.Fatalf("逐座评估耗时缺 par_echo：%v", tv.EvalMs)
+		}
+		if _, ok := tv.EvalMs["par_quiet"]; !ok {
+			t.Fatalf("逐座评估耗时缺 par_quiet：%v", tv.EvalMs)
+		}
+		return
+	}
+	t.Fatal("未找到 round.closed")
+}

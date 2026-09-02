@@ -17,7 +17,6 @@ package main
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -69,7 +68,9 @@ func main() {
 		logger.Warn("桌面日志落盘不可用（仅 stderr）", "err", err)
 	} else {
 		defer logFile.Close()
-		logger = slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stderr, logFile), &slog.HandlerOptions{Level: logLevel}))
+		// TeeWriter 而非 io.MultiWriter（v1.34 实证）：GUI 子系统进程 stderr 无有效
+		// 句柄，MultiWriter 首路失败即中止——日志文件路永远收不到写入（mosaic.log 恒空）。
+		logger = slog.New(slog.NewJSONHandler(app.TeeWriter(os.Stderr, logFile), &slog.HandlerOptions{Level: logLevel}))
 	}
 	srv, err := app.Start(ctx, app.Options{
 		DataDir: dataDir,

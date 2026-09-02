@@ -114,3 +114,48 @@ func TestWaveChainEmpty(t *testing.T) {
 		t.Fatalf("waves = %d, want 0", len(waves))
 	}
 }
+
+// TestWaveChainTimingAndWindow 收波 timing 投影（JSON 往返后的 map 表示——持久层
+// 形态）+ 窗口耗时（锚点→开波）。性能定位套件 v1 的观测面。
+func TestWaveChainTimingAndWindow(t *testing.T) {
+	events := []StoredEvent{
+		{Cursor: "c0", Envelope: protocol.Envelope{
+			EventID: "e0", RoomID: "r", Seq: 1, Type: protocol.EventMessagePosted,
+			Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, OccurredAt: "2026-09-02T01:00:00.000Z",
+			Payload: []byte(`{"body":"hi"}`),
+		}},
+		{Cursor: "c1", Envelope: protocol.Envelope{
+			EventID: "e1", RoomID: "r", Seq: 2, Type: protocol.EventRoundOpened,
+			Actor: protocol.Actor{ParticipantID: "par_system", Kind: "system"}, OccurredAt: "2026-09-02T01:00:03.200Z",
+			Payload: []byte(`{"round_id":"rnd_t","stimulus_event_id":"e0"}`),
+		}},
+		{Cursor: "c2", Envelope: protocol.Envelope{
+			EventID: "e2", RoomID: "r", Seq: 3, Type: protocol.EventRoundClosed,
+			Actor: protocol.Actor{ParticipantID: "par_system", Kind: "system"}, OccurredAt: "2026-09-02T01:00:04.000Z",
+			Payload: []byte(`{"round_id":"rnd_t","outcome":"quiescent","selected_count":0,"silent_count":1}`),
+			// 持久层 JSON 往返后的 timing 形态：map[string]any（数值为 float64）
+			Metadata: map[string]any{"timing": map[string]any{
+				"total_ms": float64(800), "history_ms": float64(5), "assemble_ms": float64(2),
+				"eval_ms":       map[string]any{"par_a": float64(300), "par_b": float64(495)},
+				"eval_total_ms": float64(795), "generate_ms": map[string]any{},
+			}},
+		}},
+	}
+	waves := WaveChainOf(events)
+	if len(waves) != 1 {
+		t.Fatalf("waves = %d, want 1", len(waves))
+	}
+	w := waves[0]
+	if w.WindowMs != 3200 {
+		t.Fatalf("窗口耗时 = %d ms, want 3200（锚点→开波）", w.WindowMs)
+	}
+	if w.Timing == nil {
+		t.Fatal("收波 timing 未投影")
+	}
+	if w.Timing.TotalMs != 800 || w.Timing.EvalTotalMs != 795 {
+		t.Fatalf("timing 汇总 = %+v", w.Timing)
+	}
+	if w.Timing.EvalMs["par_a"] != 300 || w.Timing.EvalMs["par_b"] != 495 {
+		t.Fatalf("逐座评估耗时 = %v", w.Timing.EvalMs)
+	}
+}

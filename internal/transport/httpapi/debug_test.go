@@ -265,7 +265,12 @@ func TestDebugWaves(t *testing.T) {
 			{Envelope: protocolEnvelope(roomID, openedSeq+3, protocol.EventMessagePosted, "par_codex", "agent",
 				`{"body":"复盘我"}`)},
 			{Envelope: protocolEnvelope(roomID, openedSeq+4, protocol.EventRoundClosed, "par_system", "system",
-				fmt.Sprintf(`{"round_id":%q,"outcome":"published","selected_count":1,"silent_count":0}`, roundID))},
+				fmt.Sprintf(`{"round_id":%q,"outcome":"published","selected_count":1,"silent_count":0}`, roundID),
+				map[string]any{"timing": map[string]any{
+					"total_ms": float64(800), "history_ms": float64(5), "assemble_ms": float64(2),
+					"eval_ms":       map[string]any{"par_codex": float64(300)},
+					"eval_total_ms": float64(300), "generate_ms": map[string]any{"par_codex": float64(495)},
+				}})},
 		}
 		if _, err := store.AppendEvents(context.Background(), envelopesOf(envs)); err != nil {
 			t.Fatalf("append wave %s: %v", roundID, err)
@@ -293,6 +298,15 @@ func TestDebugWaves(t *testing.T) {
 	grants, _ := first["grants"].([]any)
 	if len(grants) != 1 || grants[0].(map[string]any)["published"] != true {
 		t.Fatalf("rnd_a 发授终态 = %v", grants)
+	}
+	// 性能定位套件 v1：timing 与窗口耗时透出
+	timing, _ := first["timing"].(map[string]any)
+	if timing == nil || timing["total_ms"] != float64(800) || timing["eval_total_ms"] != float64(300) {
+		t.Fatalf("rnd_a timing = %v", timing)
+	}
+	evalMs, _ := timing["eval_ms"].(map[string]any)
+	if evalMs["par_codex"] != float64(300) {
+		t.Fatalf("rnd_a 逐座评估 = %v", evalMs)
 	}
 
 	// 分页：limit=1 → 只给最新波（rnd_b），next 指向 rnd_a 的开波 seq，续读补齐
@@ -324,13 +338,17 @@ func TestDebugWaves(t *testing.T) {
 // protocolEnvelope / envelopesOf：波事件直落 store 的构造辅助（调试面投影只认
 // 事件流，不经引擎——重启后可复盘语义的 UT 面即此）。seq 由 MemStore 自派
 // （appendLocked 覆盖），入参仅用于 EventID 去重。
-func protocolEnvelope(roomID string, seq int64, typ, actor, kind, payload string) protocol.Envelope {
-	return protocol.Envelope{
+func protocolEnvelope(roomID string, seq int64, typ, actor, kind, payload string, metadata ...map[string]any) protocol.Envelope {
+	env := protocol.Envelope{
 		EventID: fmt.Sprintf("evt_wv_%d", seq), TenantID: "ten_local", RoomID: roomID,
 		Type: typ, SchemaVersion: 1, OccurredAt: "2026-09-01T09:00:00.000Z",
 		Actor:   protocol.Actor{ParticipantID: actor, Kind: kind},
 		Payload: []byte(payload),
 	}
+	if len(metadata) > 0 {
+		env.Metadata = metadata[0]
+	}
+	return env
 }
 
 func envelopesOf(events []room.StoredEvent) []protocol.Envelope {

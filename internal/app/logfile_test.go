@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,5 +55,26 @@ func TestOpenLogFileAppendsAndRotates(t *testing.T) {
 	}
 	if fi, err := os.Stat(filepath.Join(dir, "logs", "mosaic.log")); err != nil || fi.Size() != 0 {
 		t.Fatalf("轮转后 mosaic.log 应为空（size=%v, err=%v）", fi, err)
+	}
+}
+
+// errWriter 恒失败的写路（GUI 子系统进程 stderr 无句柄的代理）。
+type errWriter struct{}
+
+func (errWriter) Write([]byte) (int, error) { return 0, errors.New("invalid handle") }
+
+// TestTeeWriterSurvivesBrokenWriter：首路恒败（GUI stderr）不得阻断日志文件路——
+// v1.34 实证 io.MultiWriter 首路失败即中止、mosaic.log 恒空的根因。
+func TestTeeWriterSurvivesBrokenWriter(t *testing.T) {
+	var buf bytes.Buffer
+	w := TeeWriter(errWriter{}, &buf)
+	if _, err := w.Write([]byte("line1\n")); err == nil {
+		t.Fatal("首路错误应聚合返回（不静默吞）")
+	}
+	if _, err := w.Write([]byte("line2\n")); err == nil {
+		t.Fatal("错误应持续可见")
+	}
+	if buf.String() != "line1\nline2\n" {
+		t.Fatalf("文件路应完整收到写入：%q", buf.String())
 	}
 }
