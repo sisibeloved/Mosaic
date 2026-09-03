@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.46 |
+| 版本 | v1.47 |
 | 日期 | 2026-09-01 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -63,6 +63,7 @@
 | v1.44 | 2026-09-03 | Mosaic 项目组 / ZCode | **狗粮诊断双案（事件流 + timing 套件实证，机制不动）+ 三处登记**。(1) **轮 28"慢"归因**：收口与开波均毫秒级（publish→closed 同毫秒、closed→opened 2ms——去抖窗在上一波生成期内已到期，单飞串行下关波即开波）；history 1ms / assemble 0ms——**Mosaic 在意向开始前零耗时操作**；慢在评估相=三席并行屏障取最慢：kimi 79.6s（codex 15.3s / minimax 13.8s 早已完成干等 64s，intent.recorded 三席同毫秒落库实证屏障语义）；kimi 评估时延方差大（本窗 12.3–79.6s）为"偶尔慢半拍"主因；codex 评估恒定 ~24k input tokens（CLI 会话恢复带全量会话）但未表现为时延异常，minimax 会话 ~24k 后自动回落 ~2k（会话重置）。(2) **"拉数据"停摆归因**：机制全按规格工作、模型判断合理（rationale 实证——"球在 codex 手里""插话只会挤占 floor"是主动判断非故障）；缺口是**承诺无自我续接通道**——最新消息=自己的承诺 → 自决静默（防自言自语的同一语义杀死承诺履行）；主动波 5min 起搏正常（08:55/09:00 两轮实证）但语境无"交付承诺"框架 → 全静默空转；人类一句话即复活（08:48:21 实证）。定性=交互模型结构缺口（非 agent 故障、非引擎 bug）；证据入 RFC-0012 OQ-A——**"何时值得说"须含"我曾承诺未交付"，未履行承诺列为 M3-3 记忆层供主动开口消费的触发源**。(3) **登记**：消息 Markdown 渲染 → M3-7（新切片）；子 Agent 状态显示（各家流式事件面适配评估先行）→ M4 backlog；kimi usage 上报缺口（intent.recorded metadata 恒空）+ 主动波静默空转退避观察（两轮空转各烧 3 次 CLI 评估——按"无病理实录不设闸"先观测不堆机制）→ M4 backlog |
 | v1.45 | 2026-09-03 | 陆尘裁定 / ZCode | **记忆机制研讨收口：双参考调研 + 五点裁定（RFC-0007 v0.2 §7.4 / RFC-0012 OQ-A 修订）**。负责人裁定"session 和 memory 是两码事"并指定调研参考——跨会话记忆 Hermes Agent（Nous Research）、群聊记忆 MaiBot（A_Memorix），两家官方文档实证要点：Hermes=恒常/按需双平面（硬上限策展文件冻结注入保 prefix cache+容量压力倒逼策展+write_approval 门控；SQLite FTS5 原文检索 ~20ms 零 LLM、专为中文做 fts5_cjk；外部 provider 并行不替代内置）；MaiBot=画像证据驱动+人工覆盖优先（纠错触发自动刷新）、Episode 异步流水线（可按来源重建）、来源管理支撑批量运维、显式生命周期操作集（强化/弱化/冻结/遗忘）、173 端点编辑面一等公民。五点裁定：(1) **责任边界**——CLI 会话=agent 私有工作记忆（OQ-16 边界内，不透明可接受），Mosaic Memory=房间共享记忆（可审计/可编辑/人类可纠错），互不替代只建后者；(2) **按需平面 FTS5 起步**——pgvector 无限期推迟（召回不足实录为重启条件），前置验证 modernc FTS5 编译可用性+CJK tokenizer；(3) **恒常平面正规化**——胶囊注入条数上限升级字符容量上限+水位调试面可见+超限倒逼合并（不静默截断丢旧）；(4) **承诺追踪=带责任人的 tasklist**（负责人纠正：非记忆系统；常见 Harness tasklist 在多 Agent 群聊形态必须加责任人字段——每项任务归属具体承诺者；确定性派生【宣言模式+N 波未交付】+人工门控；入评估语境供主动开口消费）；(5) **记忆查看/编辑/纠错 UI 为 M3-3 验收项**（无编辑面的记忆系统静默劣化，两参考一致）。M3-3 条目按裁定重排为双平面+tasklist 四行；M3 总工期不变（FTS5 替代向量检索净降范围） |
 | v1.46 | 2026-09-03 | Mosaic 项目组 / ZCode | **M3-3 记忆系统全量落地（v1.45 五点裁定的执行；RFC-0007 v0.3 / RFC-0012 附录 G）**。(1) **tasklist（带责任人）**：确定性派生纯投影（宣言模式表×句读切分×疑问排除，零 LLM）+ 人工门控（resolve_task → task.resolved，delivered/dismissed 终态不可翻；自动判定交付=伪装闭环）+ 波龄 overdue（≥2 波）+ 组装层 tasklist 注入 + 主动波承诺指令（tasklist_note——OQ-A"我曾承诺未交付"触发源的承载物）+ 快照 tasks + SPA 任务 Tab（跳转宣言消息）；**发现并修复 v1.36 声明失实**：capsule 注入"第八层"是死代码（capsuleMemoriesOf 无调用点），本版接进 assembleChat。(2) **按需平面（FTS5）**：spike 定案——modernc v1.57.0/SQLite 3.53.3 FTS5 可用，unicode61 中文整串单 token 不可用，**trigram CJK≥3 字与英文正确命中**，<3 字 LIKE 回退；room_fts 虚拟表（appendTx 同事务写入+自愈重建+级联清理）+ GET /v1/rooms/{id}/search 端点 + SPA 房内搜索（命中跳转）+ 组装时召回（刺激关键词→CJK bigram 重叠/ASCII 子串→近窗外 top5 带 provenance，retrieved_memory 层）。(3) **恒常平面纪律**：CapsuleBudgetRunes=3000（最新在前填充、装不下即停、dropped_count 水位透出——倒逼合并不静默截断）。(4) **编辑闭环**：memory.edited 事件（edit_version 递增）+ MemoryCapsulesOf 编辑后投影（注入与查看同源）+ edit_memory 命令 + 公开 GET /v1/rooms/{id}/memory + SPA 记忆面板（查看/编辑/edit_history/容量水位/异议与假设）。组装层 8→10 层（+retrieved_memory +tasklist）；契约链全同步（两事件 schema+fixtures+gate 反例、命令枚举补齐 20 个含 M3 滞后项、OpenAPI 新路径、三生成链重生）。测试：room UT 12 项新增（派生/门控/编辑投影/预算纪律/线性基准/关键词/召回/快照/assembleChat 三面接线）+ sqlite IT（trigram/LIKE/自愈/级联）+ ST（搜索端点真 SQLite、memory 端点、taskgate 负路径）+ 引擎既有测试全绿 |
+| v1.47 | 2026-09-03 | Mosaic 项目组 / ZCode | **M3-7 消息 Markdown 渲染落地（v1.44 dogfood 登记项销账）**。react-markdown + remark-gfm（表格/删除线/任务列表——agent 输出高频形态）+ remark-breaks（聊天单换行即断行，标准 MD 折叠成空格与聊天语义相悖）。安全管线三道白名单由构造保证（登记前提"XSS 白名单过滤、不引入原始 HTML 直通"）：(1) 无 HTML 直通——MD 文本内 `<script>` 等按字面转义显示（组件式渲染，不启用 rehype-raw，无 innerHTML）；(2) URL scheme 白名单——defaultUrlTransform 仅放行 http/https/mailto 与相对路径（javascript: 剔除），链接强制 rel=noreferrer noopener；(3) 元素白名单——img 不渲染（防外链请求/追踪/布局破坏，以 [图片：alt] 保留线索）、代码块与表格横向滚动、消息内标题收敛为加粗段落级（不撑层级）。Human/Agent 气泡接线（whitespace-pre-wrap 退役，换行语义移交 remark-breaks）；memo 化避免 SSE 高频刷新重复解析。真机渲染验证归 dogfood（WebView 内外链开窗行为登记观察） |
 
 # 1. 交付目标与"完全可用"定义
 
@@ -220,7 +221,7 @@
 
 ### M3-7 狗粮体验补齐（v1.44 登记）
 
-- [ ] 消息内容按 Markdown 渲染输出（dogfood 反馈 2026-09-03）：agent 消息普遍含 `**粗体**`/列表/表格标记，当前按纯文本展示满屏原始标记；渲染层落地（SPA 安全渲染管线：XSS 白名单过滤为前提，不引入原始 HTML 直通）
+- [x] 消息内容按 Markdown 渲染输出（dogfood 反馈 2026-09-03）：agent 消息普遍含 `**粗体**`/列表/表格标记，当前按纯文本展示满屏原始标记；渲染层落地（SPA 安全渲染管线：XSS 白名单过滤为前提，不引入原始 HTML 直通）**（2026-09-03 v1.47 落地：react-markdown + remark-gfm + remark-breaks；三道白名单——无 HTML 直通/URL scheme 白名单/元素白名单（img 不渲染）；代码块与表格横向滚动、标题收敛；真机渲染验证归 dogfood）**
 
 ### 贯穿观测（M3-1 起持续记录，M3-3 后数据成形）
 

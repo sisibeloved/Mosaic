@@ -6,6 +6,7 @@ import type { ParticipantView } from "../../api/client";
 import { adapterLabel, channelLabel, kindLabel } from "../../lib/copy";
 import { displayNameOf, participantOf, relativeTime } from "../../lib/ui";
 import { Avatar } from "./Avatar";
+import { MarkdownBody } from "./MarkdownBody";
 
 export function MessageList({
   entries,
@@ -93,8 +94,8 @@ function HumanBubble({
   return (
     <div className="animate-rise flex justify-end gap-2.5">
       <div className="flex max-w-[80%] flex-col items-end">
-        <div className="whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-accent-soft px-3.5 py-2 text-sm text-text">
-          {entry.body}
+        <div className="rounded-2xl rounded-br-md bg-accent-soft px-3.5 py-2 text-sm text-text">
+          <MarkdownBody text={entry.body ?? ""} />
         </div>
         <div className="mt-0.5 text-[11px] text-faint">
           <AddressedLine entry={entry} participants={participants} />
@@ -132,9 +133,9 @@ function AgentBubble({
           )}
           <span className="text-faint">{relativeTime(entry.occurredAt)}</span>
         </div>
-        <div className="w-fit max-w-full whitespace-pre-wrap break-words rounded-2xl rounded-tl-md bg-surface-2 px-3.5 py-2 text-sm">
+        <div className="w-fit max-w-full rounded-2xl rounded-tl-md bg-surface-2 px-3.5 py-2 text-sm">
           <AddressedLine entry={entry} participants={participants} />
-          {entry.body}
+          <MarkdownBody text={entry.body ?? ""} />
         </div>
       </div>
     </div>
