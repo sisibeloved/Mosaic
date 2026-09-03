@@ -40,6 +40,9 @@ type Config struct {
 	// EvalModel 评估任务专用模型（--model provider/model；空 = 与生成同模型）。
 	// dogfood 性能治理：评估输出仅几十 token，评估可降档、生成保持主模型。
 	EvalModel string
+	// Model 模型覆盖（v1.48：--model provider/model；空 = CLI 默认）。
+	// mcode 0.2.7 无思考强度面、无模型列表子命令（provider list 只列凭据源）。
+	Model string
 }
 
 // Execer 进程执行抽象（UT 捕获/阻塞；生产为真实 mcode 子进程）。
@@ -118,7 +121,7 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 
 	argv := []string{s.adapter.cfg.McodePath, "exec", "--output-format", "stream-json", "--input", "-"}
 	argv = append(argv, s.adapter.cfg.ExtraArgs...)
-	argv = append(argv, s.evalModelArgs(task)...)
+	argv = append(argv, s.runtimeArgs(task)...)
 	if s.adapter.cfg.WorkDir != "" {
 		argv = append(argv, "--cwd", s.adapter.cfg.WorkDir) // 与 --session 可共存（实证）
 	}
@@ -181,10 +184,15 @@ func (s *session) execer() Execer {
 	return &processExecer{}
 }
 
-// evalModelArgs 评估降档（dogfood 性能治理）：评估任务追加 --model <EvalModel>。
-func (s *session) evalModelArgs(task agent.Task) []string {
+// runtimeArgs 运行参数（v1.48 设置面）：模型覆盖（--model）。评估任务优先级
+// EvalModel > Model > CLI 默认（评估降档不被主模型覆盖吞掉）。
+func (s *session) runtimeArgs(task agent.Task) []string {
+	model := s.adapter.cfg.Model
 	if task.Kind == agent.KindEvaluateIntent && s.adapter.cfg.EvalModel != "" {
-		return []string{"--model", s.adapter.cfg.EvalModel}
+		model = s.adapter.cfg.EvalModel
+	}
+	if model != "" {
+		return []string{"--model", model}
 	}
 	return nil
 }

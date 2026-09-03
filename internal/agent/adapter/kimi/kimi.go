@@ -45,6 +45,9 @@ type Config struct {
 	// EvalModel 评估任务专用模型（-m；空 = 与生成同模型）。dogfood 性能治理：
 	// 评估输出仅几十 token，单座延迟瓶颈在模型档位——评估可降档、生成保持主模型。
 	EvalModel string
+	// Model 模型覆盖（v1.48：-m；空 = kimi config.toml 的 default_model——尊重
+	// CLI 侧既有选择）。0.39.1 无思考强度面（thinking 内建于模型能力）。
+	Model string
 }
 
 // Execer 进程执行抽象（UT 捕获/阻塞；生产为真实 kimi 子进程）。
@@ -133,7 +136,7 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 
 	args := []string{s.adapter.cfg.KimiPath}
 	args = append(args, s.adapter.cfg.ExtraArgs...)
-	args = append(args, s.evalModelArgs(task)...)
+	args = append(args, s.runtimeArgs(task)...)
 	args = append(args, "--output-format", "stream-json")
 	if sessID != "" {
 		args = append(args, "-S", sessID) // 连续性（实证：-p 与 -S 可组合）
@@ -193,10 +196,15 @@ func (s *session) execer() Execer {
 	return &processExecer{}
 }
 
-// evalModelArgs 评估降档（dogfood 性能治理）：评估任务追加 -m <EvalModel>。
-func (s *session) evalModelArgs(task agent.Task) []string {
+// runtimeArgs 运行参数（v1.48 设置面）：模型覆盖（-m）。评估任务优先级
+// EvalModel > Model > CLI 默认（评估降档不被主模型覆盖吞掉）。
+func (s *session) runtimeArgs(task agent.Task) []string {
+	model := s.adapter.cfg.Model
 	if task.Kind == agent.KindEvaluateIntent && s.adapter.cfg.EvalModel != "" {
-		return []string{"-m", s.adapter.cfg.EvalModel}
+		model = s.adapter.cfg.EvalModel
+	}
+	if model != "" {
+		return []string{"-m", model}
 	}
 	return nil
 }

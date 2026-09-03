@@ -428,6 +428,60 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/HarnessUnavailable" }
+  /v1/harness/executables/{id}:
+    put:
+      operationId: updateHarnessExecutable
+      summary: 更新运行参数（模型覆盖与思考强度；v1.48）
+      description: |
+        全量替换语义：空串 = 清除覆盖，回 CLI 自身配置默认（尊重用户在 CLI 侧的
+        既有选择）。模型名直接透传 CLI（codex/kimi 为 -m，mcode 为 --model
+        provider/model）；思考强度仅 codex 有此面（-c model_reasoning_effort=，
+        五档 minimal/low/medium/high/xhigh，实证 2026-09-03）。座位在下次
+        resync（≤10s）生效，无须重启。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ExecutableID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RuntimeUpdateRequest"
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, model, reasoning_effort]
+                properties:
+                  status: { type: string }
+                  model: { type: string }
+                  reasoning_effort: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/HarnessUnavailable" }
+  /v1/harness/executables/{id}/models:
+    get:
+      operationId: getHarnessExecutableModels
+      summary: 模型候选与思考强度档位（v1.48）
+      description: |
+        kimi 经 CLI 实查（provider list --json——唯一支持动态模型列表的一家，
+        实证 2026-09-03）；codex 返回五档思考强度与空模型候选（无官方列表命令，
+        自由输入）；mcode 空面。查询失败不阻塞：dynamic 仍为 true，空候选+手输。
+      parameters:
+        - $ref: "#/components/parameters/ExecutableID"
+      responses:
+        "200":
+          description: 候选面
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimeOptions"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/HarnessUnavailable" }
 components:
   securitySchemes:
     OwnerToken:
@@ -861,6 +915,9 @@ components:
         priority: { type: integer, description: 家族裁定优先级（数值小者优先；列表已按 adapter→priority→path 排序） }
         discovered_at: { type: string, format: date-time }
         enabled: { type: boolean }
+        eval_model: { type: string, description: 评估任务专用模型（手编；空 = 与生成同模型） }
+        model: { type: string, description: 模型覆盖（v1.48；空 = CLI 自身配置默认） }
+        reasoning_effort: { type: string, description: 思考强度（v1.48；仅 codex 有此面；空 = CLI 默认） }
     ManualExecutableRequest:
       type: object
       required: [adapter, runtime, path]
@@ -872,6 +929,29 @@ components:
         path: { type: string }
         version: { type: string }
         channel: { type: string, description: 可选渠道覆盖（cli 或 app:<小写>），空值按 cli }
+    RuntimeUpdateRequest:
+      type: object
+      required: [model, reasoning_effort]
+      additionalProperties: false
+      description: 运行参数更新体（全量替换；空串 = 清除覆盖回 CLI 默认）。
+      properties:
+        model: { type: string, maxLength: 120, description: "模型覆盖（codex/kimi 走 -m；mcode 走 --model provider/model）" }
+        reasoning_effort: { type: string, enum: ["", minimal, low, medium, high, xhigh], description: "思考强度（仅 codex；空 = CLI 默认）" }
+    RuntimeOptions:
+      type: object
+      required: [models, dynamic, effort_levels]
+      description: 模型候选与思考强度档位（设置页下拉数据源）。
+      properties:
+        models:
+          type: array
+          items:
+            type: object
+            required: [id]
+            properties:
+              id: { type: string, description: 传给 CLI 的模型名（kimi 为 alias） }
+              display_name: { type: string }
+        dynamic: { type: boolean, description: true = CLI 实查候选（kimi）；false = 无官方列表命令（空候选+自由输入） }
+        effort_levels: { type: array, items: { type: string }, description: 思考强度档位（仅 codex 非空） }
     TaskItem:
       type: object
       required: [task_id, owner, text, source_event_id, declared_at, declared_seq, waves_since, overdue, status]

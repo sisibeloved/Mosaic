@@ -289,7 +289,8 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 				}
 				switch exe.Adapter {
 				case "codex":
-					cfg := codex.Config{CodexPath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir, EvalModel: exe.EvalModel}
+					cfg := codex.Config{CodexPath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir,
+						EvalModel: exe.EvalModel, Model: exe.Model, ReasoningEffort: exe.ReasoningEffort}
 					if wslHome != "" {
 						cfg.WSLDistro = exe.Distro
 						cfg.WSLHome = wslHome
@@ -305,7 +306,8 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 					})
 				case "kimi":
 					// C 轨：第二个真实适配器（kimi -p stream-json + -S 会话恢复）。
-					cfg := kimi.Config{KimiPath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir, EvalModel: exe.EvalModel}
+					cfg := kimi.Config{KimiPath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir,
+						EvalModel: exe.EvalModel, Model: exe.Model}
 					if wslHome != "" {
 						cfg.WSLDistro = exe.Distro
 						cfg.WSLHome = wslHome
@@ -321,7 +323,8 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 				case "minimax":
 					// M3-1 观测基座：第三个真实适配器（mcode exec stream-json + --session 恢复，
 					// 提示词走 stdin——无 argv 上限；三 agent 同房构成真实并行/竞争场景）。
-					cfg := minimax.Config{McodePath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir, EvalModel: exe.EvalModel}
+					cfg := minimax.Config{McodePath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir,
+						EvalModel: exe.EvalModel, Model: exe.Model}
 					if wslHome != "" {
 						cfg.WSLDistro = exe.Distro
 						cfg.WSLHome = wslHome

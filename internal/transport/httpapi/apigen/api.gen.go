@@ -185,6 +185,36 @@ func (e RoomCommandCommandKind) Valid() bool {
 	}
 }
 
+// Defines values for RuntimeUpdateRequestReasoningEffort.
+const (
+	Empty   RuntimeUpdateRequestReasoningEffort = ""
+	High    RuntimeUpdateRequestReasoningEffort = "high"
+	Low     RuntimeUpdateRequestReasoningEffort = "low"
+	Medium  RuntimeUpdateRequestReasoningEffort = "medium"
+	Minimal RuntimeUpdateRequestReasoningEffort = "minimal"
+	Xhigh   RuntimeUpdateRequestReasoningEffort = "xhigh"
+)
+
+// Valid indicates whether the value is a known member of the RuntimeUpdateRequestReasoningEffort enum.
+func (e RuntimeUpdateRequestReasoningEffort) Valid() bool {
+	switch e {
+	case Empty:
+		return true
+	case High:
+		return true
+	case Low:
+		return true
+	case Medium:
+		return true
+	case Minimal:
+		return true
+	case Xhigh:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SearchHitActorKind.
 const (
 	SearchHitActorKindAgent  SearchHitActorKind = "agent"
@@ -387,15 +417,24 @@ type Executable struct {
 	Distro  *string `json:"distro,omitempty"`
 	Enabled bool    `json:"enabled"`
 
+	// EvalModel 评估任务专用模型（手编；空 = 与生成同模型）
+	EvalModel *string `json:"eval_model,omitempty"`
+
 	// Id 注册表唯一 ID（adapter@runtime:path）
 	Id string `json:"id"`
 
 	// LoginState logged_in | logged_out | unknown
 	LoginState *string `json:"login_state,omitempty"`
-	Path       string  `json:"path"`
+
+	// Model 模型覆盖（v1.48；空 = CLI 自身配置默认）
+	Model *string `json:"model,omitempty"`
+	Path  string  `json:"path"`
 
 	// Priority 家族裁定优先级（数值小者优先；列表已按 adapter→priority→path 排序）
 	Priority *int `json:"priority,omitempty"`
+
+	// ReasoningEffort 思考强度（v1.48；仅 codex 有此面；空 = CLI 默认）
+	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
 
 	// Runtime native | wsl
 	Runtime string `json:"runtime"`
@@ -518,6 +557,33 @@ type RoomSummary struct {
 	Paused bool   `json:"paused"`
 	RoomId string `json:"room_id"`
 }
+
+// RuntimeOptions 模型候选与思考强度档位（设置页下拉数据源）。
+type RuntimeOptions struct {
+	// Dynamic true = CLI 实查候选（kimi）；false = 无官方列表命令（空候选+自由输入）
+	Dynamic bool `json:"dynamic"`
+
+	// EffortLevels 思考强度档位（仅 codex 非空）
+	EffortLevels []string `json:"effort_levels"`
+	Models       []struct {
+		DisplayName *string `json:"display_name,omitempty"`
+
+		// Id 传给 CLI 的模型名（kimi 为 alias）
+		Id string `json:"id"`
+	} `json:"models"`
+}
+
+// RuntimeUpdateRequest 运行参数更新体（全量替换；空串 = 清除覆盖回 CLI 默认）。
+type RuntimeUpdateRequest struct {
+	// Model 模型覆盖（codex/kimi 走 -m；mcode 走 --model provider/model）
+	Model string `json:"model"`
+
+	// ReasoningEffort 思考强度（仅 codex；空 = CLI 默认）
+	ReasoningEffort RuntimeUpdateRequestReasoningEffort `json:"reasoning_effort"`
+}
+
+// RuntimeUpdateRequestReasoningEffort 思考强度（仅 codex；空 = CLI 默认）
+type RuntimeUpdateRequestReasoningEffort string
 
 // SearchHit 检索命中（对外视图：无 seq/tenant；position 供时间线跳转）。
 type SearchHit struct {
@@ -711,6 +777,9 @@ type SearchRoomMessagesParams struct {
 // AddHarnessExecutableJSONRequestBody defines body for AddHarnessExecutable for application/json ContentType.
 type AddHarnessExecutableJSONRequestBody = ManualExecutableRequest
 
+// UpdateHarnessExecutableJSONRequestBody defines body for UpdateHarnessExecutable for application/json ContentType.
+type UpdateHarnessExecutableJSONRequestBody = RuntimeUpdateRequest
+
 // CreateRoomJSONRequestBody defines body for CreateRoom for application/json ContentType.
 type CreateRoomJSONRequestBody = RoomCommand
 
@@ -731,12 +800,18 @@ type ServerInterface interface {
 	// AddHarnessExecutable 手动登记 agent CLI（探测失败拒收）
 	// (POST /v1/harness/executables)
 	AddHarnessExecutable(w http.ResponseWriter, r *http.Request)
+	// UpdateHarnessExecutable 更新运行参数（模型覆盖与思考强度；v1.48）
+	// (PUT /v1/harness/executables/{id})
+	UpdateHarnessExecutable(w http.ResponseWriter, r *http.Request, id ExecutableID)
 	// DisableHarnessExecutable 禁用可执行项（座位随 resync 撤出）
 	// (POST /v1/harness/executables/{id}/disable)
 	DisableHarnessExecutable(w http.ResponseWriter, r *http.Request, id ExecutableID)
 	// EnableHarnessExecutable 启用可执行项（登录门控；启用后 ≤10s 入座，无需重启）
 	// (POST /v1/harness/executables/{id}/enable)
 	EnableHarnessExecutable(w http.ResponseWriter, r *http.Request, id ExecutableID)
+	// GetHarnessExecutableModels 模型候选与思考强度档位（v1.48）
+	// (GET /v1/harness/executables/{id}/models)
+	GetHarnessExecutableModels(w http.ResponseWriter, r *http.Request, id ExecutableID)
 	// GetOwnerBootstrap 第一方客户端引导：返回 owner token（跨源门保护）
 	// (GET /v1/owner/bootstrap)
 	GetOwnerBootstrap(w http.ResponseWriter, r *http.Request)
@@ -828,6 +903,32 @@ func (siw *ServerInterfaceWrapper) AddHarnessExecutable(w http.ResponseWriter, r
 	handler.ServeHTTP(w, r)
 }
 
+// UpdateHarnessExecutable operation middleware
+func (siw *ServerInterfaceWrapper) UpdateHarnessExecutable(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id ExecutableID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateHarnessExecutable(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // DisableHarnessExecutable operation middleware
 func (siw *ServerInterfaceWrapper) DisableHarnessExecutable(w http.ResponseWriter, r *http.Request) {
 
@@ -871,6 +972,32 @@ func (siw *ServerInterfaceWrapper) EnableHarnessExecutable(w http.ResponseWriter
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.EnableHarnessExecutable(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetHarnessExecutableModels operation middleware
+func (siw *ServerInterfaceWrapper) GetHarnessExecutableModels(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id ExecutableID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetHarnessExecutableModels(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1244,6 +1371,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/enable", wrapper.EnableHarnessExecutable)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/disable", wrapper.DisableHarnessExecutable)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/v1/harness/executables/{id}", wrapper.UpdateHarnessExecutable)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables/{id}/models", wrapper.GetHarnessExecutableModels)
 
 	return m
 }

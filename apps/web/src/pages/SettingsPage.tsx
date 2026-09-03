@@ -4,6 +4,7 @@
 // 分层规矩：房间讨论策略在房间内调（抽屉"策略"Tab）；外观主题在个人中心。
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, type Executable } from "../api/client";
+import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
 import { useDevMode } from "../state/dev";
 import { adapterLabel, channelLabel } from "../lib/copy";
 import { truncate } from "../lib/ui";
@@ -96,35 +97,39 @@ export function SettingsPage() {
               {executables.map((exe) => {
                 const loginBlocked = exe.login_state !== "logged_in" && !exe.enabled;
                 return (
-                  <li key={exe.id} className="flex items-center gap-3 px-3 py-2.5">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-1.5 text-sm">
-                        <span className="font-medium">{adapterLabel(exe.adapter)}</span>
-                        <ExeBadge>{channelLabel(exe.channel)}</ExeBadge>
-                        <ExeBadge>{exe.runtime}{exe.distro ? `（${exe.distro}）` : ""}</ExeBadge>
-                        {exe.version && <span className="text-xs text-faint">{exe.version}</span>}
-                        <ExeBadge tone={exe.login_state === "logged_in" ? "ok" : "warn"}>
-                          {exe.login_state ?? "unknown"}
-                        </ExeBadge>
-                        {exe.source === "manual" && <ExeBadge>手动登记</ExeBadge>}
+                  <li key={exe.id} className="flex flex-col gap-1.5 px-3 py-2.5">
+                    <div className="flex items-center gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-1.5 text-sm">
+                          <span className="font-medium">{adapterLabel(exe.adapter)}</span>
+                          <ExeBadge>{channelLabel(exe.channel)}</ExeBadge>
+                          <ExeBadge>{exe.runtime}{exe.distro ? `（${exe.distro}）` : ""}</ExeBadge>
+                          {exe.version && <span className="text-xs text-faint">{exe.version}</span>}
+                          <ExeBadge tone={exe.login_state === "logged_in" ? "ok" : "warn"}>
+                            {exe.login_state ?? "unknown"}
+                          </ExeBadge>
+                          {exe.source === "manual" && <ExeBadge>手动登记</ExeBadge>}
+                        </div>
+                        <p className="mt-0.5 truncate font-mono text-[11px] text-faint" title={exe.path}>
+                          {truncate(exe.path, 64)}
+                        </p>
                       </div>
-                      <p className="mt-0.5 truncate font-mono text-[11px] text-faint" title={exe.path}>
-                        {truncate(exe.path, 64)}
-                      </p>
+                      <button
+                        type="button"
+                        disabled={busy === exe.id || loginBlocked}
+                        title={loginBlocked ? "未登录——请先在对应 CLI 登录" : undefined}
+                        onClick={() => void toggle(exe)}
+                        className={`shrink-0 rounded-lg px-2.5 py-1 text-xs transition-opacity disabled:opacity-40 ${
+                          exe.enabled
+                            ? "bg-accent-soft text-accent hover:opacity-85"
+                            : "bg-surface-3 text-text hover:opacity-85"
+                        }`}
+                      >
+                        {exe.enabled ? "已启用" : loginBlocked ? "未登录" : "启用"}
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      disabled={busy === exe.id || loginBlocked}
-                      title={loginBlocked ? "未登录——请先在对应 CLI 登录" : undefined}
-                      onClick={() => void toggle(exe)}
-                      className={`shrink-0 rounded-lg px-2.5 py-1 text-xs transition-opacity disabled:opacity-40 ${
-                        exe.enabled
-                          ? "bg-accent-soft text-accent hover:opacity-85"
-                          : "bg-surface-3 text-text hover:opacity-85"
-                      }`}
-                    >
-                      {exe.enabled ? "已启用" : loginBlocked ? "未登录" : "启用"}
-                    </button>
+                    {/* v1.48 运行参数：模型覆盖与思考强度（kimi 实查候选；codex 五档强度） */}
+                    <RuntimeOptsEditor exe={exe} />
                   </li>
                 );
               })}

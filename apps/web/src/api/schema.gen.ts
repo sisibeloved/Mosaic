@@ -243,6 +243,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/harness/executables/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * 更新运行参数（模型覆盖与思考强度；v1.48）
+         * @description 全量替换语义：空串 = 清除覆盖，回 CLI 自身配置默认（尊重用户在 CLI 侧的
+         *     既有选择）。模型名直接透传 CLI（codex/kimi 为 -m，mcode 为 --model
+         *     provider/model）；思考强度仅 codex 有此面（-c model_reasoning_effort=，
+         *     五档 minimal/low/medium/high/xhigh，实证 2026-09-03）。座位在下次
+         *     resync（≤10s）生效，无须重启。
+         */
+        put: operations["updateHarnessExecutable"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/harness/executables/{id}/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 模型候选与思考强度档位（v1.48）
+         * @description kimi 经 CLI 实查（provider list --json——唯一支持动态模型列表的一家，
+         *     实证 2026-09-03）；codex 返回五档思考强度与空模型候选（无官方列表命令，
+         *     自由输入）；mcode 空面。查询失败不阻塞：dynamic 仍为 true，空候选+手输。
+         */
+        get: operations["getHarnessExecutableModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -509,6 +555,12 @@ export interface components {
             /** Format: date-time */
             discovered_at?: string;
             enabled: boolean;
+            /** @description 评估任务专用模型（手编；空 = 与生成同模型） */
+            eval_model?: string;
+            /** @description 模型覆盖（v1.48；空 = CLI 自身配置默认） */
+            model?: string;
+            /** @description 思考强度（v1.48；仅 codex 有此面；空 = CLI 默认） */
+            reasoning_effort?: string;
         };
         ManualExecutableRequest: {
             adapter: string;
@@ -518,6 +570,28 @@ export interface components {
             version?: string;
             /** @description 可选渠道覆盖（cli 或 app:<小写>），空值按 cli */
             channel?: string;
+        };
+        /** @description 运行参数更新体（全量替换；空串 = 清除覆盖回 CLI 默认）。 */
+        RuntimeUpdateRequest: {
+            /** @description 模型覆盖（codex/kimi 走 -m；mcode 走 --model provider/model） */
+            model: string;
+            /**
+             * @description 思考强度（仅 codex；空 = CLI 默认）
+             * @enum {string}
+             */
+            reasoning_effort: "" | "minimal" | "low" | "medium" | "high" | "xhigh";
+        };
+        /** @description 模型候选与思考强度档位（设置页下拉数据源）。 */
+        RuntimeOptions: {
+            models: {
+                /** @description 传给 CLI 的模型名（kimi 为 alias） */
+                id: string;
+                display_name?: string;
+            }[];
+            /** @description true = CLI 实查候选（kimi）；false = 无官方列表命令（空候选+自由输入） */
+            dynamic: boolean;
+            /** @description 思考强度档位（仅 codex 非空） */
+            effort_levels: string[];
         };
         /** @description 任务清单项（M3-3 tasklist）：确定性派生（agent 消息宣言句）+ 人工门控裁定（task.resolved）。 */
         TaskItem: {
@@ -1111,6 +1185,66 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["HarnessUnavailable"];
+        };
+    };
+    updateHarnessExecutable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 注册表唯一 ID（含路径，URL 编码传递） */
+                id: components["parameters"]["ExecutableID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RuntimeUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已更新 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        status: string;
+                        model: string;
+                        reasoning_effort: string;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["HarnessUnavailable"];
+        };
+    };
+    getHarnessExecutableModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 注册表唯一 ID（含路径，URL 编码传递） */
+                id: components["parameters"]["ExecutableID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 候选面 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeOptions"];
+                };
+            };
             404: components["responses"]["NotFound"];
             503: components["responses"]["HarnessUnavailable"];
         };

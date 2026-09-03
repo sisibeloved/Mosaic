@@ -53,6 +53,14 @@ type Executable struct {
 	// EvalModel 评估任务专用模型（手编维护，跨扫描保留；空 = 与生成同模型）。
 	// dogfood 性能治理：评估输出仅几十 token，降档直接降单座评估延迟。
 	EvalModel string `json:"eval_model,omitempty"`
+	// Model 模型覆盖（手编维护，跨扫描保留；空 = CLI 自身配置默认——尊重用户
+	// 在 CLI 侧的既有选择，Mosaic 只在显式覆盖时传参）。v1.48 实证：codex/kimi
+	// 为 -m、mcode 为 --model provider/model。
+	Model string `json:"model,omitempty"`
+	// ReasoningEffort 思考强度（手编维护，跨扫描保留；空 = CLI 默认）。
+	// v1.48 实证：仅 codex 有此面（-c model_reasoning_effort=五档）；
+	// kimi 思考内建于模型能力（capabilities.thinking，无用户档位）、mcode 无。
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // Registry 域错误。
@@ -314,6 +322,8 @@ func (r *Registry) upsertLocked(exe Executable) {
 			prev := r.exes[i]
 			exe.Enabled = prev.Enabled     // 启用状态跨扫描保留（登录门控在 SetEnabled 把关）
 			exe.EvalModel = prev.EvalModel // 手编的评估降档跨扫描保留（扫描不产生该字段）
+			exe.Model = prev.Model         // 手编的模型覆盖跨扫描保留（同上）
+			exe.ReasoningEffort = prev.ReasoningEffort
 			if prev.Source == SourceManual {
 				exe.Source = SourceManual
 				if prev.Channel != "" {
@@ -508,4 +518,25 @@ func (r *Registry) EnabledList() []Executable {
 	}
 	sortByPriority(out)
 	return out
+}
+
+// UpdateRuntime 更新运行参数（v1.48：模型覆盖与思考强度；空值 = 清除覆盖回
+// CLI 自身配置默认）。座位在下次 resync（≤10s）拿到新参数。
+func (r *Registry) UpdateRuntime(id, model, reasoningEffort string) error {
+	if reasoningEffort != "" && !codexEffortSet[reasoningEffort] {
+		return fmt.Errorf("%w: reasoning_effort 取值 %v", ErrInvalidEntry, codexEffortLevels)
+	}
+	if len(model) > 120 {
+		return fmt.Errorf("%w: model 超 120 字", ErrInvalidEntry)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.exes {
+		if r.exes[i].ID == id {
+			r.exes[i].Model = model
+			r.exes[i].ReasoningEffort = reasoningEffort
+			return r.saveLocked()
+		}
+	}
+	return ErrNotFound
 }

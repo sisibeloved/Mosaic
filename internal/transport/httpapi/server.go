@@ -503,6 +503,71 @@ func (s *server) DisableHarnessExecutable(w http.ResponseWriter, r *http.Request
 	s.setEnabled(w, r, id, false)
 }
 
+// runtimeUpdateRequest 运行参数更新体（v1.48：模型覆盖与思考强度；全量替换
+// 语义，空串 = 清除覆盖回 CLI 自身配置默认）。
+type runtimeUpdateRequest struct {
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoning_effort"`
+}
+
+// UpdateHarnessExecutable PUT /v1/harness/executables/{id}：更新运行参数。
+// 座位在下次 resync（≤10s）拿到新参数——设置页保存后无须重启。
+func (s *server) UpdateHarnessExecutable(w http.ResponseWriter, r *http.Request, id apigen.ExecutableID) {
+	if s.deps.Harness == nil {
+		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req runtimeUpdateRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	if err := s.deps.Harness.UpdateRuntime(id, req.Model, req.ReasoningEffort); err != nil {
+		if errors.Is(err, harness.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		if errors.Is(err, harness.ErrInvalidEntry) {
+			writeError(w, http.StatusBadRequest, "invalid_entry", err.Error())
+			return
+		}
+		s.writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "model": req.Model, "reasoning_effort": req.ReasoningEffort})
+}
+
+// GetHarnessExecutableModels GET /v1/harness/executables/{id}/models：模型候选
+// 与思考强度档位（kimi 经 CLI 实查 provider list --json——唯一支持动态列表的
+// 一家；codex 五档强度+空候选自由输入；mcode 空面。实证 2026-09-03）。
+func (s *server) GetHarnessExecutableModels(w http.ResponseWriter, r *http.Request, id apigen.ExecutableID) {
+	if s.deps.Harness == nil {
+		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")
+		return
+	}
+	opts, err := s.deps.Harness.RuntimeOptionsOf(r.Context(), id, s.deps.ProbeRunner)
+	if err != nil {
+		if errors.Is(err, harness.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		s.writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, opts)
+}
+
 func (s *server) setEnabled(w http.ResponseWriter, r *http.Request, id string, enabled bool) {
 	if s.deps.Harness == nil {
 		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")

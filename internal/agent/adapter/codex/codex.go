@@ -34,6 +34,11 @@ type Config struct {
 	// EvalModel 评估任务专用模型（-m；空 = 与生成同模型）。dogfood 性能治理：
 	// 评估输出仅几十 token，单座延迟瓶颈在模型档位——评估可降档、生成保持主模型。
 	EvalModel string
+	// Model 模型覆盖（v1.48：-m；空 = CLI config.toml 默认——尊重 CLI 侧既有选择）。
+	Model string
+	// ReasoningEffort 思考强度（v1.48：-c model_reasoning_effort=；五档
+	// minimal/low/medium/high/xhigh；空 = CLI 默认。exec 与 exec resume 面均接受，实证）。
+	ReasoningEffort string
 }
 
 // Execer 进程执行抽象（UT 捕获/阻塞；生产为真实 codex 子进程）。
@@ -112,15 +117,16 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 
 	argv := []string{s.adapter.cfg.CodexPath, "exec", "--json", "--skip-git-repo-check", "-s", "read-only"}
 	argv = append(argv, s.adapter.cfg.ExtraArgs...)
-	argv = append(argv, s.evalModelArgs(task)...)
+	argv = append(argv, s.runtimeArgs(task)...)
 	if s.adapter.cfg.WorkDir != "" {
 		argv = append(argv, "-C", s.adapter.cfg.WorkDir) // 工作目录隔离（仅首轮）
 	}
 	if thread != "" {
 		// 连续性：resume <thread_id>（子命令不接受 -s 与 -C——实证 resume 传 -C 即
-		// exit 2 "unexpected argument"，沙箱/工作目录随会话首轮固定；-m 接受，0.151 实证）
+		// exit 2 "unexpected argument"，沙箱/工作目录随会话首轮固定；-m/-c 接受，
+		// 0.151/2026-09-03 实证）
 		argv = []string{s.adapter.cfg.CodexPath, "exec", "resume", "--json", "--skip-git-repo-check", thread}
-		argv = append(argv, s.evalModelArgs(task)...)
+		argv = append(argv, s.runtimeArgs(task)...)
 	}
 	argv = append(argv, "-") // 提示词走 stdin：避免 argv 转义与长度问题
 
@@ -180,12 +186,22 @@ func (s *session) execer() Execer {
 	return &processExecer{}
 }
 
-// evalModelArgs 评估降档（dogfood 性能治理）：评估任务追加 -m <EvalModel>。
-func (s *session) evalModelArgs(task agent.Task) []string {
+// runtimeArgs 运行参数（v1.48 设置面）：模型覆盖与思考强度。评估任务模型
+// 优先级 EvalModel > Model > CLI 默认（评估降档不被主模型覆盖吞掉）；
+// model_reasoning_effort 全任务生效（exec 与 resume 面均接受）。
+func (s *session) runtimeArgs(task agent.Task) []string {
+	var args []string
+	model := s.adapter.cfg.Model
 	if task.Kind == agent.KindEvaluateIntent && s.adapter.cfg.EvalModel != "" {
-		return []string{"-m", s.adapter.cfg.EvalModel}
+		model = s.adapter.cfg.EvalModel
 	}
-	return nil
+	if model != "" {
+		args = append(args, "-m", model)
+	}
+	if s.adapter.cfg.ReasoningEffort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+s.adapter.cfg.ReasoningEffort)
+	}
+	return args
 }
 
 // envFor 按运行面构造子进程环境（native 用宿主 HOME；wsl 用发行版内 HOME）。

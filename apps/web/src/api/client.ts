@@ -12,6 +12,7 @@ export type ParticipantView = Schemas["ParticipantView"];
 export type ManualExecutableRequest = Schemas["ManualExecutableRequest"];
 export type TaskItem = Schemas["TaskItem"];
 export type SearchHit = Schemas["SearchHit"];
+export type RuntimeOptions = Schemas["RuntimeOptions"];
 export type MemoryCapsule = NonNullable<NonNullable<components["schemas"]["MemoryView"]>["capsules"]>[number];
 
 /** 记忆查看面（GET /v1/rooms/{id}/memory）。 */
@@ -231,6 +232,18 @@ export const api = {
     return request(`/v1/harness/executables/${encodeURIComponent(id)}/${enabled ? "enable" : "disable"}`, {
       method: "POST",
     });
+  },
+  /** v1.48 运行参数：模型覆盖与思考强度（全量替换；空串 = 清除回 CLI 默认）。 */
+  updateExecutable(id: string, model: string, reasoningEffort: string): Promise<{ status: string }> {
+    return request(`/v1/harness/executables/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, reasoning_effort: reasoningEffort }),
+    });
+  },
+  /** v1.48 模型候选与强度档位（kimi 实查；codex 五档强度；mcode 空面）。 */
+  executableModels(id: string): Promise<RuntimeOptions> {
+    return request(`/v1/harness/executables/${encodeURIComponent(id)}/models`);
   },
   debugState(roomID: string): Promise<unknown> {
     return request(`/v1/debug/rooms/${encodeURIComponent(roomID)}/state`);
