@@ -75,7 +75,9 @@ type chatGrantPolicy struct {
 }
 
 func defaultChatPolicy() chatGrantPolicy {
-	return chatGrantPolicy{GrantExpiry: 30 * time.Second, ResponseCap: 500}
+	// v1.37（dogfood）：500 → 1200——实测模型常态发言超 500 rune 触发截断标注；
+	// 群聊语境一句话仍偏短，1200 兼顾成本与"别截断成残句"。
+	return chatGrantPolicy{GrantExpiry: 30 * time.Second, ResponseCap: 1200}
 }
 
 // 对话环检测阈值：历史尾部连续 agent 消息 ≥ 该数（无人类介入）即不开新波

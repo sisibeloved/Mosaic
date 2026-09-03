@@ -685,6 +685,38 @@ components:
           description: 收束清单（M3-2：pending 可接受 / accepted / rejected 各一条摘要）。
           items:
             $ref: "#/components/schemas/ClosureSummary"
+        evidence_requests:
+          type: array
+          description: 证据需求单（M3-5：open/resolved/dismissed）。
+          items:
+            $ref: "#/components/schemas/EvidenceRequestView"
+        dev_notes:
+          type: array
+          description: 开发者模式回放条目（M3-1 持久化补全：事件支撑的 [dev] 内联信息，重启还原）。
+          items:
+            $ref: "#/components/schemas/DevNote"
+    DevNote:
+      type: object
+      required: [position, event_id, type, occurred_at, payload]
+      properties:
+        position: { type: string }
+        event_id: { type: string }
+        type: { type: string }
+        occurred_at: { type: string, format: date-time }
+        payload: { type: object }
+    EvidenceRequestView:
+      type: object
+      required: [request_id, question, status]
+      properties:
+        request_id: { type: string }
+        claim_id: { type: string }
+        question: { type: string }
+        required_evidence: { type: array, items: { type: string } }
+        acceptance_criteria: { type: string }
+        owners: { type: array, items: { type: string } }
+        status: { type: string, enum: [open, resolved, dismissed] }
+        evidence_refs: { type: array, items: { type: string } }
+        reopen_thread_on_resolution: { type: boolean }
     ClosureSummary:
       type: object
       required: [closure_id, thread_id, state, ready, evaluated, concluded, objected]

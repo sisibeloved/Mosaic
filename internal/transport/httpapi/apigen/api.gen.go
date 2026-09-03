@@ -53,6 +53,27 @@ func (e ClosureSummaryState) Valid() bool {
 	}
 }
 
+// Defines values for EvidenceRequestViewStatus.
+const (
+	Dismissed EvidenceRequestViewStatus = "dismissed"
+	Open      EvidenceRequestViewStatus = "open"
+	Resolved  EvidenceRequestViewStatus = "resolved"
+)
+
+// Valid indicates whether the value is a known member of the EvidenceRequestViewStatus enum.
+func (e EvidenceRequestViewStatus) Valid() bool {
+	switch e {
+	case Dismissed:
+		return true
+	case Open:
+		return true
+	case Resolved:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ParticipantViewKind.
 const (
 	Agent  ParticipantViewKind = "agent"
@@ -236,6 +257,15 @@ type CommandResponse struct {
 	RoomVersion int64  `json:"room_version"`
 }
 
+// DevNote defines model for DevNote.
+type DevNote struct {
+	EventId    string                 `json:"event_id"`
+	OccurredAt time.Time              `json:"occurred_at"`
+	Payload    map[string]interface{} `json:"payload"`
+	Position   string                 `json:"position"`
+	Type       string                 `json:"type"`
+}
+
 // Error defines model for Error.
 type Error struct {
 	Error struct {
@@ -244,6 +274,22 @@ type Error struct {
 		Message string `json:"message"`
 	} `json:"error"`
 }
+
+// EvidenceRequestView defines model for EvidenceRequestView.
+type EvidenceRequestView struct {
+	AcceptanceCriteria       *string                   `json:"acceptance_criteria,omitempty"`
+	ClaimId                  *string                   `json:"claim_id,omitempty"`
+	EvidenceRefs             *[]string                 `json:"evidence_refs,omitempty"`
+	Owners                   *[]string                 `json:"owners,omitempty"`
+	Question                 string                    `json:"question"`
+	ReopenThreadOnResolution *bool                     `json:"reopen_thread_on_resolution,omitempty"`
+	RequestId                string                    `json:"request_id"`
+	RequiredEvidence         *[]string                 `json:"required_evidence,omitempty"`
+	Status                   EvidenceRequestViewStatus `json:"status"`
+}
+
+// EvidenceRequestViewStatus defines model for EvidenceRequestView.Status.
+type EvidenceRequestViewStatus string
 
 // Executable defines model for Executable.
 type Executable struct {
@@ -361,8 +407,14 @@ type Snapshot struct {
 	// Closures 收束清单（M3-2：pending 可接受 / accepted / rejected 各一条摘要）。
 	Closures *[]ClosureSummary `json:"closures,omitempty"`
 
+	// DevNotes 开发者模式回放条目（M3-1 持久化补全：事件支撑的 [dev] 内联信息，重启还原）。
+	DevNotes *[]DevNote `json:"dev_notes,omitempty"`
+
 	// DisplayName 房间名（room.created/room.renamed 投影产物）
 	DisplayName string `json:"display_name"`
+
+	// EvidenceRequests 证据需求单（M3-5：open/resolved/dismissed）。
+	EvidenceRequests *[]EvidenceRequestView `json:"evidence_requests,omitempty"`
 
 	// Graph 显式关系边（forked_from/responds_to/merged_into + relations 类型化边）。推断边属结构投影（M3），接入后标 inferred=true——双视图显式与推断区分。
 	Graph []struct {

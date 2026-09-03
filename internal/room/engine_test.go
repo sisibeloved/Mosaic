@@ -1465,7 +1465,7 @@ func TestEngineEvalUsageCountsTowardAdmission(t *testing.T) {
 		eng := NewEngine(EngineConfig{
 			Store: store, Reader: store, Agents: sup,
 			Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "stub_intent"}}},
-			Budget: contextx.Limits{MaxTokens: 800}, // RFC-0012：默认 cap 500——零耗时预留过、评估 500 后 500+500>800 失格
+			Budget: contextx.Limits{MaxTokens: 1500}, // v1.37：默认 cap 1200——零耗时预留过（1200<1500）、评估 500 后 500+1200>1500 失格
 			Clock:  testClock, Now: time.Now, ReactionWindow: 5 * time.Millisecond,
 			NewID: counterNewID(), Tenant: "ten_local",
 		})

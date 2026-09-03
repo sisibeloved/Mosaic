@@ -150,6 +150,46 @@ function projections(snap: Snapshot) {
   };
 }
 
+
+/** 开发者模式内联格式化（直播与重启回放同一出口——[dev] 条目不随刷新失真）。 */
+function devDetailOf(
+  type: string,
+  payload: unknown,
+  resolveName: (pid?: string) => string,
+): string | null {
+  const p = ((payload ?? {}) as Record<string, any>) ?? {};
+  switch (type) {
+    case "intent.recorded":
+      return `[dev] 意向 ${resolveName(p.participant_id)}：${p.action ?? "?"}${
+        p.type ? ` · ${p.type}` : ""
+      }${p.public_rationale ? `（${p.public_rationale}）` : ""}`;
+    case "floor.granted":
+      return `[dev] 发言权 → ${resolveName(p.participant_id)}${p.grant_id ? `（${p.grant_id}）` : ""}`;
+    case "floor.revoked":
+      return `[dev] 发言权撤销${p.reason ? `：${p.reason}` : ""}`;
+    case "participant.admitted":
+      return `[dev] ${resolveName(p.participant_id)} 入房（invite_agent）`;
+    case "closure.proposed":
+      return `[dev] 收束提议（${p.trigger ?? "human"}）`;
+    case "closure.evaluated":
+      return `[dev] 收束表态 ${resolveName(p.participant_id)}：${p.action ?? "?"}${
+        p.qualified ? "（合格异议）" : ""
+      }${p.rationale ? `（${p.rationale}）` : ""}`;
+    case "closure.rejected":
+      return `[dev] 收束被合格异议中止（${p.reason ?? "?"}）`;
+    case "closure.accepted":
+      return `[dev] 收束已接受（${p.closure_type ?? "?"}）`;
+    case "pause_capsule.created":
+      return `[dev] 预算暂停胶囊（${p.pause_reason ?? "?"}，未收敛非结论）`;
+    case "evidence_request.created":
+      return `[dev] 证据需求单：${p.question ?? ""}`;
+    case "evidence_request.resolved":
+      return `[dev] 证据需求单${p.resolution === "dismissed" ? "驳回" : "解决"}`;
+    default:
+      return null;
+  }
+}
+
 export function useRoom(roomID: string | null): RoomHandle {
   const [state, setState] = useState<RoomModelState | null>(null);
   const [connection, setConnection] = useState<Connection>("idle");
@@ -316,38 +356,7 @@ export function useRoom(roomID: string | null): RoomHandle {
         if (devMode) {
           const nm = (pid?: string) =>
             pid ? (prev.participants.find((x) => x.participant_id === pid)?.display_name ?? pid) : "?";
-          let detail: string | null = null;
-          switch (type) {
-            case "intent.recorded": {
-              const p = view.payload as
-                | { participant_id?: string; action?: string; type?: string; public_rationale?: string }
-                | null;
-              detail = `[dev] 意向 ${nm(p?.participant_id)}：${p?.action ?? "?"}${
-                p?.type ? ` · ${p.type}` : ""
-              }${p?.public_rationale ? `（${p.public_rationale}）` : ""}`;
-              break;
-            }
-            case "floor.granted": {
-              const p = view.payload as { participant_id?: string; grant_id?: string } | null;
-              detail = `[dev] 发言权 → ${nm(p?.participant_id)}${p?.grant_id ? `（${p.grant_id}）` : ""}`;
-              break;
-            }
-            case "floor.revoked": {
-              const p = view.payload as { reason?: string } | null;
-              detail = `[dev] 发言权撤销${p?.reason ? `：${p.reason}` : ""}`;
-              break;
-            }
-            case "participant.admitted": {
-              const p = view.payload as { participant_id?: string } | null;
-              detail = `[dev] ${nm(p?.participant_id)} 入房（invite_agent）`;
-              break;
-            }
-            case "policy.changed": {
-              const p = view.payload as { policy_version?: string; mode?: string } | null;
-              detail = `[dev] 策略变更 → ${p?.mode ?? "?"}（${p?.policy_version ?? "?"}）`;
-              break;
-            }
-          }
+          let detail: string | null = devDetailOf(type, view.payload, nm);
           if (detail) append(systemEntry(view, detail));
         }
         return next;
@@ -415,9 +424,24 @@ export function useRoom(roomID: string | null): RoomHandle {
       if (roomRef.current !== id) return; // 等待期间已切换房间
       versionRef.current = snap.room_version;
       grantSeatRef.current = {};
-      setState({
-        roomID: id,
-        entries: snap.timeline.map((item) =>
+      // 开发者模式回放（持久化补全 v1.37）：事件支撑的 [dev] 条目随快照还原——
+      // 重启/刷新不再失真；wave.skipped 等无事件瞬态仍不入史。
+      const replayDev = devMode
+        ? (snap.dev_notes ?? []).map((n) => ({
+            key: n.event_id,
+            kind: "system" as const,
+            actorID: "",
+            actorKind: "system" as const,
+            occurredAt: n.occurred_at,
+            detail:
+              devDetailOf(n.type, n.payload, (pid) =>
+                pid
+                  ? (snap.participants.find((x2) => x2.participant_id === pid)?.display_name ?? pid)
+                  : "?",
+              ) ?? `[dev] ${n.type}`,
+          }))
+        : [];
+      const baseEntries: TimelineEntry[] = snap.timeline.map((item) =>
           item.type === "message.posted"
             ? {
                 key: item.event_id,
@@ -436,7 +460,12 @@ export function useRoom(roomID: string | null): RoomHandle {
                 occurredAt: item.occurred_at,
                 detail: SYSTEM_EVENT_TEXT[item.type] ?? item.type,
               },
-        ),
+        );
+      baseEntries.push(...replayDev);
+      baseEntries.sort((a, b) => (a.occurredAt < b.occurredAt ? -1 : 1));
+      setState({
+        roomID: id,
+        entries: baseEntries,
         typing: {},
         roundOpen: false,
         paused: false,

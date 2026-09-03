@@ -373,6 +373,30 @@ export interface components {
             timeline: components["schemas"]["TimelineItem"][];
             /** @description 收束清单（M3-2：pending 可接受 / accepted / rejected 各一条摘要）。 */
             closures?: components["schemas"]["ClosureSummary"][];
+            /** @description 证据需求单（M3-5：open/resolved/dismissed）。 */
+            evidence_requests?: components["schemas"]["EvidenceRequestView"][];
+            /** @description 开发者模式回放条目（M3-1 持久化补全：事件支撑的 [dev] 内联信息，重启还原）。 */
+            dev_notes?: components["schemas"]["DevNote"][];
+        };
+        DevNote: {
+            position: string;
+            event_id: string;
+            type: string;
+            /** Format: date-time */
+            occurred_at: string;
+            payload: Record<string, never>;
+        };
+        EvidenceRequestView: {
+            request_id: string;
+            claim_id?: string;
+            question: string;
+            required_evidence?: string[];
+            acceptance_criteria?: string;
+            owners?: string[];
+            /** @enum {string} */
+            status: "open" | "resolved" | "dismissed";
+            evidence_refs?: string[];
+            reopen_thread_on_resolution?: boolean;
         };
         ClosureSummary: {
             closure_id: string;

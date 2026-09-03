@@ -41,6 +41,7 @@ type Snapshot struct {
 	Timeline          []TimelineItem        `json:"timeline"`
 	Closures          []ClosureSummary      `json:"closures"`
 	EvidenceRequests  []EvidenceRequestView `json:"evidence_requests"`
+	DevNotes          []DevNote             `json:"dev_notes"`
 	Scorecard         []ScorecardItem       `json:"scorecard"`
 	Threads           []ThreadView          `json:"threads"`
 	Roster            []string              `json:"roster"`
@@ -86,6 +87,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 		Timeline:          []TimelineItem{},
 		Closures:          []ClosureSummary{},
 		EvidenceRequests:  []EvidenceRequestView{},
+		DevNotes:          []DevNote{},
 		Scorecard:         []ScorecardItem{},
 		Participants:      []ParticipantView{}, // 装配层注入位：投影恒空（ADR-0011 注记）
 	}
@@ -193,6 +195,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 	}
 	snap.Closures = closuresOf(events)
 	snap.EvidenceRequests = EvidenceRequestsOf(events)
+	snap.DevNotes = DevNotesOf(events)
 	return snap
 }
 
@@ -258,6 +261,52 @@ func closuresOf(events []StoredEvent) []ClosureSummary {
 				out[i].ClosureType = p.ClosureType
 			}
 		}
+	}
+	return out
+}
+
+// DevNote 开发者模式回放条目：type+payload 原样（SPA 复用直播侧同一格式化）。
+type DevNote struct {
+	Position   string          `json:"position"`
+	EventID    string          `json:"event_id"`
+	Type       string          `json:"type"`
+	OccurredAt string          `json:"occurred_at"`
+	Payload    json.RawMessage `json:"payload"`
+}
+
+// devNoteTypes 直播侧 [dev] 内联覆盖的事件族（round.* 内部化——波骨架由
+// waves 档案承载；wave.skipped 无事件，不可回放）。
+var devNoteTypes = map[string]bool{
+	protocol.EventIntentRecorded:          true,
+	protocol.EventFloorGranted:            true,
+	protocol.EventFloorRevoked:            true,
+	protocol.EventParticipantAdmitted:     true,
+	protocol.EventClosureProposed:         true,
+	protocol.EventClosureEvaluated:        true,
+	protocol.EventClosureRejected:         true,
+	protocol.EventClosureAccepted:         true,
+	protocol.EventPauseCapsuleCreated:     true,
+	protocol.EventEvidenceRequestCreated:  true,
+	protocol.EventEvidenceRequestResolved: true,
+}
+
+// devNotesWindow 回放条目上限（个人版房间护栏；最新保留）。
+const devNotesWindow = 200
+
+// DevNotesOf 事件流 → 开发者回放条目（时间序，最新 200 条）。
+func DevNotesOf(events []StoredEvent) []DevNote {
+	out := []DevNote{}
+	for _, ev := range events {
+		if !devNoteTypes[ev.Envelope.Type] {
+			continue
+		}
+		out = append(out, DevNote{
+			Position: ev.Cursor, EventID: ev.Envelope.EventID, Type: ev.Envelope.Type,
+			OccurredAt: ev.Envelope.OccurredAt, Payload: ev.Envelope.Payload,
+		})
+	}
+	if len(out) > devNotesWindow {
+		out = out[len(out)-devNotesWindow:]
 	}
 	return out
 }
