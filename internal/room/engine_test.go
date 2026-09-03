@@ -227,6 +227,7 @@ func TestEngineMultiSeatSelection(t *testing.T) {
 		Tenant: "ten_local",
 		RoomID: "room_multi",
 	})
+	defer eng.Close() // 双 echo 座礼貌互答=无限交替（v1.43 环闸退役）：不关即僵尸引擎
 
 	store.AppendEvents(context.Background(), []protocol.Envelope{{
 		EventID: "evt_m_create", TenantID: "ten_local", RoomID: "room_multi",
@@ -359,6 +360,12 @@ type gatedHandle struct {
 func (h *gatedHandle) Updates() <-chan agent.DraftUpdate { return nil }
 
 func (h *gatedHandle) Result() (agent.Result, error) {
+	// 取消先行（与真实适配器对齐）：引擎 Close 后遗留的在途评估不得再触发全局
+	// evalHook——否则串扰下一个测试刚装的 hook（无界链测试与 Close 竞态实测：
+	// pause 事件被提前注入下一测试，围栏误判"开波前已恢复"而放行发布）。
+	if h.ctx.Err() != nil {
+		return agent.Result{}, agent.ErrStale
+	}
 	if h.task.Kind == agent.KindEvaluateIntent {
 		if _, _, hook := gatedSnapshot(); hook != nil { // 评估阶段注入事件（复审 #13）
 			hook()
@@ -484,6 +491,7 @@ func TestEngineLateRejectionOnPause(t *testing.T) {
 	setGate(make(chan struct{}))
 	defer setGate(nil)
 	eng := newEchoEngine(store, sup, contextx.Limits{}, "gated")
+	defer eng.Close() // 恒发言链无界（v1.43 环闸退役）：测试面必须收束，防跨测试串扰
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "l1", TenantID: "ten_local", RoomID: "room_l", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
@@ -595,6 +603,7 @@ func TestEngineGenerateFailureRevokesWithReason(t *testing.T) {
 	setGenFail(true)
 	defer setGenFail(false)
 	eng := newEchoEngine(store, sup, contextx.Limits{}, "gated")
+	defer eng.Close() // 恒发言链无界（v1.43 环闸退役）：测试面必须收束，防跨测试串扰
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "g1", TenantID: "ten_local", RoomID: "room_g", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
@@ -624,8 +633,8 @@ func TestEngineGenerateFailureRevokesWithReason(t *testing.T) {
 // 同房间轮串行：第二条刺激不得与在途轮并发开轮（同 epoch 双轮是竞态缺陷）。
 // RFC-0012：波串行 + 去抖合并——两条快速连发的人类消息合并为一个反应波
 // （窗口重锚，锚=最新消息 s2）；波内生成阻塞期间无第二波开启（单飞）。
-// 恒发言座（gated 无礼貌自决）→ 链由对话环检测收口（v1.40：结构冷却拆除后
-// 的有界终止）。
+// 恒发言座（gated 无礼貌自决）→ 链无结构上界（v1.43：环检测整体退役后
+// 终止只剩意愿静默 + 人类暂停；本测试用恒发言座钉串行/去抖语义，链本身不再收口）。
 func TestEngineWavesSerializeAndDebounce(t *testing.T) {
 	store := NewMemStore()
 	sup := agent.NewSupervisor()
@@ -634,6 +643,9 @@ func TestEngineWavesSerializeAndDebounce(t *testing.T) {
 	setGate(make(chan struct{}))
 	defer setGate(nil)
 	eng := newEchoEngine(store, sup, contextx.Limits{}, "gated")
+	defer eng.Close() // 恒发言链无界（v1.43 环闸退役）：测试面必须收束，防跨测试串扰
+	defer eng.Close() // v1.43 环闸退役后恒发言链无界——不关即僵尸引擎（worker 跨测试持续评估，
+	// 其全局 evalHook 会串扰后续测试，pause 注入错位致围栏误判）
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "s0", TenantID: "ten_local", RoomID: "room_s", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
@@ -682,16 +694,14 @@ func TestEngineWavesSerializeAndDebounce(t *testing.T) {
 	if humanAnchored != 1 {
 		t.Fatalf("连发两条应去抖合并为一个波：evt_s2 锚定波 = %d（期望 1）", humanAnchored)
 	}
-	// 恒发言座链的有界终止：逐波各发一条，尾部达短闸阈值（单声音=闭环保龄病理）
-	// 条 agent 消息后对话环检测收口——不再开第 7 波。
+	// 恒发言座链无结构上界（v1.43 对话环退役）：越过旧短闸阈值继续开波——
+	// 终止只由意愿静默/引擎关停治理（defer Close 收束）。
 	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) &&
-		countType(store.RoomEvents("room_s"), protocol.EventRoundOpened) < defaultRingDyadTail {
+	for time.Now().Before(deadline) && countType(store.RoomEvents("room_s"), protocol.EventRoundOpened) < 8 {
 		time.Sleep(5 * time.Millisecond)
 	}
-	time.Sleep(150 * time.Millisecond)
-	if n := countType(store.RoomEvents("room_s"), protocol.EventRoundOpened); n != defaultRingDyadTail {
-		t.Fatalf("对话环应收口恒发言链：round.opened = %d（期望 %d）", n, defaultRingDyadTail)
+	if n := countType(store.RoomEvents("room_s"), protocol.EventRoundOpened); n < 8 {
+		t.Fatalf("恒发言链应越过旧环闸阈值继续开波：round.opened = %d（期望 ≥8）", n)
 	}
 }
 
@@ -704,6 +714,7 @@ func TestEngineCloseAbortsInflight(t *testing.T) {
 	setGate(make(chan struct{}))
 	defer setGate(nil)
 	eng := newEchoEngine(store, sup, contextx.Limits{}, "gated")
+	defer eng.Close() // 恒发言链无界（v1.43 环闸退役）：测试面必须收束，防跨测试串扰
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "c1", TenantID: "ten_local", RoomID: "room_c2", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
@@ -755,11 +766,14 @@ func TestEngineReceiptCreatedAt(t *testing.T) {
 		}(),
 		Tenant: "ten_local",
 	})
+	defer eng.Close()
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "t1", TenantID: "ten_local", RoomID: "room_t", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
 	deliverHuman(t, store, eng, "room_t")
-	waitRoundClosed(t, store, "room_t")
+	// 等两波全落：波 2（评估自己上一条 → 礼貌静默）的评估同样插 Receipt——
+	// 只等波 1 就读 captured 会与波 2 评估的 append 竞争。
+	waitRoundsClosed(t, store, "room_t", 2)
 	if len(captured) == 0 {
 		t.Fatal("应捕获 Context Receipt")
 	}
@@ -908,6 +922,7 @@ func TestEnginePauseResumeFence(t *testing.T) {
 	setGate(make(chan struct{}))
 	defer setGate(nil)
 	eng := newEchoEngine(store, sup, contextx.Limits{}, "gated")
+	defer eng.Close() // 恒发言链无界（v1.43 环闸退役）：测试面必须收束，防跨测试串扰
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "pf1", TenantID: "ten_local", RoomID: "room_pf", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
@@ -954,6 +969,7 @@ func TestEngineDurableHandoffClaim(t *testing.T) {
 		Clock: testClock, Now: time.Now, ReactionWindow: 5 * time.Millisecond,
 		NewID: counterNewID(), Tenant: "ten_local",
 	})
+	defer eng.Close() // 恒发言链无界（v1.43 环闸退役）：不关即僵尸引擎（gated 评估触发全局 evalHook 串扰后续测试）
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "dh0", TenantID: "ten_local", RoomID: "room_dh", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
@@ -1333,6 +1349,7 @@ func TestEnginePauseDuringEvalRevokesBeforeGrant(t *testing.T) {
 	_ = sup.Register(gatedAdapter{})
 	defer sup.Shutdown()
 	eng := newEchoEngine(store, sup, contextx.Limits{}, "gated")
+	defer eng.Close() // 恒发言链无界（v1.43 环闸退役）：测试面必须收束，防跨测试串扰
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "pe0", TenantID: "ten_local", RoomID: "room_pe", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
@@ -1552,6 +1569,7 @@ func TestEngineRevokedUsageEntersLedger(t *testing.T) {
 	setGenUsage(&agent.Usage{InputTokens: 40, OutputTokens: 2})
 	defer setGenUsage(nil)
 	eng := newEchoEngine(store, sup, contextx.Limits{}, "gated")
+	defer eng.Close() // 恒发言链无界（v1.43 环闸退役）：测试面必须收束，防跨测试串扰
 	store.AppendEvents(context.Background(), []protocol.Envelope{
 		{EventID: "ru0", TenantID: "ten_local", RoomID: "room_ru", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})

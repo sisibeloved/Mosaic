@@ -96,7 +96,7 @@ func deterministicResult(task agent.Task) agent.Result {
 	case agent.KindEvaluateIntent:
 		// 礼貌语义（v1.40 结构冷却拆除后的测试基线）：最近消息是自己刚发的 →
 		// 自决 silent——模拟"看到自己上一条、无新语境可回"的生产模型自决静默。
-		// 连续发言不再被结构拦截，终止依赖本语义 + 对话环检测兜底。
+		// 连续发言不被结构拦截，链终止唯一依赖本语义（v1.43 环检测整体退役）。
 		if latestIsOwn(task) {
 			return agent.Result{
 				Block: "turn_intent",

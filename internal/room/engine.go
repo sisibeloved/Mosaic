@@ -4,8 +4,8 @@
 // silent=自决不回）→ 意愿放行（无中央选人；记分卡分仅作波内排序与 band 透明）
 // → sequential 发授/生成/发布（CAS 迟到围栏；逐发言人生成时刷新语境——后发者
 // 可见同波先发消息与波中人类插话）→ 每条发布再开新窗口 → round.closed。
-// 终止（v1.40 裁定：结构冷却拆除，闸二道）：意愿静默（全员 silent → quiescent，
-// 不再开窗）/ 对话环检测（尾部连续 ≥6 条 agent 消息不开波）；另有暂停随时掐断。
+// 终止（v1.43 裁定：对话环检测整体退役——双边辩论是目标场景，无病理实录不设闸）：
+// 意愿静默是唯一结构闸（全员 silent → quiescent，不再开窗）；人类暂停随时掐断。
 // 崩溃语义：反应窗口为内存 timer——崩溃即静默，不重复开波（人类补发即续）。
 package room
 
@@ -40,8 +40,8 @@ type ReceiptStore interface {
 // DraftSink 草稿流出口（安全子集：text_delta/stage；广播侧负责可见性，M1 仅 public）。
 type DraftSink func(roomID, participantID string, update agent.DraftUpdate)
 
-// WaveSkipSink 波门控跳过通知出口（reason：paused | ring | thread_inactive |
-// no_seats）。瞬态信号——门控跳过不是语义事件，不落事件日志；广播侧以瞬态帧投递，
+// WaveSkipSink 波门控跳过通知出口（reason：paused | thread_inactive | no_seats）。
+// 瞬态信号——门控跳过不是语义事件，不落事件日志；广播侧以瞬态帧投递，
 // 供开发者模式在房间内向用户解释"为什么没人说话"。
 type WaveSkipSink func(roomID, reason string)
 
@@ -56,10 +56,6 @@ type EngineConfig struct {
 	// ProactiveSilence 主动开口静默期（OQ-A/M3-3，MaiBot 式）：波链静默（quiescent
 	// 收波）后该时长无人类消息，则主动开一波（agent 自决是否起话）。0 = 关闭。
 	ProactiveSilence time.Duration
-	// RingDyadTail / RingAbsoluteTail 对话环阈值（v1.42 形制导；0 = 默认 6/30）：
-	// 闭环保龄（尾部 ≤2 说话人）短闸 / 任意形状绝对兜底。归 OQ-B 设置族（M4）。
-	RingDyadTail     int
-	RingAbsoluteTail int
 	Receipts         ReceiptStore     // 可选
 	OnDraft          DraftSink        // 可选：草稿流出口
 	OnWaveSkip       WaveSkipSink     // 可选：波门控跳过通知（开发者模式可观测性）
@@ -83,15 +79,9 @@ func defaultChatPolicy() chatGrantPolicy {
 	return chatGrantPolicy{GrantExpiry: 30 * time.Second}
 }
 
-// 对话环检测（v1.42 形制导，dogfood 实证修订）：病理形状=闭环保龄——尾部连续
-// agent 消息仅 ≤RingDyadTail 个说话人互答（RFC-0012 原始病理"双 bot 无限互相
-// 客气"）；多方轮转（≥3 说话人）是健康讨论（实证：三方来源审计讨论在第 6 条
-// 被旧计数闸误杀），不受短闸约束，仅受 RingAbsoluteTail 绝对兜底（防失控；
-// 人类一条消息即重置尾部、讨论可续）。
-const (
-	defaultRingDyadTail     = 6
-	defaultRingAbsoluteTail = 30
-)
+// 对话环检测已整体退役（v1.43 负责人裁定：双边辩论是目标场景——无病理实录
+// 不设闸；终止=意愿静默唯一结构闸 + 人类暂停。历史：v1.29 计数闸 ≥6 → v1.42
+// 形制导 → 本版全拆，RFC-0012 附录 F）。
 
 // 评估近窗（dogfood 性能治理）：评估只判"回不回/怎么回"，无需生成的全量语境；
 // 收小窗口直接降每次评估的输入 token——单座评估延迟的最大构成。
@@ -524,14 +514,6 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 		e.waveSkip(roomID, "paused")
 		return
 	}
-	// 门控：对话环检测——尾部连续 agent 消息无人类介入 ≥ 阈值 → 强制收口
-	// 门控：对话环检测（形制导）——闭环保龄（≤2 说话人互答 ≥RingDyadTail）或
-	// 任意形状 ≥RingAbsoluteTail → 强制收口；多方轮转讨论不受短闸约束。
-	if e.ringTripped(history) {
-		e.debug(roomID, "波跳过：对话环收口", "agent_tail", agentMessageTail(history))
-		e.waveSkip(roomID, "ring")
-		return
-	}
 	envs := make([]protocol.Envelope, len(history))
 	for i := range history {
 		envs[i] = history[i].Envelope
@@ -547,8 +529,9 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 	}
 	// 席位：全员参评（v1.40 负责人裁定：结构冷却拆除——连续发言不再一刀切跳过，
 	// 其三道豁免补丁随之消解）。防自言自语交给意图自决静默（agent 评估语境含自己
-	// 刚发的最新消息，可自决不回）；防无限互聊由对话环检测兜底（尾部 ≥6 条 agent
-	// 消息不开波）；"互相对答上一条"的滞后由逐发言人生成时语境刷新治本（见第 5 步）。
+	// 刚发的最新消息，可自决不回）；互聊链长不设结构上界（v1.43：环检测整体退役，
+	// 双边辩论是目标场景）；"互相对答上一条"的滞后由逐发言人生成时语境刷新治本
+	// （见第 5 步）。
 	seats := e.roomSeats(history)
 	if len(seats) == 0 {
 		e.debug(roomID, "波跳过：无 agent 席位", "anchor", anchor.EventID)
@@ -655,7 +638,7 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 		})
 	closed.Metadata = map[string]any{"timing": timing}
 	_, _ = e.append(ctx, closed)
-	if e.cfg.ProactiveSilence > 0 && len(e.roomSeats(history)) > 0 && !e.ringTripped(history) {
+	if e.cfg.ProactiveSilence > 0 && len(e.roomSeats(history)) > 0 {
 		e.scheduleProactive(roomID) // OQ-A：静默期后 agent 可自起一波
 	}
 	e.debug(roomID, "波结束", "round", roundID, "outcome", outcome,
@@ -909,74 +892,6 @@ func lastMessage(events []StoredEvent) *protocol.Envelope {
 		}
 	}
 	return nil
-}
-
-// agentMessageTail 尾部连续 agent 消息数（对话环检测；遇人类消息即止）。
-func agentMessageTail(events []StoredEvent) int {
-	n := 0
-	for i := len(events) - 1; i >= 0; i-- {
-		env := events[i].Envelope
-		if env.Type != protocol.EventMessagePosted {
-			continue
-		}
-		if env.Actor.Kind == "agent" {
-			n++
-			continue
-		}
-		break
-	}
-	return n
-}
-
-// trailingAgentEnvelopes 尾部连续 agent 消息（逆序收集，遇人类消息即止）。
-func trailingAgentEnvelopes(events []StoredEvent) []protocol.Envelope {
-	var out []protocol.Envelope
-	for i := len(events) - 1; i >= 0; i-- {
-		env := events[i].Envelope
-		if env.Type != protocol.EventMessagePosted {
-			continue
-		}
-		if env.Actor.Kind == "agent" {
-			out = append(out, env)
-			continue
-		}
-		break
-	}
-	return out
-}
-
-// ringTripped 形制导对话环（v1.42）：闭环保龄（尾部 ≤2 说话人 ≥RingDyadTail）
-// 或任意形状触绝对兜底（≥RingAbsoluteTail）。多方轮转（≥3 说话人）健康讨论
-// 只受后者约束。
-func (e *Engine) ringTripped(events []StoredEvent) bool {
-	tail := trailingAgentEnvelopes(events)
-	if len(tail) >= e.ringAbsoluteTail() {
-		return true
-	}
-	if len(tail) >= e.ringDyadTail() {
-		speakers := map[string]bool{}
-		for _, env := range tail {
-			speakers[env.Actor.ParticipantID] = true
-		}
-		if len(speakers) <= 2 {
-			return true
-		}
-	}
-	return false
-}
-
-func (e *Engine) ringDyadTail() int {
-	if e.cfg.RingDyadTail > 0 {
-		return e.cfg.RingDyadTail
-	}
-	return defaultRingDyadTail
-}
-
-func (e *Engine) ringAbsoluteTail() int {
-	if e.cfg.RingAbsoluteTail > 0 {
-		return e.cfg.RingAbsoluteTail
-	}
-	return defaultRingAbsoluteTail
 }
 
 // revealCandidate sequential 揭示链：发授（水位取当下）→ 生成 → 发布。
