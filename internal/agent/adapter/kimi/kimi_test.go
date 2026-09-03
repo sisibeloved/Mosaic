@@ -1,6 +1,7 @@
-// UT 层：native-kimi 适配器——stream-json 解析（fixtures 钉 0.39.1）、argv 契约
-// （-p 走 argv + -S resume）、发布门委托、提示词长度护栏、取消语义、
-// conformance 套件（桩输出钉结构）。真机三件套见 kimi_it_test.go（IT 层）。
+// UT 层：native-kimi 适配器——stream-json 解析（fixtures 钉 0.39.1）、传输契约
+// （提示词走 stdin + sh "$(cat)" 代入、-S resume、-m 评估降档）、发布门委托、
+// 提示词物理上限护栏、取消语义、conformance 套件（桩输出钉结构）。
+// 真机三件套见 kimi_it_test.go（IT 层）。
 package kimi
 
 import (
@@ -21,9 +22,10 @@ import (
 // ---- Execer 捕获装置 ----
 
 type capturedCall struct {
-	argv []string
-	env  []string
-	dir  string
+	argv  []string
+	env   []string
+	dir   string
+	stdin string
 }
 
 type fakeExecer struct {
@@ -35,10 +37,10 @@ type fakeExecer struct {
 	block   bool // 阻塞至 ctx 取消（取消语义用）
 }
 
-func (f *fakeExecer) Exec(ctx context.Context, argv []string, env []string, dir string) (string, int, error) {
+func (f *fakeExecer) Exec(ctx context.Context, argv []string, env []string, dir string, stdin string) (string, int, error) {
 	f.mu.Lock()
 	idx := len(f.calls)
-	f.calls = append(f.calls, capturedCall{argv: append([]string(nil), argv...), env: env, dir: dir})
+	f.calls = append(f.calls, capturedCall{argv: append([]string(nil), argv...), env: env, dir: dir, stdin: stdin})
 	f.mu.Unlock()
 	if f.block {
 		<-ctx.Done()
@@ -119,14 +121,19 @@ func TestIntentMapping(t *testing.T) {
 	if res.Usage != nil {
 		t.Fatalf("kimi 无 usage 面，不得虚构：%+v", res.Usage)
 	}
-	// argv 契约：-p <prompt> --output-format stream-json；提示词含任务身份
-	argv := exec.calls[0].argv
-	joined := strings.Join(argv, "\x00")
-	if !strings.Contains(joined, "-p") || !strings.Contains(joined, "--output-format\x00stream-json") {
-		t.Fatalf("argv 契约不符：%v", argv)
+	// 传输契约（v1.41）：提示词走 stdin（sh "$(cat)" 代入），argv 恒定——不得
+	// 携带提示词本体；旗标照旧 --output-format stream-json；提示词含任务身份。
+	call := exec.calls[0]
+	joined := strings.Join(call.argv, "\x00")
+	if !strings.Contains(joined, `exec "$@" -p "$(cat)"`) ||
+		!strings.Contains(joined, "--output-format\x00stream-json") {
+		t.Fatalf("argv 契约不符：%v", call.argv)
 	}
-	if !strings.Contains(joined, `"task_id":"t1"`) {
-		t.Fatalf("提示词应携带任务身份：%v", argv)
+	if strings.Contains(joined, `"task_id":"t1"`) {
+		t.Fatalf("提示词不得进 argv（Windows 命令行上限回归）：%v", call.argv)
+	}
+	if !strings.Contains(call.stdin, `"task_id":"t1"`) {
+		t.Fatalf("提示词应经 stdin 携带任务身份：%q", call.stdin)
 	}
 }
 
@@ -200,14 +207,15 @@ func TestGeneratePublishGate(t *testing.T) {
 	})
 }
 
-// TestPromptTooLargeGuard：提示词超 argv 安全上限 fail fast（kimi -p 不读 stdin，实证）。
+// TestPromptTooLargeGuard：提示词超单参数物理上限（Linux MAX_ARG_STRLEN 兜底）
+// fail fast——物理边界而非策略闸。
 func TestPromptTooLargeGuard(t *testing.T) {
 	exec := &fakeExecer{}
-	adapter := New(Config{KimiPath: "/x/kimi", Execer: exec, MaxPromptRunes: 16})
+	adapter := New(Config{KimiPath: "/x/kimi", Execer: exec, MaxPromptBytes: 16})
 	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p5", Adapter: "kimi"})
 	defer sess.Close()
 	h, _ := sess.Run(context.Background(), agent.Task{TaskID: "t-big", Kind: agent.KindEvaluateIntent})
-	if _, err := h.Result(); err == nil || !strings.Contains(err.Error(), "argv 安全上限") {
+	if _, err := h.Result(); err == nil || !strings.Contains(err.Error(), "单参数物理上限") {
 		t.Fatalf("超上限应明确报错：%v", err)
 	}
 	if len(exec.calls) != 0 {
@@ -247,17 +255,20 @@ func TestCancelBeforeResult(t *testing.T) {
 }
 
 // TestWSLArgvShape：WSL 运行面的 argv 包装（纯函数钉住：--exec 直 exec + env -i 清空
-// + cd 工作目录）。--exec 是 2026-09-01 实证修复：`--` 剩余参数被 wsl.exe 拼接后交
-// 发行版默认 shell 解释（引号剥除/元字符执行），kimi -p 提示词必毁（Kimi 每波评估
-// 静默失败的根因）——含 | 与引号的提示词必须作为单一 argv 元素原样存活。
+// + cd 工作目录 + 内层 sh "$(cat)" 提示词代入）。--exec 是 2026-09-01 实证修复：
+// `--` 剩余参数被 wsl.exe 拼接后交发行版默认 shell 解释（引号剥除/元字符执行），
+// 含 | 与引号的脚本/提示词必被毁——一切参数必须作为单一 argv 元素原样存活，
+// 提示词本体则根本不进 argv（stdin 传输，v1.41）。
 func TestWSLArgvShape(t *testing.T) {
-	metacharPrompt := `Reply {"action":"speak|silent","body":"pong"} quote"pipe|`
-	args := wslArgs("Ubuntu", []string{"HOME=/home/u", "PATH=/x:/bin"}, "/home/u/.mosaic/agent-work/prof_k", []string{"/home/u/.kimi-code/bin/kimi", "-p", metacharPrompt, "--output-format", "stream-json"})
+	inner := []string{"sh", "-c", `exec "$@" -p "$(cat)"`, "sh",
+		"/home/u/.kimi-code/bin/kimi", "--output-format", "stream-json"}
+	args := wslArgs("Ubuntu", []string{"HOME=/home/u", "PATH=/x:/bin"}, "/home/u/.mosaic/agent-work/prof_k", inner)
 	want := []string{
 		"-d", "Ubuntu", "--exec", "env", "-i",
 		"HOME=/home/u", "PATH=/x:/bin",
 		"sh", "-c", `cd "$1" && shift && exec "$@"`, "sh", "/home/u/.mosaic/agent-work/prof_k",
-		"/home/u/.kimi-code/bin/kimi", "-p", metacharPrompt, "--output-format", "stream-json",
+		"sh", "-c", `exec "$@" -p "$(cat)"`, "sh",
+		"/home/u/.kimi-code/bin/kimi", "--output-format", "stream-json",
 	}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("wslArgs = %v\n期望 %v", args, want)
@@ -294,14 +305,8 @@ type promptExecer struct {
 	fn func(prompt string) string
 }
 
-func (p *promptExecer) Exec(_ context.Context, argv []string, _ []string, _ string) (string, int, error) {
-	prompt := ""
-	for i, a := range argv {
-		if a == "-p" && i+1 < len(argv) {
-			prompt = argv[i+1]
-		}
-	}
-	return p.fn(prompt), 0, nil
+func (p *promptExecer) Exec(_ context.Context, argv []string, _ []string, _ string, stdin string) (string, int, error) {
+	return p.fn(stdin), 0, nil
 }
 
 func mustJSON(t *testing.T, s string) string {

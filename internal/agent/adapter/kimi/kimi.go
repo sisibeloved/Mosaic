@@ -3,9 +3,12 @@
 // stream-json 行流；实证 kimi-code 0.39.1：meta system.version / assistant content /
 // meta session.resume_hint 三类行——fixtures 钉版本，漂移由 conformance 暴露）。
 // 会话连续性：resume_hint 捕获 session_id，后续任务以 -S <id> 恢复（实证 codeword 回忆）。
-// 已知约束（实证 2026-08-31）：-p 提示词只走 argv（"-p -" 不读 stdin）——argv 有 OS
-// 长度上限（Windows CreateProcess ≈32k 字符），MaxPromptRunes 前置护栏fail fast；
-// 大上下文/流式草稿的解法是 ACP 通道（kimi acp 已在官方命令面），登记为演进项。
+// 已知约束（实证 2026-08-31，传输面修订 2026-09-03）：-p 提示词只认 argv（"-p -"
+// 不读 stdin），且 kimi 无 --input/文件通道（0.39.1 --help 实证）——提示词经
+// sh -c 'exec "$@" -p "$(cat)"' 由 stdin 代入：宿主命令行长度恒定，Windows
+// CreateProcess ≈32k 上限与曾经的 6000 rune 护栏均出局；残余物理边界是 Linux
+// MAX_ARG_STRLEN（128KiB/参数），MaxPromptBytes 兜底 fail fast；
+// 流式草稿的解法是 ACP 通道（kimi acp 已在官方命令面），登记为演进项。
 package kimi
 
 import (
@@ -34,18 +37,21 @@ type Config struct {
 	// 经 wsl.exe -d <WSLDistro> 包装执行。
 	WSLDistro string
 	WSLHome   string // 发行版内 HOME（宿主 HOME 不适用；由 harness.HostRunner.Home 解析）
-	// MaxPromptRunes 提示词 argv 安全上限（默认 6000）：kimi -p 不读 stdin（实证），
-	// 提示词全量进 argv；超限 fail fast 报明确错误，胜过 OS spawn 失败。
-	MaxPromptRunes int
+	// MaxPromptBytes 提示词物理上限（默认 100KiB）：提示词经 sh "$(cat)" 代入发行版
+	// 内 kimi argv，受 Linux MAX_ARG_STRLEN（128KiB/参数）约束——留边际 fail fast，
+	// 胜过 OS exec 失败。这是物理边界而非策略闸（对照：旧 6000 rune 护栏防的是
+	// Windows CreateProcess 命令行上限，stdin 传输已使其出局）。
+	MaxPromptBytes int
 	// EvalModel 评估任务专用模型（-m；空 = 与生成同模型）。dogfood 性能治理：
 	// 评估输出仅几十 token，单座延迟瓶颈在模型档位——评估可降档、生成保持主模型。
 	EvalModel string
 }
 
 // Execer 进程执行抽象（UT 捕获/阻塞；生产为真实 kimi 子进程）。
-// dir 为进程工作目录（kimi 无 -C 等价物——cwd 即会话工作区）。
+// dir 为进程工作目录（kimi 无 -C 等价物——cwd 即会话工作区）；stdin 为提示词
+// （经 sh "$(cat)" 代入 kimi argv）。
 type Execer interface {
-	Exec(ctx context.Context, argv []string, env []string, dir string) (stdout string, exitCode int, err error)
+	Exec(ctx context.Context, argv []string, env []string, dir string, stdin string) (stdout string, exitCode int, err error)
 }
 
 // Adapter 实现 agent.Adapter。
@@ -58,8 +64,8 @@ func New(cfg Config) *Adapter {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 120 * time.Second
 	}
-	if cfg.MaxPromptRunes <= 0 {
-		cfg.MaxPromptRunes = 6000
+	if cfg.MaxPromptBytes <= 0 {
+		cfg.MaxPromptBytes = 100 * 1024
 	}
 	return &Adapter{cfg: cfg}
 }
@@ -105,8 +111,9 @@ func (s *session) Run(ctx context.Context, task agent.Task) (agent.Handle, error
 func (s *session) Cancel(string) {}
 func (s *session) Close()        {}
 
-// execute 单任务执行：构建提示词 → kimi -p [--output-format stream-json]（-S 连续性）
-// → 解析 → 映射。提示词走 argv（实证 -p 不读 stdin）；argv 长度前置护栏。
+// execute 单任务执行：构建提示词 → sh -c 'exec "$@" -p "$(cat)"' 包装（提示词走
+// stdin，kimi -p 不读 stdin 由 sh 代入 argv）→ kimi --output-format stream-json
+// （-S 连续性）→ 解析 → 映射。
 func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 	defer close(h.done)
 
@@ -115,8 +122,8 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 		h.err = err
 		return
 	}
-	if n := len([]rune(prompt)); n > s.adapter.cfg.MaxPromptRunes {
-		h.err = fmt.Errorf("kimi: 提示词超 argv 安全上限（%d > %d runes）：kimi -p 不读 stdin（实证），缩小上下文或走 ACP 通道", n, s.adapter.cfg.MaxPromptRunes)
+	if n := len(prompt); n > s.adapter.cfg.MaxPromptBytes {
+		h.err = fmt.Errorf("kimi: 提示词超单参数物理上限（%d > %d 字节，Linux MAX_ARG_STRLEN 128KiB 边界）：缩小上下文或走 ACP 通道", n, s.adapter.cfg.MaxPromptBytes)
 		return
 	}
 
@@ -124,15 +131,18 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 	sessID := s.sessID
 	s.mu.Unlock()
 
-	argv := []string{s.adapter.cfg.KimiPath}
-	argv = append(argv, s.adapter.cfg.ExtraArgs...)
-	argv = append(argv, s.evalModelArgs(task)...)
-	argv = append(argv, "-p", prompt, "--output-format", "stream-json")
+	args := []string{s.adapter.cfg.KimiPath}
+	args = append(args, s.adapter.cfg.ExtraArgs...)
+	args = append(args, s.evalModelArgs(task)...)
+	args = append(args, "--output-format", "stream-json")
 	if sessID != "" {
-		argv = append(argv, "-S", sessID) // 连续性（实证：-p 与 -S 可组合）
+		args = append(args, "-S", sessID) // 连续性（实证：-p 与 -S 可组合）
 	}
+	// 提示词传输（v1.41）：stdin + sh "$(cat)" 代入——宿主命令行恒定（曾经的 6000
+	// rune 上限及其诱因 Windows CreateProcess ≈32k 出局）；$(cat) 剥除尾换行无害。
+	argv := append([]string{"sh", "-c", `exec "$@" -p "$(cat)"`, "sh"}, args...)
 
-	stdout, code, err := s.execer().Exec(taskCtx, argv, s.envFor(), s.adapter.cfg.WorkDir)
+	stdout, code, err := s.execer().Exec(taskCtx, argv, s.envFor(), s.adapter.cfg.WorkDir, prompt)
 	if err != nil {
 		if taskCtx.Err() != nil {
 			h.stale = true // 取消/超时：不发布正文，语义同迟到拒绝
@@ -439,12 +449,14 @@ type processExecer struct{}
 
 // Exec 返回 stdout+stderr 合并流（kimi 诊断走 stderr——官方文档；ParseStream 忽略非
 // JSON 行）。卡死防御与 codex 同构：WaitDelay + POSIX 进程组击杀（sysproc_posix.go）。
-func (p *processExecer) Exec(ctx context.Context, argv []string, env []string, dir string) (string, int, error) {
+// stdin（提示词）经 sh "$(cat)" 代入 kimi argv。
+func (p *processExecer) Exec(ctx context.Context, argv []string, env []string, dir string, stdin string) (string, int, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = env
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	cmd.Stdin = bytes.NewReader([]byte(stdin))
 	var combined bytes.Buffer
 	cmd.Stdout = &combined
 	cmd.Stderr = &combined
@@ -486,11 +498,12 @@ func wslArgs(distro string, env []string, dir string, argv []string) []string {
 	return args
 }
 
-func (w *wslExecer) Exec(ctx context.Context, argv []string, env []string, dir string) (string, int, error) {
+func (w *wslExecer) Exec(ctx context.Context, argv []string, env []string, dir string, stdin string) (string, int, error) {
 	// 网络配置改取发行版侧（同 codex 真机复现结论：宿主无代理变量 → 发行版内
 	// CLI 直连被墙）。宿主侧同名键剥除，发行版登录环境白名单键注入。
 	env = wslenv.MergeForWSL(env, wslenv.NetEnv(w.distro))
 	cmd := exec.CommandContext(ctx, "wsl.exe", wslArgs(w.distro, env, dir, argv)...)
+	cmd.Stdin = bytes.NewReader([]byte(stdin)) // 提示词（--exec stdin 直通，发行版内 sh $(cat) 代入）
 	var combined bytes.Buffer
 	cmd.Stdout = &combined
 	cmd.Stderr = &combined
