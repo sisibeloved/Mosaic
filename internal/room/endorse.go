@@ -67,13 +67,8 @@ func (e *Engine) runEndorse(ctx context.Context, endorsed protocol.Envelope) {
 	for i := range history {
 		envs[i] = history[i].Envelope
 	}
-	ledger := contextx.RebuildBudget(envs)
+	_ = contextx.RebuildBudget(envs) // 统计口径保留（v1.38：成本不入门控）
 	policy := defaultChatPolicy()
-	if !ledger.Admit(e.cfg.Budget) ||
-		!ledger.ReserveOK(e.cfg.Budget, 1, policy.ResponseCap) {
-		e.debug(roomID, "保送跳过：预算熔断/预留不足", "intent", payload.IntentID)
-		return
-	}
 
 	// 上下文重组：原轮刺激为锚 + 保送指令层（OQ-17 可追溯）
 	anchor := endorsed
@@ -91,8 +86,8 @@ func (e *Engine) runEndorse(ctx context.Context, endorsed protocol.Envelope) {
 		RoomID: roomID, TaskID: endorsed.EventID, Mode: "chat", Seats: seatsMin,
 		RecentWindow: 10, Endorse: true,
 		Budget: contextx.BudgetState{
-			RemainingTokens: remainingTokens(ledger, e.cfg.Budget),
-			Level:           ledger.Level(e.cfg.Budget),
+			RemainingTokens: remainingTokens(contextx.RebuildBudget(envs), e.cfg.Budget),
+			Level:           contextx.RebuildBudget(envs).Level(e.cfg.Budget),
 		},
 	}, envs, anchor)
 	if e.cfg.Receipts != nil {
@@ -178,7 +173,6 @@ func (e *Engine) issueGrantCustom(ctx context.Context, roomID, causationEventID 
 			ContextWatermark: int(watermark),
 			Epoch:            0,
 			ExpiresAt:        e.cfg.Now().Add(policy.GrantExpiry).UTC().Format(time.RFC3339Nano),
-			ResponseCap:      int(policy.ResponseCap),
 			Directed:         false,
 		})
 	grant.Metadata = map[string]any{"endorsed": true}

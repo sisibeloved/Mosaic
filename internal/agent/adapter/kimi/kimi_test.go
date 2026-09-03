@@ -198,40 +198,6 @@ func TestGeneratePublishGate(t *testing.T) {
 			t.Fatalf("空正文应拒发布：%v", err)
 		}
 	})
-
-	t.Run("超限截断标注", func(t *testing.T) {
-		long := strings.Repeat("长", 5000)
-		exec := &fakeExecer{outputs: []string{mkStream(long)}}
-		sess, _ := newTestAdapter(exec).Boot(context.Background(), agent.Profile{ProfileID: "p3", Adapter: "kimi"})
-		defer sess.Close()
-		h, _ := sess.Run(context.Background(), task)
-		res, err := h.Result()
-		if err != nil {
-			t.Fatalf("result: %v", err)
-		}
-		body, _ := res.Data["body"].(string)
-		if !strings.Contains(body, "[Mosaic: 输出超限已截断]") || len([]rune(body)) > 4100 {
-			t.Fatalf("超限应显式截断标注：%d runes", len([]rune(body)))
-		}
-	})
-
-	t.Run("grant ResponseCap 约束发布", func(t *testing.T) {
-		exec := &fakeExecer{outputs: []string{mkStream(strings.Repeat("字", 100))}}
-		sess, _ := newTestAdapter(exec).Boot(context.Background(), agent.Profile{ProfileID: "p4", Adapter: "kimi"})
-		defer sess.Close()
-		h, _ := sess.Run(context.Background(), agent.Task{
-			TaskID: "tg2", Kind: agent.KindGenerate,
-			Grant: &agent.Grant{GrantID: "g2", Rank: 1, Epoch: 1, ResponseCap: 20},
-		})
-		res, err := h.Result()
-		if err != nil {
-			t.Fatalf("result: %v", err)
-		}
-		body, _ := res.Data["body"].(string)
-		if runes := len([]rune(body)); runes > 60 || !strings.Contains(body, "截断") {
-			t.Fatalf("grant ResponseCap=20 应约束发布：got %d runes", runes)
-		}
-	})
 }
 
 // TestPromptTooLargeGuard：提示词超 argv 安全上限 fail fast（kimi -p 不读 stdin，实证）。

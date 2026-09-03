@@ -112,12 +112,6 @@ func (e *Engine) runClosure(ctx context.Context, roomID, proposedEventID string)
 		e.debug(roomID, "收束跳过：线程不在活跃态", "closure", pp.ClosureID, "thread", pp.ThreadID)
 		return
 	}
-	// 预算熔断不触发收束（只产暂停胶囊）；评估自身也耗预算——熔断即止
-	ledger := contextx.RebuildBudget(envs)
-	if !ledger.Admit(e.cfg.Budget) {
-		e.debug(roomID, "收束跳过：预算熔断", "closure", pp.ClosureID)
-		return
-	}
 
 	seats := e.roomSeats(history)
 	if len(seats) == 0 {
@@ -138,8 +132,8 @@ func (e *Engine) runClosure(ctx context.Context, roomID, proposedEventID string)
 		RoomID: roomID, TaskID: pp.ClosureID, Mode: "chat", Seats: seatsMin,
 		RecentWindow: 10,
 		Budget: contextx.BudgetState{
-			RemainingTokens: remainingTokens(ledger, e.cfg.Budget),
-			Level:           ledger.Level(e.cfg.Budget),
+			RemainingTokens: remainingTokens(contextx.RebuildBudget(envs), e.cfg.Budget),
+			Level:           contextx.RebuildBudget(envs).Level(e.cfg.Budget),
 		},
 	}, envs, last)
 	taskContext := agent.Context{Inline: assembled.Inline, ReceiptRef: assembled.Receipt.ReceiptID}

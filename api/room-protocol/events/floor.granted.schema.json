@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://mosaic.local/room-protocol/events/floor.granted.schema.json",
   "title": "FloorGrantedPayload",
-  "description": "FloorGrant 签发：意愿放行记账（RFC-0012）；epoch 用于迟到拒绝（AR-004/AR-008）。",
+  "description": "FloorGrant 签发：意愿放行记账（RFC-0012）；epoch 用于迟到拒绝（AR-004/AR-008）。 v1.38：response_cap 随 token 成本门控退役移除（成本只统计不影响主线）。",
   "type": "object",
   "required": [
     "grant_id",
@@ -12,7 +12,6 @@
     "context_watermark",
     "epoch",
     "expires_at",
-    "response_cap",
     "directed"
   ],
   "additionalProperties": false,
@@ -44,10 +43,6 @@
     "expires_at": {
       "type": "string",
       "format": "date-time"
-    },
-    "response_cap": {
-      "type": "integer",
-      "minimum": 1
     },
     "directed": {
       "type": "boolean",

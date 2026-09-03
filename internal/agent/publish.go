@@ -69,18 +69,14 @@ func SanitizeRelations(v any) []any {
 }
 
 // PublishGate 发布边界总成（generate 任务产出进事件日志前必过）：
-// 正文控制字符剔除 → DLP 剔除 → 去首尾空白 → 空正文判失败 → 超 maxRunes 截断并
+// 正文控制字符剔除 → DLP 剔除 → 去首尾空白 → 空正文判失败。v1.38（负责人裁定）
+// 移除 rune 截断：token 成本只做统计，绝不影响主线能力——原文照发；超常输出由
+// 任务超时（生成时长上限）天然有界，防复读/注入的兜底也是时长而非长度。
 // 显式标注；declared_relations 逐项过同一套门。
-// maxRunes 由调用方取 grant 宣告 ResponseCap 与适配器自身上限的较小者（宣告即执行）。
-func PublishGate(body string, relations any, maxRunes int) (string, []any, error) {
+func PublishGate(body string, relations any) (string, []any, error) {
 	body = RedactSecrets(SanitizeBody(body))
 	if body == "" {
 		return "", nil, fmt.Errorf("agent: 发布正文为空（拒绝发布）")
-	}
-	if maxRunes > 0 {
-		if runes := len([]rune(body)); runes > maxRunes {
-			body = string([]rune(body)[:maxRunes]) + "\n[Mosaic: 输出超限已截断]"
-		}
 	}
 	return body, SanitizeRelations(relations), nil
 }

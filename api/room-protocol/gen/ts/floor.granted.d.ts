@@ -6,7 +6,7 @@
  */
 
 /**
- * FloorGrant 签发：意愿放行记账（RFC-0012）；epoch 用于迟到拒绝（AR-004/AR-008）。
+ * FloorGrant 签发：意愿放行记账（RFC-0012）；epoch 用于迟到拒绝（AR-004/AR-008）。 v1.38：response_cap 随 token 成本门控退役移除（成本只统计不影响主线）。
  */
 export interface FloorGrantedPayload {
   grant_id: string;
@@ -16,7 +16,6 @@ export interface FloorGrantedPayload {
   context_watermark: number;
   epoch: number;
   expires_at: string;
-  response_cap: number;
   /**
    * true 表示来自点名/定向交锋快速通道（3.1.9）
    */

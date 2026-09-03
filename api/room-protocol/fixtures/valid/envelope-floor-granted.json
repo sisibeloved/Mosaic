@@ -25,7 +25,6 @@
     "context_watermark": 151,
     "epoch": 7,
     "expires_at": "2026-08-25T10:00:33.000Z",
-    "response_cap": 600,
     "directed": false
   },
   "metadata": {}

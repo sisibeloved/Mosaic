@@ -6,8 +6,13 @@
   "type": "floor.granted",
   "schema_version": 1,
   "occurred_at": "2026-08-25T10:00:00.000Z",
-  "actor": { "participant_id": "par_system", "kind": "system" },
-  "visibility": { "kind": "participants" },
+  "actor": {
+    "participant_id": "par_system",
+    "kind": "system"
+  },
+  "visibility": {
+    "kind": "participants"
+  },
   "payload": {
     "grant_id": "grant_01H8TESTGRANT000000000",
     "round_id": "rnd_01H8TESTROUND00000000000",
@@ -17,7 +22,6 @@
     "context_watermark": 151,
     "epoch": 7,
     "expires_at": "2026-08-25T10:00:33.000Z",
-    "response_cap": 600,
     "directed": false,
     "secret_score": 0.97
   }

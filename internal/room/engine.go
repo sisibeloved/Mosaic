@@ -71,13 +71,11 @@ type EngineConfig struct {
 // 单条消息长度上限与发授期限为引擎常量，预算为引擎配置）。
 type chatGrantPolicy struct {
 	GrantExpiry time.Duration // floor.granted 过期期限（生成 fence 提示）
-	ResponseCap int64         // 单条消息 rune 上限（发布门沿用）
 }
 
 func defaultChatPolicy() chatGrantPolicy {
-	// v1.37（dogfood）：500 → 1200——实测模型常态发言超 500 rune 触发截断标注；
-	// 群聊语境一句话仍偏短，1200 兼顾成本与"别截断成残句"。
-	return chatGrantPolicy{GrantExpiry: 30 * time.Second, ResponseCap: 1200}
+	// v1.38（负责人裁定）：token 成本只做统计，不入主线门控——单条上限随截断一并退役。
+	return chatGrantPolicy{GrantExpiry: 30 * time.Second}
 }
 
 // 对话环检测阈值：历史尾部连续 agent 消息 ≥ 该数（无人类介入）即不开新波
@@ -534,19 +532,7 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 			return
 		}
 	}
-	// 门控：预算 admission（100% 硬停——群聊的最终硬顶）。熔断即写暂停胶囊
-	//（M3-2：未收敛快照，非结论——不写 closure.accepted、不关线程；恢复即清位）。
-	ledger := contextx.RebuildBudget(envs)
-	if !ledger.Admit(e.cfg.Budget) {
-		if !pauseCapsuleActive(history) {
-			e.emitPauseCapsule(ctx, roomID, history)
-		}
-		e.debug(roomID, "波跳过：预算熔断", "anchor", anchor.EventID,
-			"rounds", ledger.Rounds, "utterances", ledger.Utterances, "tokens", ledger.Tokens)
-		e.waveSkip(roomID, "budget")
-		return
-	}
-	// 冷却：上波发言者跳过评估（防自言自语）；@点名豁免（RFC-0012 §2.3）。
+	// 冷却：	// 冷却：上波发言者跳过评估（防自言自语）；@点名豁免（RFC-0012 §2.3）。
 	// 仅对 agent 锚点生效——人类消息不受冷却约束：冷却集取自最近 round.opened，
 	// 被跳过的波不落 round.opened，若人类锚点也吃冷却，全员发言一波后冷却集
 	// 永不更新，房间对人类后续输入永久静默（dogfood 实测死锁"输入无回复"）。
@@ -601,8 +587,8 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 		RoomID: roomID, TaskID: roundID, Mode: "chat", Seats: seatsMin,
 		RecentWindow: 10,
 		Budget: contextx.BudgetState{
-			RemainingTokens: remainingTokens(ledger, e.cfg.Budget),
-			Level:           ledger.Level(e.cfg.Budget),
+			RemainingTokens: remainingTokens(contextx.RebuildBudget(envs), e.cfg.Budget),
+			Level:           contextx.RebuildBudget(envs).Level(e.cfg.Budget),
 		},
 	}
 	assembled := contextx.Assemble(assembleCfg, envs, *anchor)
@@ -632,7 +618,7 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 	}
 
 	// 3-4) 全员评估（观察→判断，瘦身上下文）→ intent.recorded 全记录（R-01）→ 意愿清单
-	willing, silentCount, ok := e.evaluateWave(ctx, roomID, roundID, *anchor, history, seats, evalContext, ledger, timing)
+	willing, silentCount, ok := e.evaluateWave(ctx, roomID, roundID, *anchor, history, seats, evalContext, contextx.RebuildBudget(envs), timing)
 	if !ok {
 		return
 	}
@@ -718,7 +704,6 @@ func (e *Engine) evaluateWave(ctx context.Context, roomID, roundID string, ancho
 	history []StoredEvent, seats []AgentSeat, taskContext agent.Context, baseLedger contextx.Ledger,
 	timing *waveTiming,
 ) (willing []willingIntent, silentCount int, ok bool) {
-	policy := defaultChatPolicy()
 	weights := attention.DefaultWeights
 	histEnvs := envelopesOfStored(history) // M3-4：结构特征输入（推断边/重复风险/多样性）
 	evalUsage := map[string]*agent.Usage{}
@@ -829,10 +814,6 @@ func (e *Engine) evaluateWave(ctx context.Context, roomID, roundID string, ancho
 			}
 			score = attention.Score(cand, weights)
 			band = attention.Band(score)
-			if !ledgerNow.ReserveOK(e.cfg.Budget, 1, policy.ResponseCap) {
-				// 硬失格（预算）不进记分：band 回落 unranked（记分卡透明——理由入 metadata）
-				selected, band, score, reason = false, "unranked", 0.0, "budget"
-			}
 		} else {
 			silentCount++
 		}
@@ -1005,7 +986,6 @@ func (e *Engine) issueGrant(ctx context.Context, roomID, roundID string, sel att
 			ContextWatermark: int(watermark),
 			Epoch:            int(epoch),
 			ExpiresAt:        e.cfg.Now().Add(policy.GrantExpiry).UTC().Format(time.RFC3339Nano),
-			ResponseCap:      int(policy.ResponseCap),
 		})
 	appended, err := e.append(ctx, grant)
 	if err != nil {
@@ -1034,11 +1014,10 @@ func (e *Engine) runGenerate(ctx context.Context, roomID, roundID string, stimul
 		ThreadID:      generateThread,
 		Epoch:         roundID,
 		Grant: &agent.Grant{
-			GrantID:     grantID,
-			Rank:        sel.Rank,
-			ViewCursor:  "",
-			Epoch:       0,
-			ResponseCap: policy.ResponseCap, // 宣告值必须传入适配器并约束发布
+			GrantID:    grantID,
+			Rank:       sel.Rank,
+			ViewCursor: "",
+			Epoch:      0,
 		},
 		Context: taskContext,
 	})

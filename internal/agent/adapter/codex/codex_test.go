@@ -317,23 +317,6 @@ func TestGeneratePublishSanitizeGate(t *testing.T) {
 			t.Fatalf("控制字符应被剔除：%q", body)
 		}
 	})
-	t.Run("超限截断标注", func(t *testing.T) {
-		long := strings.Repeat("字", 6000)
-		stream := `{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"` + long + `"}}` + "\n" + `{"type":"turn.completed"}`
-		exec := &fakeExecer{outputs: []string{stream}}
-		adapter := newTestAdapter(exec)
-		session, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "codex"})
-		defer session.Close()
-		h, _ := session.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
-		res, err := h.Result()
-		if err != nil {
-			t.Fatalf("result: %v", err)
-		}
-		body, _ := res.Data["body"].(string)
-		if !strings.Contains(body, "[Mosaic: 输出超限已截断]") || len([]rune(body)) > 4100 {
-			t.Fatalf("超限应显式截断标注：%d runes", len([]rune(body)))
-		}
-	})
 	t.Run("空正文拒绝", func(t *testing.T) {
 		stream := `{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"   \u0000 "}}` + "\n" + `{"type":"turn.completed"}`
 		exec := &fakeExecer{outputs: []string{stream}}
@@ -345,31 +328,6 @@ func TestGeneratePublishSanitizeGate(t *testing.T) {
 			t.Fatal("空正文必须拒绝发布")
 		}
 	})
-}
-
-// 复审 #9：grant 宣告的 ResponseCap 必须真实约束发布上限（与适配器上限取较小者）。
-func TestGrantResponseCapBindsPublishLimit(t *testing.T) {
-	long := strings.Repeat("字", 500)
-	stream := `{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"` + long + `"}}` + "\n" + `{"type":"turn.completed"}`
-	exec := &fakeExecer{outputs: []string{stream}}
-	adapter := newTestAdapter(exec) // 默认 MaxOutputRunes=4000
-	session, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "codex"})
-	defer session.Close()
-	h, _ := session.Run(context.Background(), agent.Task{
-		TaskID: "t", Kind: agent.KindGenerate,
-		Grant: &agent.Grant{GrantID: "g", ResponseCap: 20},
-	})
-	res, err := h.Result()
-	if err != nil {
-		t.Fatalf("result: %v", err)
-	}
-	body, _ := res.Data["body"].(string)
-	if runes := len([]rune(body)); runes > 40 {
-		t.Fatalf("grant ResponseCap=20 应约束发布（截断+标注 ≈38 runes）：got %d", runes)
-	}
-	if !strings.Contains(body, "[Mosaic: 输出超限已截断]") {
-		t.Fatalf("截断必须显式标注：%q", body)
-	}
 }
 
 // 复审 #6：封闭 DTO——模型输出的附加键不进发布载荷（走私通道封死）；

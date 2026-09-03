@@ -34,8 +34,6 @@ type Config struct {
 	// 经 wsl.exe -d <WSLDistro> 包装执行。
 	WSLDistro string
 	WSLHome   string // 发行版内 HOME（宿主 HOME 不适用；由 harness.HostRunner.Home 解析）
-	// MaxOutputRunes 发布正文硬上限（runes；与 codex 适配器同一发布门）。
-	MaxOutputRunes int
 	// MaxPromptRunes 提示词 argv 安全上限（默认 6000）：kimi -p 不读 stdin（实证），
 	// 提示词全量进 argv；超限 fail fast 报明确错误，胜过 OS spawn 失败。
 	MaxPromptRunes int
@@ -59,9 +57,6 @@ type Adapter struct {
 func New(cfg Config) *Adapter {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 120 * time.Second
-	}
-	if cfg.MaxOutputRunes <= 0 {
-		cfg.MaxOutputRunes = 4000
 	}
 	if cfg.MaxPromptRunes <= 0 {
 		cfg.MaxPromptRunes = 6000
@@ -100,13 +95,7 @@ func (s *session) Run(ctx context.Context, task agent.Task) (agent.Handle, error
 	if task.Kind == agent.KindObserve {
 		return nil, fmt.Errorf("kimi: 不支持 observe（Capabilities.Observe=false）")
 	}
-	// 发布上限取 grant 宣告 ResponseCap 与适配器自身上限的较小者（宣告即执行，同 codex 面）。
-	maxRunes := s.adapter.cfg.MaxOutputRunes
-	if task.Kind == agent.KindGenerate && task.Grant != nil && task.Grant.ResponseCap > 0 &&
-		int(task.Grant.ResponseCap) < maxRunes {
-		maxRunes = int(task.Grant.ResponseCap)
-	}
-	h := &handle{done: make(chan struct{}), maxRunes: maxRunes}
+	h := &handle{done: make(chan struct{})}
 	taskCtx, cancel := context.WithTimeout(ctx, s.adapter.cfg.Timeout)
 	h.cancel = cancel
 	go s.execute(taskCtx, task, h)
@@ -175,7 +164,7 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 // sanitizePublish 发布边界：委托端口级共享门 agent.PublishGate（与 codex 同一套门）。
 func (h *handle) sanitizePublish() {
 	body, _ := h.result.Data["body"].(string)
-	clean, rels, err := agent.PublishGate(body, h.result.Data["declared_relations"], h.maxRunes)
+	clean, rels, err := agent.PublishGate(body, h.result.Data["declared_relations"])
 	if err != nil {
 		h.err = fmt.Errorf("kimi: %w", err)
 		return
@@ -244,9 +233,8 @@ func kimiEnvWithHome(kimiPath, home string) []string {
 
 // handle 单任务句柄：同步等待结果；Cancel 置位后 Result 报 ErrStale。
 type handle struct {
-	done     chan struct{}
-	cancel   context.CancelFunc
-	maxRunes int
+	done   chan struct{}
+	cancel context.CancelFunc
 
 	mu     sync.Mutex
 	stale  bool
@@ -337,7 +325,6 @@ Reply with ONLY a JSON object, no prose, no code fences:
 
 const generateInstruction = `You are a participant in an ongoing group chat and have decided to reply.
 Write your chat message directly below — concise, conversational, addressed to the room (no speeches, no meta commentary).
-Stay within the response_cap given in Task identity (characters, CJK chars count as one each); anything beyond it is cut.
 Reply with ONLY a JSON object, no prose, no code fences:
 {"body":"your public message","declared_relations":[]}`
 
@@ -360,9 +347,6 @@ func taskIdentity(task agent.Task) string {
 		ident["grant_id"] = task.Grant.GrantID
 		ident["rank"] = task.Grant.Rank
 		ident["epoch"] = task.Grant.Epoch
-		// v1.37（dogfood 治本）：上限对模型可见——软约束在生成侧生效，
-		// PublishGate 截断只做极端兜底（此前 cap 只执行不宣告，模型"无辜违规"）。
-		ident["response_cap"] = task.Grant.ResponseCap
 	}
 	raw, _ := json.Marshal(ident)
 	return string(raw)

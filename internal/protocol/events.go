@@ -123,7 +123,6 @@ type FloorGrantedPayload struct {
 	ContextWatermark int    `json:"context_watermark"`
 	Epoch            int    `json:"epoch"`
 	ExpiresAt        string `json:"expires_at"`
-	ResponseCap      int    `json:"response_cap"`
 	Directed         bool   `json:"directed"`
 }
 

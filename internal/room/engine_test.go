@@ -428,16 +428,15 @@ func setGenUsage(u *agent.Usage) {
 	gatedMu.Unlock()
 }
 
-// 预算硬停：轮次耗尽后人类消息不再触发自动轮。
-func TestEngineBudgetHardStop(t *testing.T) {
+// 预算只统计不门控（v1.38 负责人裁定）：轮次耗尽后人类消息照常开波——
+// token 成本绝不影响主线能力；账本照记（统计面可见）。
+func TestEngineBudgetNeverBlocksWaves(t *testing.T) {
 	store := NewMemStore()
 	sup := agent.NewSupervisor()
 	_ = sup.Register(echo.Adapter{})
 	defer sup.Shutdown()
-	_ = sup.Register(echo.Adapter{})
 	eng := newEchoEngine(store, sup, contextx.Limits{MaxRounds: 2}, "echo")
 
-	// 种子：created + human + 两轮已开的 round.opened（账本轮次已满）
 	seed := []protocol.Envelope{
 		{EventID: "e1", TenantID: "ten_local", RoomID: "room_b", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 		{EventID: "e2", TenantID: "ten_local", RoomID: "room_b", Type: protocol.EventRoundOpened, Actor: protocol.Actor{ParticipantID: "s", Kind: "system"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
@@ -447,20 +446,9 @@ func TestEngineBudgetHardStop(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	deliverHuman(t, store, eng, "room_b")
-	time.Sleep(150 * time.Millisecond)
-	// M3-2：预算熔断写暂停胶囊（未收敛快照，非结论——不写 closure.accepted/不关线程）
-	events := store.RoomEvents("room_b")
-	if n := len(events); n != 5 {
-		t.Fatalf("预算硬停后不得开轮（但写暂停胶囊），事件数 = %d：%v", n, typesOf(events))
-	}
-	if events[len(events)-1].Type != protocol.EventPauseCapsuleCreated {
-		t.Fatalf("末事件应为 pause_capsule.created：%v", typesOf(events))
-	}
-	// 暂停胶囊去重：再投一条人类消息不重复写胶囊（在位即不补）
-	deliverHuman2(t, store, eng, "room_b", "evt_human_b2")
-	time.Sleep(100 * time.Millisecond)
-	if n := len(store.RoomEvents("room_b")); n != 6 {
-		t.Fatalf("胶囊在位不重复写（只多一条人类消息），事件数 = %d", n)
+	waitRoundsClosed(t, store, "room_b", 1) // 超限后照常开波发言
+	if n := countType(store.RoomEvents("room_b"), protocol.EventPauseCapsuleCreated); n != 0 {
+		t.Fatalf("预算不再产生暂停胶囊（成本不入门控）：n=%d", n)
 	}
 }
 
@@ -553,48 +541,6 @@ func hasType(events []protocol.Envelope, typ string) bool {
 }
 
 // ---- M1 收口补课（审校 2026-08-28）----
-
-// R-01：失格候选（预算预留不足）也必须落 intent.recorded——零痕迹违反 RFC-0003 R-01 全记录。
-func TestEngineRecordsRejectedIntents(t *testing.T) {
-	store := NewMemStore()
-	sup := agent.NewSupervisor()
-	_ = sup.Register(echo.Adapter{})
-	defer sup.Shutdown()
-	// MaxTokens=1：admission 过（用量 0），但对称预留 1×600>1 → BudgetOK=false → 失格
-	eng := newEchoEngine(store, sup, contextx.Limits{MaxTokens: 1}, "echo")
-	store.AppendEvents(context.Background(), []protocol.Envelope{
-		{EventID: "r1", TenantID: "ten_local", RoomID: "room_r", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
-	})
-	deliverHuman(t, store, eng, "room_r")
-	waitRoundClosed(t, store, "room_r")
-	events := store.RoomEvents("room_r")
-	var ir protocol.IntentRecordedPayload
-	found := false
-	for _, ev := range events {
-		if ev.Type != protocol.EventIntentRecorded {
-			continue
-		}
-		found = true
-		_ = json.Unmarshal(ev.Payload, &ir)
-		if ir.Selected || ir.ScoreBand != "unranked" {
-			t.Fatalf("失格意图应 selected=false + score_band=unranked：%+v", ir)
-		}
-		if ev.Metadata["unselected_reason"] != "budget" {
-			t.Fatalf("unselected_reason 应为 budget：%v", ev.Metadata["unselected_reason"])
-		}
-	}
-	if !found {
-		t.Fatalf("失格候选零痕迹（R-01 违约）：%v", typesOf(events))
-	}
-	if hasType(events, protocol.EventFloorGranted) {
-		t.Fatalf("失格轮不得有 grant：%v", typesOf(events))
-	}
-	var rc protocol.RoundClosedPayload
-	_ = json.Unmarshal(events[len(events)-1].Payload, &rc)
-	if rc.Outcome != "quiescent" {
-		t.Fatalf("outcome = %s（期望 quiescent）", rc.Outcome)
-	}
-}
 
 // 预算 token 三维：评估 usage 必须入 intent.recorded metadata 并计入账本重建。
 func TestEngineRecordsEvalUsage(t *testing.T) {
@@ -1451,38 +1397,6 @@ func TestReactionDebounceMergesToLatestAnchor(t *testing.T) {
 // ---- 四轮复审（2026-08-30）----
 
 // 四轮复审 #10：本轮评估消耗计入同轮 admission——BudgetOK 用"现在"的账本。
-// MaxTokens=1000、MaxSpeakers=1、cap=600：评估花费 500 后 500+600>1000 → 失格。
-func TestEngineEvalUsageCountsTowardAdmission(t *testing.T) {
-	run := func(evalUsage *agent.Usage) bool {
-		store := NewMemStore()
-		sup := agent.NewSupervisor()
-		stubIntentData = map[string]any{"action": "speak", "type": "extend",
-			"scores": map[string]any{"relevance": .8, "novelty": .5, "urgency": .5, "confidence": .5}}
-		stubIntentUsage = evalUsage
-		_ = sup.Register(intentStubAdapter{})
-		defer sup.Shutdown()
-		defer func() { stubIntentData = nil; stubIntentUsage = nil }()
-		eng := NewEngine(EngineConfig{
-			Store: store, Reader: store, Agents: sup,
-			Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "stub_intent"}}},
-			Budget: contextx.Limits{MaxTokens: 1500}, // v1.37：默认 cap 1200——零耗时预留过（1200<1500）、评估 500 后 500+1200>1500 失格
-			Clock:  testClock, Now: time.Now, ReactionWindow: 5 * time.Millisecond,
-			NewID: counterNewID(), Tenant: "ten_local",
-		})
-		store.AppendEvents(context.Background(), []protocol.Envelope{
-			{EventID: "eu0", TenantID: "ten_local", RoomID: "room_eu", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
-		})
-		deliverHuman(t, store, eng, "room_eu")
-		waitRoundClosed(t, store, "room_eu")
-		return hasType(store.RoomEvents("room_eu"), protocol.EventFloorGranted)
-	}
-	if !run(nil) {
-		t.Fatal("零评估消耗时对称预留应通过（500<=800），对照失败")
-	}
-	if run(&agent.Usage{InputTokens: 500, OutputTokens: 0}) {
-		t.Fatal("评估消耗 500 后同波 admission 应失格（500+500>800）——同波 eval 用量不得绕过预算")
-	}
-}
 
 func mustMarshalForTest(v any) []byte {
 	raw, err := json.Marshal(v)

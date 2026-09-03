@@ -179,37 +179,6 @@ func TestResumeAndCwdArgv(t *testing.T) {
 	}
 }
 
-// TestPublishCapEnforced：grant 宣告的 ResponseCap 必须真实约束发布正文。
-func TestPublishCapEnforced(t *testing.T) {
-	long := strings.Repeat("字", 3000)
-	payload := `{"sessionId":"mvs_cap","type":"item.completed","item":{"type":"agent_message","content":"` +
-		`{\"body\":\"` + long + `\",\"declared_relations\":[]}"}}` + "\n" +
-		`{"type":"turn.completed","usage":{"inputTokens":10,"outputTokens":5}}` + "\n"
-	exec := &fakeExecer{outputs: []string{payload}}
-	adapter := newTestAdapter(exec)
-	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p-ut", Adapter: "minimax"})
-	defer sess.Close()
-	h, _ := sess.Run(context.Background(), agent.Task{
-		TaskID: "t-cap", Kind: agent.KindGenerate,
-		Grant: &agent.Grant{GrantID: "g1", ResponseCap: 50},
-	})
-	res, err := h.Result()
-	if err != nil {
-		t.Fatalf("result: %v", err)
-	}
-	if !strings.Contains(exec.calls[0].stdin, `response_cap":50`) {
-		t.Fatalf("生成提示词应携带 response_cap（模型自约束）：%s", exec.calls[0].stdin)
-	}
-	body, _ := res.Data["body"].(string)
-	// 截断 + 截断标注（"\n[Mosaic: 输出超限已截断]"）——与 codex 面同口径
-	if n := len([]rune(body)); n > 50+len("\n[Mosaic: 输出超限已截断]") {
-		t.Fatalf("发布正文 %d runes 超过宣告 cap 50+标注", n)
-	}
-	if res.Usage == nil || res.Usage.OutputTokens != 5 {
-		t.Fatalf("usage 应透传：%+v", res.Usage)
-	}
-}
-
 // TestCancelStale：在途取消 → ErrStale（不发布正文）。
 func TestCancelStale(t *testing.T) {
 	exec := &fakeExecer{block: true}

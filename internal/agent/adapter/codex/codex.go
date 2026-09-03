@@ -31,9 +31,6 @@ type Config struct {
 	// 经 wsl.exe -d <WSLDistro> 包装执行（native exec 会启用即坏）。
 	WSLDistro string
 	WSLHome   string // 发行版内 HOME（宿主 HOME 不适用；由 harness.HostRunner.Home 解析）
-	// MaxOutputRunes 发布正文硬上限（runes；二轮审校 #4/#6：不可信输出的发布边界。
-	// token 级 ResponseCap 需流式计数，exec 批式路径以 rune 上限代理，M1 裁剪登记）。
-	MaxOutputRunes int
 	// EvalModel 评估任务专用模型（-m；空 = 与生成同模型）。dogfood 性能治理：
 	// 评估输出仅几十 token，单座延迟瓶颈在模型档位——评估可降档、生成保持主模型。
 	EvalModel string
@@ -53,9 +50,6 @@ type Adapter struct {
 func New(cfg Config) *Adapter {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 120 * time.Second
-	}
-	if cfg.MaxOutputRunes <= 0 {
-		cfg.MaxOutputRunes = 4000
 	}
 	return &Adapter{cfg: cfg}
 }
@@ -91,14 +85,7 @@ func (s *session) Run(ctx context.Context, task agent.Task) (agent.Handle, error
 	if task.Kind == agent.KindObserve {
 		return nil, fmt.Errorf("codex: 不支持 observe（Capabilities.Observe=false）")
 	}
-	// 复审 #9：发布上限取 grant 宣告 ResponseCap 与适配器自身上限的较小者——
-	// floor.granted 宣告的 cap 必须真实约束发布正文（token 上限以 rune 上限代理，M1 登记）。
-	maxRunes := s.adapter.cfg.MaxOutputRunes
-	if task.Kind == agent.KindGenerate && task.Grant != nil && task.Grant.ResponseCap > 0 &&
-		int(task.Grant.ResponseCap) < maxRunes {
-		maxRunes = int(task.Grant.ResponseCap)
-	}
-	h := &handle{done: make(chan struct{}), maxRunes: maxRunes}
+	h := &handle{done: make(chan struct{})}
 	// ctx 与 cancel 同步接线：Cancel() 必须能立即杀掉在途任务（端口取消契约）
 	taskCtx, cancel := context.WithTimeout(ctx, s.adapter.cfg.Timeout)
 	h.cancel = cancel
@@ -174,7 +161,7 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 // M2 C 轨上移；上限取 grant 宣告 ResponseCap 与适配器自身上限的较小者，见 Run）。
 func (h *handle) sanitizePublish() {
 	body, _ := h.result.Data["body"].(string)
-	clean, rels, err := agent.PublishGate(body, h.result.Data["declared_relations"], h.maxRunes)
+	clean, rels, err := agent.PublishGate(body, h.result.Data["declared_relations"])
 	if err != nil {
 		h.err = fmt.Errorf("codex: %w", err)
 		return
@@ -326,7 +313,6 @@ Reply with ONLY a JSON object, no prose, no code fences:
 
 const generateInstruction = `You are a participant in an ongoing group chat and have decided to reply.
 Write your chat message directly below — concise, conversational, addressed to the room (no speeches, no meta commentary).
-Stay within the response_cap given in Task identity (characters, CJK chars count as one each); anything beyond it is cut.
 Reply with ONLY a JSON object, no prose, no code fences:
 {"body":"your public message","declared_relations":[]}`
 
@@ -349,9 +335,6 @@ func taskIdentity(task agent.Task) string {
 		ident["grant_id"] = task.Grant.GrantID
 		ident["rank"] = task.Grant.Rank
 		ident["epoch"] = task.Grant.Epoch
-		// v1.37（dogfood 治本）：上限对模型可见——软约束在生成侧生效，
-		// PublishGate 截断只做极端兜底（此前 cap 只执行不宣告，模型"无辜违规"）。
-		ident["response_cap"] = task.Grant.ResponseCap
 	}
 	raw, _ := json.Marshal(ident)
 	return string(raw)
