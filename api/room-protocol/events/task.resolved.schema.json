@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/task.resolved.schema.json",
+  "title": "TaskResolvedPayload",
+  "description": "任务裁定（M3-3 tasklist / RFC-0012 OQ-A 修订：带责任人的承诺追踪——人工门控，delivered/dismissed 由人类裁定）。",
+  "type": "object",
+  "required": ["task_id", "owner", "resolution", "resolved_by"],
+  "additionalProperties": false,
+  "properties": {
+    "task_id": { "type": "string", "pattern": "^tsk_[0-9A-Za-z_-]+$" },
+    "owner": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" },
+    "resolution": { "type": "string", "enum": ["delivered", "dismissed"] },
+    "note": { "type": "string", "maxLength": 280 },
+    "resolved_by": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" }
+  }
+}

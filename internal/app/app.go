@@ -193,6 +193,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Dev:              opts.Dev,
 		Budget:           budgetLimits,
 		Outbox:           store,
+		Searcher:         store, // M3-3 按需平面：FTS5 trigram（SQLite 实现端口）
 		ExtraOriginHosts: opts.ExtraOriginHosts,
 		OwnerToken:       ownerToken,
 		UI:               ui,

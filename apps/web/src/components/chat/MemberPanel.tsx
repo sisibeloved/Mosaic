@@ -5,7 +5,7 @@
 // 内部枚举一律经 lib/copy 映射层转为用户语言，不裸显。
 import { useEffect, useState } from "react";
 import { api, type AgentSeatInfo, type ParticipantView } from "../../api/client";
-import type { GraphEdge, ScorecardItem, ThreadItem } from "../../api/room";
+import type { GraphEdge, ScorecardItem, TaskItem, ThreadItem } from "../../api/room";
 import { useDevMode } from "../../state/dev";
 import type { ClosureSummary } from "../../api/room";
 import { DevPanel } from "../DevPanel";
@@ -22,11 +22,15 @@ import {
 } from "../../lib/copy";
 import { displayNameOf, shortId, truncate } from "../../lib/ui";
 import { Avatar } from "./Avatar";
+import { MemoryTab } from "./MemoryTab";
+import { TasksTab } from "./TasksTab";
 
-type Tab = "members" | "scorecard" | "graph" | "debug";
+type Tab = "members" | "tasks" | "memory" | "scorecard" | "graph" | "debug";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "members", label: "成员" },
+  { id: "tasks", label: "任务" },
+  { id: "memory", label: "记忆" },
   { id: "scorecard", label: "发言评估" },
   { id: "graph", label: "话题线" },
 ];
@@ -43,6 +47,7 @@ export function MemberPanel({
   threads,
   edges,
   closures,
+  tasks,
   endorseBusy,
   onEndorse,
   inviteBusy,
@@ -50,6 +55,11 @@ export function MemberPanel({
   onProposeClosure,
   onAcceptClosure,
   closureBusy,
+  onResolveTask,
+  taskBusy,
+  onEditMemory,
+  memoryBusy,
+  onJumpToEvent,
   onTabActive,
   onClose,
   describeEvent,
@@ -64,6 +74,8 @@ export function MemberPanel({
   edges: GraphEdge[];
   /** M3-2 收束清单（快照 closures 视图）。 */
   closures: ClosureSummary[];
+  /** M3-3 任务清单（快照 tasks 视图；带责任人）。 */
+  tasks: TaskItem[];
   endorseBusy: string | null;
   onEndorse: (intentID: string) => void;
   inviteBusy: string | null;
@@ -72,6 +84,13 @@ export function MemberPanel({
   onProposeClosure: (threadID: string | null) => void;
   onAcceptClosure: (closureID: string) => void;
   closureBusy: boolean;
+  /** M3-3 任务裁定与记忆编辑（版本校准+409 重试在 room.ts 命令链内）。 */
+  onResolveTask: (taskID: string, resolution: "delivered" | "dismissed") => void;
+  taskBusy: string | null;
+  onEditMemory: (memoryID: string, edits: { conclusions?: string[]; assumptions?: string[] }, note: string) => void;
+  memoryBusy: string | null;
+  /** event_id → 时间线定位（任务宣言消息/检索命中跳转）。 */
+  onJumpToEvent: (eventID: string) => void;
   /** Tab 打开/切换时回调（触发投影刷新）。 */
   onTabActive: (tab: Tab) => void;
   onClose: () => void;
@@ -120,6 +139,24 @@ export function MemberPanel({
       <div className="flex-1 overflow-y-auto">
         {tab === "members" && (
           <MembersTab participants={participants} roster={roster} inviteBusy={inviteBusy} onInvite={onInvite} />
+        )}
+        {tab === "tasks" && (
+          <TasksTab
+            tasks={tasks}
+            participants={participants}
+            busyTaskID={taskBusy}
+            onResolve={onResolveTask}
+            onJumpToEvent={onJumpToEvent}
+          />
+        )}
+        {tab === "memory" && (
+          <MemoryTab
+            roomID={roomID}
+            participants={participants}
+            editBusy={memoryBusy}
+            onEdit={onEditMemory}
+            onJumpToEvent={onJumpToEvent}
+          />
         )}
         {tab === "scorecard" && (
           <ScorecardTab

@@ -6,7 +6,7 @@
 
 **创建日期 (Created):** 2026-08-25
 
-**更新日期 (Updated):** 2026-09-03
+**更新日期 (Updated):** 2026-09-03（v0.2 裁定）；2026-09-03（v0.3 实现落地面）
 
 **相关 Issue/PR:** #TBD（RFC 入库时创建 tracking issue）
 
@@ -26,6 +26,7 @@
 |---|---|---|---|
 | v0.1 | 2026-08-25 | Mosaic 项目组 / ZCode | 初稿：统一讨论输入契约（七层组装+独立配额）、历史查询内容面、四层 Memory 与 Memory Item Schema、Capsule 一等 Memory、GroundedSummary、Context Receipt Schema、混合检索口径、最小必要与脱敏 |
 | v0.2 | 2026-09-03 | 陆尘裁定 / ZCode | **记忆双平面与责任边界裁定（§7.4）**：双参考调研（Hermes Agent 跨会话记忆 / MaiBot 群聊记忆）后负责人五点裁定——session 归 harness / memory 归房间（共享、可审计、可编辑）；按需平面 SQLite FTS5 起步（§3.1.8 修订，pgvector 无限期推迟）；恒常平面容量纪律（字符上限+水位可见+超限倒逼合并）；承诺/待办追踪改口为**带责任人的 tasklist**（非记忆系统，落 RFC-0012 OQ-A）；记忆查看/编辑/纠错 UI 为 M3-3 验收项 |
+| v0.3 | 2026-09-03 | Mosaic 项目组 / ZCode | **M3-3 实现落地面（v0.2 裁定的执行）**：FTS5 前置验证定案——modernc v1.57.0（SQLite 3.53.3）FTS5 可用，unicode61 对中文整串成单 token 不可用，**trigram 对 CJK 子串 ≥3 字与英文正确命中**，<3 字查询回退 LIKE 子串（语义与线性基准一致，无需自研 fts5_cjk 类扩展）；恒常平面 CapsuleBudgetRunes=3000（room 包常量，水位透出 debug/memory 与公开 memory 端点，dropped_count>0 即超预算信号）；**v1.36 声明失实修复**——capsule 注入（第八层）此前是死代码（capsuleMemoriesOf 无调用点），本版接进 assembleChat 并升级为编辑后视图；组装层从 8 层扩至 10 层（+retrieved_memory 按需召回 +tasklist）；编辑闭环 = memory.edited 事件 + MemoryCapsulesOf 投影 + edit_memory 命令 + 公开 GET /v1/rooms/{id}/memory + SPA 记忆面板（查看/编辑/edit_history/容量水位）；按需平面另有组装时召回（刺激关键词 → CJK bigram 重叠/ASCII 子串 → 近窗外 top5 带 provenance）与房内搜索端点 GET /v1/rooms/{id}/search（FTS5 trigram + LIKE 回退 + 自愈重建） |
 
 # 1. 概述
 

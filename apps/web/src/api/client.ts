@@ -10,6 +10,16 @@ export type CommandResponse = Schemas["CommandResponse"];
 export type RoomSummary = Schemas["RoomSummary"];
 export type ParticipantView = Schemas["ParticipantView"];
 export type ManualExecutableRequest = Schemas["ManualExecutableRequest"];
+export type TaskItem = Schemas["TaskItem"];
+export type SearchHit = Schemas["SearchHit"];
+export type MemoryCapsule = NonNullable<NonNullable<components["schemas"]["MemoryView"]>["capsules"]>[number];
+
+/** 记忆查看面（GET /v1/rooms/{id}/memory）。 */
+export interface MemoryView {
+  room_id: string;
+  capsules: MemoryCapsule[];
+  capsule_budget: { budget_runes: number; injected_runes: number; injected_count: number; dropped_count: number };
+}
 
 export class ApiError extends Error {
   readonly status: number;
@@ -182,6 +192,31 @@ export const api = {
       `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
       commandBody("endorse_intent", version, { intent_id: intentID, effect: "grant" }),
     );
+  },
+  resolveTask(roomID: string, version: number, taskID: string, resolution: "delivered" | "dismissed", note?: string): Promise<CommandResponse> {
+    return post(
+      `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
+      commandBody("resolve_task", version, { task_id: taskID, resolution, note: note ?? null }),
+    );
+  },
+  editMemory(roomID: string, version: number, memoryID: string, edits: { conclusions?: string[]; assumptions?: string[] }, note: string): Promise<CommandResponse> {
+    return post(
+      `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
+      commandBody("edit_memory", version, {
+        memory_id: memoryID,
+        conclusions: edits.conclusions ?? null,
+        assumptions: edits.assumptions ?? null,
+        note,
+      }),
+    );
+  },
+  roomMemory(roomID: string): Promise<MemoryView> {
+    return request<MemoryView>(`/v1/rooms/${encodeURIComponent(roomID)}/memory`);
+  },
+  searchMessages(roomID: string, q: string, actor?: string, limit = 20): Promise<{ hits: SearchHit[] }> {
+    const params = new URLSearchParams({ q, limit: String(limit) });
+    if (actor) params.set("actor", actor);
+    return request(`/v1/rooms/${encodeURIComponent(roomID)}/search?${params.toString()}`);
   },
   snapshot(roomID: string): Promise<Snapshot> {
     return request<Snapshot>(`/v1/rooms/${encodeURIComponent(roomID)}/snapshot`);

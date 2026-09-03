@@ -47,6 +47,7 @@ type Snapshot struct {
 	Roster            []string              `json:"roster"`
 	Graph             []GraphEdge           `json:"graph"`
 	Participants      []ParticipantView     `json:"participants"`
+	Tasks             []TaskItem            `json:"tasks"`
 }
 
 // ParticipantView 快照参与者视图项（装配层注入：本地 owner + 引擎座位）。
@@ -90,6 +91,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 		DevNotes:          []DevNote{},
 		Scorecard:         []ScorecardItem{},
 		Participants:      []ParticipantView{}, // 装配层注入位：投影恒空（ADR-0011 注记）
+		Tasks:             []TaskItem{},
 	}
 	endorsedSet := map[string]bool{} // intent.endorsed 合并键
 	for _, ev := range events {
@@ -164,7 +166,8 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 			case protocol.EventRoomPaused, protocol.EventRoomStarted,
 				protocol.EventClosureProposed, protocol.EventClosureEvaluated,
 				protocol.EventClosureRejected, protocol.EventClosureAccepted,
-				protocol.EventPauseCapsuleCreated:
+				protocol.EventPauseCapsuleCreated,
+				protocol.EventTaskResolved, protocol.EventMemoryEdited:
 				item := TimelineItem{
 					Position:   ev.Cursor,
 					EventID:    ev.Envelope.EventID,
@@ -196,6 +199,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 	snap.Closures = closuresOf(events)
 	snap.EvidenceRequests = EvidenceRequestsOf(events)
 	snap.DevNotes = DevNotesOf(events)
+	snap.Tasks = TasksOf(events)
 	return snap
 }
 
@@ -288,6 +292,8 @@ var devNoteTypes = map[string]bool{
 	protocol.EventPauseCapsuleCreated:     true,
 	protocol.EventEvidenceRequestCreated:  true,
 	protocol.EventEvidenceRequestResolved: true,
+	protocol.EventTaskResolved:            true,
+	protocol.EventMemoryEdited:            true,
 }
 
 // devNotesWindow 回放条目上限（个人版房间护栏；最新保留）。

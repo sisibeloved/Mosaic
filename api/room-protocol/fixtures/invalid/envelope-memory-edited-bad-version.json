@@ -1,0 +1,27 @@
+{
+  "event_id": "evt_memoryeditedbad",
+  "tenant_id": "ten_local",
+  "room_id": "room_fixture01",
+  "type": "memory.edited",
+  "schema_version": 1,
+  "occurred_at": "2026-09-03T08:10:00.000Z",
+  "actor": {
+    "participant_id": "par_owner",
+    "kind": "human"
+  },
+  "visibility": {
+    "kind": "public"
+  },
+  "payload": {
+    "memory_id": "clo_01H8X",
+    "conclusions": ["修正后的结论表述"],
+    "edit_version": 0,
+    "edited_by": "par_owner"
+  },
+  "seq": 104,
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "causation_id": null,
+  "correlation_id": null,
+  "metadata": {}
+}

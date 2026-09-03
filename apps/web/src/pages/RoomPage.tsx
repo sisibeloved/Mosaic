@@ -24,6 +24,8 @@ export function RoomPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [endorseBusy, setEndorseBusy] = useState<string | null>(null);
   const [inviteBusy, setInviteBusy] = useState<string | null>(null);
+  const [taskBusy, setTaskBusy] = useState<string | null>(null);
+  const [memoryBusy, setMemoryBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
 
@@ -81,6 +83,44 @@ export function RoomPage() {
   const onTabActive = useCallback(() => {
     void room.refreshProjections();
   }, []);
+
+  // M3-3 任务裁定 / 记忆编辑：SSE 事件驱动快照重投影；SSE 未达时兜底手刷一次。
+  const onResolveTask = useCallback(
+    (taskID: string, resolution: "delivered" | "dismissed") => {
+      setTaskBusy(taskID);
+      void room
+        .resolveTask(taskID, resolution)
+        .then(() => room.refreshProjections())
+        .catch(() => {})
+        .finally(() => setTaskBusy(null));
+    },
+    [room],
+  );
+  const onEditMemory = useCallback(
+    (memoryID: string, edits: { conclusions?: string[]; assumptions?: string[] }, note: string) => {
+      setMemoryBusy(memoryID);
+      void room
+        .editMemory(memoryID, edits, note)
+        .then(() => room.refreshProjections())
+        .catch(() => {})
+        .finally(() => setMemoryBusy(null));
+    },
+    [room],
+  );
+
+  // provenance 跳转：时间线按 event_id 定位（消息流 DOM 无 id 锚点，最小版用
+  // 文本检索找不到则静默——消息本体始终可按内容回看）。
+  const onJumpToEvent = useCallback(
+    (eventID: string) => {
+      const el = document.querySelector(`[data-event-id="${CSS.escape(eventID)}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("jump-flash");
+        setTimeout(() => el.classList.remove("jump-flash"), 1600);
+      }
+    },
+    [],
+  );
 
   // 观点关系边的可读引用：TimelineEntry.key 即 event_id（快照与 SSE 两路同键），
   // 能命中消息就解析成"名字：摘要"（摘要截 24 字），否则返回 null 由面板回退短 hash。
@@ -205,6 +245,7 @@ export function RoomPage() {
             threads={room.threads}
             edges={room.edges}
             closures={room.closures}
+            tasks={room.tasks}
             endorseBusy={endorseBusy}
             onEndorse={onEndorse}
             inviteBusy={inviteBusy}
@@ -212,6 +253,11 @@ export function RoomPage() {
             onProposeClosure={(threadID) => void room.proposeClosure(threadID)}
             onAcceptClosure={(closureID) => void room.acceptClosure(closureID)}
             closureBusy={false}
+            onResolveTask={onResolveTask}
+            taskBusy={taskBusy}
+            onEditMemory={onEditMemory}
+            memoryBusy={memoryBusy}
+            onJumpToEvent={onJumpToEvent}
             onTabActive={onTabActive}
             onClose={() => setDrawerOpen(false)}
             describeEvent={describeEvent}

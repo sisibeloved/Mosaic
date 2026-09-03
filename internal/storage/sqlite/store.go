@@ -81,12 +81,33 @@ CREATE TABLE IF NOT EXISTS room_tombstones (
   deleted_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS migrations (
-	version    INTEGER PRIMARY KEY,
-	applied_at TEXT NOT NULL
+  version    INTEGER PRIMARY KEY,
+  applied_at TEXT NOT NULL
 );
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (3, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox(id) WHERE dispatched_at IS NULL;
+`
+
+// roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
+// modernc v1.57.0 / SQLite 3.53.3：unicode61 对中文整串成单 token 不可用，
+// trigram 对 CJK 子串 ≥3 字与英文均正确命中；<3 字查询由 SearchMessages
+// 回退 LIKE 子串）。虚拟表 CREATE 不在 schemaDDL 事务语义里幂等问题：
+// IF NOT EXISTS 即幂等；存量库由 Open 的 v3 迁移执行。
+const roomFTSDDL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS room_fts USING fts5(
+	room_id UNINDEXED,
+	event_id UNINDEXED,
+	actor UNINDEXED,
+	actor_kind UNINDEXED,
+	thread_id UNINDEXED,
+	occurred_at UNINDEXED,
+	seq UNINDEXED,
+	global_pos UNINDEXED,
+	body,
+	tokenize='trigram'
+);
 `
 
 // migrationV2 既有库补 engine_claims.position 列（四轮复审 #14：恢复重驱动需按
@@ -122,6 +143,11 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(migrationV2); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: migration v2: %w", err)
+	}
+	// v3 迁移（M3-3）：FTS5 trigram 全文索引（存量库建虚拟表；新库由同 DDL 幂等）
+	if _, err := db.Exec(roomFTSDDL); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("sqlite: migration v3 (room_fts): %w", err)
 	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -262,6 +288,19 @@ func (s *Store) appendTx(ctx context.Context, envelopes []protocol.Envelope, rec
 			env.RoomID, pos, env.EventID, string(raw),
 		); err != nil {
 			return nil, fmt.Errorf("sqlite: insert outbox: %w", err)
+		}
+		// M3-3 按需平面：message.posted 正文同事务入 FTS5 索引（与事件账本一致——
+		// 索引缺行由 SearchMessages 的自愈校验兜底重建）。
+		if env.Type == protocol.EventMessagePosted {
+			if body, actor, actorKind, threadID, ok := ftsFieldsOf(env); ok {
+				if _, err := conn.ExecContext(ctx, `
+					INSERT INTO room_fts (room_id, event_id, actor, actor_kind, thread_id, occurred_at, seq, global_pos, body)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					env.RoomID, env.EventID, actor, actorKind, threadID, env.OccurredAt, env.Seq, pos, body,
+				); err != nil {
+					return nil, fmt.Errorf("sqlite: insert fts: %w", err)
+				}
+			}
 		}
 		appended[i] = env
 	}
@@ -554,10 +593,161 @@ func (s *Store) DeleteRoom(ctx context.Context, roomID string) error {
 		roomID, reason); err != nil {
 		return err
 	}
-	for _, table := range []string{"room_events", "outbox", "command_receipts", "engine_claims"} {
+	for _, table := range []string{"room_events", "outbox", "command_receipts", "engine_claims", "room_fts"} {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE room_id=?", roomID); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
+}
+
+// ftsFieldsOf message.posted 信封 → 索引字段（正文/作者/线程）。
+func ftsFieldsOf(env protocol.Envelope) (body, actor, actorKind, threadID string, ok bool) {
+	var p struct {
+		Body string `json:"body"`
+	}
+	if json.Unmarshal(env.Payload, &p) != nil {
+		return "", "", "", "", false
+	}
+	if env.ThreadID != nil {
+		threadID = *env.ThreadID
+	}
+	return p.Body, env.Actor.ParticipantID, env.Actor.Kind, threadID, true
+}
+
+// SearchMessages 实现 room.MessageSearcher（M3-3 按需平面）：FTS5 trigram 生产
+// 路径。语义与线性基准 room.SearchMessages 一致：子串、大小写不敏感、最新在前、
+// limit 1..100 默认 20。≥3 字查询走 MATCH（phrase 引号包裹防语法注入；trigram
+// 对 CJK/英文子串均正确——v1.46 spike 实证）；<3 字 trigram 不可用，回退 LIKE
+// 子串。自愈：索引行数与事件数不符（旧库升级/历史缺行）即全量重建该房间索引。
+func (s *Store) SearchMessages(ctx context.Context, roomID, query, actor, threadID string, limit int) ([]room.SearchHit, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []room.SearchHit{}, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if err := s.ensureFTS(ctx, roomID); err != nil {
+		return nil, err
+	}
+	where := "room_id = ?"
+	args := []any{roomID}
+	if actor != "" {
+		where += " AND actor = ?"
+		args = append(args, actor)
+	}
+	if threadID != "" {
+		where += " AND thread_id = ?"
+		args = append(args, threadID)
+	}
+	// trigram tokenizer 要求查询 ≥3 字符（CJK 与 ASCII 同规）；短查询回退 LIKE
+	// 子串（语义与线性基准一致——同为大小写不敏感子串）。
+	if len([]rune(query)) >= 3 {
+		phrase := `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
+		where += " AND room_fts MATCH ?"
+		args = append(args, phrase)
+	} else {
+		where += " AND body LIKE ? COLLATE NOCASE"
+		args = append(args, "%"+query+"%")
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT event_id, actor, actor_kind, thread_id, body, occurred_at, global_pos
+		FROM room_fts WHERE `+where+`
+		ORDER BY seq DESC LIMIT ?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: search: %w", err)
+	}
+	defer rows.Close()
+	hits := []room.SearchHit{}
+	for rows.Next() {
+		var h room.SearchHit
+		var threadID string
+		var globalPos int64
+		if err := rows.Scan(&h.EventID, &h.Actor, &h.ActorKind, &threadID, &h.Body, &h.OccurredAt, &globalPos); err != nil {
+			return nil, fmt.Errorf("sqlite: scan search: %w", err)
+		}
+		if threadID != "" {
+			t := threadID
+			h.ThreadID = &t
+		}
+		h.Position = protocol.EncodeCursor(globalPos)
+		hits = append(hits, h)
+	}
+	return hits, rows.Err()
+}
+
+// ensureFTS 索引自愈校验：FTS 行数 != 事件数（v3 前旧库/异常缺口）即全量重建
+// 该房间索引（个人版房间规模毫秒级；重建后增量路径恢复）。
+func (s *Store) ensureFTS(ctx context.Context, roomID string) error {
+	var ftsCount, evtCount int64
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM room_fts WHERE room_id = ?", roomID).Scan(&ftsCount); err != nil {
+		return fmt.Errorf("sqlite: fts count: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM room_events WHERE room_id = ? AND type = ?", roomID, protocol.EventMessagePosted,
+	).Scan(&evtCount); err != nil {
+		return fmt.Errorf("sqlite: event count: %w", err)
+	}
+	if ftsCount == evtCount {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: fts rebuild begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM room_fts WHERE room_id = ?", roomID); err != nil {
+		return fmt.Errorf("sqlite: fts rebuild clear: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT event_id, envelope, global_pos FROM room_events
+		WHERE room_id = ? AND type = ? ORDER BY seq`, roomID, protocol.EventMessagePosted)
+	if err != nil {
+		return fmt.Errorf("sqlite: fts rebuild scan: %w", err)
+	}
+	type row struct {
+		id, env string
+		pos     int64
+	}
+	var batch []row
+	for rows.Next() {
+		var r row
+		var raw string
+		if err := rows.Scan(&r.id, &raw, &r.pos); err != nil {
+			rows.Close()
+			return fmt.Errorf("sqlite: fts rebuild row: %w", err)
+		}
+		r.env = raw
+		batch = append(batch, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("sqlite: fts rebuild rows: %w", err)
+	}
+	for _, r := range batch {
+		var env protocol.Envelope
+		if json.Unmarshal([]byte(r.env), &env) != nil {
+			continue
+		}
+		body, actor, actorKind, threadID, ok := ftsFieldsOf(env)
+		if !ok {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO room_fts (room_id, event_id, actor, actor_kind, thread_id, occurred_at, seq, global_pos, body)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			roomID, env.EventID, actor, actorKind, threadID, env.OccurredAt, env.Seq, r.pos, body); err != nil {
+			return fmt.Errorf("sqlite: fts rebuild insert: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: fts rebuild commit: %w", err)
+	}
+	return nil
 }

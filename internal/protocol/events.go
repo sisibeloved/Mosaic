@@ -36,6 +36,13 @@ const (
 	EventEvidenceRequestCreated  = "evidence_request.created"
 	EventEvidenceRequestResolved = "evidence_request.resolved"
 	EventRoomDeleted             = "room.deleted"
+	// tasklist（RFC-0012 OQ-A 修订 / v1.45 负责人裁定：带责任人的承诺追踪——
+	// 非 Memory 系统，独立成物）：派生是确定性纯投影（宣言模式匹配，零 LLM），
+	// 不落声明事件；人类门控事件族只有 resolved（delivered/dismissed 由人裁定）。
+	EventTaskResolved = "task.resolved"
+	// 记忆编辑（RFC-0007 §7.4 裁定 5：记忆可纠错——人工编辑留 edit_history，
+	// 生效于下次组装；胶囊为一等 Memory 的最小编辑面）。
+	EventMemoryEdited = "memory.edited"
 )
 
 // Envelope 是 room_events 的权威/内部形态（RFC-0001 v0.4）。
@@ -168,6 +175,14 @@ func (e *Envelope) DecodePayload() any {
 		var p RoundClosedPayload
 		_ = json.Unmarshal(e.Payload, &p)
 		return p
+	case EventTaskResolved:
+		var p TaskResolvedPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
+	case EventMemoryEdited:
+		var p MemoryEditedPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
 	default:
 		return nil
 	}
@@ -278,4 +293,25 @@ type EvidenceRequestResolvedPayload struct {
 	EvidenceRefs []string `json:"evidence_refs"`
 	Resolution   string   `json:"resolution"` // resolved | dismissed
 	Note         string   `json:"note,omitempty"`
+}
+
+// TaskResolvedPayload task.resolved：人类对派生任务的裁定（人工门控——
+// 自动判定"说了等于做了"会伪装闭环；delivered=已交付，dismissed=误报/撤销）。
+type TaskResolvedPayload struct {
+	TaskID     string `json:"task_id"`
+	Owner      string `json:"owner"`
+	Resolution string `json:"resolution"` // delivered | dismissed
+	Note       string `json:"note,omitempty"`
+	ResolvedBy string `json:"resolved_by"`
+}
+
+// MemoryEditedPayload memory.edited：胶囊记忆人工编辑（conclusions/assumptions
+// 为编辑后全文、整组替换，至少一项提供；edit_version 自事件流递增）。
+type MemoryEditedPayload struct {
+	MemoryID    string   `json:"memory_id"` // = closure_id（胶囊为一等 Memory 最小版）
+	Conclusions []string `json:"conclusions,omitempty"`
+	Assumptions []string `json:"assumptions,omitempty"`
+	Note        string   `json:"note,omitempty"`
+	EditVersion int      `json:"edit_version"`
+	EditedBy    string   `json:"edited_by"`
 }

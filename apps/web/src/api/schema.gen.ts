@@ -99,6 +99,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/rooms/{room_id}/memory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 房间记忆视图（胶囊 + 编辑历史 + 容量水位）
+         * @description M3-3 记忆查看面（RFC-0007 §7.4 裁定 5）：已接受胶囊的编辑后视图
+         *     （conclusions/assumptions 已应用 memory.edited 链，与语境注入同源不双轨）
+         *     + edit_history（人工编辑留痕）+ capsule_budget（恒常平面容量水位——
+         *     dropped_count > 0 即超预算倒逼合并的信号）。编辑走 edit_memory 命令。
+         */
+        get: operations["getRoomMemory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/rooms/{room_id}/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 房内消息全文检索（FTS5 trigram，按需平面）
+         * @description M3-3 按需检索平面（RFC-0007 §3.1.8 v0.2）：SQLite FTS5 trigram——
+         *     CJK 子串 ≥3 字与英文词均可用（v1.46 spike 实证）；<3 字查询回退
+         *     子串匹配（语义一致）。结果最新在前，position 供时间线跳转定位。
+         */
+        get: operations["searchRoomMessages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/agents": {
         parameters: {
             query?: never;
@@ -214,7 +259,7 @@ export interface components {
          */
         RoomCommand: {
             /** @enum {string} */
-            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "rename_room" | "endorse_intent" | "invite_agent" | "fork_thread" | "pause_thread" | "resume_thread" | "close_thread" | "reopen_thread" | "merge_thread";
+            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "rename_room" | "endorse_intent" | "invite_agent" | "fork_thread" | "pause_thread" | "resume_thread" | "close_thread" | "reopen_thread" | "merge_thread" | "propose_closure" | "accept_closure" | "create_evidence_request" | "resolve_evidence_request" | "resolve_task" | "edit_memory" | "delete_room";
             expected_room_version: number;
             /** @description UUIDv7（服务端按 tenant+key+kind 去重；同键异指纹 409） */
             idempotency_key: string;
@@ -373,6 +418,8 @@ export interface components {
             timeline: components["schemas"]["TimelineItem"][];
             /** @description 收束清单（M3-2：pending 可接受 / accepted / rejected 各一条摘要）。 */
             closures?: components["schemas"]["ClosureSummary"][];
+            /** @description 任务清单（M3-3 tasklist，RFC-0012 OQ-A：带责任人 owner 的承诺追踪——确定性派生 + 人工门控裁定）。 */
+            tasks?: components["schemas"]["TaskItem"][];
             /** @description 证据需求单（M3-5：open/resolved/dismissed）。 */
             evidence_requests?: components["schemas"]["EvidenceRequestView"][];
             /** @description 开发者模式回放条目（M3-1 持久化补全：事件支撑的 [dev] 内联信息，重启还原）。 */
@@ -471,6 +518,97 @@ export interface components {
             version?: string;
             /** @description 可选渠道覆盖（cli 或 app:<小写>），空值按 cli */
             channel?: string;
+        };
+        /** @description 任务清单项（M3-3 tasklist）：确定性派生（agent 消息宣言句）+ 人工门控裁定（task.resolved）。 */
+        TaskItem: {
+            /** @description tsk_ 前缀（源事件哈希派生，确定性） */
+            task_id: string;
+            /** @description 责任人（承诺者 participant_id——多 Agent 群聊对常见 tasklist 的必要增量） */
+            owner: string;
+            /** @description 宣言句（截断 120 字） */
+            text: string;
+            /** @description 派生源消息（provenance 跳转位） */
+            source_event_id: string;
+            /** Format: date-time */
+            declared_at: string;
+            /** Format: int64 */
+            declared_seq: number;
+            /** @description 声明后经过的波数 */
+            waves_since: number;
+            /** @description pending 且 waves_since ≥ 2 */
+            overdue: boolean;
+            /** @enum {string} */
+            status: "pending" | "delivered" | "dismissed";
+            resolution?: string;
+            note?: string;
+            resolved_by?: string;
+            /** Format: date-time */
+            resolved_at?: string;
+        };
+        /** @description 任务裁定（task.resolved 事件载荷）：delivered=已交付；dismissed=误报/撤销。 */
+        ResolveTaskPayload: {
+            task_id: string;
+            /** @enum {string} */
+            resolution: "delivered" | "dismissed";
+            note?: string;
+        };
+        /** @description 胶囊记忆人工编辑（memory.edited 事件载荷）：conclusions/assumptions 为编辑后全文（整组替换），至少一项提供。 */
+        EditMemoryPayload: {
+            /** @description 胶囊 closure_id */
+            memory_id: string;
+            conclusions?: string[];
+            assumptions?: string[];
+            /** @description 编辑理由（留痕） */
+            note?: string;
+        };
+        /** @description 记忆查看面（GET /v1/rooms/{id}/memory）：编辑后胶囊 + 容量水位。 */
+        MemoryView: {
+            room_id: string;
+            capsules: {
+                closure_id: string;
+                /** @enum {string} */
+                closure_type: "consensus" | "bounded_disagreement";
+                thread_id: string;
+                /** Format: int64 */
+                watermark?: number;
+                conclusions: string[];
+                assumptions: string[];
+                named_dissent: {
+                    participant_id: string;
+                    basis: string;
+                }[];
+                falsifiers?: string[];
+                reopen_triggers?: string[];
+                /** @description 人工编辑留痕（正文在事件流；此处只留溯源位） */
+                edit_history: {
+                    event_id: string;
+                    edit_version: number;
+                    note?: string;
+                    edited_by: string;
+                    /** Format: date-time */
+                    occurred_at: string;
+                }[];
+            }[];
+            /** @description 恒常平面容量水位（Hermes 纪律：dropped_count > 0 即超预算——倒逼合并/编辑，不静默截断） */
+            capsule_budget: {
+                budget_runes: number;
+                injected_runes: number;
+                injected_count: number;
+                dropped_count: number;
+            };
+        };
+        /** @description 检索命中（对外视图：无 seq/tenant；position 供时间线跳转）。 */
+        SearchHit: {
+            event_id: string;
+            actor: string;
+            /** @enum {string} */
+            actor_kind: "human" | "agent" | "system";
+            thread_id?: null | string;
+            body: string;
+            /** Format: date-time */
+            occurred_at: string;
+            /** @description opaque cursor（时间线定位） */
+            position: string;
         };
     };
     responses: {
@@ -729,6 +867,63 @@ export interface operations {
                     "application/json": components["schemas"]["Snapshot"];
                 };
             };
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["Internal"];
+        };
+    };
+    getRoomMemory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                room_id: components["parameters"]["RoomID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 记忆视图 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryView"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["Internal"];
+        };
+    };
+    searchRoomMessages: {
+        parameters: {
+            query: {
+                /** @description 检索词（子串语义） */
+                q: string;
+                /** @description 按参与者过滤（participant_id） */
+                actor?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                room_id: components["parameters"]["RoomID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 命中列表（最新在前） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        hits: components["schemas"]["SearchHit"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             500: components["responses"]["Internal"];
         };

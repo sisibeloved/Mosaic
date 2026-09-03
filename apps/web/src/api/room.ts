@@ -52,6 +52,9 @@ interface DraftFrame {
 /** M3-2 收束摘要（快照 closures 视图）。 */
 export type ClosureSummary = NonNullable<Snapshot["closures"]>[number];
 
+/** M3-3 任务清单项（快照 tasks 视图；owner = 责任人）。 */
+export type TaskItem = NonNullable<Snapshot["tasks"]>[number];
+
 const SUBSCRIBED_EVENTS = [
   "message.posted",
   "round.opened",
@@ -69,6 +72,8 @@ const SUBSCRIBED_EVENTS = [
   "closure.rejected",
   "closure.accepted",
   "pause_capsule.created",
+  "task.resolved",
+  "memory.edited",
 ] as const;
 
 
@@ -99,6 +104,8 @@ interface RoomModelState {
   threads: ThreadItem[];
   edges: GraphEdge[];
   closures: ClosureSummary[];
+  /** M3-3 任务清单（带责任人的承诺追踪）。 */
+  tasks: TaskItem[];
   roundOpen: boolean;
   paused: boolean;
   /** 入房 Agent 名单（null = 全席模式：建房未选人，所有在席 Agent 均在房内）。 */
@@ -116,6 +123,7 @@ export interface RoomHandle {
   threads: ThreadItem[];
   edges: GraphEdge[];
   closures: ClosureSummary[];
+  tasks: TaskItem[];
   roundOpen: boolean;
   paused: boolean;
   roster: string[] | null;
@@ -131,6 +139,10 @@ export interface RoomHandle {
   /** M3-2 收束：提议（threadID 空 = 根线程）；接受待决收束（closureID 空 = 唯一待决）。 */
   proposeClosure(threadID: string | null, hint?: string): Promise<void>;
   acceptClosure(closureID?: string): Promise<void>;
+  /** M3-3 任务裁定（task.resolved：delivered=已交付；dismissed=误报/撤销）。 */
+  resolveTask(taskID: string, resolution: "delivered" | "dismissed", note?: string): Promise<void>;
+  /** M3-3 记忆编辑（memory.edited：整组替换，生效于下次组装）。 */
+  editMemory(memoryID: string, edits: { conclusions?: string[]; assumptions?: string[] }, note: string): Promise<void>;
   /** 重取快照投影区（成员/记分卡/谱系/策略）——抽屉 Tab 打开时调用。 */
   refreshProjections(): Promise<void>;
 }
@@ -144,6 +156,7 @@ function projections(snap: Snapshot) {
     threads: snap.threads,
     edges: snap.graph,
     closures: snap.closures ?? [],
+    tasks: snap.tasks ?? [],
     roster: snap.roster ?? null,
   };
 }
@@ -183,6 +196,14 @@ function devDetailOf(
       return `[dev] 证据需求单：${p.question ?? ""}`;
     case "evidence_request.resolved":
       return `[dev] 证据需求单${p.resolution === "dismissed" ? "驳回" : "解决"}`;
+    case "task.resolved":
+      return `[dev] 任务裁定（${resolveName(p.owner)}）：${p.resolution === "dismissed" ? "误报/撤销" : "已交付"}${
+        p.note ? `（${p.note}）` : ""
+      }`;
+    case "memory.edited":
+      return `[dev] 记忆编辑 ${p.memory_id ?? ""} v${p.edit_version ?? "?"}${
+        p.note ? `（${p.note}）` : ""
+      }`;
     default:
       return null;
   }
@@ -345,6 +366,12 @@ export function useRoom(roomID: string | null): RoomHandle {
           scheduleRefresh();
           break;
         case "pause_capsule.created":
+          scheduleRefresh();
+          break;
+        case "task.resolved": // M3-3：任务裁定 → 快照 tasks 重投影
+          scheduleRefresh();
+          break;
+        case "memory.edited": // M3-3：记忆编辑 → 胶囊视图重取
           scheduleRefresh();
           break;
         case "intent.endorsed":
@@ -599,6 +626,16 @@ export function useRoom(roomID: string | null): RoomHandle {
     (closureID?: string) => runCommand((id, v) => api.acceptClosure(id, v, closureID ?? null)),
     [runCommand],
   );
+  const resolveTask = useCallback(
+    (taskID: string, resolution: "delivered" | "dismissed", note?: string) =>
+      runCommand((id, v) => api.resolveTask(id, v, taskID, resolution, note)),
+    [runCommand],
+  );
+  const editMemory = useCallback(
+    (memoryID: string, edits: { conclusions?: string[]; assumptions?: string[] }, note: string) =>
+      runCommand((id, v) => api.editMemory(id, v, memoryID, edits, note)),
+    [runCommand],
+  );
 
   return {
     roomID: state?.roomID ?? null,
@@ -611,6 +648,7 @@ export function useRoom(roomID: string | null): RoomHandle {
     threads: state?.threads ?? [],
     edges: state?.edges ?? [],
     closures: state?.closures ?? [],
+    tasks: state?.tasks ?? [],
     roundOpen: state?.roundOpen ?? false,
     paused: state?.paused ?? false,
     roster: state?.roster ?? null,
@@ -624,6 +662,8 @@ export function useRoom(roomID: string | null): RoomHandle {
     invite,
     proposeClosure,
     acceptClosure,
+    resolveTask,
+    editMemory,
     refreshProjections: refreshProjectionsNow,
   };
 }

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/memory.edited.schema.json",
+  "title": "MemoryEditedPayload",
+  "description": "胶囊记忆人工编辑（RFC-0007 §7.4 裁定 5：纠错留 edit_history、生效于下次组装；conclusions/assumptions 为编辑后全文，整组替换）。",
+  "type": "object",
+  "required": ["memory_id", "edit_version", "edited_by"],
+  "additionalProperties": false,
+  "properties": {
+    "memory_id": { "type": "string", "pattern": "^clo_[0-9A-Za-z_-]+$" },
+    "conclusions": {
+      "type": "array",
+      "maxItems": 12,
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    },
+    "assumptions": {
+      "type": "array",
+      "maxItems": 12,
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    },
+    "note": { "type": "string", "maxLength": 280 },
+    "edit_version": { "type": "integer", "minimum": 1 },
+    "edited_by": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" }
+  }
+}

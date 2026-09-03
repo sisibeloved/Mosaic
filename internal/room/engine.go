@@ -646,13 +646,26 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 		"total_ms", timing.TotalMs, "eval_total_ms", timing.EvalTotalMs)
 }
 
-// assembleChat 聊天语境组装 + Receipt 落账（评估/生成共用出口；proactive 波仅在
-// 生成语境注入 OQ-A 标记——适配器据此知道无新刺激）。
+// assembleChat 聊天语境组装 + Receipt 落账（评估/生成共用出口）。M3-3 记忆
+// 三面在此接线（v1.46 修复 v1.36 失实：胶囊注入此前从未接进引擎——
+// capsuleMemoriesOf 是死代码）：恒常平面（编辑后胶囊 + 容量纪律）、按需平面
+// （刺激关键词召回近窗外旧消息）、tasklist（pending 承诺，含波龄与 overdue）。
+// proactive 波额外注入 OQ-A 标记与承诺指令（适配器据此知道无新刺激、
+// 未交付承诺该交付或说明）。
 func (e *Engine) assembleChat(ctx context.Context, cfg contextx.Config, envs []protocol.Envelope, anchor protocol.Envelope, proactive bool) contextx.Assembled {
+	capsules, _ := capsuleMemoriesOf(envs)
+	cfg.Capsules = capsuleMemoriesProjection(capsules)
+	cfg.Tasklist = taskBriefProjection(envs)
+	cfg.Retrieved = retrievedProjection(envs, anchor, cfg.RecentWindow)
 	asm := contextx.Assemble(cfg, envs, anchor)
 	if proactive {
 		asm.Inline["proactive"] = true
 		asm.Inline["silence_minutes"] = int(e.cfg.ProactiveSilence.Minutes())
+		// OQ-A 承诺指令（v1.44 狗粮实证的治本位：主动波语境此前无"未履行承诺"
+		// 概念，宣言后全静默空转）：清单已含 owner，各 agent 对照自查名下任务。
+		if len(cfg.Tasklist) > 0 {
+			asm.Inline["tasklist_note"] = "本房间有未交付的承诺（见 tasklist，按 owner 认领）：若是你名下的，有结果就交付；没有进展就说明情况"
+		}
 	}
 	if e.cfg.Receipts != nil {
 		asm.Receipt.CreatedAt = e.cfg.Clock()
@@ -661,6 +674,78 @@ func (e *Engine) assembleChat(ctx context.Context, cfg contextx.Config, envs []p
 		}
 	}
 	return asm
+}
+
+// capsuleMemoriesProjection 胶囊 → 语境注入投影（恒常平面最小版）。
+func capsuleMemoriesProjection(capsules []protocol.ClosureCapsule) []contextx.CapsuleMemory {
+	out := make([]contextx.CapsuleMemory, 0, len(capsules))
+	for _, c := range capsules {
+		mem := contextx.CapsuleMemory{
+			ClosureID: c.ClosureID, Type: c.ClosureType, ThreadID: c.ThreadID,
+			Conclusions: c.Conclusions, Assumptions: c.Assumptions,
+		}
+		for _, d := range c.NamedDissent {
+			mem.Dissent = append(mem.Dissent, d.ParticipantID+": "+d.Basis)
+		}
+		out = append(out, mem)
+	}
+	return out
+}
+
+// taskBriefProjection pending 承诺 → 语境注入投影（声明序）。
+func taskBriefProjection(envs []protocol.Envelope) []contextx.TaskBrief {
+	briefs := PendingTaskBriefsOf(envs)
+	out := make([]contextx.TaskBrief, len(briefs))
+	for i, b := range briefs {
+		out[i] = contextx.TaskBrief{
+			TaskID: b.TaskID, Owner: b.Owner, Text: b.Text,
+			WavesSince: b.WavesSince, Overdue: b.Overdue,
+		}
+	}
+	return out
+}
+
+// retrievedProjection 按需平面：刺激关键词召回近窗外旧消息（top 5；排除
+// recent 窗口与刺激本身——重复注入无信息量；event_id 即 provenance）。
+func retrievedProjection(envs []protocol.Envelope, anchor protocol.Envelope, recentWindow int) []contextx.RetrievedItem {
+	if recentWindow <= 0 {
+		recentWindow = 10
+	}
+	var stimulusBody string
+	{
+		var p struct {
+			Body string `json:"body"`
+		}
+		_ = json.Unmarshal(anchor.Payload, &p)
+		stimulusBody = p.Body
+	}
+	keywords := ExtractKeywords(stimulusBody)
+	if len(keywords) == 0 {
+		return nil
+	}
+	exclude := map[string]bool{anchor.EventID: true}
+	var msgIDs []string
+	for i := len(envs) - 1; i >= 0; i-- {
+		if envs[i].Type == protocol.EventMessagePosted {
+			msgIDs = append(msgIDs, envs[i].EventID)
+			if len(msgIDs) >= recentWindow {
+				break
+			}
+		}
+	}
+	for _, id := range msgIDs {
+		exclude[id] = true
+	}
+	hits := RetrieveRelated(envs, keywords, exclude, 5)
+	out := make([]contextx.RetrievedItem, 0, len(hits))
+	for _, h := range hits {
+		var p struct {
+			Body string `json:"body"`
+		}
+		_ = json.Unmarshal(h.Payload, &p)
+		out = append(out, contextx.RetrievedItem{EventID: h.EventID, Actor: h.Actor.ParticipantID, Body: p.Body})
+	}
+	return out
 }
 
 // clearRoomClaims 波开后的声明清账：本房间全部 pending 声明清除——锚点已覆盖
@@ -1245,22 +1330,5 @@ func truncate(s string, max int) string {
 	return string(runes[:max])
 }
 
-// capsuleMemoriesOf 历史胶囊 → 上下文记忆项（最多前 5 个：旧胶囊渐远）。
-func capsuleMemoriesOf(history []StoredEvent) []contextx.CapsuleMemory {
-	capsules := AcceptedCapsulesOf(history)
-	if len(capsules) > 5 {
-		capsules = capsules[:5]
-	}
-	out := make([]contextx.CapsuleMemory, 0, len(capsules))
-	for _, c := range capsules {
-		mem := contextx.CapsuleMemory{
-			ClosureID: c.ClosureID, Type: c.ClosureType, ThreadID: c.ThreadID,
-			Conclusions: c.Conclusions, Assumptions: c.Assumptions,
-		}
-		for _, d := range c.NamedDissent {
-			mem.Dissent = append(mem.Dissent, d.ParticipantID+": "+d.Basis)
-		}
-		out = append(out, mem)
-	}
-	return out
-}
+// capsuleMemoriesOf 已迁移 memoryedit.go（M3-3：编辑后视图 + 容量预算；
+// v1.36 版本是死代码——声明"注入第八层"但从未被调用，v1.46 接线修复）。

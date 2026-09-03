@@ -143,6 +143,27 @@ paths:
                   issued_at: "2026-09-02T02:05:00.000Z"
                   payload:
                     closure_id: null
+              resolve_task:
+                value:
+                  command_kind: resolve_task
+                  expected_room_version: 22
+                  idempotency_key: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d9008"
+                  issued_at: "2026-09-03T08:00:00.000Z"
+                  payload:
+                    task_id: tsk_abc123def456
+                    resolution: delivered
+                    note: 数据已拉到并贴出
+              edit_memory:
+                value:
+                  command_kind: edit_memory
+                  expected_room_version: 25
+                  idempotency_key: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d9009"
+                  issued_at: "2026-09-03T08:10:00.000Z"
+                  payload:
+                    memory_id: clo_01H8XYZ
+                    conclusions: [修正后的结论表述]
+                    assumptions: null
+                    note: 原结论表述有误，人工纠正
       responses:
         "200":
           description: 命令受理（含幂等回放）
@@ -192,6 +213,66 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Snapshot"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /v1/rooms/{room_id}/memory:
+    get:
+      operationId: getRoomMemory
+      summary: 房间记忆视图（胶囊 + 编辑历史 + 容量水位）
+      description: |
+        M3-3 记忆查看面（RFC-0007 §7.4 裁定 5）：已接受胶囊的编辑后视图
+        （conclusions/assumptions 已应用 memory.edited 链，与语境注入同源不双轨）
+        + edit_history（人工编辑留痕）+ capsule_budget（恒常平面容量水位——
+        dropped_count > 0 即超预算倒逼合并的信号）。编辑走 edit_memory 命令。
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: 记忆视图
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryView"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /v1/rooms/{room_id}/search:
+    get:
+      operationId: searchRoomMessages
+      summary: 房内消息全文检索（FTS5 trigram，按需平面）
+      description: |
+        M3-3 按需检索平面（RFC-0007 §3.1.8 v0.2）：SQLite FTS5 trigram——
+        CJK 子串 ≥3 字与英文词均可用（v1.46 spike 实证）；<3 字查询回退
+        子串匹配（语义一致）。结果最新在前，position 供时间线跳转定位。
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+          description: 检索词（子串语义）
+        - name: actor
+          in: query
+          required: false
+          schema: { type: string }
+          description: 按参与者过滤（participant_id）
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200":
+          description: 命中列表（最新在前）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hits]
+                properties:
+                  hits:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SearchHit"
+        "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/Internal" }
   /v1/agents:
@@ -429,7 +510,7 @@ components:
       properties:
         command_kind:
           type: string
-          enum: [create_room, post_message, pause_room, resume_room, rename_room, endorse_intent, invite_agent, fork_thread, pause_thread, resume_thread, close_thread, reopen_thread, merge_thread]
+          enum: [create_room, post_message, pause_room, resume_room, rename_room, endorse_intent, invite_agent, fork_thread, pause_thread, resume_thread, close_thread, reopen_thread, merge_thread, propose_closure, accept_closure, create_evidence_request, resolve_evidence_request, resolve_task, edit_memory, delete_room]
         expected_room_version:
           type: integer
           minimum: 0
@@ -685,6 +766,11 @@ components:
           description: 收束清单（M3-2：pending 可接受 / accepted / rejected 各一条摘要）。
           items:
             $ref: "#/components/schemas/ClosureSummary"
+        tasks:
+          type: array
+          description: 任务清单（M3-3 tasklist，RFC-0012 OQ-A：带责任人 owner 的承诺追踪——确定性派生 + 人工门控裁定）。
+          items:
+            $ref: "#/components/schemas/TaskItem"
         evidence_requests:
           type: array
           description: 证据需求单（M3-5：open/resolved/dismissed）。
@@ -786,3 +872,104 @@ components:
         path: { type: string }
         version: { type: string }
         channel: { type: string, description: 可选渠道覆盖（cli 或 app:<小写>），空值按 cli }
+    TaskItem:
+      type: object
+      required: [task_id, owner, text, source_event_id, declared_at, declared_seq, waves_since, overdue, status]
+      description: 任务清单项（M3-3 tasklist）：确定性派生（agent 消息宣言句）+ 人工门控裁定（task.resolved）。
+      properties:
+        task_id: { type: string, description: "tsk_ 前缀（源事件哈希派生，确定性）" }
+        owner: { type: string, description: 责任人（承诺者 participant_id——多 Agent 群聊对常见 tasklist 的必要增量） }
+        text: { type: string, description: 宣言句（截断 120 字） }
+        source_event_id: { type: string, description: 派生源消息（provenance 跳转位） }
+        declared_at: { type: string, format: date-time }
+        declared_seq: { type: integer, format: int64 }
+        waves_since: { type: integer, description: 声明后经过的波数 }
+        overdue: { type: boolean, description: pending 且 waves_since ≥ 2 }
+        status: { type: string, enum: [pending, delivered, dismissed] }
+        resolution: { type: string }
+        note: { type: string }
+        resolved_by: { type: string }
+        resolved_at: { type: string, format: date-time }
+    ResolveTaskPayload:
+      type: object
+      required: [task_id, resolution]
+      additionalProperties: false
+      description: 任务裁定（task.resolved 事件载荷）：delivered=已交付；dismissed=误报/撤销。
+      properties:
+        task_id: { type: string, pattern: "^tsk_[0-9A-Za-z_-]+$" }
+        resolution: { type: string, enum: [delivered, dismissed] }
+        note: { type: string, maxLength: 280 }
+    EditMemoryPayload:
+      type: object
+      required: [memory_id]
+      additionalProperties: false
+      description: 胶囊记忆人工编辑（memory.edited 事件载荷）：conclusions/assumptions 为编辑后全文（整组替换），至少一项提供。
+      properties:
+        memory_id: { type: string, pattern: "^clo_[0-9A-Za-z_-]+$", description: 胶囊 closure_id }
+        conclusions: { type: array, maxItems: 12, items: { type: string, maxLength: 500 } }
+        assumptions: { type: array, maxItems: 12, items: { type: string, maxLength: 500 } }
+        note: { type: string, maxLength: 280, description: 编辑理由（留痕） }
+    MemoryView:
+      type: object
+      required: [room_id, capsules, capsule_budget]
+      description: 记忆查看面（GET /v1/rooms/{id}/memory）：编辑后胶囊 + 容量水位。
+      properties:
+        room_id: { type: string }
+        capsules:
+          type: array
+          items:
+            type: object
+            required: [closure_id, closure_type, thread_id, conclusions, assumptions, named_dissent, edit_history]
+            properties:
+              closure_id: { type: string }
+              closure_type: { type: string, enum: [consensus, bounded_disagreement] }
+              thread_id: { type: string }
+              watermark: { type: integer, format: int64 }
+              conclusions: { type: array, items: { type: string } }
+              assumptions: { type: array, items: { type: string } }
+              named_dissent:
+                type: array
+                items:
+                  type: object
+                  required: [participant_id, basis]
+                  properties:
+                    participant_id: { type: string }
+                    basis: { type: string }
+              falsifiers: { type: array, items: { type: string } }
+              reopen_triggers: { type: array, items: { type: string } }
+              edit_history:
+                type: array
+                description: 人工编辑留痕（正文在事件流；此处只留溯源位）
+                items:
+                  type: object
+                  required: [event_id, edit_version, edited_by, occurred_at]
+                  properties:
+                    event_id: { type: string }
+                    edit_version: { type: integer }
+                    note: { type: string }
+                    edited_by: { type: string }
+                    occurred_at: { type: string, format: date-time }
+        capsule_budget:
+          type: object
+          required: [budget_runes, injected_runes, injected_count, dropped_count]
+          description: 恒常平面容量水位（Hermes 纪律：dropped_count > 0 即超预算——倒逼合并/编辑，不静默截断）
+          properties:
+            budget_runes: { type: integer }
+            injected_runes: { type: integer }
+            injected_count: { type: integer }
+            dropped_count: { type: integer }
+    SearchHit:
+      type: object
+      required: [event_id, actor, actor_kind, body, occurred_at, position]
+      description: 检索命中（对外视图：无 seq/tenant；position 供时间线跳转）。
+      properties:
+        event_id: { type: string }
+        actor: { type: string }
+        actor_kind: { type: string, enum: [human, agent, system] }
+        thread_id:
+          oneOf:
+            - type: "null"
+            - type: string
+        body: { type: string }
+        occurred_at: { type: string, format: date-time }
+        position: { type: string, description: opaque cursor（时间线定位） }

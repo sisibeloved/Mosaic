@@ -120,3 +120,11 @@ type CASStore interface {
 	// 不符返回 ErrVersionConflict，整批回滚）。
 	AppendEventsIf(ctx context.Context, envelopes []protocol.Envelope, expectedRoomVersion int64) ([]protocol.Envelope, error)
 }
+
+// MessageSearcher 按需检索端口（M3-3 按需平面，RFC-0007 §7.4 裁定 2）：
+// SQLite FTS5(trigram) 为生产实现；语义基准是纯函数 SearchMessages（线性子串，
+// 大小写不敏感）——两实现语义一致（trigram 对 <3 字查询回退 LIKE 子串）。
+// 供 HTTP 搜索端点消费；组装时检索走 RetrieveRelated（内存线性，历史已在手）。
+type MessageSearcher interface {
+	SearchMessages(ctx context.Context, roomID, query, actor, threadID string, limit int) ([]SearchHit, error)
+}

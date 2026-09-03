@@ -142,3 +142,12 @@ body {
 .draft-text {
   animation: mosaic-fade-in 150ms ease-out;
 }
+
+/* provenance 跳转闪高（任务宣言消息/检索命中定位——M3-3） */
+.jump-flash {
+  animation: jump-flash-frames 1.6s ease-out 1;
+}
+@keyframes jump-flash-frames {
+  0% { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+  100% { background: transparent; }
+}

@@ -107,6 +107,10 @@ func (s *Service) ExecuteCommand(ctx context.Context, actor Actor, cmd Command) 
 		return s.createEvidenceRequest(ctx, actor, cmd)
 	case "resolve_evidence_request":
 		return s.resolveEvidenceRequest(ctx, actor, cmd)
+	case "resolve_task":
+		return s.resolveTask(ctx, actor, cmd)
+	case "edit_memory":
+		return s.editMemory(ctx, actor, cmd)
 	case "delete_room":
 		return s.deleteRoom(ctx, actor, cmd)
 	case "fork_thread", "pause_thread", "resume_thread", "close_thread", "reopen_thread", "merge_thread":
@@ -303,7 +307,151 @@ var (
 	eventIDPattern       = regexp.MustCompile(`^evt_[0-9A-Za-z_-]+$`)
 	intentIDPattern      = regexp.MustCompile(`^int_[0-9A-Za-z_-]+$`)
 	participantIDPattern = regexp.MustCompile(`^par_[0-9A-Za-z_-]+$`)
+	taskIDPattern        = regexp.MustCompile(`^tsk_[0-9A-Za-z_-]+$`)
+	closureIDPattern     = regexp.MustCompile(`^clo_[0-9A-Za-z_-]+$`)
 )
+
+// resolveTask 人类裁定派生任务（tasklist 人工门控——delivered/dismissed 由人
+// 定，自动判定交付会伪装闭环）。校验：任务存在且 pending。
+func (s *Service) resolveTask(ctx context.Context, actor Actor, cmd Command) (*CommandResult, error) {
+	if res, err := s.replayIfReceived(ctx, cmd, actor); res != nil || err != nil {
+		return res, err
+	}
+	if res, err := s.roomVersionPrecheck(ctx, cmd, actor); res != nil || err != nil {
+		return res, err
+	}
+	var payload struct {
+		TaskID     string `json:"task_id"`
+		Resolution string `json:"resolution"`
+		Note       string `json:"note"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(cmd.Payload)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("%w: resolve_task payload: %v", ErrInvalidCommand, err)
+	}
+	if !taskIDPattern.MatchString(payload.TaskID) {
+		return nil, fmt.Errorf("%w: task_id 形如 tsk_*", ErrInvalidCommand)
+	}
+	if payload.Resolution != "delivered" && payload.Resolution != "dismissed" {
+		return nil, fmt.Errorf("%w: resolution 取值 delivered | dismissed", ErrInvalidCommand)
+	}
+	if len([]rune(payload.Note)) > 280 {
+		return nil, fmt.Errorf("%w: note 超 280 字", ErrInvalidCommand)
+	}
+	history, err := s.historyOf(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: history: %w", err)
+	}
+	tasks := TasksOf(history)
+	var target *TaskItem
+	for i := range tasks {
+		if tasks[i].TaskID == payload.TaskID {
+			target = &tasks[i]
+			break
+		}
+	}
+	if target == nil {
+		return nil, fmt.Errorf("%w: 任务 %s 不存在", ErrInvalidCommand, payload.TaskID)
+	}
+	if target.Status != "pending" {
+		return nil, fmt.Errorf("%w: 任务已裁定（%s），不可重复裁定", ErrInvalidCommand, target.Status)
+	}
+	env := protocol.Envelope{
+		EventID:       s.cfg.NewID("evt"),
+		TenantID:      s.cfg.Tenant,
+		RoomID:        cmd.RoomID,
+		Type:          protocol.EventTaskResolved,
+		SchemaVersion: 1,
+		OccurredAt:    s.cfg.Clock(),
+		Actor:         protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
+		Visibility:    protocol.Visibility{Kind: "public"},
+		Payload: mustJSON(protocol.TaskResolvedPayload{
+			TaskID:     payload.TaskID,
+			Owner:      target.Owner,
+			Resolution: payload.Resolution,
+			Note:       payload.Note,
+			ResolvedBy: actor.ParticipantID,
+		}),
+		Metadata: map[string]any{},
+	}
+	return s.commitWith(ctx, cmd, actor, env)
+}
+
+// editMemory 人工编辑胶囊记忆（RFC-0007 §7.4 裁定 5：纠错留 edit_history、
+// 生效于下次组装）。conclusions/assumptions 为编辑后全文（整组替换，至少一项）。
+func (s *Service) editMemory(ctx context.Context, actor Actor, cmd Command) (*CommandResult, error) {
+	if res, err := s.replayIfReceived(ctx, cmd, actor); res != nil || err != nil {
+		return res, err
+	}
+	if res, err := s.roomVersionPrecheck(ctx, cmd, actor); res != nil || err != nil {
+		return res, err
+	}
+	var payload struct {
+		MemoryID    string   `json:"memory_id"`
+		Conclusions []string `json:"conclusions"`
+		Assumptions []string `json:"assumptions"`
+		Note        string   `json:"note"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(cmd.Payload)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("%w: edit_memory payload: %v", ErrInvalidCommand, err)
+	}
+	if !closureIDPattern.MatchString(payload.MemoryID) {
+		return nil, fmt.Errorf("%w: memory_id 形如 clo_*（胶囊 closure_id）", ErrInvalidCommand)
+	}
+	if len([]rune(payload.Note)) > 280 {
+		return nil, fmt.Errorf("%w: note 超 280 字", ErrInvalidCommand)
+	}
+	if len(payload.Conclusions) == 0 && len(payload.Assumptions) == 0 {
+		return nil, fmt.Errorf("%w: conclusions/assumptions 至少一项（编辑后全文，整组替换）", ErrInvalidCommand)
+	}
+	for name, items := range map[string][]string{"conclusions": payload.Conclusions, "assumptions": payload.Assumptions} {
+		if len(items) > 12 {
+			return nil, fmt.Errorf("%w: %s ≤ 12 条", ErrInvalidCommand, name)
+		}
+		for i, it := range items {
+			if len([]rune(it)) < 1 || len([]rune(it)) > 500 {
+				return nil, fmt.Errorf("%w: %s[%d] 长度 1..500 字", ErrInvalidCommand, name, i)
+			}
+		}
+	}
+	history, err := s.historyOf(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: history: %w", err)
+	}
+	known := false
+	for _, c := range AcceptedCapsulesOf(history) {
+		if c.ClosureID == payload.MemoryID {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return nil, fmt.Errorf("%w: 胶囊 %s 不存在（须为已接受收束）", ErrInvalidCommand, payload.MemoryID)
+	}
+	env := protocol.Envelope{
+		EventID:       s.cfg.NewID("evt"),
+		TenantID:      s.cfg.Tenant,
+		RoomID:        cmd.RoomID,
+		Type:          protocol.EventMemoryEdited,
+		SchemaVersion: 1,
+		OccurredAt:    s.cfg.Clock(),
+		Actor:         protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
+		Visibility:    protocol.Visibility{Kind: "public"},
+		Payload: mustJSON(protocol.MemoryEditedPayload{
+			MemoryID:    payload.MemoryID,
+			Conclusions: payload.Conclusions,
+			Assumptions: payload.Assumptions,
+			Note:        payload.Note,
+			EditVersion: NextEditVersionOf(history, payload.MemoryID),
+			EditedBy:    actor.ParticipantID,
+		}),
+		Metadata: map[string]any{},
+	}
+	return s.commitWith(ctx, cmd, actor, env)
+}
 
 // commit 原子落库 + 回执；回执竞态时重查回放（并发同键后到者）。
 // 存储在事务内强制乐观并发（ExpectedRoomVersion）——本函数之上只做快速失败预检。

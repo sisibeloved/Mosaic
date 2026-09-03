@@ -230,7 +230,8 @@ func (s *server) handleDebugMemory(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"room_id":           roomID,
-		"capsules":          room.AcceptedCapsulesOf(events),
+		"capsules":          room.MemoryCapsulesOf(events), // 编辑后视图（与注入同源）
+		"capsule_budget":    room.CapsuleBudgetOf(envs),    // 恒常平面水位（dropped>0 即超预算）
 		"evidence_requests": room.EvidenceRequestsOf(events),
 		"drift_signature":   room.DriftSignature(envs, 20),
 		"repetition_risk":   seats,

@@ -43,8 +43,7 @@ type Deps struct {
 	// Authority 配置的服务监听地址（host:port；四轮复审 #15）：跨源写门据此判定
 	// Origin——不信请求自带的 Host（DNS rebinding 后 Origin 与 Host 会同时指向
 	// 攻击者域名而相等）。空 = 测试装配退回"请求 Host + 回环 host"判定（host 仍须回环）。
-	Authority string
-	// ExtraOriginHosts 壳集成信任源（M2 桌面壳）：精确主机名匹配（如 wails.localhost）。
+	Authority string // ExtraOriginHosts 壳集成信任源（M2 桌面壳）：精确主机名匹配（如 wails.localhost）。
 	// 浏览器对 Origin 头不可伪造，且 .localhost 顶级域不落到远端——该 Origin 只能
 	// 来自本应用自带 WebView 中的页面；命中即放行（豁免回环/端口判定）。
 	ExtraOriginHosts []string
@@ -55,6 +54,9 @@ type Deps struct {
 	// UI 前端产物根（index.html 位于根；M2 SPA 经 apps/web 构建）。nil = 退回
 	// M1 内嵌最小 webui（测试装配 / 未装配 SPA 的兜底形态）。
 	UI fs.FS
+	// Searcher 按需检索端口（M3-3）：nil = 回退线性基准（读全量事件 +
+	// room.SearchMessages 纯函数——语义一致）；SQLite 装配注入 FTS5 实现。
+	Searcher room.MessageSearcher
 }
 
 // New 构造路由。对外契约面（ADR-0007）由 apigen 生成的 ServerInterface +
@@ -578,6 +580,68 @@ func (s *server) ListRooms(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"rooms": rooms})
+}
+
+// GetRoomMemory 记忆查看面（M3-3，apigen.ServerInterface）：编辑后胶囊 +
+// edit_history + 容量水位——与语境注入同源投影（纠错生效于下次组装可证）。
+func (s *server) GetRoomMemory(w http.ResponseWriter, r *http.Request, roomID apigen.RoomID) {
+	events, err := s.readAllEvents(r, roomID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "memory_read_failed", err.Error())
+		return
+	}
+	if len(events) == 0 {
+		writeError(w, http.StatusNotFound, "room_not_found", "房间不存在或尚无事件")
+		return
+	}
+	envs := make([]protocol.Envelope, len(events))
+	for i := range events {
+		envs[i] = events[i].Envelope
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"room_id":        roomID,
+		"capsules":       room.MemoryCapsulesOf(events),
+		"capsule_budget": room.CapsuleBudgetOf(envs),
+	})
+}
+
+// SearchRoomMessages 房内全文检索（M3-3 按需平面，apigen.ServerInterface）：
+// Searcher（SQLite FTS5 trigram）优先，nil 回退线性基准（语义一致）。
+func (s *server) SearchRoomMessages(w http.ResponseWriter, r *http.Request, roomID apigen.RoomID, params apigen.SearchRoomMessagesParams) {
+	q := strings.TrimSpace(params.Q)
+	if q == "" || len([]rune(q)) > 200 {
+		writeError(w, http.StatusBadRequest, "bad_query", "q 必填 1..200 字")
+		return
+	}
+	limit := 20
+	if params.Limit != nil {
+		if *params.Limit < 1 || *params.Limit > 100 {
+			writeError(w, http.StatusBadRequest, "bad_limit", "limit 须为 1..100")
+			return
+		}
+		limit = *params.Limit
+	}
+	actor := ""
+	if params.Actor != nil {
+		actor = *params.Actor
+	}
+	var hits []room.SearchHit
+	if s.deps.Searcher != nil {
+		var err error
+		hits, err = s.deps.Searcher.SearchMessages(r.Context(), roomID, q, actor, "", limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "search_failed", err.Error())
+			return
+		}
+	} else {
+		events, err := s.readAllEvents(r, roomID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "search_failed", err.Error())
+			return
+		}
+		hits = room.SearchMessages(events, q, actor, "", limit)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"hits": hits})
 }
 
 // handleUI：GET 兜底——SPA 静态产物 + 前端路由回退（M2 真实界面，v1.7 制度化）。

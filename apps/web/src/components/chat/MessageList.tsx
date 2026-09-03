@@ -46,9 +46,13 @@ export function MessageList({
           e.kind === "system" ? (
             <SystemBar key={e.key} text={e.detail ?? ""} />
           ) : e.actorKind === "human" ? (
-            <HumanBubble key={e.key} entry={e} participants={participants} />
+            <div key={e.key} data-event-id={e.key} className="rounded-xl">
+              <HumanBubble entry={e} participants={participants} />
+            </div>
           ) : (
-            <AgentBubble key={e.key} entry={e} participants={participants} />
+            <div key={e.key} data-event-id={e.key} className="rounded-xl">
+              <AgentBubble entry={e} participants={participants} />
+            </div>
           ),
         )}
       </div>

@@ -1,6 +1,9 @@
-// Package contextx：Context 组装（RFC-0007 七层最小版）与预算账本（RFC-0003 §3.1.4）。
-// 纯函数、确定性：层摘要（sha256）使 Context Receipt 可验证——同事件流必同摘要，
-// 回放重建与审计据此成立。M1 裁剪：无 embedding 检索层（M3 记忆层接入）。
+// Package contextx：Context 组装（RFC-0007 七层最小版 + 记忆双平面）与预算
+// 账本（RFC-0003 §3.1.4）。纯函数、确定性：层摘要（sha256）使 Context Receipt
+// 可验证——同事件流必同摘要，回放重建与审计据此成立。M1 裁剪：无 embedding
+// 检索层。M3-3（RFC-0007 §7.4 v0.2）：恒常平面 capsule_memory（编辑后胶囊，
+// 容量纪律见 room.CapsuleBudgetRunes）+ 按需平面 retrieved_memory（关键词召回
+// 的近窗外旧消息，FTS5 同语义）+ tasklist（带责任人的承诺追踪，RFC-0012 OQ-A）。
 package contextx
 
 import (
@@ -43,8 +46,31 @@ type Config struct {
 	Budget       BudgetState
 	Endorse      bool // 人类保送（OQ-17）：owner 指定发言（非仲裁获选）
 	// Capsules 一等 Memory（M3-3，RFC-0007 最小接入）：已接受收束胶囊注入上下文
-	//（结论/假设/异议边界——"这个房间已经聊定过什么"）。
+	//（结论/假设/异议边界——"这个房间已经聊定过什么"；编辑后视图，纠错生效）。
 	Capsules []CapsuleMemory
+	// Tasklist 带责任人的承诺追踪（RFC-0012 OQ-A 修订 / v1.45）：pending 任务
+	// 最小投影——"我曾承诺未交付"是主动开口的触发源（狗粮实证 v1.44）。
+	Tasklist []TaskBrief
+	// Retrieved 按需平面（RFC-0007 §7.4 裁定 2）：组装时按刺激关键词召回的
+	// 近窗外旧消息（provenance=event_id；FTS5 同语义的线性实现）。
+	Retrieved []RetrievedItem
+}
+
+// TaskBrief 任务语境项（注入用最小投影；owner 是多 Agent 群聊对常见 tasklist
+// 的必要增量——每项任务归属具体承诺者）。
+type TaskBrief struct {
+	TaskID     string `json:"task_id"`
+	Owner      string `json:"owner"`
+	Text       string `json:"text"`
+	WavesSince int    `json:"waves_since"`
+	Overdue    bool   `json:"overdue"`
+}
+
+// RetrievedItem 按需召回项（event_id 即 provenance——引用可解析为已提交事件）。
+type RetrievedItem struct {
+	EventID string `json:"event_id"`
+	Actor   string `json:"actor"`
+	Body    string `json:"body"`
 }
 
 // CapsuleMemory 胶囊记忆项（注入用最小投影；全文走 debug memory 查询面）。
@@ -133,9 +159,15 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 			"conclusions": c.Conclusions, "assumptions": c.Assumptions, "named_dissent": dissent,
 		})
 	}
+	tasklist := make([]TaskBrief, 0, len(cfg.Tasklist))
+	tasklist = append(tasklist, cfg.Tasklist...)
+	retrieved := make([]RetrievedItem, 0, len(cfg.Retrieved))
+	retrieved = append(retrieved, cfg.Retrieved...)
 	inline := map[string]any{
 		"room_id":                 cfg.RoomID,
 		"capsules":                capsuleBrief,
+		"tasklist":                tasklist,
+		"retrieved":               retrieved,
 		"mode":                    cfg.Mode,
 		"participants":            participants,
 		"stimulus_body":           stimulusBody,
@@ -146,7 +178,7 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 		"budget_remaining_tokens": cfg.Budget.RemainingTokens,
 	}
 
-	// 七层（顺序即组装序；摘要对层内容规范化 JSON 计算）
+	// 层清单（顺序即组装序；摘要对层内容规范化 JSON 计算）
 	layerDefs := []struct {
 		name    string
 		content any
@@ -158,7 +190,9 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 		{"relations", relations},
 		{"budget_watermark", map[string]any{"watermark": watermark, "budget": cfg.Budget}},
 		{"task_directive", taskDirectiveOf(cfg)},
-		{"capsule_memory", capsuleBrief}, // M3-3：七层之外的第八层（记忆）最小版
+		{"capsule_memory", capsuleBrief}, // 恒常平面（M3-3：编辑后胶囊，容量纪律）
+		{"retrieved_memory", retrieved},  // 按需平面（M3-3：关键词召回，FTS5 同语义）
+		{"tasklist", tasklist},           // 承诺追踪（RFC-0012 OQ-A：带责任人）
 	}
 	layers := make([]Layer, 0, len(layerDefs))
 	digests := make([]string, 0, len(layerDefs))

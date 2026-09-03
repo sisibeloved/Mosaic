@@ -16,16 +16,16 @@ import (
 
 // Defines values for ClosureSummaryClosureType.
 const (
-	BoundedDisagreement ClosureSummaryClosureType = "bounded_disagreement"
-	Consensus           ClosureSummaryClosureType = "consensus"
+	ClosureSummaryClosureTypeBoundedDisagreement ClosureSummaryClosureType = "bounded_disagreement"
+	ClosureSummaryClosureTypeConsensus           ClosureSummaryClosureType = "consensus"
 )
 
 // Valid indicates whether the value is a known member of the ClosureSummaryClosureType enum.
 func (e ClosureSummaryClosureType) Valid() bool {
 	switch e {
-	case BoundedDisagreement:
+	case ClosureSummaryClosureTypeBoundedDisagreement:
 		return true
-	case Consensus:
+	case ClosureSummaryClosureTypeConsensus:
 		return true
 	default:
 		return false
@@ -34,19 +34,19 @@ func (e ClosureSummaryClosureType) Valid() bool {
 
 // Defines values for ClosureSummaryState.
 const (
-	Accepted ClosureSummaryState = "accepted"
-	Pending  ClosureSummaryState = "pending"
-	Rejected ClosureSummaryState = "rejected"
+	ClosureSummaryStateAccepted ClosureSummaryState = "accepted"
+	ClosureSummaryStatePending  ClosureSummaryState = "pending"
+	ClosureSummaryStateRejected ClosureSummaryState = "rejected"
 )
 
 // Valid indicates whether the value is a known member of the ClosureSummaryState enum.
 func (e ClosureSummaryState) Valid() bool {
 	switch e {
-	case Accepted:
+	case ClosureSummaryStateAccepted:
 		return true
-	case Pending:
+	case ClosureSummaryStatePending:
 		return true
-	case Rejected:
+	case ClosureSummaryStateRejected:
 		return true
 	default:
 		return false
@@ -55,19 +55,37 @@ func (e ClosureSummaryState) Valid() bool {
 
 // Defines values for EvidenceRequestViewStatus.
 const (
-	Dismissed EvidenceRequestViewStatus = "dismissed"
-	Open      EvidenceRequestViewStatus = "open"
-	Resolved  EvidenceRequestViewStatus = "resolved"
+	EvidenceRequestViewStatusDismissed EvidenceRequestViewStatus = "dismissed"
+	EvidenceRequestViewStatusOpen      EvidenceRequestViewStatus = "open"
+	EvidenceRequestViewStatusResolved  EvidenceRequestViewStatus = "resolved"
 )
 
 // Valid indicates whether the value is a known member of the EvidenceRequestViewStatus enum.
 func (e EvidenceRequestViewStatus) Valid() bool {
 	switch e {
-	case Dismissed:
+	case EvidenceRequestViewStatusDismissed:
 		return true
-	case Open:
+	case EvidenceRequestViewStatusOpen:
 		return true
-	case Resolved:
+	case EvidenceRequestViewStatusResolved:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MemoryViewCapsulesClosureType.
+const (
+	MemoryViewCapsulesClosureTypeBoundedDisagreement MemoryViewCapsulesClosureType = "bounded_disagreement"
+	MemoryViewCapsulesClosureTypeConsensus           MemoryViewCapsulesClosureType = "consensus"
+)
+
+// Valid indicates whether the value is a known member of the MemoryViewCapsulesClosureType enum.
+func (e MemoryViewCapsulesClosureType) Valid() bool {
+	switch e {
+	case MemoryViewCapsulesClosureTypeBoundedDisagreement:
+		return true
+	case MemoryViewCapsulesClosureTypeConsensus:
 		return true
 	default:
 		return false
@@ -76,19 +94,19 @@ func (e EvidenceRequestViewStatus) Valid() bool {
 
 // Defines values for ParticipantViewKind.
 const (
-	Agent  ParticipantViewKind = "agent"
-	Human  ParticipantViewKind = "human"
-	System ParticipantViewKind = "system"
+	ParticipantViewKindAgent  ParticipantViewKind = "agent"
+	ParticipantViewKindHuman  ParticipantViewKind = "human"
+	ParticipantViewKindSystem ParticipantViewKind = "system"
 )
 
 // Valid indicates whether the value is a known member of the ParticipantViewKind enum.
 func (e ParticipantViewKind) Valid() bool {
 	switch e {
-	case Agent:
+	case ParticipantViewKindAgent:
 		return true
-	case Human:
+	case ParticipantViewKindHuman:
 		return true
-	case System:
+	case ParticipantViewKindSystem:
 		return true
 	default:
 		return false
@@ -97,27 +115,42 @@ func (e ParticipantViewKind) Valid() bool {
 
 // Defines values for RoomCommandCommandKind.
 const (
-	CloseThread   RoomCommandCommandKind = "close_thread"
-	CreateRoom    RoomCommandCommandKind = "create_room"
-	EndorseIntent RoomCommandCommandKind = "endorse_intent"
-	ForkThread    RoomCommandCommandKind = "fork_thread"
-	InviteAgent   RoomCommandCommandKind = "invite_agent"
-	MergeThread   RoomCommandCommandKind = "merge_thread"
-	PauseRoom     RoomCommandCommandKind = "pause_room"
-	PauseThread   RoomCommandCommandKind = "pause_thread"
-	PostMessage   RoomCommandCommandKind = "post_message"
-	RenameRoom    RoomCommandCommandKind = "rename_room"
-	ReopenThread  RoomCommandCommandKind = "reopen_thread"
-	ResumeRoom    RoomCommandCommandKind = "resume_room"
-	ResumeThread  RoomCommandCommandKind = "resume_thread"
+	AcceptClosure          RoomCommandCommandKind = "accept_closure"
+	CloseThread            RoomCommandCommandKind = "close_thread"
+	CreateEvidenceRequest  RoomCommandCommandKind = "create_evidence_request"
+	CreateRoom             RoomCommandCommandKind = "create_room"
+	DeleteRoom             RoomCommandCommandKind = "delete_room"
+	EditMemory             RoomCommandCommandKind = "edit_memory"
+	EndorseIntent          RoomCommandCommandKind = "endorse_intent"
+	ForkThread             RoomCommandCommandKind = "fork_thread"
+	InviteAgent            RoomCommandCommandKind = "invite_agent"
+	MergeThread            RoomCommandCommandKind = "merge_thread"
+	PauseRoom              RoomCommandCommandKind = "pause_room"
+	PauseThread            RoomCommandCommandKind = "pause_thread"
+	PostMessage            RoomCommandCommandKind = "post_message"
+	ProposeClosure         RoomCommandCommandKind = "propose_closure"
+	RenameRoom             RoomCommandCommandKind = "rename_room"
+	ReopenThread           RoomCommandCommandKind = "reopen_thread"
+	ResolveEvidenceRequest RoomCommandCommandKind = "resolve_evidence_request"
+	ResolveTask            RoomCommandCommandKind = "resolve_task"
+	ResumeRoom             RoomCommandCommandKind = "resume_room"
+	ResumeThread           RoomCommandCommandKind = "resume_thread"
 )
 
 // Valid indicates whether the value is a known member of the RoomCommandCommandKind enum.
 func (e RoomCommandCommandKind) Valid() bool {
 	switch e {
+	case AcceptClosure:
+		return true
 	case CloseThread:
 		return true
+	case CreateEvidenceRequest:
+		return true
 	case CreateRoom:
+		return true
+	case DeleteRoom:
+		return true
+	case EditMemory:
 		return true
 	case EndorseIntent:
 		return true
@@ -133,13 +166,40 @@ func (e RoomCommandCommandKind) Valid() bool {
 		return true
 	case PostMessage:
 		return true
+	case ProposeClosure:
+		return true
 	case RenameRoom:
 		return true
 	case ReopenThread:
 		return true
+	case ResolveEvidenceRequest:
+		return true
+	case ResolveTask:
+		return true
 	case ResumeRoom:
 		return true
 	case ResumeThread:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SearchHitActorKind.
+const (
+	SearchHitActorKindAgent  SearchHitActorKind = "agent"
+	SearchHitActorKindHuman  SearchHitActorKind = "human"
+	SearchHitActorKindSystem SearchHitActorKind = "system"
+)
+
+// Valid indicates whether the value is a known member of the SearchHitActorKind enum.
+func (e SearchHitActorKind) Valid() bool {
+	switch e {
+	case SearchHitActorKindAgent:
+		return true
+	case SearchHitActorKindHuman:
+		return true
+	case SearchHitActorKindSystem:
 		return true
 	default:
 		return false
@@ -164,6 +224,27 @@ func (e SnapshotThreadsState) Valid() bool {
 	case Merged:
 		return true
 	case Paused:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TaskItemStatus.
+const (
+	TaskItemStatusDelivered TaskItemStatus = "delivered"
+	TaskItemStatusDismissed TaskItemStatus = "dismissed"
+	TaskItemStatusPending   TaskItemStatus = "pending"
+)
+
+// Valid indicates whether the value is a known member of the TaskItemStatus enum.
+func (e TaskItemStatus) Valid() bool {
+	switch e {
+	case TaskItemStatusDelivered:
+		return true
+	case TaskItemStatusDismissed:
+		return true
+	case TaskItemStatusPending:
 		return true
 	default:
 		return false
@@ -336,6 +417,44 @@ type ManualExecutableRequest struct {
 	Version *string `json:"version,omitempty"`
 }
 
+// MemoryView 记忆查看面（GET /v1/rooms/{id}/memory）：编辑后胶囊 + 容量水位。
+type MemoryView struct {
+	// CapsuleBudget 恒常平面容量水位（Hermes 纪律：dropped_count > 0 即超预算——倒逼合并/编辑，不静默截断）
+	CapsuleBudget struct {
+		BudgetRunes   int `json:"budget_runes"`
+		DroppedCount  int `json:"dropped_count"`
+		InjectedCount int `json:"injected_count"`
+		InjectedRunes int `json:"injected_runes"`
+	} `json:"capsule_budget"`
+	Capsules []struct {
+		Assumptions []string                      `json:"assumptions"`
+		ClosureId   string                        `json:"closure_id"`
+		ClosureType MemoryViewCapsulesClosureType `json:"closure_type"`
+		Conclusions []string                      `json:"conclusions"`
+
+		// EditHistory 人工编辑留痕（正文在事件流；此处只留溯源位）
+		EditHistory []struct {
+			EditVersion int       `json:"edit_version"`
+			EditedBy    string    `json:"edited_by"`
+			EventId     string    `json:"event_id"`
+			Note        *string   `json:"note,omitempty"`
+			OccurredAt  time.Time `json:"occurred_at"`
+		} `json:"edit_history"`
+		Falsifiers   *[]string `json:"falsifiers,omitempty"`
+		NamedDissent []struct {
+			Basis         string `json:"basis"`
+			ParticipantId string `json:"participant_id"`
+		} `json:"named_dissent"`
+		ReopenTriggers *[]string `json:"reopen_triggers,omitempty"`
+		ThreadId       string    `json:"thread_id"`
+		Watermark      *int64    `json:"watermark,omitempty"`
+	} `json:"capsules"`
+	RoomId string `json:"room_id"`
+}
+
+// MemoryViewCapsulesClosureType defines model for MemoryView.Capsules.ClosureType.
+type MemoryViewCapsulesClosureType string
+
 // ParticipantView defines model for ParticipantView.
 type ParticipantView struct {
 	// Adapter agent 座位的适配器名（human 无此键）
@@ -400,6 +519,22 @@ type RoomSummary struct {
 	RoomId string `json:"room_id"`
 }
 
+// SearchHit 检索命中（对外视图：无 seq/tenant；position 供时间线跳转）。
+type SearchHit struct {
+	Actor      string             `json:"actor"`
+	ActorKind  SearchHitActorKind `json:"actor_kind"`
+	Body       string             `json:"body"`
+	EventId    string             `json:"event_id"`
+	OccurredAt time.Time          `json:"occurred_at"`
+
+	// Position opaque cursor（时间线定位）
+	Position string  `json:"position"`
+	ThreadId *string `json:"thread_id,omitempty"`
+}
+
+// SearchHitActorKind defines model for SearchHit.ActorKind.
+type SearchHitActorKind string
+
 // Snapshot defines model for Snapshot.
 type Snapshot struct {
 	AlgorithmVersion int64 `json:"algorithm_version"`
@@ -448,6 +583,9 @@ type Snapshot struct {
 		UnselectedReason *string    `json:"unselected_reason,omitempty"`
 	} `json:"scorecard"`
 
+	// Tasks 任务清单（M3-3 tasklist，RFC-0012 OQ-A：带责任人 owner 的承诺追踪——确定性派生 + 人工门控裁定）。
+	Tasks *[]TaskItem `json:"tasks,omitempty"`
+
 	// Threads 线程投影（RFC-0004 生命周期状态 + fork 谱系 + 合并去向）。
 	Threads []struct {
 		Goal         *string              `json:"goal,omitempty"`
@@ -463,6 +601,38 @@ type Snapshot struct {
 
 // SnapshotThreadsState defines model for Snapshot.Threads.State.
 type SnapshotThreadsState string
+
+// TaskItem 任务清单项（M3-3 tasklist）：确定性派生（agent 消息宣言句）+ 人工门控裁定（task.resolved）。
+type TaskItem struct {
+	DeclaredAt  time.Time `json:"declared_at"`
+	DeclaredSeq int64     `json:"declared_seq"`
+	Note        *string   `json:"note,omitempty"`
+
+	// Overdue pending 且 waves_since ≥ 2
+	Overdue bool `json:"overdue"`
+
+	// Owner 责任人（承诺者 participant_id——多 Agent 群聊对常见 tasklist 的必要增量）
+	Owner      string     `json:"owner"`
+	Resolution *string    `json:"resolution,omitempty"`
+	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
+	ResolvedBy *string    `json:"resolved_by,omitempty"`
+
+	// SourceEventId 派生源消息（provenance 跳转位）
+	SourceEventId string         `json:"source_event_id"`
+	Status        TaskItemStatus `json:"status"`
+
+	// TaskId tsk_ 前缀（源事件哈希派生，确定性）
+	TaskId string `json:"task_id"`
+
+	// Text 宣言句（截断 120 字）
+	Text string `json:"text"`
+
+	// WavesSince 声明后经过的波数
+	WavesSince int `json:"waves_since"`
+}
+
+// TaskItemStatus defines model for TaskItem.Status.
+type TaskItemStatus string
 
 // TimelineItem RFC-0012 群聊模型：Timeline = 消息族 + 暂停/恢复系统提醒（round.* 内部化，
 // 不入用户可见时间线）。
@@ -528,6 +698,16 @@ type SubscribeRoomEventsParams struct {
 	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
+// SearchRoomMessagesParams defines parameters for SearchRoomMessages.
+type SearchRoomMessagesParams struct {
+	// Q 检索词（子串语义）
+	Q string `form:"q" json:"q"`
+
+	// Actor 按参与者过滤（participant_id）
+	Actor *string `form:"actor,omitempty" json:"actor,omitempty"`
+	Limit *int    `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // AddHarnessExecutableJSONRequestBody defines body for AddHarnessExecutable for application/json ContentType.
 type AddHarnessExecutableJSONRequestBody = ManualExecutableRequest
 
@@ -572,6 +752,12 @@ type ServerInterface interface {
 	// SubscribeRoomEvents SSE 订阅房间事件流（opaque cursor 续传）
 	// (GET /v1/rooms/{room_id}/events)
 	SubscribeRoomEvents(w http.ResponseWriter, r *http.Request, roomId RoomID, params SubscribeRoomEventsParams)
+	// GetRoomMemory 房间记忆视图（胶囊 + 编辑历史 + 容量水位）
+	// (GET /v1/rooms/{room_id}/memory)
+	GetRoomMemory(w http.ResponseWriter, r *http.Request, roomId RoomID)
+	// SearchRoomMessages 房内消息全文检索（FTS5 trigram，按需平面）
+	// (GET /v1/rooms/{room_id}/search)
+	SearchRoomMessages(w http.ResponseWriter, r *http.Request, roomId RoomID, params SearchRoomMessagesParams)
 	// GetRoomSnapshot 快照（版本 + 水位 + 投影/算法版本 + Timeline 投影 + 房间名/参与者视图）
 	// (GET /v1/rooms/{room_id}/snapshot)
 	GetRoomSnapshot(w http.ResponseWriter, r *http.Request, roomId RoomID)
@@ -804,6 +990,100 @@ func (siw *ServerInterfaceWrapper) SubscribeRoomEvents(w http.ResponseWriter, r 
 	handler.ServeHTTP(w, r)
 }
 
+// GetRoomMemory operation middleware
+func (siw *ServerInterfaceWrapper) GetRoomMemory(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "room_id" -------------
+	var roomId RoomID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "room_id", r.PathValue("room_id"), &roomId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "room_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetRoomMemory(w, r, roomId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SearchRoomMessages operation middleware
+func (siw *ServerInterfaceWrapper) SearchRoomMessages(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "room_id" -------------
+	var roomId RoomID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "room_id", r.PathValue("room_id"), &roomId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "room_id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SearchRoomMessagesParams
+
+	// ------------- Required query parameter "q" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "q", r.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "q"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "q", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "actor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "actor", r.URL.Query(), &params.Actor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "actor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "actor", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SearchRoomMessages(w, r, roomId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetRoomSnapshot operation middleware
 func (siw *ServerInterfaceWrapper) GetRoomSnapshot(w http.ResponseWriter, r *http.Request) {
 
@@ -956,6 +1236,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/rooms/{room_id}/commands", wrapper.SubmitRoomCommand)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/events", wrapper.SubscribeRoomEvents)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/snapshot", wrapper.GetRoomSnapshot)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/memory", wrapper.GetRoomMemory)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/search", wrapper.SearchRoomMessages)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/agents", wrapper.ListAgents)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/owner/bootstrap", wrapper.GetOwnerBootstrap)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
