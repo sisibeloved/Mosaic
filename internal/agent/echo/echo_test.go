@@ -78,6 +78,49 @@ func TestDeterministicOutput(t *testing.T) {
 	}
 }
 
+// TestPoliteSilenceOnOwnMessage：礼貌语义（v1.40 结构冷却拆除后的测试基线）——
+// 最近消息是自己刚发的（recent 尾条 actor==自己 且 event_id==stimulus_id）→
+// 自决 silent；最新是他者消息 → 照常 speak。连续发言的防自言自语依赖本语义。
+func TestPoliteSilenceOnOwnMessage(t *testing.T) {
+	task := sampleTask(agent.KindEvaluateIntent)
+	task.ParticipantID = "par_echo"
+	task.Context = agent.Context{Inline: map[string]any{
+		"stimulus_id": "evt_m1",
+		"recent": []map[string]any{
+			{"event_id": "evt_h1", "actor": "par_owner"},
+			{"event_id": "evt_m1", "actor": "par_echo"},
+		},
+	}}
+	h, err := (&session{}).Run(context.Background(), task)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	res, err := h.Result()
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if res.Data["action"] != "silent" {
+		t.Fatalf("自己最新消息应自决 silent：%v", res.Data["action"])
+	}
+
+	task.Context.Inline["stimulus_id"] = "evt_m2"
+	task.Context.Inline["recent"] = []map[string]any{
+		{"event_id": "evt_h1", "actor": "par_owner"},
+		{"event_id": "evt_m2", "actor": "par_other"},
+	}
+	h2, err := (&session{}).Run(context.Background(), task)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	res2, err := h2.Result()
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if res2.Data["action"] != "speak" {
+		t.Fatalf("他者最新消息应 speak：%v", res2.Data["action"])
+	}
+}
+
 // TestCancelBeforeResult：取消后 Result 返回 ErrStale（迟到拒绝语义）。
 func TestCancelBeforeResult(t *testing.T) {
 	h, err := (&session{}).Run(context.Background(), sampleTask(agent.KindGenerate))

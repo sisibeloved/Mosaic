@@ -72,6 +72,13 @@ func TestCreateRoomAgentSelection(t *testing.T) {
 	waitRoundClosed(t, store, roomID)
 
 	events := store.RoomEvents(roomID)
+	// v1.40：发言后有礼貌静默收束波——断言面锚定第一波闭环前缀，杜绝读序竞态
+	for i := range events {
+		if events[i].Type == protocol.EventRoundClosed {
+			events = events[:i+1]
+			break
+		}
+	}
 	for _, ev := range events {
 		if ev.Actor.ParticipantID == "par_other" {
 			t.Fatalf("未入选的 par_other 不应参与轮（出现在 %s）：%v", ev.Type, typesOf(events))
@@ -87,6 +94,9 @@ func TestCreateRoomAgentSelection(t *testing.T) {
 	}
 
 	// invite_agent 拉人 → par_other 入 roster 并参与下一轮
+	// v1.40：先等首波链收敛（published → 礼貌静默收束），版本捕获不再与后续波竞态
+	waitRoundsClosed(t, store, roomID, 2)
+	time.Sleep(60 * time.Millisecond)
 	version := int64(0)
 	for _, ev := range store.RoomEvents(roomID) {
 		if ev.Seq > version {
@@ -101,7 +111,8 @@ func TestCreateRoomAgentSelection(t *testing.T) {
 		t.Fatalf("invite: %v", err)
 	}
 	rosterStimulus(t, store, eng, roomID, "evt_ro_h2", "拉人后的消息")
-	waitRoundsClosed(t, store, roomID, 2)
+	// v1.40：波1（发言）+ 波2（礼貌静默收束）+ 波3（本刺激——par_other 参与评估）
+	waitRoundsClosed(t, store, roomID, 3)
 	sawOther := false
 	for _, ev := range store.RoomEvents(roomID) {
 		if ev.Actor.ParticipantID == "par_other" && ev.Seq > version {
@@ -172,6 +183,13 @@ func TestCreateRoomDefaultMaterializesRoster(t *testing.T) {
 	rosterStimulus(t, store, eng, created.RoomID, "evt_rm_h1", "新座启用后")
 	waitRoundClosed(t, store, created.RoomID)
 	events := store.RoomEvents(created.RoomID)
+	// v1.40：发言后有后续互聊/收束波——断言面锚定第一波闭环前缀，杜绝读序竞态
+	for i := range events {
+		if events[i].Type == protocol.EventRoundClosed {
+			events = events[:i+1]
+			break
+		}
+	}
 	for _, ev := range events {
 		if ev.Actor.ParticipantID == "par_late" {
 			t.Fatalf("建房后启用的 par_late 不应自动入房：%v", typesOf(events))

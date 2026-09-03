@@ -82,19 +82,10 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 	raw, _ := json.Marshal(human)
 	eng.Deliver(context.Background(), outbox.Entry{RoomID: "room_eng", Envelope: raw})
 
-	// 轮异步：轮询直到 round.closed（超时 3s）
-	deadline := time.Now().Add(3 * time.Second)
-	var events []protocol.Envelope
-	for time.Now().Before(deadline) {
-		events = store.RoomEvents("room_eng")
-		if len(events) > 0 && events[len(events)-1].Type == protocol.EventRoundClosed {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if len(events) == 0 || events[len(events)-1].Type != protocol.EventRoundClosed {
-		t.Fatalf("轮未完成，事件数=%d", len(events))
-	}
+	// 轮异步：等待两波收束（v1.40：结构冷却拆除——波1 发言后，波2 锚=echo 自己
+	// 的消息，礼貌自决 silent → quiescent 收束；无新刺激即无第三波）
+	waitRoundsClosed(t, store, "room_eng", 2)
+	events := store.RoomEvents("room_eng")
 
 	// 事件链与顺序
 	wantTypes := []string{
@@ -105,7 +96,10 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 		protocol.EventFloorGranted,
 		protocol.EventMessagePosted, // agent
 		protocol.EventRoundClosed,
-		// RFC-0012：波后 echo 处于冷却 → 无第二波（单座静默终止，无事件）
+		// v1.40：波2——全员评估，echo 自决 silent（全记录），quiescent 收束
+		protocol.EventRoundOpened,
+		protocol.EventIntentRecorded,
+		protocol.EventRoundClosed,
 	}
 	if len(events) != len(wantTypes) {
 		t.Fatalf("事件数 = %d（期望 %d）：%v", len(events), len(wantTypes), typesOf(events))
@@ -132,9 +126,9 @@ func TestEngineRoundProducesEventChain(t *testing.T) {
 	if agentMsg.Actor.Kind != "agent" || agentMsg.Actor.ParticipantID != "par_echo" {
 		t.Fatalf("agent 消息 actor 不符：%+v", agentMsg.Actor)
 	}
-	// 同轮 correlation
+	// 同轮 correlation（波1 事件段 [2,7)——波2 起归属下一轮 id）
 	roundID := events[2].CorrelationID
-	for _, ev := range events[2:] {
+	for _, ev := range events[2:7] {
 		if ev.CorrelationID == nil || *ev.CorrelationID != *roundID {
 			t.Fatalf("%s correlation 应为 round id", ev.Type)
 		}
@@ -266,9 +260,16 @@ func TestEngineMultiSeatSelection(t *testing.T) {
 	if len(events) == 0 || events[len(events)-1].Type != protocol.EventRoundClosed {
 		t.Fatalf("轮未完成，事件数=%d", len(events))
 	}
+	// v1.40：结构冷却拆除后首波闭环仍有后续波（互聊直至环检测收口）——断言面
+	// 锚定第一波闭环前缀，杜绝与后续波的读序竞态。
+	for i := range events {
+		if events[i].Type == protocol.EventRoundClosed {
+			events = events[:i+1]
+			break
+		}
+	}
 	// 期望：created, human, round.opened, intent×2, (grant,msg)×2 交错, closed = 10
-	// （RFC-0012：意愿放行 sequential——intent 齐后逐座 授→生成→发布；上波发言者下波冷却，
-	//  双座同波都回 → 下波全冷却 → 单波终止）
+	// （RFC-0012：意愿放行 sequential——intent 齐后逐座 授→生成→发布）
 	if len(events) != 10 {
 		t.Fatalf("事件数 = %d（期望 10）：%v", len(events), typesOf(events))
 	}
@@ -572,7 +573,14 @@ func TestEngineRecordsEvalUsage(t *testing.T) {
 		t.Fatal("未找到 intent.recorded")
 	}
 	// 账本重建把评估 usage 计入 token 维度（三维账本不得缺评估侧）
+	// ——断言面锚定第一波闭环前缀（后续收束波会再记评估 usage，不属本断言）。
 	envs := store.RoomEvents("room_u")
+	for i := range envs {
+		if envs[i].Type == protocol.EventRoundClosed {
+			envs = envs[:i+1]
+			break
+		}
+	}
 	if led := contextx.RebuildBudget(envs); led.Tokens != 18 { // eval 18（agent 消息 usage 0 自报缺失记 0）
 		t.Fatalf("RebuildBudget tokens = %d（期望 18，含评估 usage）", led.Tokens)
 	}
@@ -616,7 +624,8 @@ func TestEngineGenerateFailureRevokesWithReason(t *testing.T) {
 // 同房间轮串行：第二条刺激不得与在途轮并发开轮（同 epoch 双轮是竞态缺陷）。
 // RFC-0012：波串行 + 去抖合并——两条快速连发的人类消息合并为一个反应波
 // （窗口重锚，锚=最新消息 s2）；波内生成阻塞期间无第二波开启（单飞）。
-// 唯一座发言后冷却 → 无后续波（自然终止）。
+// 恒发言座（gated 无礼貌自决）→ 链由对话环检测收口（v1.40：结构冷却拆除后
+// 的有界终止）。
 func TestEngineWavesSerializeAndDebounce(t *testing.T) {
 	store := NewMemStore()
 	sup := agent.NewSupervisor()
@@ -654,25 +663,35 @@ func TestEngineWavesSerializeAndDebounce(t *testing.T) {
 	waitRoundClosed(t, store, "room_s")
 
 	events := store.RoomEvents("room_s")
-	if n := countType(events, protocol.EventRoundOpened); n != 1 {
-		t.Fatalf("连发两条应去抖合并为一个波：round.opened = %d（期望 1）", n)
-	}
-	// 锚点 = 最新消息（s2）：round.opened.stimulus_event_id
+	// 去抖断言面：两条人类刺激只允许一个锚定波（锚=最新 evt_s2）。后续波锚定
+	// agent 消息（恒发言座互聊链，v1.40 无结构冷却），不在本断言面内。
+	humanAnchored := 0
 	for _, ev := range events {
 		if ev.Type != protocol.EventRoundOpened {
 			continue
 		}
 		var p protocol.RoundOpenedPayload
 		_ = json.Unmarshal(ev.Payload, &p)
-		if p.StimulusEventID != "evt_s2" {
-			t.Fatalf("波锚点应为最新消息 evt_s2：%+v", p)
+		switch p.StimulusEventID {
+		case "evt_s1":
+			t.Fatalf("首条刺激不得单独开波（应被去抖合并）：%+v", p)
+		case "evt_s2":
+			humanAnchored++
 		}
-		break
 	}
-	// 唯一座发言后冷却 → 无后续波
-	time.Sleep(120 * time.Millisecond)
-	if n := countType(store.RoomEvents("room_s"), protocol.EventRoundOpened); n != 1 {
-		t.Fatalf("发言者冷却应终止流：round.opened = %d（期望 1）", n)
+	if humanAnchored != 1 {
+		t.Fatalf("连发两条应去抖合并为一个波：evt_s2 锚定波 = %d（期望 1）", humanAnchored)
+	}
+	// 恒发言座链的有界终止：逐波各发一条，尾部达 maxAgentMessageTail 条 agent
+	// 消息后对话环检测收口——不再开第 7 波。
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) &&
+		countType(store.RoomEvents("room_s"), protocol.EventRoundOpened) < maxAgentMessageTail {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if n := countType(store.RoomEvents("room_s"), protocol.EventRoundOpened); n != maxAgentMessageTail {
+		t.Fatalf("对话环应收口恒发言链：round.opened = %d（期望 %d）", n, maxAgentMessageTail)
 	}
 }
 
@@ -956,8 +975,20 @@ func TestEngineDurableHandoffClaim(t *testing.T) {
 	eng.Deliver(context.Background(), outbox.Entry{RoomID: "room_dh", Envelope: raw})
 	close(gate)
 	waitRoundClosed(t, store, "room_dh")
-	if n := countType(store.RoomEvents("room_dh"), protocol.EventRoundOpened); n != 1 {
-		t.Fatalf("重放不得双开轮：round.opened = %d", n)
+	// 重放断言面：同一刺激只允许一个锚定波（恒发言座后续互聊链不在本面）
+	stimAnchored := 0
+	for _, ev := range store.RoomEvents("room_dh") {
+		if ev.Type != protocol.EventRoundOpened {
+			continue
+		}
+		var p protocol.RoundOpenedPayload
+		_ = json.Unmarshal(ev.Payload, &p)
+		if p.StimulusEventID == "dh1" {
+			stimAnchored++
+		}
+	}
+	if stimAnchored != 1 {
+		t.Fatalf("重放不得双开轮：dh1 锚定波 = %d（期望 1）", stimAnchored)
 	}
 	// 开轮后声明应被清除
 	claims, _ = store.PendingClaims(context.Background())
@@ -993,10 +1024,10 @@ func TestEngineRecoverClaimsDrivesLostRound(t *testing.T) {
 		t.Fatalf("claim: %v", err)
 	}
 	eng.RecoverClaims()
-	waitRoundClosed(t, store, "room_rc")
+	waitRoundsClosed(t, store, "room_rc", 2) // 恢复波（published）→ 礼貌静默收束波
 	events := store.RoomEvents("room_rc")
-	if countType(events, protocol.EventRoundOpened) != 1 {
-		t.Fatalf("恢复扫描应重驱动丢失的轮：%v", typesOf(events))
+	if countType(events, protocol.EventRoundOpened) != 2 {
+		t.Fatalf("恢复扫描应重驱动丢失的轮（+收束波）：%v", typesOf(events))
 	}
 	if claims, _ := store.PendingClaims(context.Background()); len(claims) != 0 {
 		t.Fatalf("恢复后声明应清除，剩 %d", len(claims))
@@ -1019,8 +1050,15 @@ func TestEngineDynamicSeats(t *testing.T) {
 	})
 	deliverHuman(t, store, eng, "room_ds")
 	waitRoundClosed(t, store, "room_ds")
-	intents := countType(store.RoomEvents("room_ds"), protocol.EventIntentRecorded)
-	if intents != 2 {
+	events := store.RoomEvents("room_ds")
+	// v1.40：发言后有后续互聊/收束波——断言面锚定第一波闭环前缀，杜绝读序竞态
+	for i := range events {
+		if events[i].Type == protocol.EventRoundClosed {
+			events = events[:i+1]
+			break
+		}
+	}
+	if intents := countType(events, protocol.EventIntentRecorded); intents != 2 {
 		t.Fatalf("动态座位应双双参与（intent.recorded=%d，期望 2）", intents)
 	}
 }
@@ -1258,8 +1296,20 @@ func TestEngineResumeRedrivesPausedStimulus(t *testing.T) {
 		t.Fatalf("deliver resume: %v", err)
 	}
 	waitRoundClosed(t, store, "room_rd")
-	if n := countType(store.RoomEvents("room_rd"), protocol.EventRoundOpened); n != 1 {
-		t.Fatalf("resume 后应重驱动开轮：round.opened = %d", n)
+	// 重驱动断言面：该刺激只允许一个锚定波（收束/互聊后续波不在本面）
+	stimAnchored := 0
+	for _, ev := range store.RoomEvents("room_rd") {
+		if ev.Type != protocol.EventRoundOpened {
+			continue
+		}
+		var p protocol.RoundOpenedPayload
+		_ = json.Unmarshal(ev.Payload, &p)
+		if p.StimulusEventID == "evt_human_room_rd" {
+			stimAnchored++
+		}
+	}
+	if stimAnchored != 1 {
+		t.Fatalf("resume 后应重驱动开轮：evt_human_room_rd 锚定波 = %d（期望 1）", stimAnchored)
 	}
 	if claims, _ := store.PendingClaims(context.Background()); len(claims) != 0 {
 		t.Fatalf("重驱动后声明应清除：%d", len(claims))
@@ -1375,11 +1425,14 @@ func TestReactionDebounceMergesToLatestAnchor(t *testing.T) {
 	_ = eng.Deliver(context.Background(), outbox.Entry{RoomID: "room_so", Envelope: mustRawJSON(s1)})
 	_ = eng.Deliver(context.Background(), outbox.Entry{RoomID: "room_so", Envelope: mustRawJSON(s2)})
 
-	waitRoundClosed(t, store, "room_so")
-	time.Sleep(120 * time.Millisecond)
+	waitRoundsClosed(t, store, "room_so", 2) // 波1（published）→ 波2（echo 对自己消息礼貌自决 silent → quiescent）
+	time.Sleep(60 * time.Millisecond)
 	events := store.RoomEvents("room_so")
-	if n := countType(events, protocol.EventRoundOpened); n != 1 {
-		t.Fatalf("去抖应合并为单波：round.opened = %d（期望 1）：%v", n, typesOf(events))
+	if n := countType(events, protocol.EventRoundOpened); n != 2 {
+		t.Fatalf("去抖应合并为单刺激波 + 静默收束波：round.opened = %d（期望 2）：%v", n, typesOf(events))
+	}
+	if n := countAgentMsgsOf(events); n != 1 {
+		t.Fatalf("两刺激合并评估只发一条：agent 消息 = %d（期望 1）", n)
 	}
 	for _, ev := range events {
 		if ev.Type != protocol.EventRoundOpened {
@@ -1654,10 +1707,9 @@ func (h *parEvalHandle) Result() (agent.Result, error) {
 	return agent.Result{Block: "turn_intent", Data: map[string]any{"action": "silent"}}, nil
 }
 
-// 冷却死锁回归（dogfood "输入无回复"）：全员发言一波后，人类新消息必须照常开波——
-// 冷却仅约束 agent 锚点（被跳过的波不落 round.opened，人类锚点若吃冷却，冷却集
-// 永不更新，房间对人类后续输入永久静默）。
-func TestEngineHumanStimulusBypassesCooldown(t *testing.T) {
+// 人类刺激必得反应波（原冷却死锁回归，v1.40 结构冷却拆除后语义保留）：agent
+// 发言流收敛后，人类新消息照常开波并各得回复——人类输入永远不被结构性静默。
+func TestEngineHumanStimulusAlwaysOpensWave(t *testing.T) {
 	store := NewMemStore()
 	sup := agent.NewSupervisor()
 	_ = sup.Register(echo.Adapter{})
@@ -1667,9 +1719,13 @@ func TestEngineHumanStimulusBypassesCooldown(t *testing.T) {
 		{EventID: "hb0", TenantID: "ten_local", RoomID: "room_hb", Type: protocol.EventRoomCreated, Actor: protocol.Actor{ParticipantID: "o", Kind: "human"}, Payload: []byte(`{}`), Metadata: map[string]any{}},
 	})
 	deliverHuman(t, store, eng, "room_hb")
-	waitRoundClosed(t, store, "room_hb") // 波 1：echo 发言并进冷却（唯一座 = 全员冷却态）
+	waitRoundClosed(t, store, "room_hb") // 波 1：echo 发言（随后自决静默收束）
 	deliverHuman2(t, store, eng, "room_hb", "evt_human_hb2")
-	waitRoundsClosed(t, store, "room_hb", 2) // 波 2：人类锚点豁免冷却，必须再开
+	// 新人类消息必须再开波并得回复——按终态条件等待（第二条 agent 消息落定）
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && countAgentMsgsOf(store.RoomEvents("room_hb")) < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if n := countAgentMsgsOf(store.RoomEvents("room_hb")); n != 2 {
 		t.Fatalf("两波人类刺激应各得一条回复：agent 消息 = %d", n)
 	}

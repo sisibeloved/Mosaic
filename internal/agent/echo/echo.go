@@ -52,6 +52,20 @@ func (h *handle) Updates() <-chan agent.DraftUpdate {
 	return ch
 }
 
+// latestIsOwn 刺激（最新消息）是否为该参与者自己刚发的：语境 Inline 的 recent
+// 尾条 actor==自己 且 event_id==stimulus_id。缺语境（无 recent）视为否。
+func latestIsOwn(task agent.Task) bool {
+	recent, _ := task.Context.Inline["recent"].([]map[string]any)
+	if len(recent) == 0 {
+		return false
+	}
+	last := recent[len(recent)-1]
+	stimulusID, _ := task.Context.Inline["stimulus_id"].(string)
+	actor, _ := last["actor"].(string)
+	eventID, _ := last["event_id"].(string)
+	return actor == task.ParticipantID && stimulusID != "" && eventID == stimulusID
+}
+
 func (h *handle) Cancel() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -80,6 +94,18 @@ func deterministicResult(task agent.Task) agent.Result {
 			Data:  map[string]any{"salience": 0.5, "disposition": "consider"},
 		}
 	case agent.KindEvaluateIntent:
+		// 礼貌语义（v1.40 结构冷却拆除后的测试基线）：最近消息是自己刚发的 →
+		// 自决 silent——模拟"看到自己上一条、无新语境可回"的生产模型自决静默。
+		// 连续发言不再被结构拦截，终止依赖本语义 + 对话环检测兜底。
+		if latestIsOwn(task) {
+			return agent.Result{
+				Block: "turn_intent",
+				Data: map[string]any{
+					"action":           "silent",
+					"public_rationale": "own last message; nothing new to answer",
+				},
+			}
+		}
 		return agent.Result{
 			Block: "turn_intent",
 			Data: map[string]any{

@@ -1,10 +1,11 @@
-// UT 层：RFC-0012 群聊交互模型专项——agent 消息触发后续波、发言冷却与
-// @点名豁免、对话环检测强制收口、意愿静默终止。
+// UT 层：RFC-0012 群聊交互模型专项——agent 消息触发后续波、连续发言（v1.40
+// 结构冷却拆除）、对话环检测强制收口、意愿静默终止、逐发言人生成时语境刷新。
 package room
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -29,9 +30,9 @@ func seedRoomCreatedFor(t *testing.T, store *MemStore, roomID string) {
 	}
 }
 
-// 双座（echo + 恒 silent 桩）：人类消息 → 波1 echo 发言（silent 自决不回）→
-// echo 发言触发新窗口 → 波2 echo 冷却跳过、silent 意图 → quiescent 终止。
-// 验证：agent 消息是观察事件（触发后续波）+ 冷却 + 意愿静默三语义。
+// 双座（echo + 恒 silent 桩）：人类消息 → 波1 echo 发言（quiet 自决不回）→
+// echo 发言触发新窗口 → 波2 全员评估：echo 对自己消息礼貌自决 silent、quiet
+// silent → quiescent 终止。验证：agent 消息是观察事件（触发后续波）+ 意愿静默。
 func TestChatAgentMessageTriggersNextWave(t *testing.T) {
 	store := NewMemStore()
 	sup := agent.NewSupervisor()
@@ -54,7 +55,7 @@ func TestChatAgentMessageTriggersNextWave(t *testing.T) {
 	seedRoomCreatedFor(t, store, "room_chat")
 	deliverHuman(t, store, eng, "room_chat")
 
-	// 波1（published：echo 发言）→ 波2（quiescent：echo 冷却、quiet silent）
+	// 波1（published：echo 发言）→ 波2（quiescent：echo 礼貌静默、quiet silent）
 	waitRoundsClosed(t, store, "room_chat", 2)
 	time.Sleep(150 * time.Millisecond)
 	events := store.RoomEvents("room_chat")
@@ -75,8 +76,10 @@ func TestChatAgentMessageTriggersNextWave(t *testing.T) {
 	}
 }
 
-// @点名豁免冷却：echo 发言进入冷却后，人类点名消息使 echo 重新评估并发言。
-func TestChatAddressedExemptsCooldown(t *testing.T) {
+// v1.40（结构冷却拆除）：agent 发言后不被一刀切跳过——下一条人类消息照常开波，
+// 该 agent 连续参与两波发言（波1、波3 各一条；波2/波4 为其对自己消息的礼貌
+// 静默收束）。@点名保留意愿排序前置语义（不再承担冷却豁免）。
+func TestChatAgentSpeaksAgainOnNewMessage(t *testing.T) {
 	store := NewMemStore()
 	sup := agent.NewSupervisor()
 	_ = sup.Register(echo.Adapter{})
@@ -86,13 +89,9 @@ func TestChatAddressedExemptsCooldown(t *testing.T) {
 
 	seedRoomCreatedFor(t, store, "room_at")
 	deliverHuman(t, store, eng, "room_at")
-	waitRoundClosed(t, store, "room_at") // 波1：echo 发言 → 冷却
-	time.Sleep(100 * time.Millisecond)
-	if n := countType(store.RoomEvents("room_at"), protocol.EventRoundOpened); n != 1 {
-		t.Fatalf("单座发言后应冷却终止：round.opened = %d（期望 1）", n)
-	}
+	waitRoundsClosed(t, store, "room_at", 2) // 波1 published → 波2 quiescent（对自己消息礼貌静默）
 
-	// 点名消息：addressed_to 含 par_echo → 冷却豁免
+	// 新人类消息（点名与否不影响开波，仅排序前置）→ 波3：echo 再次发言
 	addressed := protocol.Envelope{
 		EventID: "evt_at_ping", TenantID: "ten_local", RoomID: "room_at",
 		Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: testClock(),
@@ -105,15 +104,112 @@ func TestChatAddressedExemptsCooldown(t *testing.T) {
 	}
 	eng.Deliver(context.Background(), outboxEntryOf(addressed))
 
-	waitRoundsClosed(t, store, "room_at", 2)
+	waitRoundsClosed(t, store, "room_at", 4) // 波3 published → 波4 quiescent（链收敛终态）
 	time.Sleep(120 * time.Millisecond)
 	events := store.RoomEvents("room_at")
-	if n := countType(events, protocol.EventRoundOpened); n != 2 {
-		t.Fatalf("@点名应豁免冷却再开波：round.opened = %d（期望 2）：%v", n, typesOf(events))
+	if n := countType(events, protocol.EventRoundOpened); n != 4 {
+		t.Fatalf("新刺激应再开波：round.opened = %d（期望 4）：%v", n, typesOf(events))
 	}
 	if n := countAgentMsgsOf(events); n != 2 {
-		t.Fatalf("echo 应被点名再次点名发言：agent 消息 = %d（期望 2）", n)
+		t.Fatalf("echo 应连续两波各发一条：agent 消息 = %d（期望 2）", n)
 	}
+}
+
+// TestChatGenerationContextRefresh v1.40 核心断言：同一波内后发者的生成语境必须
+// 含先发者刚发布的消息（逐发言人生成时刷新——波内盲生成"互相对答上一条"的治本
+// 位）。双 recap 座（同分，字典序 par_recap_a 先发）：a 生成时近窗仅人类刺激；
+// b 生成时近窗含 a 的正文——若沿用开波快照，b 只能看到近窗=1。
+func TestChatGenerationContextRefresh(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(recapAdapter{})
+	defer sup.Shutdown()
+	eng := NewEngine(EngineConfig{
+		Store: store, Reader: store, Agents: sup,
+		Seats: []AgentSeat{
+			{ParticipantID: "par_recap_a", Profile: agent.Profile{ProfileID: "pa", Adapter: "recap_stub"}},
+			{ParticipantID: "par_recap_b", Profile: agent.Profile{ProfileID: "pb", Adapter: "recap_stub"}},
+		},
+		Budget:         contextx.Limits{},
+		ReactionWindow: 5 * time.Millisecond,
+		Clock:          testClock, Now: time.Now,
+		NewID: counterNewID(), Tenant: "ten_local",
+	})
+	defer eng.Close()
+
+	seedRoomCreatedFor(t, store, "room_gen")
+	deliverHuman(t, store, eng, "room_gen")
+	waitRoundsClosed(t, store, "room_gen", 2) // 波1 双发 → 波2 对 agent 锚自决静默 quiescent
+	time.Sleep(100 * time.Millisecond)
+
+	bodies := map[string]string{}
+	for _, ev := range store.RoomEvents("room_gen") {
+		if ev.Type != protocol.EventMessagePosted || ev.Actor.Kind != "agent" {
+			continue
+		}
+		var p struct {
+			Body string `json:"body"`
+		}
+		_ = json.Unmarshal(ev.Payload, &p)
+		bodies[ev.Actor.ParticipantID] = p.Body
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("双座应各发一条：%v", bodies)
+	}
+	if bodies["par_recap_a"] != "recent=1;last=stimulus" {
+		t.Fatalf("先发者应只见人类刺激（recent=1）：%q", bodies["par_recap_a"])
+	}
+	if want := "recent=2;last=" + bodies["par_recap_a"]; bodies["par_recap_b"] != want {
+		t.Fatalf("后发者生成语境应含先发者消息（%q）：%q", want, bodies["par_recap_b"])
+	}
+}
+
+// ---- recap 复述桩：意图仅对人类锚点表态；生成正文复述语境近窗（条数+尾条正文）----
+
+type recapAdapter struct{}
+
+func (recapAdapter) Name() string                     { return "recap_stub" }
+func (recapAdapter) Capabilities() agent.Capabilities { return agent.Capabilities{} }
+func (recapAdapter) Boot(context.Context, agent.Profile) (agent.Session, error) {
+	return recapSession{}, nil
+}
+
+type recapSession struct{}
+
+func (recapSession) Run(_ context.Context, task agent.Task) (agent.Handle, error) {
+	return recapHandle{task: task}, nil
+}
+func (recapSession) Cancel(string) {}
+func (recapSession) Close()        {}
+
+type recapHandle struct{ task agent.Task }
+
+func (recapHandle) Updates() <-chan agent.DraftUpdate { return nil }
+func (recapHandle) Cancel()                           {}
+
+func (h recapHandle) Result() (agent.Result, error) {
+	recent, _ := h.task.Context.Inline["recent"].([]map[string]any)
+	lastKind, lastBody := "", ""
+	if len(recent) > 0 {
+		lastKind, _ = recent[len(recent)-1]["kind"].(string)
+		lastBody, _ = recent[len(recent)-1]["body"].(string)
+	}
+	switch h.task.Kind {
+	case agent.KindEvaluateIntent:
+		action := "speak"
+		if lastKind != "human" {
+			action = "silent" // 锚=agent 消息（波2+）自决静默，链收敛
+		}
+		return agent.Result{Block: "turn_intent", Data: map[string]any{
+			"action": action, "type": "extend", "public_rationale": "recap stub",
+			"scores": map[string]any{"relevance": 0.5, "novelty": 0.5, "urgency": 0.5, "confidence": 0.5},
+		}}, nil
+	case agent.KindGenerate:
+		return agent.Result{Block: "public_draft", Data: map[string]any{
+			"body": fmt.Sprintf("recent=%d;last=%s", len(recent), lastBody),
+		}}, nil
+	}
+	return agent.Result{Block: "unsupported"}, nil
 }
 
 // 对话环检测：尾部连续 6 条 agent 消息（无人类介入）→ 不开新波（强制收口）。

@@ -77,8 +77,7 @@ const WAVE_SKIP_TEXT: Record<string, string> = {
   paused: "波未开启：房间已暂停",
   ring: "波未开启：对话环收口（连续 agent 发言无人类介入）",
   thread_inactive: "波未开启：锚点线程已暂停/关闭/合并",
-  budget: "波未开启：预算熔断（100% 硬顶）",
-  cooldown: "波未开启：全员冷却（上波发言者自决静默）",
+  no_seats: "波未开启：房内无 agent 席位",
 };
 
 /** wave.skipped 线上帧（httpapi.WaveSkipConsumer → SSE 瞬态帧：无 id、不补发）。 */

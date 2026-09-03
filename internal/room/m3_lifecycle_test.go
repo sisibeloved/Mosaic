@@ -110,9 +110,9 @@ func TestProactiveWaveAfterSilence(t *testing.T) {
 	seedRoomCreatedFor(t, store, "room_pa")
 	deliverHuman(t, store, eng, "room_pa")
 
-	// 初始链收敛（单座：波1 echo 发言 → 波2 全员冷却跳过 → 排主动计时）
+	// 初始链收敛（单座：波1 echo 发言 → 波2 对自己消息礼貌自决 silent → quiescent 排主动计时）
 	waitRoundsClosed(t, store, "room_pa", 1)
-	time.Sleep(60 * time.Millisecond) // 波2（冷却跳过）落定
+	time.Sleep(60 * time.Millisecond) // 波2（静默收束）落定
 	base := countRoundsIn(store, "room_pa")
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) && countRoundsIn(store, "room_pa") <= base {

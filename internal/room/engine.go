@@ -2,10 +2,11 @@
 // agent）触发去抖反应窗口（默认 3s，窗内新消息重锚合并）→ 到期开一个反应波：
 // round.opened（内部记账——快照 Timeline 不收录）→ 全员意图评估（观察→判断，
 // silent=自决不回）→ 意愿放行（无中央选人；记分卡分仅作波内排序与 band 透明）
-// → sequential 发授/生成/发布（CAS 迟到围栏）→ 每条发布再开新窗口 → round.closed。
-// 终止：意愿静默（全员 silent → quiescent，不再开窗）/ 发言冷却（上波发言者跳过，
-// @点名豁免）/ 对话环检测（尾部连续 ≥6 条 agent 消息不开波）/ 预算 100% 硬顶 /
-// 暂停。崩溃语义：反应窗口为内存 timer——崩溃即静默，不重复开波（人类补发即续）。
+// → sequential 发授/生成/发布（CAS 迟到围栏；逐发言人生成时刷新语境——后发者
+// 可见同波先发消息与波中人类插话）→ 每条发布再开新窗口 → round.closed。
+// 终止（v1.40 裁定：结构冷却拆除，闸二道）：意愿静默（全员 silent → quiescent，
+// 不再开窗）/ 对话环检测（尾部连续 ≥6 条 agent 消息不开波）；另有暂停随时掐断。
+// 崩溃语义：反应窗口为内存 timer——崩溃即静默，不重复开波（人类补发即续）。
 package room
 
 import (
@@ -39,8 +40,8 @@ type ReceiptStore interface {
 // DraftSink 草稿流出口（安全子集：text_delta/stage；广播侧负责可见性，M1 仅 public）。
 type DraftSink func(roomID, participantID string, update agent.DraftUpdate)
 
-// WaveSkipSink 波门控跳过通知出口（reason：paused | ring | thread_inactive | budget |
-// cooldown）。瞬态信号——门控跳过不是语义事件，不落事件日志；广播侧以瞬态帧投递，
+// WaveSkipSink 波门控跳过通知出口（reason：paused | ring | thread_inactive |
+// no_seats）。瞬态信号——门控跳过不是语义事件，不落事件日志；广播侧以瞬态帧投递，
 // 供开发者模式在房间内向用户解释"为什么没人说话"。
 type WaveSkipSink func(roomID, reason string)
 
@@ -532,37 +533,21 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 			return
 		}
 	}
-	// 冷却：	// 冷却：上波发言者跳过评估（防自言自语）；@点名豁免（RFC-0012 §2.3）。
-	// 仅对 agent 锚点生效——人类消息不受冷却约束：冷却集取自最近 round.opened，
-	// 被跳过的波不落 round.opened，若人类锚点也吃冷却，全员发言一波后冷却集
-	// 永不更新，房间对人类后续输入永久静默（dogfood 实测死锁"输入无回复"）。
-	cooldown := map[string]bool{}
-	if anchor.Actor.Kind != "human" && !proactive {
-		// 主动波（OQ-A）豁免冷却——静默后自起话本就要允许上波发言者再开口；
-		// 自言自语防线由对话环检测（尾部 ≥6 条 agent 消息不开波）与意愿静默兜底。
-		cooldown = lastWaveSpeakers(history)
-	}
-	addressed := addressedSet(*anchor)
-	roomSeats := e.roomSeats(history)
-	seats := make([]AgentSeat, 0, len(roomSeats))
-	for _, s := range roomSeats {
-		if cooldown[s.ParticipantID] && !addressed[s.ParticipantID] {
-			e.debug(roomID, "座冷却跳过", "seat", s.ParticipantID)
-			continue
-		}
-		seats = append(seats, s)
-	}
+	// 席位：全员参评（v1.40 负责人裁定：结构冷却拆除——连续发言不再一刀切跳过，
+	// 其三道豁免补丁随之消解）。防自言自语交给意图自决静默（agent 评估语境含自己
+	// 刚发的最新消息，可自决不回）；防无限互聊由对话环检测兜底（尾部 ≥6 条 agent
+	// 消息不开波）；"互相对答上一条"的滞后由逐发言人生成时语境刷新治本（见第 5 步）。
+	seats := e.roomSeats(history)
 	if len(seats) == 0 {
-		e.debug(roomID, "波跳过：全员冷却（静默）", "anchor", anchor.EventID)
-		e.waveSkip(roomID, "cooldown")
-		e.scheduleProactive(roomID) // OQ-A：静默即排主动计时（上波发言者冷却=当前静默态）
+		e.debug(roomID, "波跳过：无 agent 席位", "anchor", anchor.EventID)
+		e.waveSkip(roomID, "no_seats")
 		return
 	}
 
 	policy := defaultChatPolicy()
 	epoch := countRounds(history) + 1
 	e.debug(roomID, "波开始", "round", roundID, "anchor", anchor.EventID, "epoch", epoch,
-		"seats", len(seats), "cooldown", len(cooldown), "proactive", proactive)
+		"seats", len(seats), "proactive", proactive)
 
 	// 1) round.opened（内部记账：快照 Timeline 不收录；策略面已退役）
 	opened := e.newEnv(roomID, protocol.EventRoundOpened,
@@ -580,46 +565,26 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 	// 声明清账（群聊语义：波锚定最新语境，覆盖更早刺激——消息是语境不是席位）
 	e.clearRoomClaims(ctx, roomID)
 
-	// 2) 上下文组装（七层最小 + Receipt）。评估与生成各组一份：评估收小近窗
-	// （evalRecentWindow，降输入 token），生成仍用全量近窗；逐组装各落一张
-	// Receipt（溯源按实——评估 Receipt 以 ":eval" 后缀区分任务号）。
+	// 2) 上下文组装（七层最小 + Receipt）。评估一份小近窗快照（evalRecentWindow，
+	// 同时观察语义：全员对同一刺激表态）；生成语境不再开波预组装——逐发言人生成
+	// 时刷新（v1.40 裁定：波内盲生成治本），见第 5 步。
 	tStage = time.Now()
 	seatsMin := make([]contextx.Seat, len(seats))
 	for i, s := range seats {
 		seatsMin[i] = contextx.Seat{ParticipantID: s.ParticipantID}
 	}
-	assembleCfg := contextx.Config{
-		RoomID: roomID, TaskID: roundID, Mode: "chat", Seats: seatsMin,
-		RecentWindow: 10,
-		Budget: contextx.BudgetState{
-			RemainingTokens: remainingTokens(contextx.RebuildBudget(envs), e.cfg.Budget),
-			Level:           contextx.RebuildBudget(envs).Level(e.cfg.Budget),
-		},
+	waveBudget := contextx.BudgetState{
+		RemainingTokens: remainingTokens(contextx.RebuildBudget(envs), e.cfg.Budget),
+		Level:           contextx.RebuildBudget(envs).Level(e.cfg.Budget),
 	}
-	assembled := contextx.Assemble(assembleCfg, envs, *anchor)
-	assembleCfg.TaskID = roundID + ":eval"
-	assembleCfg.RecentWindow = evalRecentWindow
-	evalAssembled := contextx.Assemble(assembleCfg, envs, *anchor)
+	evalsAsm := e.assembleChat(ctx, contextx.Config{
+		RoomID: roomID, TaskID: roundID + ":eval", Mode: "chat", Seats: seatsMin,
+		RecentWindow: evalRecentWindow, Budget: waveBudget,
+	}, envs, *anchor, false)
 	timing.AssembleMs = msSince(tStage)
-	if e.cfg.Receipts != nil {
-		for _, asm := range []*contextx.Assembled{&assembled, &evalAssembled} {
-			asm.Receipt.CreatedAt = e.cfg.Clock()
-			if err := e.cfg.Receipts.InsertReceipt(ctx, asm.Receipt); err != nil {
-				e.warn(roomID, "context receipt 落库失败", "err", err)
-			}
-		}
-	}
-	if proactive { // OQ-A：静默期自起的波——语境标记（适配器据此知道无新刺激）
-		assembled.Inline["proactive"] = true
-		assembled.Inline["silence_minutes"] = int(e.cfg.ProactiveSilence.Minutes())
-	}
-	taskContext := agent.Context{
-		Inline:     assembled.Inline,
-		ReceiptRef: assembled.Receipt.ReceiptID,
-	}
 	evalContext := agent.Context{
-		Inline:     evalAssembled.Inline,
-		ReceiptRef: evalAssembled.Receipt.ReceiptID,
+		Inline:     evalsAsm.Inline,
+		ReceiptRef: evalsAsm.Receipt.ReceiptID,
 	}
 
 	// 3-4) 全员评估（观察→判断，瘦身上下文）→ intent.recorded 全记录（R-01）→ 意愿清单
@@ -628,10 +593,28 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 		return
 	}
 
-	// 5) 意愿放行 + sequential 发布（记分卡分排序，@点名前置；CAS 迟到围栏）
+	// 5) 意愿放行 + sequential 发布（记分卡分排序，@点名前置；CAS 迟到围栏）。
+	// 逐发言人生成时刷新（v1.40 负责人裁定）：每次生成前重读水位重组装——同波
+	// 先发者的消息与波中人类插话即时入窗，后发者对最新语境作答（"互相对答上一条"
+	// 滞后的治本位）；锚点仍取本波原锚（刺激语义与事件因果链不变）。进程内重组装
+	// 微秒级；Receipt 任务号带发言序（:gen0/:gen1…）保证溯源唯一。
 	published := 0
-	for _, w := range willing {
-		outcome := e.revealCandidate(ctx, roomID, roundID, *anchor, w.selection(), epoch, w.intentEventID, taskContext, policy, timing)
+	for i, w := range willing {
+		genHistory, err := e.roomHistory(ctx, roomID)
+		if err != nil {
+			e.warn(roomID, "生成前历史读取失败，波中止", "err", err)
+			return
+		}
+		genEnvs := make([]protocol.Envelope, len(genHistory))
+		for j := range genHistory {
+			genEnvs[j] = genHistory[j].Envelope
+		}
+		genAsm := e.assembleChat(ctx, contextx.Config{
+			RoomID: roomID, TaskID: roundID + ":gen" + fmt.Sprintf("%d", i), Mode: "chat",
+			Seats: seatsMin, RecentWindow: 10, Budget: waveBudget,
+		}, genEnvs, *anchor, proactive)
+		genContext := agent.Context{Inline: genAsm.Inline, ReceiptRef: genAsm.Receipt.ReceiptID}
+		outcome := e.revealCandidate(ctx, roomID, roundID, *anchor, w.selection(), epoch, w.intentEventID, genContext, policy, timing)
 		switch outcome {
 		case revealPublished:
 			published++
@@ -666,6 +649,23 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 	e.debug(roomID, "波结束", "round", roundID, "outcome", outcome,
 		"published", published, "silent", silentCount,
 		"total_ms", timing.TotalMs, "eval_total_ms", timing.EvalTotalMs)
+}
+
+// assembleChat 聊天语境组装 + Receipt 落账（评估/生成共用出口；proactive 波仅在
+// 生成语境注入 OQ-A 标记——适配器据此知道无新刺激）。
+func (e *Engine) assembleChat(ctx context.Context, cfg contextx.Config, envs []protocol.Envelope, anchor protocol.Envelope, proactive bool) contextx.Assembled {
+	asm := contextx.Assemble(cfg, envs, anchor)
+	if proactive {
+		asm.Inline["proactive"] = true
+		asm.Inline["silence_minutes"] = int(e.cfg.ProactiveSilence.Minutes())
+	}
+	if e.cfg.Receipts != nil {
+		asm.Receipt.CreatedAt = e.cfg.Clock()
+		if err := e.cfg.Receipts.InsertReceipt(ctx, asm.Receipt); err != nil {
+			e.warn(cfg.RoomID, "context receipt 落库失败", "err", err)
+		}
+	}
+	return asm
 }
 
 // clearRoomClaims 波开后的声明清账：本房间全部 pending 声明清除——锚点已覆盖
@@ -899,28 +899,6 @@ func lastMessage(events []StoredEvent) *protocol.Envelope {
 	return nil
 }
 
-// lastWaveSpeakers 上一波发言者（冷却集）：最近一个 round.opened 之后发言的
-// agent 集合。无轮历史 → 空集（首波无人冷却）。
-func lastWaveSpeakers(events []StoredEvent) map[string]bool {
-	lastOpened := int64(0)
-	for _, ev := range events {
-		if ev.Envelope.Type == protocol.EventRoundOpened {
-			lastOpened = ev.Envelope.Seq
-		}
-	}
-	speakers := map[string]bool{}
-	if lastOpened == 0 {
-		return speakers
-	}
-	for _, ev := range events {
-		if ev.Envelope.Seq > lastOpened &&
-			ev.Envelope.Type == protocol.EventMessagePosted && ev.Envelope.Actor.Kind == "agent" {
-			speakers[ev.Envelope.Actor.ParticipantID] = true
-		}
-	}
-	return speakers
-}
-
 // agentMessageTail 尾部连续 agent 消息数（对话环检测；遇人类消息即止）。
 func agentMessageTail(events []StoredEvent) int {
 	n := 0
@@ -936,21 +914,6 @@ func agentMessageTail(events []StoredEvent) int {
 		break
 	}
 	return n
-}
-
-// addressedSet 锚点消息的 @点名集合（addressed_to 载荷）。
-func addressedSet(anchor protocol.Envelope) map[string]bool {
-	out := map[string]bool{}
-	var payload struct {
-		AddressedTo []string `json:"addressed_to"`
-	}
-	if json.Unmarshal(anchor.Payload, &payload) != nil {
-		return out
-	}
-	for _, p := range payload.AddressedTo {
-		out[p] = true
-	}
-	return out
 }
 
 // revealCandidate sequential 揭示链：发授（水位取当下）→ 生成 → 发布。
@@ -1232,7 +1195,7 @@ func recentFloorShare(history []StoredEvent, participantID string) float64 {
 	return float64(mine) / float64(total)
 }
 
-// directAddress 锚点是否 @点名该参与者（冷却豁免与顺序前置的特征输入）。
+// directAddress 锚点是否 @点名该参与者（意愿排序前置与记分卡特征输入）。
 func directAddress(stimulus protocol.Envelope, participantID string) float64 {
 	var payload struct {
 		AddressedTo []string `json:"addressed_to"`

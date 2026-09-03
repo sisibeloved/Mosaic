@@ -1,7 +1,8 @@
 //go:build st
 
 // ST 层：RFC-0012 群聊交互模型——真实二进制：一条人类消息 → 去抖反应窗口 →
-// 反应波（echo 意愿放行 + sequential 发布）→ 发言者冷却 → 流自然终止；
+// 反应波（echo 意愿放行 + sequential 发布）→ 意愿静默收束（v1.40：结构冷却拆除，
+// echo 对自己消息礼貌自决 silent → quiescent）；
 // 快照 Timeline 不含 round.*（内部化），事件流仍可检视波链路。
 package main_test
 
@@ -35,22 +36,22 @@ func TestChatFlow_ST(t *testing.T) {
 	})
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	// 等波完成：round.closed 到位
+	// 等波收敛：两波收束（波1 echo 发言 → 波2 对自己消息礼貌自决 silent → quiescent）
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
-		if closedCountST(t, client, base, roomID) >= 1 {
+		if closedCountST(t, client, base, roomID) >= 2 {
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	time.Sleep(5 * time.Second) // 冷却终止确认窗（默认反应窗口 3s：若冷却失效，第二波在此窗口内可见）
+	time.Sleep(3 * time.Second) // 静默收束确认窗（若礼貌自决静默失效，第三波在此窗口内可见）
 
-	if closedCountST(t, client, base, roomID) < 1 {
-		t.Fatal("反应波未在时限内完成")
+	if closedCountST(t, client, base, roomID) < 2 {
+		t.Fatal("反应波未在时限内收敛")
 	}
 	opened := roundOpenedST(t, client, base, roomID)
-	if len(opened) != 1 {
-		t.Fatalf("单座发言后应冷却终止：round.opened = %d（期望 1）", len(opened))
+	if len(opened) != 2 {
+		t.Fatalf("发言后应由意愿静默收束：round.opened = %d（期望 2：发言波 + 静默收束波）", len(opened))
 	}
 
 	// 快照：Timeline 只有消息族（round.* 内部化不入列）
