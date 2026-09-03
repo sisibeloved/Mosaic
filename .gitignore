@@ -40,3 +40,7 @@ Thumbs.db
 # wails build 副产物：frontend 缓存标记与未使用的绑定目录（本应用无 wails 绑定）
 apps/web/package.json.md5
 apps/web/wailsjs/
+
+# 交叉编译落仓根的产物（go build 无 -o 输出）
+/mosaic-server
+/desktop

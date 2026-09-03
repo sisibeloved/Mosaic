@@ -49,6 +49,7 @@ type WaveTimingView struct {
 type WaveView struct {
 	RoundID         string           `json:"round_id"`
 	StimulusEventID string           `json:"stimulus_event_id"`
+	Proactive       bool             `json:"proactive,omitempty"` // OQ-A 主动波（round.opened metadata 标记投影）
 	OpenedSeq       int64            `json:"opened_seq"`
 	ClosedSeq       int64            `json:"closed_seq,omitempty"` // 0 = 未收波（崩溃/在途）
 	Outcome         string           `json:"outcome,omitempty"`    // published | quiescent | revoked_all
@@ -79,6 +80,7 @@ func WaveChainOf(events []StoredEvent) []WaveView {
 			waves = append(waves, WaveView{
 				RoundID:         p.RoundID,
 				StimulusEventID: p.StimulusEventID,
+				Proactive:       env.Metadata["proactive"] == true,
 				OpenedSeq:       env.Seq,
 				Intents:         []WaveIntentView{},
 				Grants:          []WaveGrantView{},

@@ -562,12 +562,17 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 	policy := defaultChatPolicy()
 	epoch := countRounds(history) + 1
 	e.debug(roomID, "波开始", "round", roundID, "anchor", anchor.EventID, "epoch", epoch,
-		"seats", len(seats), "cooldown", len(cooldown))
+		"seats", len(seats), "cooldown", len(cooldown), "proactive", proactive)
 
 	// 1) round.opened（内部记账：快照 Timeline 不收录；策略面已退役）
 	opened := e.newEnv(roomID, protocol.EventRoundOpened,
 		protocol.Actor{ParticipantID: "par_system", Kind: "system"}, anchor.EventID, roundID,
 		protocol.RoundOpenedPayload{RoundID: roundID, StimulusEventID: anchor.EventID})
+	if proactive {
+		// 主动波自证：全静默收场的主动波不落任何用户可见消息，波链路视图凭此
+		// 标记可辨（否则"主动波从未触发"无从证伪）。
+		opened.Metadata["proactive"] = true
+	}
 	if _, err := e.append(ctx, opened); err != nil {
 		e.warn(roomID, "round.opened 落库失败，波中止", "err", err)
 		return

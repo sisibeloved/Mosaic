@@ -115,13 +115,25 @@ func TestProactiveWaveAfterSilence(t *testing.T) {
 	time.Sleep(60 * time.Millisecond) // 波2（冷却跳过）落定
 	base := countRoundsIn(store, "room_pa")
 	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if countRoundsIn(store, "room_pa") > base {
-			return // 静默期后自起了新波（OQ-A 生效）
-		}
+	for time.Now().Before(deadline) && countRoundsIn(store, "room_pa") <= base {
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("静默期后未自起波（rounds=%d）", base)
+	if countRoundsIn(store, "room_pa") <= base {
+		t.Fatalf("静默期后未自起波（rounds=%d）", base)
+	}
+	// 主动波自证：波1（人类锚点）不带标记；其后自起的波 round.opened metadata 带
+	// proactive 标记且波链路投影可辨——全静默收场的主动波不落用户可见消息，无此
+	// 标记则"主动波从未触发"无从证伪（装配漏配曾致主动波从未排上，见 app.go）。
+	waves := WaveChainOf(storedEventsOf(store.RoomEvents("room_pa")))
+	if len(waves) < 2 {
+		t.Fatalf("波数不足（%d）", len(waves))
+	}
+	if waves[0].Proactive {
+		t.Fatalf("人类锚点波不该带主动标记")
+	}
+	if !waves[len(waves)-1].Proactive {
+		t.Fatalf("静默期自起波缺主动标记（rounds=%d）", countRoundsIn(store, "room_pa"))
+	}
 }
 
 func countRoundsIn(store *MemStore, roomID string) int64 {
@@ -132,6 +144,14 @@ func countRoundsIn(store *MemStore, roomID string) int64 {
 		}
 	}
 	return n
+}
+
+func storedEventsOf(envs []protocol.Envelope) []StoredEvent {
+	out := make([]StoredEvent, len(envs))
+	for i := range envs {
+		out[i].Envelope = envs[i]
+	}
+	return out
 }
 
 var _ = bufio.ScanLines

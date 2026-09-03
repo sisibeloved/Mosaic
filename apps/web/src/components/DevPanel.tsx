@@ -49,6 +49,7 @@ interface WaveTiming {
 interface Wave {
   round_id: string;
   stimulus_event_id: string;
+  proactive?: boolean;
   opened_seq: number;
   closed_seq?: number;
   outcome?: string;
@@ -268,6 +269,7 @@ export function DevPanel({
                   <span className="text-dim">
                     波 {w.round_id.slice(-8)} · seq {w.opened_seq}
                     {w.closed_seq ? `→${w.closed_seq}` : "→…"}
+                    {w.proactive ? " · 主动" : ""}
                   </span>
                   <span className={badge.cls}>{badge.text}</span>
                 </div>

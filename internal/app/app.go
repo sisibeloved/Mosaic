@@ -338,20 +338,23 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			return seats
 		}
 		engine := room.NewEngine(room.EngineConfig{
-			Store:      store,
-			Reader:     store,
-			Agents:     supervisor,
-			Seats:      syncSeats(),
-			Budget:     budgetLimits,
-			Receipts:   store,
-			Claims:     store,
-			OnDraft:    httpapi.DraftConsumer(hub),
-			OnWaveSkip: httpapi.WaveSkipConsumer(hub),
-			Logger:     logger,
-			Clock:      clock,
-			Now:        time.Now,
-			NewID:      newID,
-			Tenant:     "ten_local",
+			Store:    store,
+			Reader:   store,
+			Agents:   supervisor,
+			Seats:    syncSeats(),
+			Budget:   budgetLimits,
+			Receipts: store,
+			Claims:   store,
+			// OQ-A 主动开口静默期：零值即禁用（scheduleProactive 直接返回）——
+			// v1.36 曾漏配此处，主动波从未排上（dogfood 实证），勿再省略。
+			ProactiveSilence: 5 * time.Minute,
+			OnDraft:          httpapi.DraftConsumer(hub),
+			OnWaveSkip:       httpapi.WaveSkipConsumer(hub),
+			Logger:           logger,
+			Clock:            clock,
+			Now:              time.Now,
+			NewID:            newID,
+			Tenant:           "ten_local",
 		})
 		enginePtr.Store(engine)
 		engine.RecoverClaims() // 崩溃窗口重驱动（二轮审校 #9）
