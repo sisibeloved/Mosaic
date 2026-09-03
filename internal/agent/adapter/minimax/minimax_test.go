@@ -197,6 +197,9 @@ func TestPublishCapEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("result: %v", err)
 	}
+	if !strings.Contains(exec.calls[0].stdin, `response_cap":50`) {
+		t.Fatalf("生成提示词应携带 response_cap（模型自约束）：%s", exec.calls[0].stdin)
+	}
 	body, _ := res.Data["body"].(string)
 	// 截断 + 截断标注（"\n[Mosaic: 输出超限已截断]"）——与 codex 面同口径
 	if n := len([]rune(body)); n > 50+len("\n[Mosaic: 输出超限已截断]") {

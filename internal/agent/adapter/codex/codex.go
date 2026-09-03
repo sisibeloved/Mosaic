@@ -326,6 +326,7 @@ Reply with ONLY a JSON object, no prose, no code fences:
 
 const generateInstruction = `You are a participant in an ongoing group chat and have decided to reply.
 Write your chat message directly below — concise, conversational, addressed to the room (no speeches, no meta commentary).
+Stay within the response_cap given in Task identity (characters, CJK chars count as one each); anything beyond it is cut.
 Reply with ONLY a JSON object, no prose, no code fences:
 {"body":"your public message","declared_relations":[]}`
 
@@ -348,6 +349,9 @@ func taskIdentity(task agent.Task) string {
 		ident["grant_id"] = task.Grant.GrantID
 		ident["rank"] = task.Grant.Rank
 		ident["epoch"] = task.Grant.Epoch
+		// v1.37（dogfood 治本）：上限对模型可见——软约束在生成侧生效，
+		// PublishGate 截断只做极端兜底（此前 cap 只执行不宣告，模型"无辜违规"）。
+		ident["response_cap"] = task.Grant.ResponseCap
 	}
 	raw, _ := json.Marshal(ident)
 	return string(raw)
