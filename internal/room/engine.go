@@ -56,6 +56,10 @@ type EngineConfig struct {
 	// ProactiveSilence 主动开口静默期（OQ-A/M3-3，MaiBot 式）：波链静默（quiescent
 	// 收波）后该时长无人类消息，则主动开一波（agent 自决是否起话）。0 = 关闭。
 	ProactiveSilence time.Duration
+	// RingDyadTail / RingAbsoluteTail 对话环阈值（v1.42 形制导；0 = 默认 6/30）：
+	// 闭环保龄（尾部 ≤2 说话人）短闸 / 任意形状绝对兜底。归 OQ-B 设置族（M4）。
+	RingDyadTail     int
+	RingAbsoluteTail int
 	Receipts         ReceiptStore     // 可选
 	OnDraft          DraftSink        // 可选：草稿流出口
 	OnWaveSkip       WaveSkipSink     // 可选：波门控跳过通知（开发者模式可观测性）
@@ -79,9 +83,15 @@ func defaultChatPolicy() chatGrantPolicy {
 	return chatGrantPolicy{GrantExpiry: 30 * time.Second}
 }
 
-// 对话环检测阈值：历史尾部连续 agent 消息 ≥ 该数（无人类介入）即不开新波
-// （双 agent 无限互相客气的强制收口；RFC-0012 §2.3）。
-const maxAgentMessageTail = 6
+// 对话环检测（v1.42 形制导，dogfood 实证修订）：病理形状=闭环保龄——尾部连续
+// agent 消息仅 ≤RingDyadTail 个说话人互答（RFC-0012 原始病理"双 bot 无限互相
+// 客气"）；多方轮转（≥3 说话人）是健康讨论（实证：三方来源审计讨论在第 6 条
+// 被旧计数闸误杀），不受短闸约束，仅受 RingAbsoluteTail 绝对兜底（防失控；
+// 人类一条消息即重置尾部、讨论可续）。
+const (
+	defaultRingDyadTail     = 6
+	defaultRingAbsoluteTail = 30
+)
 
 // 评估近窗（dogfood 性能治理）：评估只判"回不回/怎么回"，无需生成的全量语境；
 // 收小窗口直接降每次评估的输入 token——单座评估延迟的最大构成。
@@ -515,8 +525,10 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 		return
 	}
 	// 门控：对话环检测——尾部连续 agent 消息无人类介入 ≥ 阈值 → 强制收口
-	if tail := agentMessageTail(history); tail >= maxAgentMessageTail {
-		e.debug(roomID, "波跳过：对话环收口", "agent_tail", tail)
+	// 门控：对话环检测（形制导）——闭环保龄（≤2 说话人互答 ≥RingDyadTail）或
+	// 任意形状 ≥RingAbsoluteTail → 强制收口；多方轮转讨论不受短闸约束。
+	if e.ringTripped(history) {
+		e.debug(roomID, "波跳过：对话环收口", "agent_tail", agentMessageTail(history))
 		e.waveSkip(roomID, "ring")
 		return
 	}
@@ -643,7 +655,7 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 		})
 	closed.Metadata = map[string]any{"timing": timing}
 	_, _ = e.append(ctx, closed)
-	if e.cfg.ProactiveSilence > 0 && len(e.roomSeats(history)) > 0 && agentMessageTail(history) < maxAgentMessageTail {
+	if e.cfg.ProactiveSilence > 0 && len(e.roomSeats(history)) > 0 && !e.ringTripped(history) {
 		e.scheduleProactive(roomID) // OQ-A：静默期后 agent 可自起一波
 	}
 	e.debug(roomID, "波结束", "round", roundID, "outcome", outcome,
@@ -914,6 +926,57 @@ func agentMessageTail(events []StoredEvent) int {
 		break
 	}
 	return n
+}
+
+// trailingAgentEnvelopes 尾部连续 agent 消息（逆序收集，遇人类消息即止）。
+func trailingAgentEnvelopes(events []StoredEvent) []protocol.Envelope {
+	var out []protocol.Envelope
+	for i := len(events) - 1; i >= 0; i-- {
+		env := events[i].Envelope
+		if env.Type != protocol.EventMessagePosted {
+			continue
+		}
+		if env.Actor.Kind == "agent" {
+			out = append(out, env)
+			continue
+		}
+		break
+	}
+	return out
+}
+
+// ringTripped 形制导对话环（v1.42）：闭环保龄（尾部 ≤2 说话人 ≥RingDyadTail）
+// 或任意形状触绝对兜底（≥RingAbsoluteTail）。多方轮转（≥3 说话人）健康讨论
+// 只受后者约束。
+func (e *Engine) ringTripped(events []StoredEvent) bool {
+	tail := trailingAgentEnvelopes(events)
+	if len(tail) >= e.ringAbsoluteTail() {
+		return true
+	}
+	if len(tail) >= e.ringDyadTail() {
+		speakers := map[string]bool{}
+		for _, env := range tail {
+			speakers[env.Actor.ParticipantID] = true
+		}
+		if len(speakers) <= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) ringDyadTail() int {
+	if e.cfg.RingDyadTail > 0 {
+		return e.cfg.RingDyadTail
+	}
+	return defaultRingDyadTail
+}
+
+func (e *Engine) ringAbsoluteTail() int {
+	if e.cfg.RingAbsoluteTail > 0 {
+		return e.cfg.RingAbsoluteTail
+	}
+	return defaultRingAbsoluteTail
 }
 
 // revealCandidate sequential 揭示链：发授（水位取当下）→ 生成 → 发布。

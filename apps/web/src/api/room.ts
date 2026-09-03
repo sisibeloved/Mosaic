@@ -75,7 +75,7 @@ const SUBSCRIBED_EVENTS = [
 /** 波跳过原因 → 开发者模式文案（engine.waveSkip 的 reason 集合）。 */
 const WAVE_SKIP_TEXT: Record<string, string> = {
   paused: "波未开启：房间已暂停",
-  ring: "波未开启：对话环收口（连续 agent 发言无人类介入）",
+  ring: "波未开启：对话环收口（≤2 说话人互答≥6 或连续 agent 发言≥30，无人类介入）——发送一条消息即可继续",
   thread_inactive: "波未开启：锚点线程已暂停/关闭/合并",
   no_seats: "波未开启：房内无 agent 席位",
 };

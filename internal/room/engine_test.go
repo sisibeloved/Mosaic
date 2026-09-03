@@ -682,16 +682,16 @@ func TestEngineWavesSerializeAndDebounce(t *testing.T) {
 	if humanAnchored != 1 {
 		t.Fatalf("连发两条应去抖合并为一个波：evt_s2 锚定波 = %d（期望 1）", humanAnchored)
 	}
-	// 恒发言座链的有界终止：逐波各发一条，尾部达 maxAgentMessageTail 条 agent
-	// 消息后对话环检测收口——不再开第 7 波。
+	// 恒发言座链的有界终止：逐波各发一条，尾部达短闸阈值（单声音=闭环保龄病理）
+	// 条 agent 消息后对话环检测收口——不再开第 7 波。
 	deadline = time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) &&
-		countType(store.RoomEvents("room_s"), protocol.EventRoundOpened) < maxAgentMessageTail {
+		countType(store.RoomEvents("room_s"), protocol.EventRoundOpened) < defaultRingDyadTail {
 		time.Sleep(5 * time.Millisecond)
 	}
 	time.Sleep(150 * time.Millisecond)
-	if n := countType(store.RoomEvents("room_s"), protocol.EventRoundOpened); n != maxAgentMessageTail {
-		t.Fatalf("对话环应收口恒发言链：round.opened = %d（期望 %d）", n, maxAgentMessageTail)
+	if n := countType(store.RoomEvents("room_s"), protocol.EventRoundOpened); n != defaultRingDyadTail {
+		t.Fatalf("对话环应收口恒发言链：round.opened = %d（期望 %d）", n, defaultRingDyadTail)
 	}
 }
 
