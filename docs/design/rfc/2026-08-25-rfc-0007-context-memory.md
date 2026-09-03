@@ -6,7 +6,7 @@
 
 **创建日期 (Created):** 2026-08-25
 
-**更新日期 (Updated):** 2026-08-25
+**更新日期 (Updated):** 2026-09-03
 
 **相关 Issue/PR:** #TBD（RFC 入库时创建 tracking issue）
 
@@ -25,12 +25,13 @@
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
 | v0.1 | 2026-08-25 | Mosaic 项目组 / ZCode | 初稿：统一讨论输入契约（七层组装+独立配额）、历史查询内容面、四层 Memory 与 Memory Item Schema、Capsule 一等 Memory、GroundedSummary、Context Receipt Schema、混合检索口径、最小必要与脱敏 |
+| v0.2 | 2026-09-03 | 陆尘裁定 / ZCode | **记忆双平面与责任边界裁定（§7.4）**：双参考调研（Hermes Agent 跨会话记忆 / MaiBot 群聊记忆）后负责人五点裁定——session 归 harness / memory 归房间（共享、可审计、可编辑）；按需平面 SQLite FTS5 起步（§3.1.8 修订，pgvector 无限期推迟）；恒常平面容量纪律（字符上限+水位可见+超限倒逼合并）；承诺/待办追踪改口为**带责任人的 tasklist**（非记忆系统，落 RFC-0012 OQ-A）；记忆查看/编辑/纠错 UI 为 M3-3 验收项 |
 
 # 1. 概述
 
 ## 1.1 简介
 
-本 RFC 定义 Mosaic 向 Agent 交付什么（统一讨论输入与权威历史查询）、记住什么（四层 Memory）以及如何留痕（Context Receipt）。OQ-16 已决的分工是边界：Mosaic 不按 Model Binding 差异化组装、不做超窗压缩——那是 Harness 的职责；Mosaic 的保证是**统一输入 + 不存在授权可见却查不到的历史 + 每次运行可审计"实际看到了什么"**。Memory 不是真相：必须带 provenance、scope、版本与人工编辑历史。
+本 RFC 定义 Mosaic 向 Agent 交付什么（统一讨论输入与权威历史查询）、记住什么（四层 Memory）以及如何留痕（Context Receipt）。OQ-16 已决的分工是边界：Mosaic 不按 Model Binding 差异化组装、不做超窗压缩——那是 Harness 的职责；Mosaic 的保证是**统一输入 + 不存在授权可见却查不到的历史 + 每次运行可审计"实际看到了什么"**。Memory 不是真相：必须带 provenance、scope、版本与人工编辑历史。**责任边界裁定（2026-09-03，§7.4）**：Harness 的 CLI 会话是 Agent 的私有工作记忆（OQ-16 边界内，不透明、不可审计、不可编辑——可接受）；Mosaic Memory 是**房间的共享记忆**（有 provenance、可审计、可编辑、人类可纠错）——两者所有者与审计要求不同，互不替代，Mosaic 只建后者。
 
 ## 1.2 动机
 
@@ -65,7 +66,7 @@
 | X-02 历史查询补全 | Agent 经通道（MCP/结构化请求）查询；查询计入 Receipt | 有界查询往返 P95 < 1s（0002 口径） | 非干扰过滤 + 审批审计（0002/0006） |
 | X-03 Capsule 入 Memory | 被接受 Capsule 按 closure_type 写入 Room/Thread Memory | 随接受原子写入 | dissent/falsifiers/Requests 保留 provenance |
 | X-04 记忆编辑与冲突 | 人工编辑留历史；冲突时展示来源由策略定序 | 编辑生效 ≤ 下次组装 | Memory 不是真相（UI 明示） |
-| X-05 混合检索 | pgvector + 关键词/结构化；scope/visibility 过滤 | 检索 P95 < 300ms（有界集） | 命中集按主体过滤 |
+| X-05 混合检索 | pgvector + 关键词/结构化；scope/visibility 过滤（个人版 FTS5 起步，§7.4） | 检索 P95 < 300ms（有界集） | 命中集按主体过滤 |
 | X-06 摘要生成 | merge（0004）/收束（0005）摘要走 summarize 任务 | 引用必须可解析 | 摘要是派生数据可重建（原则 9） |
 | X-07 迟到与水位 | 迟到 Intent 滚入（0003）时按新水位重交付 | 水位校验强一致 | Receipt 记录实际交付水位 |
 | X-08 全局偏好 | Global Profile Memory 默认关闭，opt-in | 用户明确保存才启用 | 可查看/编辑/删除（9.4） |
@@ -143,12 +144,12 @@ Context Builder 沿 `reply_to`、显式 `relations` 与版本化 claim 谱系回
 - `unique(run_id)`；用途：检测引用未提供内容、区分模型/摘要/投影错误、删除影响范围追踪（6.10.4）；
 - "Mosaic 交付了什么 + Agent 查询了什么"两侧都在 Receipt；Harness 内部保留/压缩不属于审计范围（OQ-16）。
 
-### 3.1.8 混合检索口径
+### 3.1.8 混合检索口径（v0.2 修订：FTS5 起步，pgvector 无限期推迟）
 
-- pgvector（ADR-0003：起步精确/iterative scan）+ 关键词/结构化过滤组合召回；
+- **个人版按需平面以 SQLite FTS5 全文检索起步**（v0.2 裁定，§7.4）：事件日志本就在库内全量，对 message 正文建 FTS5 索引 + 关键词/结构化过滤组合召回；pgvector/embedding **无限期推迟**，以 FTS5 召回不足的狗粮实录为重启条件；前置验证项：modernc.org/sqlite 的 FTS5 编译可用性与 CJK tokenizer 方案（参考实现 Hermes 为中文专门做 fts5_cjk 扩展）；
 - 过滤链：tenant → scope（四层）→ visibility → 主体非干扰；
-- embeddings 表记录 `model/version/dimensions`；模型切换并行重建新索引不覆盖旧向量（架构 §8.3.2）；
-- 命中集上限（默认 20 条）与相似度阈值进 Policy。
+- （向量形态保留为未来服务端部署选型）embeddings 表记录 `model/version/dimensions`；模型切换并行重建新索引不覆盖旧向量（架构 §8.3.2）；
+- 命中集上限（默认 20 条）进 Policy；相似度阈值随向量推迟挂起。
 
 ### 3.1.9 最小必要与不可信标记
 
@@ -160,7 +161,7 @@ Context Builder 沿 `reply_to`、显式 `relations` 与版本化 claim 谱系回
 | 决策点 | 选择 | 放弃方案与原因 |
 |---|---|---|
 | 摘要生成 | RFC-0002 summarize 任务（Harness 模型） | Mosaic 直调模型：违背 OQ-20（发言与摘要流量归 Harness） |
-| 检索 | PG 内混合检索 | 外挂 rerank 服务：无规模证据 |
+| 检索 | PG 内混合检索（个人版：SQLite FTS5 起步，§7.4 裁定） | 外挂 rerank 服务：无规模证据 |
 | Memory 存储 | PG（结构化 + JSONB） | 独立记忆库：运维负担（架构 §6.5 已定） |
 | Receipt 存储 | PG 表（ID 清单） | 全文快照：体积与隐私（明确禁止） |
 
@@ -258,6 +259,8 @@ Context Builder 沿 `reply_to`、显式 `relations` 与版本化 claim 谱系回
 |---|---|---|
 | RAG 上下文工程 | 分层配额、引用可解析、混合召回 | Mosaic 以事件水位与谱系为准，不靠切块 |
 | MemGPT 类记忆分层 | 分层记忆与编辑观 | Mosaic 记忆可审计、带 provenance、非真相 |
+| Hermes Agent（Nous Research，2026-09-03 调研） | 恒常/按需双平面（硬上限策展文件冻结注入 + FTS5 原文检索零 LLM）；容量压力倒逼策展（不自动压缩，超限报错由 agent 当轮合并）；write_approval 门控 + pending 队列；外部记忆 provider 并行增强、永不替代内置存储 | Mosaic 恒常平面=胶囊/MemoryItem 注入层、按需平面=权威历史查询；提案-接受生命周期已事件溯源化（memory.* 事件族），agent 提案面留待工具面成熟 |
+| MaiBot A_Memorix（群聊记忆，2026-09-03 调研） | 画像=证据驱动+人工覆盖优先（纠错触发自动刷新）；Episode 异步流水线（pending/processed/failed，可按来源重建）；来源管理支撑批量运维（影响预览/回收站恢复）；显式生命周期操作集（强化/弱化/冻结/遗忘）；编辑 UI 一等公民（173 端点） | Mosaic 的记忆单元是房间/线程级结论、承诺与任务而非人物画像；source_event_ids 强制 provenance 与其来源管理同构 |
 | W3C PROV（概念） | provenance 三元组思想 | Mosaic 以 source_event_ids 落地 |
 | Zulip 引用回复上下文 | 显式锚点优于隐式拼接 | Mosaic 扩展为类型化关系谱系 |
 
@@ -293,3 +296,20 @@ Context Builder 沿 `reply_to`、显式 `relations` 与版本化 claim 谱系回
 - 评审期（Draft → Reviewing）：收敛配额与 TTL 默认值；
 - Accepted 后：`context_receipts`/`memory_items` Schema 进迁移；组装 fixture 进 CI；
 - 后续：RFC-0010 落地时补级联细则；Receipt 评测口径随 RFC-0011。
+
+## 7.4 记忆双平面与责任边界裁定（v0.2，2026-09-03 负责人裁定）
+
+**背景**：负责人裁定"session 和 memory 是两码事"，并指定两个参考实现先行调研——跨会话记忆看 **Hermes Agent**（Nous Research），群聊记忆看 **MaiBot**（A_Memorix，docs.mai-mai.org/manual/features/memory-system）。调研以两家官方文档为据，要点：
+
+- **Hermes（跨会话记忆）**：刻意分两个平面——**恒常平面** = 两个硬上限策展文件（`MEMORY.md` 2,200 字符 / `USER.md` 1,375 字符），会话启动时作冻结快照注入 system prompt（保 prefix cache）、注入头带容量水位（`[67% — 1,474/2,200 chars]`）；**不做自动压缩**——超限写入报错并附当前条目清单，由 agent 当轮自行合并删除后重试（容量压力倒逼策展）；写入经 memory tool 自助（add/replace/remove，子串匹配定位），每个 turn 结束跑后台自我改进审查，`write_approval` 开启时非交互场景的写入进 pending 队列人工批准；写入前扫注入/外泄模式与不可见 Unicode、完全重复自动拒绝。**按需平面** = Session Search：全部历史会话入 SQLite FTS5，查询 ~20ms、返回消息原文、**无 LLM 摘要、零模型成本**（并为中文专门做 fts5_cjk 扩展）。外部记忆 provider（Honcho/Mem0 等 8 家）只并行增强、**永不替代**内置存储。
+- **MaiBot（群聊记忆）**：多模块协作（长期/短期/按消息窗口滚动摘要/Episode 片段/知识图谱/人物画像）；画像 = **证据驱动 + 手动覆盖优先**的双层模型（纠正证据触发画像自动刷新）；每条记忆带**来源管理**字段（来自哪个聊天流/导入任务），支撑按来源批量重建、删除前影响范围预览、回收站恢复；生命周期显式操作集（强化/弱化/冻结/保护/永久记住/遗忘）；173 个 HTTP 端点把查看/纠错/编辑/删除全部暴露为 UI 能力。
+
+**五点裁定**（负责人 2026-09-03 确认，第 4 点经其纠正改口）：
+
+1. **责任边界**：Harness CLI 会话 = Agent 私有工作记忆（OQ-16 边界内，不透明/不可审计/不可编辑——可接受）；Mosaic Memory = **房间共享记忆**（有 provenance、可审计、可编辑、人类可纠错）。两者所有者与审计要求不同，互不替代；Mosaic 只建后者。与 Hermes "外部 provider 并行不替代内置"同构。
+2. **按需平面 FTS5 起步**（§3.1.8 随之修订）：事件日志本就在 SQLite 全量，FTS5 全文检索 + 结构化过滤即覆盖"我们之前是不是聊过 X"类召回；查询走权威历史查询通道并入 Context Receipt（§3.1.3/§3.1.7 既定）。pgvector/embedding 无限期推迟，以 FTS5 召回不足的狗粮实录为重启条件。前置验证项：modernc.org/sqlite 的 FTS5 编译可用性 + CJK tokenizer 方案。
+3. **恒常平面正规化**：现有"已接受胶囊注入第八层"（v1.36，最新 5 条）升级为容量纪律——字符容量上限（替代条数上限）、容量水位在调试面可见、超限倒逼合并（不静默截断丢旧）。§3.1.1 七层配额（记忆层 15%）不变，容量纪律是该配额的执行面。
+4. **承诺/待办追踪是 tasklist，不是记忆系统**（负责人纠正）：形态取常见 Harness 的 tasklist/todolist，但在多 Agent 群聊形态上**必须加责任人字段**——每项任务归属到具体承诺者，否则"谁该交付"无从判定。确定性派生优先（宣言模式 + N 波未交付即入清单）、人工门控；清单入评估语境供主动开口消费（RFC-0012 OQ-A 触发源的承载物）。与记忆层强关联（provenance 纪律同源）但独立成物——设计落 RFC-0012 OQ-A，不属本 RFC 范围。
+5. **编辑面是 M3-3 验收项而非可选**：查看来源 / 人工编辑留 edit_history / 纠错生效于下次组装的最小闭环随 M3-3 交付（两家参考一致：无编辑面的记忆系统静默劣化）。
+
+**对既有条款的影响**：§3.1.8 已按裁定 2 修订；X-05 与 §3.2 检索行加个人版注记；§6 未解决问题 5（相似度阈值初值）随向量推迟挂起；§3.1.4 四层 Memory 与 Memory Item Schema 不变（恒常平面的分期接入面）；§5 现有技术增补两个参考实现对照行。
