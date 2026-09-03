@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.43 |
+| 版本 | v1.44 |
 | 日期 | 2026-09-01 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -60,6 +60,7 @@
 | v1.41 | 2026-09-03 | Mosaic 项目组 / ZCode | **dogfood 修复（Kimi 提示词上限被 v1.40 引爆→传输面治本）**。报错"kimi: 提示词超 argv 安全上限（6185 > 6000 runes）"——上限出处=M2 C 轨 kimi 适配器的 6000 rune 护栏（防 Windows CreateProcess ≈32k 命令行上限，当时实证 kimi -p 只认 argv、无 --input/文件通道）；v1.40 拆冷却后链变长+逐发言人刷新语境变大，提示词越过旧护栏。**治本=传输面换轨**：提示词不再进 argv——经 sh -c 'exec "$@" -p "$(cat)"' 由 stdin 代入发行版内 kimi argv（--exec stdin 直通已被 codex/minimax 实证；真机探针验证 0.39.1 全链：stdin→$(cat)→stream-json+session 连续性完好），宿主命令行恒定，32k 上限与 6000 护栏双双出局；Execer 接口加 stdin 参（对齐 minimax 形态）。残余物理边界=Linux MAX_ARG_STRLEN（128KiB/参数），MaxPromptBytes 兜底 100KiB fail fast（物理边界非策略闸）。测试翻新：传输契约断言（argv 恒定不含提示词本体、stdin 携带任务身份）、护栏改字节制、WSL argv 形状钉新双层 sh 包装；fixtures 不受影响（只钉 stdout 流）。ACP 通道仍为演进项（流式草稿的解法） |
 | v1.42 | 2026-09-03 | Mosaic 项目组 / ZCode | **dogfood 修复（对话环误杀健康讨论→形制导，RFC-0012 附录 E）**。反馈："聊得正欢提示对话环收口"——真机事件流实证：三方"来源审计"讨论（互相纠错、逐条核验、三轮自然轮转）在第 6 条被旧计数闸切断；≥6 阈值标定于"双 bot 互相客气"病理（封闭双声音循环），而病理特征是形状不是长度。修订：(1) **闭环保龄短闸**——尾部连续 agent 消息 ≤2 说话人互答 ≥RingDyadTail（默认 6，原病理语义不变）；(2) **多方轮转豁免**——≥3 说话人尾部链不受短闸，讨论由意愿静默治理（实证支持：打招呼链三座各一条自然 quiescent）；(3) **绝对兜底**——任意形状 ≥RingAbsoluteTail（默认 30）防失控，跳波帧明示"发条消息即可继续"（人类消息重置尾部）；(4) 主动波排程条件改 !ringTripped——修复 v1.40 隐藏退化（三方讨论超 6 条后主动波被旧计数静默禁掉）；(5) 阈值入 EngineConfig 归 OQ-B 设置族（M4）。测试：TestRingShapeGate 纯函数钉七形制（单/双声音病理、双 5 未达、三方 6/29 豁免、三方 30 兜底、人类重置）+ 既有单声音集成环测试改语义注释。登记：双声音且实质推进的两人讨论仍会被短闸在第 6 条——内容停滞判定（M3-4 echo/漂移签名复用）为精化候选，待误杀实录再标定。**同日被 v1.43 裁定整体退役（附录 F）——机制未等到狗粮证据即拆除，本行保留作演化档案** |
 | v1.43 | 2026-09-03 | Mosaic 项目组 / ZCode | **架构裁定（负责人）：对话环检测整体退役——"如果不预先堆机制，应该把6条还有绝对兜底30条这些门控去掉，因为双边辩论也是允许的目标场景"（RFC-0012 附录 F）**。动因：v1.42 形制导闸落地当日狗粮再误杀（三方热聊被"对话环收口"掐断）；环检测自始至终为**预想**病理（"双 bot 无限互相客气"，RFC-0003 时代）而设、狗粮从未实录，两次修订（计数→形制导）都在为无证据的病理调参，而闸两次砍中真实健康讨论——与 v1.38 去成本闸、v1.40 去冷却同一原则落地：**无病理实录不设闸**。修订：(1) 拆除面——短闸/绝对兜底/ringTripped/尾部扫描/EngineConfig 阈值字段全拆，waveSkip reason 收敛为 paused \\| thread_inactive \\| no_seats；终止=意愿静默唯一结构闸 + 人类暂停随时掐断，链长不设上界；(2) 主动波排程条件简化为 ProactiveSilence>0 且有席位；(3) 失控风险移交内容级诊断候选（M3-4 echo/漂移签名区分"互相客气"与"实质推进"）——先取证再设闸，闸的形状由实录标定。测试：两个 Ring 专项 UT 退役；新增 TestChatDyadChainContinuesWithoutRingGate（种子 6 条双座交替链=旧短闸病理形状，反应波照常开——钉死"双边辩论是目标场景"）；序列化测试改无界链持续断言（>6 波继续开）。**测试卫生教训入档**：无结构闸后恒发言/礼貌互答适配器=无界链，测试不关引擎即成僵尸（评估回调经全局 evalHook 串扰后续测试、Receipt append 与断言读竞争）——一律 defer eng.Close()，捕获面读取等全链静默后（TestEngineReceiptCreatedAt 竞争修复：等两波全落再读）；room 包 race 8/8 稳定 |
+| v1.44 | 2026-09-03 | Mosaic 项目组 / ZCode | **狗粮诊断双案（事件流 + timing 套件实证，机制不动）+ 三处登记**。(1) **轮 28"慢"归因**：收口与开波均毫秒级（publish→closed 同毫秒、closed→opened 2ms——去抖窗在上一波生成期内已到期，单飞串行下关波即开波）；history 1ms / assemble 0ms——**Mosaic 在意向开始前零耗时操作**；慢在评估相=三席并行屏障取最慢：kimi 79.6s（codex 15.3s / minimax 13.8s 早已完成干等 64s，intent.recorded 三席同毫秒落库实证屏障语义）；kimi 评估时延方差大（本窗 12.3–79.6s）为"偶尔慢半拍"主因；codex 评估恒定 ~24k input tokens（CLI 会话恢复带全量会话）但未表现为时延异常，minimax 会话 ~24k 后自动回落 ~2k（会话重置）。(2) **"拉数据"停摆归因**：机制全按规格工作、模型判断合理（rationale 实证——"球在 codex 手里""插话只会挤占 floor"是主动判断非故障）；缺口是**承诺无自我续接通道**——最新消息=自己的承诺 → 自决静默（防自言自语的同一语义杀死承诺履行）；主动波 5min 起搏正常（08:55/09:00 两轮实证）但语境无"交付承诺"框架 → 全静默空转；人类一句话即复活（08:48:21 实证）。定性=交互模型结构缺口（非 agent 故障、非引擎 bug）；证据入 RFC-0012 OQ-A——**"何时值得说"须含"我曾承诺未交付"，未履行承诺列为 M3-3 记忆层供主动开口消费的触发源**。(3) **登记**：消息 Markdown 渲染 → M3-7（新切片）；子 Agent 状态显示（各家流式事件面适配评估先行）→ M4 backlog；kimi usage 上报缺口（intent.recorded metadata 恒空）+ 主动波静默空转退避观察（两轮空转各烧 3 次 CLI 评估——按"无病理实录不设闸"先观测不堆机制）→ M4 backlog |
 
 # 1. 交付目标与"完全可用"定义
 
@@ -173,7 +174,7 @@
 - [x] OpenAPI 3.1 + oapi-codegen strict 生成（ADR-0007 修订：自 M1 延期至此，随 SPA 接入）+ gen/ts 产物新鲜度 CI 校验（Schema 改动未重生成即红）**（2026-08-31 A 轨契约切片落地：api/http-api/openapi.yaml 全表面 + oapi-codegen v2.8.0（go.mod tool 锁版本）生成 ServerInterface/边界模型/内嵌 spec，httpapi 实现接口——操作集一致性编译期保证；strict-server 包装有意不启用（接管解码会静默放行未知字段，与 DisallowUnknownFields 纪律冲突，ADR-0007 登记偏离），请求侧行为由契约测试回填；CI 增 gen-api 漂移门禁。SPA 侧类型消费随 A 轨次切片接入）**
 - [x] `message.posted` payload Schema 定稿（M1 声明未兑现，延期登记；含 addressed_to/relations 严格字段集）**（2026-08-31：events/message.posted.schema.json——严格字段集；relations 按 RFC-0004 类型化（kind 八枚举/provenance 恒 explicit，系统固化、客户端值不收）；agent 路径 declared_relations 封闭投影。运行时同步严格化 + fixtures 双例一反例进门禁）**
 - **M2 backlog（M1 收口审校遗留，随相关切片消化）**：conformance 反例 fixture 集 + chaos 适配器（RFC-0002 §3.5.1 三件套补全）；attention 变异验证留档（CI 门禁化）；崩溃恢复演练深化（轮中途崩溃：重复开轮/永久丢失刺激两个窗口的注入用例）；grant 过期可见态（超时/取消当前都映射 ErrStale，RFC-0003 要 expired 可区分）+ A-03 在途取消 <500ms（当前正确性靠 epoch 兜底，取消动作不发出）
-- **M4 backlog**：Windows Job Object（孙进程整组击杀，替代 POSIX Setpgid 空实现）；登录态使用时复核（座位调用前 re-probe，当前为启用时点门控）
+- **M4 backlog**：Windows Job Object（孙进程整组击杀，替代 POSIX Setpgid 空实现）；登录态使用时复核（座位调用前 re-probe，当前为启用时点门控）；子 Agent 状态显示（dogfood 反馈 2026-09-03，v1.44 登记：**先评估各家 CLI 流式事件面**——minimax `mcode exec --output-format stream-json` 有步骤/工具事件、codex stream-json 有 item 事件、kimi 0.39.1 stream-json 粒度待核，可暴露的状态粒度决定 UI 形态）；kimi usage 上报缺口（v1.44 实证：intent.recorded metadata 恒空，codex/minimax 正常）；主动波静默空转退避观察（v1.44 实证：房间静默后主动波每 5min 无限空转，两轮各烧 3 次 CLI 评估——按"无病理实录不设闸"先观测，连续 K 次全静默是否退避留待数据）
 - **出口判据**：连续 5 个工作日真实自用（≥1 场多 agent 讨论含分叉与合并）；零数据丢失；体验阻塞项清单清空或降级记录；**（v1.11 增补）** M1 验收反馈两项——完整设置页面、静默期"正在输入"状态显示——落地并在真实自用中验证。**（v1.32 关账·负责人裁定"收尾 M2"：真实自用跨 2026-08-28～09-01（桌面 exe 多日实用：真实房间/真实适配器发言/改名/暂停恢复）；"分叉与合并"形态被 RFC-0012 群聊制取代（Thread 图谱机制在、讨论形态为群聊）；体验阻塞项（Kimi 全程静默）已修复（v1.30）并补齐日志落盘可观测性；零数据丢失（WAL 存储 + 崩溃即静默不重波语义，无丢失报告）；群聊制上线当日即关账——狗粮连续性由 M3-1 观测基座结构性承接（三 agent 狗粮 + 重启可复盘），不作为 M2 缺件）**
 
 ## M3 收束、记忆与投影（3 周，v1.31 拆细为六切片）
@@ -198,7 +199,7 @@
 ### M3-3 记忆层
 
 - [ ] 四层 Memory + 混合检索（sqlite-vec）+ Capsule 一等 Memory；记忆查看/编辑 UI
-- [ ] 主动开口（RFC-0012 OQ-A，挂本切片出口）：静默 N 分钟后 agent 自行起话——依赖收束/记忆给定"何时值得说"；落地后与发言冷却/对话环检测的交互需重验**（v1.36 引擎已落地；v1.39 修复装配漏配——ProactiveSilence 现装配 5min，主动波 round.opened 带标记、波链路可辨；狗粮重验待新 exe）**
+- [ ] 主动开口（RFC-0012 OQ-A，挂本切片出口）：静默 N 分钟后 agent 自行起话——依赖收束/记忆给定"何时值得说"；落地后与意愿静默的交互需重验（发言冷却/对话环检测已先后退役，v1.40/v1.43）**（v1.36 引擎已落地；v1.39 修复装配漏配——ProactiveSilence 现装配 5min，主动波 round.opened 带标记、波链路可辨；v1.44 狗粮实证：起搏正常但语境无"未履行承诺"概念——agent 承诺"开拉数据"后两轮主动波全静默空转，OQ-A 已增补：未履行承诺是本切片记忆层须追踪并供主动开口消费的触发源）**
 
 ### M3-4 结构投影最小版（RFC-0006）
 
@@ -211,6 +212,10 @@
 ### M3-6 数据主权（RFC-0010 个人版范围）
 
 - [ ] 导出（manifest + NDJSON）与删除级联 + 墓碑
+
+### M3-7 狗粮体验补齐（v1.44 登记）
+
+- [ ] 消息内容按 Markdown 渲染输出（dogfood 反馈 2026-09-03）：agent 消息普遍含 `**粗体**`/列表/表格标记，当前按纯文本展示满屏原始标记；渲染层落地（SPA 安全渲染管线：XSS 白名单过滤为前提，不引入原始 HTML 直通）
 
 ### 贯穿观测（M3-1 起持续记录，M3-3 后数据成形）
 
