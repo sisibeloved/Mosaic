@@ -291,6 +291,7 @@ var devNoteTypes = map[string]bool{
 	protocol.EventClosureAccepted:         true,
 	protocol.EventPauseCapsuleCreated:     true,
 	protocol.EventEvidenceRequestCreated:  true,
+	protocol.EventEvidenceRequestClaimed:  true,
 	protocol.EventEvidenceRequestResolved: true,
 	protocol.EventTaskResolved:            true,
 	protocol.EventMemoryEdited:            true,

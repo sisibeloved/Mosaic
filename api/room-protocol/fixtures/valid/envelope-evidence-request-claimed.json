@@ -1,0 +1,26 @@
+{
+  "event_id": "evt_evidencerequ02",
+  "tenant_id": "ten_local",
+  "room_id": "room_fixture01",
+  "type": "evidence_request.claimed",
+  "schema_version": 1,
+  "occurred_at": "2026-09-04T03:00:00.000Z",
+  "actor": {
+    "participant_id": "par_kimi_kimi_wsl_d1",
+    "kind": "agent"
+  },
+  "visibility": {
+    "kind": "public"
+  },
+  "payload": {
+    "request_id": "ereq_01H8X",
+    "claimed_by": "par_kimi_kimi_wsl_d1",
+    "note": "我来取官方页面"
+  },
+  "seq": 104,
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "causation_id": null,
+  "correlation_id": null,
+  "metadata": {}
+}

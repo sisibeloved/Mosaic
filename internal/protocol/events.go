@@ -35,7 +35,11 @@ const (
 	EventPauseCapsuleCreated     = "pause_capsule.created"
 	EventEvidenceRequestCreated  = "evidence_request.created"
 	EventEvidenceRequestResolved = "evidence_request.resolved"
-	EventRoomDeleted             = "room.deleted"
+	// evidence_request.claimed（M3-5 认领，v1.54 补齐）：owners 空=待认领的
+	// 需求单被认领——claimed_by 入 owners（open 态单次追加，幂等投影去重；
+	// 命令面仅 human/system，agent 自主认领随工具面分期）。
+	EventEvidenceRequestClaimed = "evidence_request.claimed"
+	EventRoomDeleted            = "room.deleted"
 	// tasklist（RFC-0012 OQ-A 修订 / v1.45 负责人裁定：带责任人的承诺追踪——
 	// 非 Memory 系统，独立成物）：派生是确定性纯投影（mosaic-todo 申报协议，零 LLM；
 	// v1.46 宣言模式匹配因误报严重废弃），不落声明事件；人类门控事件族只有
@@ -184,6 +188,10 @@ func (e *Envelope) DecodePayload() any {
 		var p MemoryEditedPayload
 		_ = json.Unmarshal(e.Payload, &p)
 		return p
+	case EventEvidenceRequestClaimed:
+		var p EvidenceRequestClaimedPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
 	default:
 		return nil
 	}
@@ -294,6 +302,13 @@ type EvidenceRequestResolvedPayload struct {
 	EvidenceRefs []string `json:"evidence_refs"`
 	Resolution   string   `json:"resolution"` // resolved | dismissed
 	Note         string   `json:"note,omitempty"`
+}
+
+// EvidenceRequestClaimedPayload evidence_request.claimed：认领（owners 追加）。
+type EvidenceRequestClaimedPayload struct {
+	RequestID string `json:"request_id"`
+	ClaimedBy string `json:"claimed_by"`
+	Note      string `json:"note,omitempty"`
 }
 
 // TaskResolvedPayload task.resolved：人类对派生任务的裁定（人工门控——

@@ -116,6 +116,7 @@ func (e ParticipantViewKind) Valid() bool {
 // Defines values for RoomCommandCommandKind.
 const (
 	AcceptClosure          RoomCommandCommandKind = "accept_closure"
+	ClaimEvidenceRequest   RoomCommandCommandKind = "claim_evidence_request"
 	CloseThread            RoomCommandCommandKind = "close_thread"
 	CreateEvidenceRequest  RoomCommandCommandKind = "create_evidence_request"
 	CreateRoom             RoomCommandCommandKind = "create_room"
@@ -141,6 +142,8 @@ const (
 func (e RoomCommandCommandKind) Valid() bool {
 	switch e {
 	case AcceptClosure:
+		return true
+	case ClaimEvidenceRequest:
 		return true
 	case CloseThread:
 		return true

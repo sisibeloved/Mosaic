@@ -105,6 +105,8 @@ func (s *Service) ExecuteCommand(ctx context.Context, actor Actor, cmd Command) 
 		return s.acceptClosure(ctx, actor, cmd)
 	case "create_evidence_request":
 		return s.createEvidenceRequest(ctx, actor, cmd)
+	case "claim_evidence_request":
+		return s.claimEvidenceRequest(ctx, actor, cmd)
 	case "resolve_evidence_request":
 		return s.resolveEvidenceRequest(ctx, actor, cmd)
 	case "resolve_task":

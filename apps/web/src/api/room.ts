@@ -72,6 +72,7 @@ const SUBSCRIBED_EVENTS = [
   "closure.rejected",
   "closure.accepted",
   "pause_capsule.created",
+  "evidence_request.claimed",
   "task.resolved",
   "memory.edited",
 ] as const;
@@ -194,6 +195,8 @@ function devDetailOf(
       return `[dev] 预算暂停胶囊（${p.pause_reason ?? "?"}，未收敛非结论）`;
     case "evidence_request.created":
       return `[dev] 证据需求单：${p.question ?? ""}`;
+    case "evidence_request.claimed":
+      return `[dev] 证据需求单认领：${resolveName(p.claimed_by)}${p.note ? `（${p.note}）` : ""}`;
     case "evidence_request.resolved":
       return `[dev] 证据需求单${p.resolution === "dismissed" ? "驳回" : "解决"}`;
     case "task.resolved":

@@ -95,7 +95,8 @@ func TestSpecCommandKindEnum(t *testing.T) {
 	}
 	// M3-3 前的滞后枚举（13 项）随 v1.46 补齐：收束/证据单/任务/记忆编辑/删除
 	// 全部入枚举——spec 枚举 == 服务端 switch 受理集（ExecuteCommand 的 case 集）。
-	want := map[string]bool{"create_room": true, "post_message": true, "pause_room": true, "resume_room": true, "rename_room": true, "endorse_intent": true, "fork_thread": true, "pause_thread": true, "resume_thread": true, "close_thread": true, "reopen_thread": true, "merge_thread": true, "invite_agent": true, "propose_closure": true, "accept_closure": true, "create_evidence_request": true, "resolve_evidence_request": true, "resolve_task": true, "edit_memory": true, "delete_room": true}
+	// v1.54 增 claim_evidence_request（M3-5 认领）。
+	want := map[string]bool{"create_room": true, "post_message": true, "pause_room": true, "resume_room": true, "rename_room": true, "endorse_intent": true, "fork_thread": true, "pause_thread": true, "resume_thread": true, "close_thread": true, "reopen_thread": true, "merge_thread": true, "invite_agent": true, "propose_closure": true, "accept_closure": true, "create_evidence_request": true, "claim_evidence_request": true, "resolve_evidence_request": true, "resolve_task": true, "edit_memory": true, "delete_room": true}
 	if len(got) != len(want) {
 		t.Fatalf("command_kind 枚举漂移：spec=%v 服务端=%v", got, want)
 	}

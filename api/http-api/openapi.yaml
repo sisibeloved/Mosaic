@@ -564,7 +564,7 @@ components:
       properties:
         command_kind:
           type: string
-          enum: [create_room, post_message, pause_room, resume_room, rename_room, endorse_intent, invite_agent, fork_thread, pause_thread, resume_thread, close_thread, reopen_thread, merge_thread, propose_closure, accept_closure, create_evidence_request, resolve_evidence_request, resolve_task, edit_memory, delete_room]
+          enum: [create_room, post_message, pause_room, resume_room, rename_room, endorse_intent, invite_agent, fork_thread, pause_thread, resume_thread, close_thread, reopen_thread, merge_thread, propose_closure, accept_closure, create_evidence_request, claim_evidence_request, resolve_evidence_request, resolve_task, edit_memory, delete_room]
         expected_room_version:
           type: integer
           minimum: 0

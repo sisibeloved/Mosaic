@@ -104,6 +104,7 @@ func TestStrictSchemaValidationGate(t *testing.T) {
 		"envelope-message-bad-relation-kind.json",    // payload 枚举（relations.kind，M2 定稿）
 		"envelope-task-resolved-bad-resolution.json", // payload 枚举（task.resolved.resolution，M3-3）
 		"envelope-memory-edited-bad-version.json",    // payload 下界（memory.edited.edit_version ≥ 1，M3-3）
+		"envelope-evidence-request-bad-id.json",      // payload pattern（evidence_request.claimed.request_id，M3-5）
 		"command-bad-idempotency-key.json",           // 幂等键 UUIDv7 pattern
 		"command-missing-payload.json",               // 命令必填字段
 	}

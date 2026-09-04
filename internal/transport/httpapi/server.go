@@ -73,6 +73,7 @@ func New(deps Deps) http.Handler {
 		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/state", s.handleDebugState)
 		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/events", s.handleDebugEvents)
 		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/waves", s.handleDebugWaves)
+		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/claims", s.handleDebugClaims)
 		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/memory", s.handleDebugMemory)
 		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/export", s.handleDebugExport)
 	}

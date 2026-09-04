@@ -305,7 +305,7 @@ export interface components {
          */
         RoomCommand: {
             /** @enum {string} */
-            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "rename_room" | "endorse_intent" | "invite_agent" | "fork_thread" | "pause_thread" | "resume_thread" | "close_thread" | "reopen_thread" | "merge_thread" | "propose_closure" | "accept_closure" | "create_evidence_request" | "resolve_evidence_request" | "resolve_task" | "edit_memory" | "delete_room";
+            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "rename_room" | "endorse_intent" | "invite_agent" | "fork_thread" | "pause_thread" | "resume_thread" | "close_thread" | "reopen_thread" | "merge_thread" | "propose_closure" | "accept_closure" | "create_evidence_request" | "claim_evidence_request" | "resolve_evidence_request" | "resolve_task" | "edit_memory" | "delete_room";
             expected_room_version: number;
             /** @description UUIDv7（服务端按 tenant+key+kind 去重；同键异指纹 409） */
             idempotency_key: string;

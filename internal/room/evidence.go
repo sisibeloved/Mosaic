@@ -62,6 +62,23 @@ func EvidenceRequestsOf(events []StoredEvent) []EvidenceRequestView {
 				out[i].Status = p.Resolution
 				out[i].EvidenceRefs = p.EvidenceRefs
 			}
+		case protocol.EventEvidenceRequestClaimed:
+			var p protocol.EvidenceRequestClaimedPayload
+			if json.Unmarshal(env.Payload, &p) != nil {
+				continue
+			}
+			if i, ok := index[p.RequestID]; ok && out[i].Status == "open" {
+				dup := false
+				for _, o := range out[i].Owners {
+					if o == p.ClaimedBy {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					out[i].Owners = append(out[i].Owners, p.ClaimedBy)
+				}
+			}
 		}
 	}
 	return out
@@ -112,6 +129,65 @@ func (s *Service) createEvidenceRequest(ctx context.Context, actor Actor, cmd Co
 			Question: payload.Question, RequiredEvidence: payload.RequiredEvidence,
 			AcceptanceCriteria: payload.AcceptanceCriteria, Owners: payload.Owners,
 			ReopenOnResolution: payload.ReopenOnResolution,
+		}),
+		Metadata: map[string]any{},
+	}
+	return s.commitWith(ctx, cmd, actor, env)
+}
+
+// claimEvidenceRequest 认领证据需求单（M3-5 v1.54 补齐）：owners 空=人类待认领，
+// 认领即追加（open 态、非重复）；claimant 为命令 actor（命令面仅 human/system
+// ——agent 自主认领随工具面分期，当前由人类认领/指派）。
+func (s *Service) claimEvidenceRequest(ctx context.Context, actor Actor, cmd Command) (*CommandResult, error) {
+	if res, err := s.replayIfReceived(ctx, cmd, actor); res != nil || err != nil {
+		return res, err
+	}
+	if res, err := s.roomVersionPrecheck(ctx, cmd, actor); res != nil || err != nil {
+		return res, err
+	}
+	var payload struct {
+		RequestID string `json:"request_id"`
+		Note      string `json:"note"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(cmd.Payload)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("%w: claim_evidence_request payload: %v", ErrInvalidCommand, err)
+	}
+	if len([]rune(payload.Note)) > 280 {
+		return nil, fmt.Errorf("%w: note 上限 280 字", ErrInvalidCommand)
+	}
+	history, err := s.historyOf(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: history: %w", err)
+	}
+	reqs := EvidenceRequestsOf(history)
+	found := false
+	for _, r := range reqs {
+		if r.RequestID == payload.RequestID {
+			found = true
+			if r.Status != "open" {
+				return nil, fmt.Errorf("%w: 需求单已 %s（不可认领）", ErrInvalidCommand, r.Status)
+			}
+			for _, o := range r.Owners {
+				if o == actor.ParticipantID {
+					return nil, fmt.Errorf("%w: 已是认领人（不可重复认领）", ErrInvalidCommand)
+				}
+			}
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("%w: 无此证据需求单 %s", ErrInvalidCommand, payload.RequestID)
+	}
+	env := protocol.Envelope{
+		EventID:  s.cfg.NewID("evt"),
+		TenantID: s.cfg.Tenant, RoomID: cmd.RoomID,
+		Type: protocol.EventEvidenceRequestClaimed, SchemaVersion: 1,
+		OccurredAt: s.cfg.Clock(),
+		Actor:      protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
+		Visibility: protocol.Visibility{Kind: "public"},
+		Payload: mustJSON(protocol.EvidenceRequestClaimedPayload{
+			RequestID: payload.RequestID, ClaimedBy: actor.ParticipantID, Note: payload.Note,
 		}),
 		Metadata: map[string]any{},
 	}

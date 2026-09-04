@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/evidence_request.claimed.schema.json",
+  "title": "EvidenceRequestClaimedPayload",
+  "description": "证据需求单认领（M3-5 v1.54 补齐）：owners 空=人类待认领，认领即追加（open 态单次，幂等投影去重）。",
+  "type": "object",
+  "required": [
+    "request_id",
+    "claimed_by"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "request_id": {
+      "type": "string",
+      "pattern": "^ereq_[0-9A-Za-z_-]+$"
+    },
+    "claimed_by": {
+      "type": "string"
+    },
+    "note": {
+      "type": "string"
+    }
+  }
+}

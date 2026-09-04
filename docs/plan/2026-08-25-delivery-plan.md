@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.53 |
+| 版本 | v1.54 |
 | 日期 | 2026-09-01 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -70,6 +70,7 @@
 | v1.51 | 2026-09-03 | 陆尘裁定 / ZCode | **权限档裁定落地（"permission 没有 auto 档的一律选 full 档"）——v1.50 mcode web_fetch 决策点收口**。适用面逐一核实：mcode 三档 smart/full/off 无 auto → **落地 `--permission full`**（前置实证：full 下 web_fetch 实抓 example.com 成功返回页面原文，smart 下的 HOST_CAPABILITY_UNAVAILABLE 消除；full=全工具自动放行，爆炸半径由 per-profile scratch 工作目录承担——argv 契约 UT 钉死）；kimi 有 auto 档（--auto），但实证 **与 -p 互斥**（"Cannot combine --prompt with --auto."）——Mosaic 的 kimi 无头形态走 -p，维持现状（狗粮已证该形态工具可用）；codex 权限面是 sandbox 概念（-s read-only，读写/网络资源域而非审批档），不属"permission 档"裁定域，维持。适配器头注释与 argv 契约同步更新。**v1.52 负责人纠正：codex 排除与 kimi--auto 定性有误——裁定范围是"全部适配"，见 v1.52 行** |
 | v1.52 | 2026-09-04 | 陆尘裁定 / ZCode | **权限档裁定范围纠正（"codex 也有权限策略啊……各个 Agent 要么有 YOLO 模式，要么权限可以设置成 Full 级别的，只是名称不一样，都得适配上"）——v1.51 把 codex 排除出裁定域、把 kimi --auto 当权限档均有误**。逐家落地与实证：(1) **codex**：sandbox 即其权限面（exec 非交互下审批本就 never，-s 是唯一闸）——`-s read-only` → **`-s danger-full-access`**（Full 档；read-only 曾连网络一并封死；实证 0.151 full 档最小调用跑通；resume 子命令不接受 -s——沙箱随会话首轮固定，首轮 Full 即全会话 Full；argv 契约 UT 钉死 TestRuntimeSandboxFullCodex）；(2) **kimi**：YOLO 档是 `-y/--yolo`（"Auto-approve regular tool calls"，v1.51 误把 --auto 当权限档——auto 是"完全自治模式"且与 -p 互斥），实证 **--yolo 同样与 -p 互斥**（"Cannot combine --prompt with --yolo."）——-p 是 kimi 唯一无头通道（2026-08-31 实证无 --input/文件通道），该形态自带审批语义（工具直接执行，狗粮 web 抓取已证可用），无旗标可叠加，维持现状并注记；(3) mcode 已于 v1.51 落地 `--permission full`。三家对齐结果：**能在无头形态显式设 Full 的都设了（codex/mcode），形态本身自带放行的维持并注记（kimi）**；爆炸半径统一由 per-profile 工作目录与机主信任域承担。登记：codex 0.151 exec 无 --search 旗标（web 工具面未开放，与权限无关） |
 | v1.53 | 2026-09-04 | Mosaic 项目组 / ZCode | **dogfood 诊断+修复（"MiniMax 说开抓 10 分钟无动静"）——执行模型认知错配**。三层取证：(1) 事件流/日志时间线（DB=UTC/日志=本地 MDT 对齐）——07:12Z minimax 发"开抓，10 分钟内回前两条"（带 mosaic-todo 申报块，v1.49 协议已被模型自发使用 ✓）+ 07:12Z/07:17Z 两波全静默（minimax rationale："再说话是空转，留在执行上"）；(2) **mcode 会话日志实锤：宣言轮（07-12-08 会话）content 只有 text/thinking、零工具调用**——模型只是"说"了要抓；(3) 引擎侧无恙——主动波 5min 起搏正常（07:17:25Z proactive=true 实证，07:22:57Z 会再来）、Timeout 装配 180s 非瓶颈。**根因：mcode exec 按轮拉起、轮末即结束、无后台执行，而模型抱持"我会在后台执行 10 分钟"的自我模型**——两轮机会均以"执行中"为由自选静默，tasklist_note 的"没有进展就说明情况"被解读成"无话可说"而非"任务停滞"。修复（认知矫正进协议指令，两处单源）：TasklistProtocol 增执行模型硬事实（"你的会话按轮拉起、轮末即结束，没有后台执行——任务须在某一轮回复中当场完成，只承诺不执行任务永远停在原地"）；主动波 tasklist_note 改写（"'已在执行中'不是静默理由，要么本轮就做（调用工具当场完成），要么说明真实阻塞"）。登记：若矫正后仍空转，下一步候选为评估指令面向主动波的条件化（intentInstruction 静态通用文案与 tasklist_note 的张力）+ 生成任务超时按抓取类任务放宽（180s 对多页抓取+撰写余量未实证） |
+| v1.54 | 2026-09-04 | Mosaic 项目组 / ZCode | **M3 完成度核对与收口（负责人指令"确认 M3 规划内容是否已完成，没有完成的补上"）**。逐切片对照代码核实：M3-2/3-6 已按既有裁定落地（RFC-0005 附录 B 群聊制裁剪 / v1.36 数据主权），本版勾选并补注记；**两个真实缺口补齐**：(1) **M3-5 认领**——claim_evidence_request 命令 + evidence_request.claimed 事件（owners 追加、open 态单次、同人不重复、终态后拒绝；幂等投影去重；命令面仅 human/system，agent 自主认领随工具面分期）+ Schema/fixtures/gate 反例 + [dev] 文案 + 命令枚举 21 + 认领命令链 UT；(2) **M3-4 Claim 投影（"按 flag 离线启用"）**——ClaimsOf 确定性最小账本（零 LLM）：胶囊结论→strengthened、同 thread 后到胶囊取代早者→superseded（重开后再收束的演化留痕）、假设→open、证据需求单问题→open_question（resolved→strengthened/dismissed→weakened）；取编辑后胶囊视图（与注入同源）；"按 flag 离线启用"落地为仅 dev 门禁端点 GET /v1/debug/rooms/{id}/claims（不入组装/公开快照）+ 端点 UT（含非 dev 404）；RFC-0006 E-03 模型混合提取为其后续分期。**贯穿观测读数归档（出口判据项）**：GPT-6 预测讨论房 195 带 timing 收波——波全程 p50 17.8s/max 201.9s，评估Σ p50 16.9s 占 ~95%（完全主导）；逐座评估 p50 codex 14.1s/kimi 9.6s/minimax 14.6s，kimi 方差极端（max 109.3s）；Σ→max 并行化节省 max 164.5s——**裁定建议：评估相并行化（不改发布语义）**；M3-1 狗粮基座与 M3-2/3-4/3-5/3-6 全部勾选；出口判据四项三项 ✓（bounded_disagreement 真实讨论实录待狗粮——机制 UT/IT 钉死） |
 
 # 1. 交付目标与"完全可用"定义
 
@@ -196,14 +197,14 @@
   **（v1.32 实证完成·文档调研：官方 CLI 为 MiniMax Code CLI（`mcode`）——安装 `npm i -g @minimax-ai/code@latest`（Node ≥22.19<23 或 ≥24<27，本机 v24.14.1 满足）、登录 `mcode login`（需订阅 Token 套餐；`mcode provider` 管 API Key 路由——凭据留 CLI 侧合规 OQ-20）；无头调用面优于 kimi：`mcode exec [prompt] --output-format text|json|stream-json --cwd <dir> --session <id> --permission ask|smart|full|off --timeout --max-steps`，机器输出走 stdout/诊断走 stderr（分流，无混流解析噪声），`--input -` 显式读 stdin（提示词可走 stdin——无 argv 长度上限，规避 kimi 的 6000 rune 护栏类问题），`--output-schema` JSON Schema 校验（codex 实证上游 400 不可用，mcode 待实证——若可用则意图结构化输出可硬校验）；`mcode acp` ACP stdio 通道原生在（演进项）。前置条件=负责人安装并订阅登录；随后真机 fixtures 钉版本（stream-json 行流形状）+ BuiltinProbes 探针 + 适配器实施）**
   **（2026-09-02 v1.33 落地：负责人安装订阅登录（mcode 0.2.7）→ 真机实证钉死（stdin 提示词/--session 回忆/stderr 恒空/登录态=~/.minimax/cli-auth）→ fixtures 两形态真机捕获 + manifest 哈希门禁 → internal/agent/adapter/minimax（codex 同构 + WSL --exec 直传）→ BuiltinProbes 探针 + syncSeats 座位（par_minimax_*）→ UT/IT 真机三件套/生产路径 ST（桩 CI + 真机 24.8s 闭环）全绿）**
 - [x] 开发者模式持久化（dogfood 反馈 v1.31：重启后开发者模式信息全失）：`[dev]` 内联时间线当前为瞬态（room.ts"瞬态，不入快照"——仅实时 SSE 进内存，无人重放）→ 改为事件流重放投影（波链路/意向/记分卡/围栏撤销自持久事件重建，debug 视图按房间+游标分页）+ trace id 可回查（贯通 v1.30 落盘的 mosaic.log）**（2026-09-01 v1.32 落地：`room.WaveChainOf` 纯函数投影（波骨架/意图全记录含弃权与未选理由/发授终态含撤销归账/发布计数/未收波可辨）+ `GET /v1/debug/rooms/{id}/waves` 端点（dev 门禁内，seq 降序取页/页内时间正序/limit 1..100/cursor 续读更老）+ DevPanel"波链路（重启可复盘）"档案区（进房加载最新页/加载更早/手动刷新/成员名与锚点摘要解析）；实时增量仍走聊天内 [dev] 内联时间线（live 面），档案区为事实源视图（archive 面）；UT 投影三用例 + 端点用例（直落库波事件可复盘/分页/坏 cursor 400/非 dev 404））**
-- [ ] 产出：≥3 agent 真实狗粮基座——为波内并行观测（贯穿项）与 M3 各切片验证提供测量面 **（v1.34：三座同房狗粮已运行——MiniMax/Codex/Kimi 均正常发言；负责人反馈"非常慢"，性能链路定位套件 v1 随之落地）**
+- [x] 产出：≥3 agent 真实狗粮基座——为波内并行观测（贯穿项）与 M3 各切片验证提供测量面 **（v1.34：三座同房狗粮已运行——MiniMax/Codex/Kimi 均正常发言；负责人反馈"非常慢"，性能链路定位套件 v1 随之落地；至 v1.53 多场三座同房实录持续供给测量面——GPT-6 预测讨论房 195 波 timing 读数归档见贯穿观测）**
 - [x] 性能链路定位套件 v1（dogfood 反馈"非常慢"，v1.34 落地）：引擎分段计时（历史拉取/上下文组装/逐座意图评估/逐发言人生成/波全程）落 `round.closed.metadata.timing`——波链路投影透出（window_ms = 锚点→开波）+ DevPanel 波卡片耗时行与近波均值 + 波结束日志带 total/eval_total；**首轮粗账（DB 时间戳，15 波）**：三座房评估相串行合计最高 51.4s（codex+kimi+mcode 逐个排队）、波全程最高 86.8s、去抖窗恒 3.0s——评估相并行化是最大候选（max≈20s 可省 ~30s），生成串行次之；逐座精确数字由套件持续供给
 - [x] 桌面日志恒空修复（dogfood 反馈，v1.34）：GUI 子系统进程 stderr 无有效句柄——`io.MultiWriter` 首路失败即中止，日志文件路永远收不到写入（mosaic.log 0 字节实证）；`app.TeeWriter` 逐路写入单路失败不阻断 + UT 钉住
 - **出口判据**：三 agent 同房真实对话一场；杀进程重启后开发者视图完整还原该场全部波链路。
 
 ### M3-2 收束协议（RFC-0005）
 
-- [ ] closure round + 合格异议判定 + 六种 Capsule + Pause Capsule + reopen 流程
+- [x] closure round + 合格异议判定 + 六种 Capsule + Pause Capsule + reopen 流程 **（2026-09-02 v1.35/v1.36 按 RFC-0005 附录 B 群聊制裁剪落地：closure 评估路径（KindEvaluateClosure 结构化块，三适配器承载）+ 确定性合格异议判定（新证据/新假设+预期影响；closure.rejected 中止回 active）+ Capsule 接受时无模型确定性组装（consensus/bounded_disagreement 两型——其余四型随 Policy/RFC-0006 既有裁定，个人版最小可用）+ Pause Capsule（预算熔断即写、恢复清位）+ reopen（人类 reopen_thread 留痕 + reopen_triggers 强制非空）；五事件 Schema/fixtures + OpenAPI + SPA 收束控件随 v1.36；v1.54 完成度核对勾选——bounded_disagreement 实录待狗粮（机制 UT/IT 钉死））**
 
 ### M3-3 记忆层（v1.45 按五点裁定重排为双平面 + tasklist；RFC-0007 v0.2 §7.4 / RFC-0012 OQ-A 修订）
 
@@ -215,15 +216,15 @@
 
 ### M3-4 结构投影最小版（RFC-0006）
 
-- [ ] reply 基图 + 重复检测 + 漂移签名（供 repetition_risk 与重聚焦）；Claim 投影按 flag 离线启用；推断边标 inferred 接入 Timeline/Graph（v1.19/v1.28 登记的挂接点）
+- [x] reply 基图 + 重复检测 + 漂移签名（供 repetition_risk 与重聚焦）；Claim 投影按 flag 离线启用；推断边标 inferred 接入 Timeline/Graph（v1.19/v1.28 登记的挂接点） **（2026-09-02 v1.36：推断边 echoes（规范化 bigram Jaccard≥0.6）+ RepetitionRisk/ViewpointDiversity 实算接入波内排序 + 漂移签名（窗口规范化哈希）+ inferred 标记接入 SPA 图谱视图（"（系统推断）"徽标）；**2026-09-04 v1.54 补 Claim 投影**：ClaimsOf 确定性最小账本（胶囊结论→strengthened/同 thread 后到者取代→superseded、假设→open、证据需求单问题→open_question/resolved→strengthened/dismissed→weakened；取编辑后胶囊视图与注入同源）——"按 flag 离线启用"落地为仅 dev 门禁端点 GET /v1/debug/rooms/{id}/claims（不入在线组装/公开快照）；RFC-0006 E-03 的模型混合提取（置信度/stance 台账）随工具面分期，本账本为其确定性骨架）**
 
 ### M3-5 Evidence Request
 
-- [ ] 创建/认领/解决 + 重开提议
+- [x] 创建/认领/解决 + 重开提议 **（2026-09-02 v1.36：create/resolve（dismiss 同命令，resolved 必带 evidence_refs）+ 快照 evidence_requests 投影 + [dev] 内联；重开=人类 reopen_thread 留痕（附录 B 裁剪：不做自动重开）；**2026-09-04 v1.54 补认领**：claim_evidence_request 命令 + evidence_request.claimed 事件（owners 追加、open 态单次、幂等投影去重；命令面仅 human/system——agent 自主认领随工具面分期）+ Schema/fixtures/gate 反例 + [dev] 文案 + 命令枚举 21）**
 
 ### M3-6 数据主权（RFC-0010 个人版范围）
 
-- [ ] 导出（manifest + NDJSON）与删除级联 + 墓碑
+- [x] 导出（manifest + NDJSON）与删除级联 + 墓碑 **（2026-09-02 v1.36：delete_room（reason 必填→room.deleted 墓碑→级联清事件/outbox/回执/声明；SQLite room_tombstones，MemStore/SQLite 双实现）+ 导出 /v1/debug/rooms/{id}/export（NDJSON manifest+全量事件，重放一致 UT）+ 删除无残留 fixture UT；公开导出 API 随 M4 迁移（已登记）；v1.54 完成度核对勾选）**
 
 ### M3-7 狗粮体验补齐（v1.44 登记）
 
@@ -231,9 +232,9 @@
 
 ### 贯穿观测（M3-1 起持续记录，M3-3 后数据成形）
 
-- [ ] 波内并行发言 slot 观测（v1.30 登记、v1.31 改贯穿项）：≥3 座 + 主动开口构成真实并行场景；记录同波多意愿频率、串行链时延、同锚点应答冗余率；数据成形后裁定并行化（Σ→max）或 sequential + 波内上下文增量 **（v1.34 首轮读数：评估相串行 Σ51.4s 是波内最大时延段——评估相并行化（不改发布语义，仅相 1 并发）与发布并行化是两个可分离的裁定项；套件已就位，持续读数后裁定）**
+- [x] 波内并行发言 slot 观测（v1.30 登记、v1.31 改贯穿项）：≥3 座 + 主动开口构成真实并行场景；记录同波多意愿频率、串行链时延、同锚点应答冗余率；数据成形后裁定并行化（Σ→max）或 sequential + 波内上下文增量 **（v1.34 首轮读数 + **v1.54 归档读数（GPT-6 预测讨论房，195 带 timing 收波）**：波全程 p50 17.8s / max 201.9s；评估Σ p50 16.9s **占波全程 ~95%——评估相完全主导**；逐座评估 p50：codex 14.1s / kimi 9.6s / minimax 14.6s，**kimi 方差极端（max 109.3s，串行 Σ 被拖至 180s）**；生成 p50 17-20s 三座相当；Σ→max 并行化节省 max 164.5s（重波收益巨大）。**裁定建议：评估相并行化（不改发布语义，仅相 1 并发）**——kimi 评估方差另列观测（usage 上报缺口 M4 项关联）；发布并行化维持串行（波内上下文增量价值未证））**
 
-- **里程碑出口判据**：一场真实讨论以 bounded_disagreement 收束并成功按新证据重开；导出包在干净环境重放一致；删除后全库无残留（fixture）；三 agent 狗粮观测记录归档（波内并行裁定有数据支撑）。
+- **里程碑出口判据**：一场真实讨论以 bounded_disagreement 收束并成功按新证据重开（**机制 UT/IT 钉死，真实讨论实录待狗粮——v1.54 核对注记**）；导出包在干净环境重放一致（✓ v1.36 UT）；删除后全库无残留（✓ fixture UT）；三 agent 狗粮观测记录归档（✓ v1.54：195 波 timing 读数与裁定建议归档于贯穿观测项）。
 
 ## M4 产品化——"不是半成品"专项（4 周）
 

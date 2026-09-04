@@ -335,6 +335,58 @@ func TestDebugWaves(t *testing.T) {
 	}
 }
 
+// TestDebugClaims：M3-4 Claim 认知账本端点（v1.54）——胶囊结论/假设 + 证据
+// 需求单问题派生；同 thread 后到胶囊取代早者结论。
+func TestDebugClaims(t *testing.T) {
+	ts, store := newDevServer(t, true)
+	roomID, _ := createDevRoom(t, ts)
+
+	capsuleEnv := func(seq int64, closureID, conclusion string) protocol.Envelope {
+		return protocolEnvelope(roomID, seq, protocol.EventClosureAccepted, "par_owner", "human",
+			fmt.Sprintf(`{"closure_id":%q,"closure_type":"consensus","thread_id":"thr_dbg","capsule":{"closure_id":%q,"closure_type":"consensus","thread_id":"thr_dbg","conclusions":[%q],"assumptions":[],"evidence":{"support":[],"oppose":[]},"participation":{"concluded":[],"objected":[],"abstained":[],"timeout":[],"unavailable":[]},"reopen_triggers":["新证据"]}}`,
+				closureID, closureID, conclusion))
+	}
+	envs := []protocol.Envelope{
+		capsuleEnv(10, "clo_d1", "早结论"),
+		capsuleEnv(11, "clo_d2", "晚结论"),
+		protocolEnvelope(roomID, 12, protocol.EventEvidenceRequestCreated, "par_owner", "human",
+			`{"request_id":"ereq_d1","question":"日期是？","required_evidence":[],"acceptance_criteria":"","owners":[]}`),
+	}
+	if _, err := store.AppendEvents(context.Background(), envs); err != nil {
+		t.Fatal(err)
+	}
+
+	status, doc := getJSON(t, ts.URL+"/v1/debug/rooms/"+roomID+"/claims")
+	if status != 200 {
+		t.Fatalf("claims status=%d body=%v", status, doc)
+	}
+	claims, _ := doc["claims"].([]any)
+	if len(claims) != 3 {
+		t.Fatalf("claims = %d, want 3（两结论 + 一开放问题）：%v", len(claims), claims)
+	}
+	byStmt := map[string]map[string]any{}
+	for _, c := range claims {
+		cm, _ := c.(map[string]any)
+		byStmt[cm["statement"].(string)] = cm
+	}
+	if byStmt["早结论"]["status"] != "superseded" {
+		t.Fatalf("早结论应 superseded：%v", byStmt["早结论"])
+	}
+	if byStmt["晚结论"]["status"] != "strengthened" {
+		t.Fatalf("晚结论应 strengthened：%v", byStmt["晚结论"])
+	}
+	if byStmt["日期是？"]["kind"] != "open_question" {
+		t.Fatalf("需求单问题应 open_question：%v", byStmt["日期是？"])
+	}
+
+	// 非 dev 不暴露（404）
+	tsNoDev, _ := newDevServer(t, false)
+	status, _ = getJSON(t, tsNoDev.URL+"/v1/debug/rooms/room_x/claims")
+	if status != http.StatusNotFound {
+		t.Fatalf("非 dev claims 端点应 404，got %d", status)
+	}
+}
+
 // protocolEnvelope / envelopesOf：波事件直落 store 的构造辅助（调试面投影只认
 // 事件流，不经引擎——重启后可复盘语义的 UT 面即此）。seq 由 MemStore 自派
 // （appendLocked 覆盖），入参仅用于 EventID 去重。

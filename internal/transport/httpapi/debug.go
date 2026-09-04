@@ -205,6 +205,25 @@ func (s *server) handleDebugWaves(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"waves": page, "next": next})
 }
 
+// handleDebugClaims 认知账本查询面（M3-4 v1.54：Claim 投影确定性最小版，
+// "按 flag 离线启用"的落地形态——仅 dev 面，不入组装/公开快照）。
+func (s *server) handleDebugClaims(w http.ResponseWriter, r *http.Request) {
+	roomID := r.PathValue("room_id")
+	events, err := s.readAllEvents(r, roomID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "debug_read_failed", err.Error())
+		return
+	}
+	if len(events) == 0 {
+		writeError(w, http.StatusNotFound, "room_not_found", "房间不存在或尚无事件")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"room_id": roomID,
+		"claims":  room.ClaimsOf(events),
+	})
+}
+
 // handleDebugMemory 记忆查询面（M3-3）：胶囊记忆 + 证据需求单 + 漂移签名 +
 // 逐座重复风险——记忆侧可观测（查看面；编辑不适用：胶囊不可变，登记 RFC-0007）。
 func (s *server) handleDebugMemory(w http.ResponseWriter, r *http.Request) {
