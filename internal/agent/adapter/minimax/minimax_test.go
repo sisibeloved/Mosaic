@@ -129,10 +129,12 @@ func TestIntentMapping(t *testing.T) {
 	if err := agent.ValidateBlock(res.Block, res.Data); err != nil {
 		t.Fatalf("端口级结构校验: %v", err)
 	}
-	// argv 契约：exec 无头 + stream-json + stdin 提示词；提示词含任务身份与指令
+	// argv 契约：exec 无头 + --permission full（负责人裁定：无 auto 档选 full——
+	// smart 下网络工具需交互宿主弹权限，无头 exec 结构性不可用）+ stream-json
+	// + stdin 提示词；提示词含任务身份与指令
 	argv := exec.calls[0].argv
 	joined := strings.Join(argv, "\x00")
-	for _, want := range []string{"exec\x00--output-format\x00stream-json", "--input\x00-"} {
+	for _, want := range []string{"exec\x00--permission\x00full\x00--output-format\x00stream-json", "--input\x00-"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("argv 契约不符（缺 %q）：%v", want, argv)
 		}
@@ -141,8 +143,10 @@ func TestIntentMapping(t *testing.T) {
 		!strings.Contains(exec.calls[0].stdin, "Decide whether to reply") {
 		t.Fatalf("stdin 应为完整提示词（指令+任务身份）：%q", exec.calls[0].stdin)
 	}
-	if strings.Contains(joined, "-p") {
-		t.Fatal("提示词不得走 -p argv（kimi 护栏类问题）")
+	for _, a := range argv { // 精确元素匹配：--permission 含子串 "-p"，朴素 Contains 会误伤
+		if a == "-p" {
+			t.Fatal("提示词不得走 -p argv（kimi 护栏类问题）")
+		}
 	}
 }
 
@@ -197,11 +201,11 @@ func TestCancelStale(t *testing.T) {
 func TestWSLArgvShape(t *testing.T) {
 	metacharPrompt := `Reply {"action":"speak|silent"}` // 走 stdin——argv 不含提示词
 	got := wslArgs("Ubuntu", []string{"HOME=/home/u", "PATH=/x"}, []string{"/home/u/bin/mcode",
-		"exec", "--output-format", "stream-json", "--input", "-", metacharPrompt})
+		"exec", "--permission", "full", "--output-format", "stream-json", "--input", "-", metacharPrompt})
 	want := []string{
 		"-d", "Ubuntu", "--exec", "env", "-i",
 		"HOME=/home/u", "PATH=/x",
-		"/home/u/bin/mcode", "exec", "--output-format", "stream-json", "--input", "-", metacharPrompt,
+		"/home/u/bin/mcode", "exec", "--permission", "full", "--output-format", "stream-json", "--input", "-", metacharPrompt,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("wslArgs = %v\n期望 %v", got, want)

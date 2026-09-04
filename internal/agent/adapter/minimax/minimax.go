@@ -5,8 +5,13 @@
 // （实证：跨任务回忆）；--session 与 --cwd 可共存（实证）。
 // 提示词走 --input - stdin（实证读 stdin）——无 argv 长度上限，kimi -p 的
 // MaxPromptRunes 护栏类问题在本面不存在。
-// 权限面：无头默认 smart（ask 需 TUI/ACP、off 全放行不可取——实证 exec --help）；
-// 工作目录为 per-profile scratch（装配层隔离），smart 下文件操作爆炸半径受限。
+// 权限面：--permission full（负责人裁定 2026-09-03："permission 没有 auto 档的
+// 一律选 full 档"）。mcode 三档 smart/full/off 均无 auto：smart（默认）下网络
+// 工具需 Runtime host 交互弹权限，无头 exec 无宿主 → web_fetch 结构性报
+// HOST_CAPABILITY_UNAVAILABLE（v1.50 实证复现；full 下实抓 example.com 成功）。
+// full = 全工具自动放行，爆炸半径由 per-profile scratch 工作目录（装配层隔离）
+// 承担。kimi 有 auto 档但实证与 -p 互斥（"Cannot combine --prompt with --auto"）
+// 维持现状；codex 为 sandbox 概念，不在本裁定域。
 // 输出分流：机器输出 stdout / 诊断 stderr（实证 stderr 恒空——比 kimi 合流干净）。
 package minimax
 
@@ -119,7 +124,7 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 	sessID := s.sessID
 	s.mu.Unlock()
 
-	argv := []string{s.adapter.cfg.McodePath, "exec", "--output-format", "stream-json", "--input", "-"}
+	argv := []string{s.adapter.cfg.McodePath, "exec", "--permission", "full", "--output-format", "stream-json", "--input", "-"}
 	argv = append(argv, s.adapter.cfg.ExtraArgs...)
 	argv = append(argv, s.runtimeArgs(task)...)
 	if s.adapter.cfg.WorkDir != "" {
