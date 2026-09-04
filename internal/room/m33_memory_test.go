@@ -60,11 +60,112 @@ func TestTaskDerivationProtocol(t *testing.T) {
 	if got.Owner != "par_codex" || got.Text != "拉取数据" {
 		t.Fatalf("首项 owner/text = %s/%q，期望 par_codex/拉取数据", got.Owner, got.Text)
 	}
+	if got.Requester != "par_codex" {
+		t.Fatalf("自领任务 requester 应等于 owner（v1.50 提出方/负责人分离）：%+v", got)
+	}
 	if got.Status != "pending" || got.Overdue || got.WavesSince != 0 {
 		t.Fatalf("初始态应为 pending、未逾期、0 波：%+v", got)
 	}
-	if got.TaskID != TaskIDOf(got.SourceEventID, "拉取数据") {
-		t.Fatal("task_id 须为源事件+文本哈希派生（确定性）")
+	if got.TaskID != TaskIDOf(got.SourceEventID, got.Owner, "拉取数据") {
+		t.Fatal("task_id 须为源事件+负责人+文本哈希派生（确定性）")
+	}
+}
+
+// v1.50 提出方/负责人分离：@负责人 行缀指派（A 派 B）、替换按提出方定域、
+// 负责人交叉结案、agent 撤回后可重指派、未解析 @ 前缀保留在文本里。
+func TestTaskAssignmentProtocol(t *testing.T) {
+	const kimiID = "par_kimi_kimi_wsl_d1"
+	events := []StoredEvent{
+		taskEvent(t, 1, protocol.EventRoomCreated, "human", "par_owner", ""),
+		// kimi 先入流（参与者索引——@kimi 分段解析的前提）
+		taskEvent(t, 2, protocol.EventMessagePosted, "agent", kimiID, "在的。"),
+		// codex 指派 kimi + 自领
+		taskEvent(t, 3, protocol.EventMessagePosted, "agent", "par_codex",
+			todoBody("分工。", "- [ ] @kimi 查证数据", "- [ ] 自己核对口径")),
+		// kimi 自己的块只替换 kimi 提出的任务——codex 的指派不受影响
+		taskEvent(t, 4, protocol.EventMessagePosted, "agent", kimiID,
+			todoBody("收到。", "- [ ] 整理要点")),
+	}
+	tasks := TasksOf(events)
+	if len(tasks) != 3 {
+		t.Fatalf("任务数 = %d（%+v），期望 3（codex 指派 1 + codex 自领 1 + kimi 自领 1）", len(tasks), tasks)
+	}
+	find := func(owner, text string) TaskItem {
+		for _, tk := range tasks {
+			if tk.Owner == owner && tk.Text == text {
+				return tk
+			}
+		}
+		t.Fatalf("未找到 owner=%s text=%s：%+v", owner, text, tasks)
+		return TaskItem{}
+	}
+	assigned := find(kimiID, "查证数据")
+	if assigned.Requester != "par_codex" {
+		t.Fatalf("指派任务 requester = %s，期望 par_codex（提出方≠负责人）", assigned.Requester)
+	}
+	if self := find("par_codex", "自己核对口径"); self.Requester != "par_codex" {
+		t.Fatalf("自领任务 requester 应=owner：%+v", self)
+	}
+
+	// codex 再报不含指派 → 提出方撤回（dismissed）；再重指派同文本 → 重开新任务
+	events = append(events,
+		taskEvent(t, 5, protocol.EventMessagePosted, "agent", "par_codex",
+			todoBody("调整。", "- [ ] 自己核对口径")),
+		taskEvent(t, 6, protocol.EventMessagePosted, "agent", "par_codex",
+			todoBody("再派。", "- [ ] @kimi 查证数据", "- [ ] 自己核对口径")),
+	)
+	tasks = TasksOf(events)
+	byStatus := map[string]TaskItem{}
+	for _, tk := range tasks {
+		byStatus[tk.Text+"/"+tk.Status] = tk
+	}
+	if old, ok := byStatus["查证数据/dismissed"]; !ok || old.ResolvedBy != "par_codex" {
+		t.Fatalf("撤回应记 ResolvedBy=提出方：%+v", old)
+	}
+	again, ok := byStatus["查证数据/pending"]
+	if !ok || again.Owner != kimiID || again.Requester != "par_codex" {
+		t.Fatalf("重指派应开新 pending 任务（owner/requester 不变）：%+v", again)
+	}
+
+	// 负责人交叉结案：kimi 自领块里对同文本打 x（重开的新任务 delivered；
+	// seq3 原任务保持 dismissed——撤回是既成历史，不翻案）
+	events = append(events,
+		taskEvent(t, 7, protocol.EventMessagePosted, "agent", kimiID,
+			todoBody("交差。", "- [x] 查证数据", "- [ ] 整理要点")),
+	)
+	tasks = TasksOf(events)
+	delivered := 0
+	for _, tk := range tasks {
+		if tk.Text == "查证数据" {
+			switch tk.Status {
+			case "pending":
+				t.Fatalf("负责人交叉结案后不应有 pending：%+v", tk)
+			case "delivered":
+				delivered++
+				if tk.ResolvedBy != kimiID {
+					t.Fatalf("交叉结案 ResolvedBy 应为负责人：%+v", tk)
+				}
+			}
+		}
+	}
+	if delivered != 1 {
+		t.Fatalf("重开任务应恰一条 delivered（seq3 原任务保持 dismissed）：%+v", tasks)
+	}
+
+	// 未解析 @ 前缀：回退自领且前缀保留在文本里（信息不丢）
+	events = append(events,
+		taskEvent(t, 8, protocol.EventMessagePosted, "agent", "par_codex",
+			todoBody("顺手。", "- [ ] @nobody 找资料", "- [ ] 自己核对口径")),
+	)
+	tasks = TasksOf(events)
+	found := false
+	for _, tk := range tasks {
+		if tk.Owner == "par_codex" && tk.Text == "@nobody 找资料" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("未解析 @ 应回退自领且保留前缀：%+v", tasks)
 	}
 }
 
@@ -148,7 +249,7 @@ func TestTaskResolvedHumanGate(t *testing.T) {
 	decl := taskEvent(t, 2, protocol.EventMessagePosted, "agent", "par_codex",
 		todoBody("收到。", "- [ ] 拉取数据"))
 	events := []StoredEvent{decl}
-	taskID := TaskIDOf(decl.Envelope.EventID, "拉取数据")
+	taskID := TaskIDOf(decl.Envelope.EventID, "par_codex", "拉取数据")
 	resolved := StoredEvent{Envelope: protocol.Envelope{
 		EventID: "evt_tr1", TenantID: "ten_t", RoomID: "room_t", Seq: 3,
 		Type: protocol.EventTaskResolved, SchemaVersion: 1, OccurredAt: "2026-09-03T00:00:01Z",
@@ -213,7 +314,7 @@ func TestServiceResolveTask(t *testing.T) {
 	if _, err := store.AppendEvents(ctx, seed); err != nil {
 		t.Fatal(err)
 	}
-	taskID := TaskIDOf("evt_m1", "开拉数据，稍后给出结果")
+	taskID := TaskIDOf("evt_m1", "par_codex", "开拉数据，稍后给出结果")
 	v, _ := store.RoomVersion(ctx, "room_t")
 
 	mk := func(payload string) Command {

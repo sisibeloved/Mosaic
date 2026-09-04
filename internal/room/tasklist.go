@@ -1,16 +1,17 @@
-// tasklist（RFC-0012 OQ-A 修订 / v1.45 负责人裁定；v1.49 派生机制重做）：带责任人
-// 的承诺追踪——常见 Harness tasklist 在多 Agent 群聊形态上的必要增量是 owner 字段
-// （每项任务归属具体承诺者，否则"谁该交付"无从判定）。
+// tasklist（RFC-0012 OQ-A 修订 / v1.45 负责人裁定；v1.49 派生机制重做；v1.50
+// 提出方/负责人分离）：带责任人的任务追踪——常见 Harness tasklist 在多 Agent
+// 群聊形态上的必要增量是 owner 字段（每项任务归属具体负责人，否则"谁该交付"
+// 无从判定）；v1.50 再分离 requester（提出方）——群聊里 A 指派 B 是常态
+// （负责人指令：任务的提出方和负责人得分开显示）。
 // 派生机制 v1.46 用自然语言宣言模式匹配（"我来/我会"），狗粮误报严重（假设句/
 // 引用/疑问皆可命中）——负责人裁定：不能通过关键字匹配来做。改为显式申报协议：
-// agent 在回复 body 末尾附 mosaic-todo 围栏块逐行维护自己名下的全量在办事项
-// （GFM 任务列表语法 - [ ] / - [x]），围栏标记即协议边界——误报率结构性归零，
-// 解析仍是确定性纯投影（零 LLM、零模型成本、完全可测）。
-// 全量替换语义（同常见 Harness 的 todo write）：再次申报的块即该 owner 当前
-// 完整在办清单——打 x = delivered、消失 = dismissed、新行 = 新任务。人工裁定
-// （task.resolved）保留且先行终态有效（自动申报不伪装人工闭环，反之亦然）。
-// 清单入评估语境供主动开口消费：狗粮实证（v1.44）"我曾承诺未交付"是静默期
-// agent 自起话的触发源，此前无承载物导致"开拉数据"空转。
+// agent 在回复 body 末尾附 mosaic-todo 围栏块逐行维护任务（GFM 任务列表语法
+// - [ ] / - [x]，可带 @负责人 行缀指派），围栏标记即协议边界——误报率结构性
+// 归零，解析仍是确定性纯投影（零 LLM、零模型成本、完全可测）。
+// 全量替换语义（同常见 Harness 的 todo write），定域=提出方：再次申报的块即
+// 该提出方当前提出的完整任务集——打 x = delivered、消失 = dismissed、新行 =
+// 新任务；负责人在自己块里对同文本任务打 x 可交叉结案。人工裁定
+// （task.resolved）保留且先行终态有效。清单入评估语境供主动开口消费。
 package room
 
 import (
@@ -35,8 +36,11 @@ const maxTodoItems = 12
 
 // TaskItem 任务清单项（快照投影；语境注入走 TaskBriefsOf 最小投影）。
 type TaskItem struct {
-	TaskID        string `json:"task_id"`
-	Owner         string `json:"owner"`
+	TaskID string `json:"task_id"`
+	Owner  string `json:"owner"`
+	// Requester 提出方（v1.50：与负责人分离——A 指派 B 时 requester=A、owner=B；
+	// 自领任务 requester=owner）。
+	Requester     string `json:"requester"`
 	Text          string `json:"text"`
 	SourceEventID string `json:"source_event_id"`
 	DeclaredAt    string `json:"declared_at"`
@@ -55,22 +59,75 @@ type TaskItem struct {
 type TaskBrief struct {
 	TaskID     string `json:"task_id"`
 	Owner      string `json:"owner"`
+	Requester  string `json:"requester"`
 	Text       string `json:"text"`
 	WavesSince int    `json:"waves_since"`
 	Overdue    bool   `json:"overdue"`
 }
 
-// TaskIDOf 派生任务 ID（确定性：源事件 + 归一化事项文本哈希——同消息多事项、
-// 跨消息重申报同文本均可稳定引用）。
-func TaskIDOf(eventID, text string) string {
-	sum := sha256.Sum256([]byte(eventID + "\x1f" + text))
+// TaskIDOf 派生任务 ID（确定性：源事件 + 负责人 + 归一化文本哈希——同消息
+// 多事项、跨消息重申报、指派不同负责人均可稳定引用）。
+func TaskIDOf(eventID, owner, text string) string {
+	sum := sha256.Sum256([]byte(eventID + "\x1f" + owner + "\x1f" + text))
 	return "tsk_" + hex.EncodeToString(sum[:])[:12]
 }
 
-// todoDecl 一条申报行。
+// todoDecl 一条申报行（mention 解析前的原始形态；owner 由事件流参与者索引解析）。
 type todoDecl struct {
-	text string
-	done bool
+	text    string // 归一化文本（@ 前缀已剥离）
+	rawText string // 归一化文本（含 @ 前缀——解析回退自领时保留，信息不丢）
+	done    bool
+	mention string // @负责人（空 = 自领）
+}
+
+// participantIndex 事件流内已见参与者（id → kind），@指派解析与"人工/agent
+// 终态可否重开"判定共用。构成：消息/意向/发授的 actor + participant.admitted
+// 载荷 + room.created agents 名单（admitted/名单视为 agent）。
+type participantIndex map[string]string
+
+func (idx participantIndex) add(pid, kind string) {
+	if pid == "" {
+		return
+	}
+	if _, ok := idx[pid]; !ok {
+		idx[pid] = kind
+	}
+}
+
+// resolveMention @指派解析（确定性）：空 → 申报人自领；精确 participant_id；
+// 否则 id 的下划线分段与 mention 不区分大小写全等且唯一命中（"@kimi" 命中
+// par_kimi_…——agent 在语境里互见的正是这类 id）。负责人必须是 agent 座位
+// （人类待办不派生）——解析到人类参与者一律回退自领。歧义/未命中 → 申报人
+// 自领（mention 保留在任务文本里，信息不丢失）。
+func resolveMention(mention string, idx participantIndex, declarer string) string {
+	agentOnly := func(pid string) string {
+		if kind, ok := idx[pid]; !ok || kind != "human" {
+			return pid
+		}
+		return declarer
+	}
+	if mention == "" {
+		return declarer
+	}
+	if _, ok := idx[mention]; ok {
+		return agentOnly(mention)
+	}
+	lower := strings.ToLower(mention)
+	hit := ""
+	for pid := range idx {
+		for _, seg := range strings.Split(pid, "_") {
+			if seg != "" && strings.ToLower(seg) == lower {
+				if hit != "" && hit != pid {
+					return declarer // 歧义：同适配器多实例等
+				}
+				hit = pid
+			}
+		}
+	}
+	if hit != "" {
+		return agentOnly(hit)
+	}
+	return declarer
 }
 
 // TasksOf 自事件流重建任务清单（纯函数，回放一致）：agent 消息的 mosaic-todo
@@ -79,9 +136,29 @@ type todoDecl struct {
 func TasksOf(events []StoredEvent) []TaskItem {
 	out := []TaskItem{}
 	index := map[string]int{} // task_id → out 下标
+	pidx := participantIndex{}
 	for _, ev := range events {
 		env := ev.Envelope
+		if env.Actor.ParticipantID != "" {
+			pidx.add(env.Actor.ParticipantID, env.Actor.Kind)
+		}
 		switch env.Type {
+		case protocol.EventRoomCreated:
+			var p struct {
+				Agents []string `json:"agents"`
+			}
+			if json.Unmarshal(env.Payload, &p) == nil {
+				for _, pid := range p.Agents {
+					pidx.add(pid, "agent")
+				}
+			}
+		case protocol.EventParticipantAdmitted:
+			var p struct {
+				ParticipantID string `json:"participant_id"`
+			}
+			if json.Unmarshal(env.Payload, &p) == nil {
+				pidx.add(p.ParticipantID, "agent")
+			}
 		case protocol.EventMessagePosted:
 			if env.Actor.Kind != "agent" {
 				continue // 人类待办不是 agent 群聊语境的债（owner 须是 agent 座位）
@@ -93,7 +170,12 @@ func TasksOf(events []StoredEvent) []TaskItem {
 				continue
 			}
 			if decls, ok := todoDeclarations(p.Body); ok {
-				out = applyTodoDeclaration(out, index, env, decls)
+				resolved := make([]todoDecl, len(decls))
+				for i, d := range decls {
+					d.mention = resolveMention(d.mention, pidx, env.Actor.ParticipantID)
+					resolved[i] = d
+				}
+				out = applyTodoDeclaration(out, index, pidx, env, resolved)
 			}
 		case protocol.EventRoundOpened:
 			for i := range out {
@@ -119,59 +201,105 @@ func TasksOf(events []StoredEvent) []TaskItem {
 	return out
 }
 
-// applyTodoDeclaration 全量替换语义：块即该 owner 当前完整在办清单。
-//   - 原 pending 且块内打 x → delivered（agent 申报完成）
-//   - 原 pending 且块内消失 → dismissed（未再申报，自动收束）
-//   - 原 pending 且块内保留 [ ] → 维持（TaskID/波龄/申报时间不变——债龄自首次申报起算）
-//   - 块内新 [ ] 行（无同 owner 同文本任务）→ 新 pending
+// applyTodoDeclaration 全量替换语义，定域=提出方（块即该提出方当前提出的完整
+// 任务集；自领任务 requester=owner，同属此集）：
+//   - requester==申报人的 pending 任务：块内 (负责人,文本) 打 x → delivered；
+//     块内消失 → dismissed（撤回指派/收束，未再申报）
+//   - 负责人交叉结案：申报人自领行 [x] 可结案 owner==申报人、requester!=申报人
+//     的同文本 pending（A 派给 B，B 在自己块里打 x 交差）
+//   - 新 [ ] 行（无同 (owner,文本) 存量）→ 新 pending
 //
-// 已终态（人工裁定过）的任务不受影响；delivered 后再次申报同文本视为新债（新 TaskID）。
-func applyTodoDeclaration(tasks []TaskItem, index map[string]int, env protocol.Envelope, decls []todoDecl) []TaskItem {
-	owner := env.Actor.ParticipantID
-	declared := map[string]bool{} // 归一化文本 → 是否 [x]
-	for _, d := range decls {
-		declared[d.text] = d.done
+// 已终态（人工裁定过）的任务不受影响；agent 申报/撤回结案的可重开（新任务新
+// ID），人工终态不复活（人工门控是权威）。保留项 TaskID/债龄不重置。
+// @前缀解析回退自领时（未命中/歧义/指向人类），@token 保留在任务文本里。
+func applyTodoDeclaration(tasks []TaskItem, index map[string]int, pidx participantIndex, env protocol.Envelope, decls []todoDecl) []TaskItem {
+	requester := env.Actor.ParticipantID
+	// 有效文本：@前缀解析回退自领时（未命中/歧义/指向人类/自指）保留前缀，
+	// 替换/结案/新建/TaskID 全链路统一用同一键，避免回退形态键漂移。
+	type effDecl struct {
+		owner string
+		text  string
+		done  bool
 	}
+	effs := make([]effDecl, len(decls))
+	for i, d := range decls {
+		text := d.text
+		if d.mention == requester && d.rawText != "" {
+			text = d.rawText
+		}
+		effs[i] = effDecl{owner: d.mention, text: text, done: d.done}
+	}
+	declByKey := map[string]bool{} // owner \x1f 有效文本 → done
+	for _, e := range effs {
+		declByKey[e.owner+"\x1f"+e.text] = e.done
+	}
+
+	// 1) 替换定域：requester==申报人
 	for i := range tasks {
 		t := &tasks[i]
-		if t.Owner != owner || t.Status != "pending" {
+		if t.Requester != requester || t.Status != "pending" {
 			continue
 		}
-		done, present := declared[t.Text]
+		done, present := declByKey[t.Owner+"\x1f"+t.Text]
 		switch {
 		case present && done:
 			t.Status, t.Resolution = "delivered", "delivered"
-			t.ResolvedBy, t.ResolvedAt = owner, env.OccurredAt
-			t.Note = "agent 申报完成（mosaic-todo [x]）"
+			t.ResolvedBy, t.ResolvedAt = requester, env.OccurredAt
+			t.Note = "申报完成（mosaic-todo [x]）"
 		case !present:
 			t.Status, t.Resolution = "dismissed", "dismissed"
-			t.ResolvedBy, t.ResolvedAt = owner, env.OccurredAt
+			t.ResolvedBy, t.ResolvedAt = requester, env.OccurredAt
 			t.Note = "全量替换后未再申报，自动收束"
 		}
 	}
-	for _, d := range decls {
-		if d.done {
-			continue // 完成行只用于结案，不新建（完成不存在的事是空账）
+
+	// 2) 负责人交叉结案：自领 [x] 行结案 owner==申报人、他方提出的同文本 pending
+	for _, e := range effs {
+		if !e.done || e.owner != requester {
+			continue
+		}
+		for i := range tasks {
+			t := &tasks[i]
+			if t.Status == "pending" && t.Owner == requester && t.Requester != requester && t.Text == e.text {
+				t.Status, t.Resolution = "delivered", "delivered"
+				t.ResolvedBy, t.ResolvedAt = requester, env.OccurredAt
+				t.Note = "负责人申报完成（交叉结案）"
+			}
+		}
+	}
+
+	// 3) 新建（[ ] 行，完成行只结案不新建——完成不存在的事是空账）
+	for _, e := range effs {
+		if e.done {
+			continue
 		}
 		dup := false
 		for i := range tasks {
-			if tasks[i].Owner != owner || tasks[i].Text != d.text {
+			t := &tasks[i]
+			if t.Owner != e.owner || t.Text != e.text {
 				continue
 			}
-			// pending 保留原任务（TaskID/债龄不变）；agent 自报结案的可重开
-			// （新任务新 ID）；人工裁定的终态不复活（人工门控是权威）。
-			if tasks[i].Status == "pending" || tasks[i].ResolvedBy != owner {
+			// pending 保留原任务（TaskID/债龄不变）；agent 结案的终态可重开
+			//（提出方撤回后重指派、负责人交差后重领均走新任务）；人工裁定
+			// 的终态不复活（人工门控是权威——ResolvedBy 为人类参与者）。
+			if t.Status == "pending" {
 				dup = true
+				break
 			}
+			if kind, ok := pidx[t.ResolvedBy]; ok && kind == "agent" {
+				continue // agent 结案：可重开
+			}
+			dup = true // 人工终态或未知结案者：不复活
 			break
 		}
 		if dup {
 			continue
 		}
 		nt := TaskItem{
-			TaskID:        TaskIDOf(env.EventID, d.text),
-			Owner:         owner,
-			Text:          d.text,
+			TaskID:        TaskIDOf(env.EventID, e.owner, e.text),
+			Owner:         e.owner,
+			Requester:     requester,
+			Text:          e.text,
 			SourceEventID: env.EventID,
 			DeclaredAt:    env.OccurredAt,
 			DeclaredSeq:   env.Seq,
@@ -210,6 +338,8 @@ func todoDeclarations(body string) ([]todoDecl, bool) {
 }
 
 // parseTodoLine GFM 任务列表行：- [ ] 文本 / - [x] 文本（子弹符 - * + 均收）。
+// 文本前缀 @token = 负责人指派（token 不含空白）；text 剥离前缀、rawText 保留
+// （@ 解析回退自领时以 rawText 入库，信息不丢）。
 func parseTodoLine(s string) (todoDecl, bool) {
 	var d todoDecl
 	rest := strings.TrimLeft(s, "-*+")
@@ -222,9 +352,23 @@ func parseTodoLine(s string) (todoDecl, bool) {
 			return d, false
 		}
 		d.done = true
-		rest = rest[3:]
+		rest = strings.TrimSpace(rest[3:])
 	} else {
-		rest = rest[3:]
+		rest = strings.TrimSpace(rest[3:])
+	}
+	// @负责人 指派前缀（@kimi / @par_kimi_… / @Mavis）
+	if strings.HasPrefix(rest, "@") {
+		token := rest[1:]
+		var body string
+		if sp := strings.IndexAny(token, " \t"); sp >= 0 {
+			d.mention = strings.Trim(token[:sp], ":：,，")
+			body = token[sp:]
+		} else {
+			d.mention = strings.Trim(token, ":：,，")
+			body = ""
+		}
+		d.rawText = normalizeTaskText(rest)
+		rest = body
 	}
 	d.text = normalizeTaskText(rest)
 	return d, d.text != ""
@@ -248,7 +392,7 @@ func PendingTaskBriefsOf(envs []protocol.Envelope) []TaskBrief {
 			continue
 		}
 		briefs = append(briefs, TaskBrief{
-			TaskID: t.TaskID, Owner: t.Owner, Text: t.Text,
+			TaskID: t.TaskID, Owner: t.Owner, Requester: t.Requester, Text: t.Text,
 			WavesSince: t.WavesSince, Overdue: t.Overdue,
 		})
 	}

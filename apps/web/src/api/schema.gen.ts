@@ -602,12 +602,14 @@ export interface components {
              */
             default_source?: "config" | "builtin" | "";
         };
-        /** @description 任务清单项（M3-3 tasklist）：显式申报协议派生（mosaic-todo 围栏块）+ 人工门控裁定（task.resolved）。 */
+        /** @description 任务清单项（M3-3 tasklist）：显式申报协议派生（mosaic-todo 围栏块，可带 @负责人 指派）+ 人工门控裁定（task.resolved）。 */
         TaskItem: {
-            /** @description tsk_ 前缀（源事件哈希派生，确定性） */
+            /** @description tsk_ 前缀（源事件+负责人+文本哈希派生，确定性） */
             task_id: string;
-            /** @description 责任人（承诺者 participant_id——多 Agent 群聊对常见 tasklist 的必要增量） */
+            /** @description 负责人（被指派/自领的 agent participant_id） */
             owner: string;
+            /** @description 提出方（申报人；A 指派 B 时 requester=A、owner=B，自领两者相同） */
+            requester: string;
             /** @description 申报事项文本（mosaic-todo 行，归一化后截断 120 字） */
             text: string;
             /** @description 首次申报消息（provenance 跳转位） */

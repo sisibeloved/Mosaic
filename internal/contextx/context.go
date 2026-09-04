@@ -57,10 +57,12 @@ type Config struct {
 }
 
 // TaskBrief 任务语境项（注入用最小投影；owner 是多 Agent 群聊对常见 tasklist
-// 的必要增量——每项任务归属具体承诺者）。
+// 的必要增量——每项任务归属具体负责人；v1.50 requester 提出方与 owner 分离，
+// A 指派 B 时 requester=A、owner=B，自领任务两者相同）。
 type TaskBrief struct {
 	TaskID     string `json:"task_id"`
 	Owner      string `json:"owner"`
+	Requester  string `json:"requester"`
 	Text       string `json:"text"`
 	WavesSince int    `json:"waves_since"`
 	Overdue    bool   `json:"overdue"`
@@ -101,9 +103,10 @@ type Assembled struct {
 }
 
 // TasklistProtocol 任务申报协议（v1.49：替代 v1.46 自然语言宣言模式匹配——狗粮
-// 误报严重，负责人裁定不能靠关键字匹配）。协议指令随语境常驻（agent 须先知道
-// 约定才可能在首次承诺时申报），任务面本体在 tasklist 键。
-const TasklistProtocol = "任务申报协议：若你在本房间有待办承诺，在回复 body 末尾用 ```mosaic-todo 围栏块维护你名下的全量在办清单，每行 '- [ ] 事项' 或 '- [x] 已完成'；再次申报即全量替换（打 x = 完成，移除 = 收束）。仅在事项有变化时附带。"
+// 误报严重，负责人裁定不能靠关键字匹配；v1.50 增 @负责人 指派：提出方与负责人
+// 分离）。协议指令随语境常驻（agent 须先知道约定才可能在首次承诺时申报），
+// 任务面本体在 tasklist 键。
+const TasklistProtocol = "任务申报协议：在回复 body 末尾用 ```mosaic-todo 围栏块维护任务清单，每行 '- [ ] 事项' 或 '- [x] 已完成'。自领任务直接写文本；指派他人写 '- [ ] @对方 事项'（@ 后接对方 participant_id 或适配器名，如 @kimi、@codex）——申报人=提出方，@者=负责人。再次申报即全量替换你提出的任务（打 x = 完成，移除 = 收束）；负责人也可在自己的块里对同文本任务打 x 交差。仅在事项有变化时附带。"
 
 // Assemble 从房间历史组装七层上下文。
 // Seat 参与者座位（引擎侧 AgentSeat 的最小投影，避免反向依赖）。

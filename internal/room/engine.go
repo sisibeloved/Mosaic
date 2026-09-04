@@ -692,13 +692,13 @@ func capsuleMemoriesProjection(capsules []protocol.ClosureCapsule) []contextx.Ca
 	return out
 }
 
-// taskBriefProjection pending 承诺 → 语境注入投影（声明序）。
+// taskBriefProjection pending 任务 → 语境注入投影（申报序；v1.50 带 requester）。
 func taskBriefProjection(envs []protocol.Envelope) []contextx.TaskBrief {
 	briefs := PendingTaskBriefsOf(envs)
 	out := make([]contextx.TaskBrief, len(briefs))
 	for i, b := range briefs {
 		out[i] = contextx.TaskBrief{
-			TaskID: b.TaskID, Owner: b.Owner, Text: b.Text,
+			TaskID: b.TaskID, Owner: b.Owner, Requester: b.Requester, Text: b.Text,
 			WavesSince: b.WavesSince, Overdue: b.Overdue,
 		}
 	}

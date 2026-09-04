@@ -701,7 +701,7 @@ type Snapshot struct {
 // SnapshotThreadsState defines model for Snapshot.Threads.State.
 type SnapshotThreadsState string
 
-// TaskItem 任务清单项（M3-3 tasklist）：显式申报协议派生（mosaic-todo 围栏块）+ 人工门控裁定（task.resolved）。
+// TaskItem 任务清单项（M3-3 tasklist）：显式申报协议派生（mosaic-todo 围栏块，可带 @负责人 指派）+ 人工门控裁定（task.resolved）。
 type TaskItem struct {
 	DeclaredAt  time.Time `json:"declared_at"`
 	DeclaredSeq int64     `json:"declared_seq"`
@@ -710,8 +710,11 @@ type TaskItem struct {
 	// Overdue pending 且 waves_since ≥ 2
 	Overdue bool `json:"overdue"`
 
-	// Owner 责任人（承诺者 participant_id——多 Agent 群聊对常见 tasklist 的必要增量）
-	Owner      string     `json:"owner"`
+	// Owner 负责人（被指派/自领的 agent participant_id）
+	Owner string `json:"owner"`
+
+	// Requester 提出方（申报人；A 指派 B 时 requester=A、owner=B，自领两者相同）
+	Requester  string     `json:"requester"`
 	Resolution *string    `json:"resolution,omitempty"`
 	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 	ResolvedBy *string    `json:"resolved_by,omitempty"`
@@ -720,7 +723,7 @@ type TaskItem struct {
 	SourceEventId string         `json:"source_event_id"`
 	Status        TaskItemStatus `json:"status"`
 
-	// TaskId tsk_ 前缀（源事件哈希派生，确定性）
+	// TaskId tsk_ 前缀（源事件+负责人+文本哈希派生，确定性）
 	TaskId string `json:"task_id"`
 
 	// Text 申报事项文本（mosaic-todo 行，归一化后截断 120 字）
