@@ -9,6 +9,11 @@
 // CreateProcess ≈32k 上限与曾经的 6000 rune 护栏均出局；残余物理边界是 Linux
 // MAX_ARG_STRLEN（128KiB/参数），MaxPromptBytes 兜底 fail fast；
 // 流式草稿的解法是 ACP 通道（kimi acp 已在官方命令面），登记为演进项。
+// 权限面（v1.52 裁定核实："要么有 YOLO 模式，要么权限设置成 Full 级别"）：
+// kimi 有 YOLO（-y/--yolo）与 --auto，但实证均与 -p 互斥（"Cannot combine
+// --prompt with --yolo/--auto."）——无头 -p 形态自带审批语义（工具直接执行，
+// 狗粮已证 web 抓取可用），无权限旗标可叠加，维持现状（-p 是唯一无头通道，
+// 见上——无替代形态可换轨）。
 package kimi
 
 import (

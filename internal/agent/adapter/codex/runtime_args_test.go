@@ -42,6 +42,21 @@ func TestRuntimeModelArgsCodex(t *testing.T) {
 	}
 }
 
+// v1.52 权限档裁定（负责人："要么有 YOLO 模式，要么权限设置成 Full 级别，名称
+// 不一样都得适配上"）：codex 的 Full = -s danger-full-access（首轮带；resume
+// 不接受 -s——沙箱随会话首轮固定，首轮 Full 即全会话 Full）。read-only 曾连
+// 网络一并封死。
+func TestRuntimeSandboxFullCodex(t *testing.T) {
+	exec := runSilentTask(t, Config{}, agent.KindEvaluateIntent)
+	argv := exec.calls[0].argv
+	if !contains(argv, "-s") || !contains(argv, "danger-full-access") {
+		t.Fatalf("首轮应带 -s danger-full-access: %v", argv)
+	}
+	if contains(argv, "read-only") {
+		t.Fatalf("read-only 沙箱已废弃: %v", argv)
+	}
+}
+
 func TestRuntimeEvalModelWinsCodex(t *testing.T) {
 	cfg := Config{Model: "gpt-5.6-sol", EvalModel: "mini-x", ReasoningEffort: "low"}
 	// 评估任务：EvalModel 优先；生成任务：主模型

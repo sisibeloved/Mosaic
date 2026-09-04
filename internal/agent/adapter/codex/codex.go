@@ -115,7 +115,12 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 	thread := s.thread
 	s.mu.Unlock()
 
-	argv := []string{s.adapter.cfg.CodexPath, "exec", "--json", "--skip-git-repo-check", "-s", "read-only"}
+	// 权限面（负责人裁定 2026-09-04："要么有 YOLO 模式，要么权限设置成 Full 级别，
+	// 名称不一样都得适配上"）：codex 的 Full = -s danger-full-access（exec 非交互下
+	// 审批本就 never，sandbox 是唯一闸；v1.52 前为 read-only 会连网络一并封死）。
+	// 实证 0.151 可跑通；resume 子命令不接受 -s（见下注），沙箱随会话首轮固定——
+	// 首轮 Full 即全会话 Full。爆炸半径由 per-profile 工作目录（-C）与机主信任域承担。
+	argv := []string{s.adapter.cfg.CodexPath, "exec", "--json", "--skip-git-repo-check", "-s", "danger-full-access"}
 	argv = append(argv, s.adapter.cfg.ExtraArgs...)
 	argv = append(argv, s.runtimeArgs(task)...)
 	if s.adapter.cfg.WorkDir != "" {
