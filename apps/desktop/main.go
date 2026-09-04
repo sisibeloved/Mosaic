@@ -50,10 +50,11 @@ func openLogFile(dataDir string) (*os.File, error) { return app.OpenLogFile(data
 
 func main() {
 	// M2 主线开发默认在开发者模式上进行（计划 v1.8 裁定；设置页有 UI 开关）；
-	// 桌面日志走 stderr + 数据目录落盘（openLogFile）。
+	// 桌面日志走 stderr + 数据目录落盘（openLogFile）。v1.49：TextHandler 人类
+	// 可读时间（长静默排障）。
 	logLevel := new(slog.LevelVar)
 	logLevel.Set(slog.LevelDebug)
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
+	logger := app.NewLogger(os.Stderr, logLevel)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -70,7 +71,7 @@ func main() {
 		defer logFile.Close()
 		// TeeWriter 而非 io.MultiWriter（v1.34 实证）：GUI 子系统进程 stderr 无有效
 		// 句柄，MultiWriter 首路失败即中止——日志文件路永远收不到写入（mosaic.log 恒空）。
-		logger = slog.New(slog.NewJSONHandler(app.TeeWriter(os.Stderr, logFile), &slog.HandlerOptions{Level: logLevel}))
+		logger = app.NewLogger(app.TeeWriter(os.Stderr, logFile), logLevel)
 	}
 	srv, err := app.Start(ctx, app.Options{
 		DataDir: dataDir,

@@ -47,7 +47,29 @@ type logLine struct {
 	Addr string `json:"addr"`
 }
 
-// waitListening 从 stdout 的 JSON 日志中解析实际监听地址（main 先 Listen 再 Serve，
+// parseListeningLine 从一行日志解析监听地址（v1.49 日志换 TextHandler 人类可读
+// 格式——兼容 key="value" 行与旧 JSON 行两种形态）。
+func parseListeningLine(line []byte) string {
+	var l logLine
+	if json.Unmarshal(line, &l) == nil && l.Msg == "mosaic-server listening" && l.Addr != "" {
+		return l.Addr
+	}
+	s := string(line)
+	if !strings.Contains(s, `msg="mosaic-server listening"`) {
+		return ""
+	}
+	i := strings.Index(s, "addr=")
+	if i < 0 {
+		return ""
+	}
+	addr := strings.TrimSpace(s[i+len("addr="):])
+	if j := strings.IndexAny(addr, " \t"); j >= 0 {
+		addr = addr[:j]
+	}
+	return strings.Trim(addr, `"`)
+}
+
+// waitListening 从 stdout 日志中解析实际监听地址（main 先 Listen 再 Serve，
 // 日志携带 ln.Addr() 的真实值，支持 -addr 127.0.0.1:0 随机端口）。
 func waitListening(t *testing.T, stdout io.Reader) string {
 	t.Helper()
@@ -56,10 +78,8 @@ func waitListening(t *testing.T, stdout io.Reader) string {
 		defer close(ch)
 		sc := bufio.NewScanner(stdout)
 		for sc.Scan() {
-			var l logLine
-			if json.Unmarshal(sc.Bytes(), &l) == nil &&
-				l.Msg == "mosaic-server listening" && l.Addr != "" {
-				ch <- l.Addr
+			if addr := parseListeningLine(sc.Bytes()); addr != "" {
+				ch <- addr
 				return
 			}
 		}

@@ -6,6 +6,7 @@
 // 明确提示而非无限"读取中"。
 import { useEffect, useState } from "react";
 import { api, ApiError, lastTrace } from "../api/client";
+import { absoluteTime } from "../lib/ui";
 
 interface DebugBudget {
   rounds?: number;
@@ -51,6 +52,7 @@ interface Wave {
   stimulus_event_id: string;
   proactive?: boolean;
   opened_seq: number;
+  opened_at?: string;
   closed_seq?: number;
   outcome?: string;
   published: number;
@@ -267,6 +269,8 @@ export function DevPanel({
               <div key={w.round_id} className="rounded-lg bg-surface p-2.5 text-[11px] leading-5">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-dim">
+                    {w.opened_at ? <span className="tabular-nums">{absoluteTime(w.opened_at)}</span> : "—"}
+                    {" · "}
                     波 {w.round_id.slice(-8)} · seq {w.opened_seq}
                     {w.closed_seq ? `→${w.closed_seq}` : "→…"}
                     {w.proactive ? " · 主动" : ""}

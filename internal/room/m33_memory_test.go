@@ -32,50 +32,112 @@ func taskEvent(t *testing.T, seq int64, typ, actorKind, actor, body string) Stor
 	return StoredEvent{Envelope: e, Cursor: "c" + string(rune('0'+seq%10))}
 }
 
-func TestTaskDerivationDeterministic(t *testing.T) {
+// todoBody 构造带 mosaic-todo 申报块的 agent 消息体。
+func todoBody(prose string, lines ...string) string {
+	return prose + "\n```mosaic-todo\n" + strings.Join(lines, "\n") + "\n```"
+}
+
+func TestTaskDerivationProtocol(t *testing.T) {
 	events := []StoredEvent{
 		taskEvent(t, 1, protocol.EventRoomCreated, "human", "par_owner", ""),
-		// agent 宣言（狗粮实录原句形态）→ 派生
-		taskEvent(t, 2, protocol.EventMessagePosted, "agent", "par_codex", "好，我来拉数据，稍后给出结果。"),
-		// human 的"我来"不派生（人类待办不是 agent 群聊语境的债）
-		taskEvent(t, 3, protocol.EventMessagePosted, "human", "par_owner", "我来补充一下背景。"),
-		// 疑问句不派生
-		taskEvent(t, 4, protocol.EventMessagePosted, "agent", "par_kimi", "我来处理这个可以吗？"),
-		// 无宣言模式不派生
-		taskEvent(t, 5, protocol.EventMessagePosted, "agent", "par_kimi", "这个方案有风险。"),
+		// agent 显式申报（协议块）→ 派生两项
+		taskEvent(t, 2, protocol.EventMessagePosted, "agent", "par_codex",
+			todoBody("好，我来安排。", "- [ ] 拉取数据", "- [x] 建好索引")),
+		// v1.49 误报回归：自然语言承诺（无协议块）永不派生——
+		// v1.46 关键字匹配的"我来/我会"在此类句子上误报严重（负责人裁定）
+		taskEvent(t, 3, protocol.EventMessagePosted, "agent", "par_kimi", "好，我来拉数据，稍后给出结果。"),
+		taskEvent(t, 4, protocol.EventMessagePosted, "agent", "par_kimi", "如果是我我会用方案B。"),
+		// human 的申报块不派生（人类待办不是 agent 群聊语境的债）
+		taskEvent(t, 5, protocol.EventMessagePosted, "human", "par_owner", todoBody("我记一下。", "- [ ] 补充背景")),
+		// 零有效行的块不构成申报（防误触全量清空）
+		taskEvent(t, 6, protocol.EventMessagePosted, "agent", "par_kimi", "```mosaic-todo\n这里是说明文字\n```"),
 	}
 	tasks := TasksOf(events)
 	if len(tasks) != 1 {
-		t.Fatalf("派生数 = %d（%+v），期望 1（仅 agent 宣言句）", len(tasks), tasks)
+		t.Fatalf("派生数 = %d（%+v），期望 1（[ ] 行新建；[x] 无存量只结案不新建）", len(tasks), tasks)
 	}
 	got := tasks[0]
-	if got.Owner != "par_codex" {
-		t.Fatalf("owner = %s，期望 par_codex（责任人）", got.Owner)
+	if got.Owner != "par_codex" || got.Text != "拉取数据" {
+		t.Fatalf("首项 owner/text = %s/%q，期望 par_codex/拉取数据", got.Owner, got.Text)
 	}
-	if !strings.Contains(got.Text, "我来拉数据") {
-		t.Fatalf("text = %q，期望宣言句", got.Text)
+	if got.Status != "pending" || got.Overdue || got.WavesSince != 0 {
+		t.Fatalf("初始态应为 pending、未逾期、0 波：%+v", got)
 	}
-	if got.Status != "pending" || got.Overdue {
-		t.Fatalf("初始态应为 pending 且未逾期：%+v", got)
+	if got.TaskID != TaskIDOf(got.SourceEventID, "拉取数据") {
+		t.Fatal("task_id 须为源事件+文本哈希派生（确定性）")
 	}
-	if got.WavesSince != 0 {
-		t.Fatalf("无波时 waves_since 应为 0：%+v", got)
+}
+
+func TestTaskProtocolFullReplace(t *testing.T) {
+	events := []StoredEvent{
+		// 申报 A、B 两项
+		taskEvent(t, 2, protocol.EventMessagePosted, "agent", "par_codex",
+			todoBody("收到。", "- [ ] 拉取数据", "- [ ] 核对口径")),
+		// 再申报：A 打 x、B 保留、C 新增
+		taskEvent(t, 3, protocol.EventMessagePosted, "agent", "par_codex",
+			todoBody("进展。", "- [x] 拉取数据", "- [ ] 核对口径", "- [ ] 出简报")),
+		// 三报：只剩 C——B 消失自动收束
+		taskEvent(t, 4, protocol.EventMessagePosted, "agent", "par_codex",
+			todoBody("继续。", "- [ ] 出简报")),
 	}
-	if got.TaskID != TaskIDOf(got.SourceEventID) {
-		t.Fatal("task_id 须为源事件哈希派生（确定性）")
+	tasks := TasksOf(events)
+	if len(tasks) != 3 {
+		t.Fatalf("任务数 = %d（%+v），期望 3（A/B/C 各一项，替换不产生新行）", len(tasks), tasks)
+	}
+	byText := map[string]TaskItem{}
+	for _, tk := range tasks {
+		byText[tk.Text] = tk
+	}
+	if a := byText["拉取数据"]; a.Status != "delivered" || a.ResolvedBy != "par_codex" || !strings.Contains(a.Note, "申报完成") {
+		t.Fatalf("[x] 应自动 delivered（agent 申报完成）：%+v", a)
+	}
+	if b := byText["核对口径"]; b.Status != "dismissed" || !strings.Contains(b.Note, "未再申报") {
+		t.Fatalf("替换后消失项应自动 dismissed：%+v", b)
+	}
+	if c := byText["出简报"]; c.Status != "pending" {
+		t.Fatalf("新行应 pending：%+v", c)
+	}
+	// B 保持原 TaskID/申报时间（替换保留原债——债龄自首次申报起算）
+	if b := byText["核对口径"]; b.DeclaredSeq != 2 {
+		t.Fatalf("保留项不应重置申报序（债龄）：%+v", b)
+	}
+	// 人工终态不被后续申报推翻：owner 裁定 dismissed 后，agent 再申报同文本不复活
+	// （人工门控是权威；agent 自报结案的才可经重申报开新债）
+	resolved := StoredEvent{Envelope: protocol.Envelope{
+		EventID: "evt_tr9", TenantID: "ten_t", RoomID: "room_t", Seq: 5,
+		Type: protocol.EventTaskResolved, SchemaVersion: 1, OccurredAt: "2026-09-03T00:00:01Z",
+		Actor:      protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Visibility: protocol.Visibility{Kind: "public"},
+		Payload: mustJSON(protocol.TaskResolvedPayload{
+			TaskID: byText["出简报"].TaskID, Owner: "par_codex", Resolution: "dismissed",
+			Note: "误报", ResolvedBy: "par_owner",
+		}),
+		Metadata: map[string]any{},
+	}}
+	redeclare := taskEvent(t, 6, protocol.EventMessagePosted, "agent", "par_codex",
+		todoBody("重报。", "- [ ] 出简报"))
+	final := TasksOf([]StoredEvent{events[0], events[1], events[2], resolved, redeclare})
+	if len(final) != 3 {
+		t.Fatalf("人工 dismissed 后重申报同文本不应新增任务：%+v", final)
+	}
+	for _, tk := range final {
+		if tk.Text == "出简报" && (tk.Status != "dismissed" || tk.ResolvedBy != "par_owner") {
+			t.Fatalf("人工裁定终态不得被申报推翻：%+v", tk)
+		}
 	}
 }
 
 func TestTaskWavesAndOverdue(t *testing.T) {
 	events := []StoredEvent{
-		taskEvent(t, 2, protocol.EventMessagePosted, "agent", "par_codex", "我去查证这个数据。"),
+		taskEvent(t, 2, protocol.EventMessagePosted, "agent", "par_codex",
+			todoBody("收到。", "- [ ] 查证这个数据")),
 		taskEvent(t, 3, protocol.EventRoundOpened, "system", "par_system", ""),
 		taskEvent(t, 4, protocol.EventRoundOpened, "system", "par_system", ""),
 		taskEvent(t, 5, protocol.EventRoundOpened, "system", "par_system", ""),
 	}
 	tasks := TasksOf(events)
 	if len(tasks) != 1 || tasks[0].WavesSince != 3 {
-		t.Fatalf("waves_since = %d，期望 3（声明后每波计数）", tasks[0].WavesSince)
+		t.Fatalf("waves_since = %d，期望 3（申报后每波计数）", tasks[0].WavesSince)
 	}
 	if !tasks[0].Overdue {
 		t.Fatal("waves_since ≥ OverdueWaves(2) 应标 overdue")
@@ -83,9 +145,10 @@ func TestTaskWavesAndOverdue(t *testing.T) {
 }
 
 func TestTaskResolvedHumanGate(t *testing.T) {
-	decl := taskEvent(t, 2, protocol.EventMessagePosted, "agent", "par_codex", "我来拉数据。")
+	decl := taskEvent(t, 2, protocol.EventMessagePosted, "agent", "par_codex",
+		todoBody("收到。", "- [ ] 拉取数据"))
 	events := []StoredEvent{decl}
-	taskID := TaskIDOf(decl.Envelope.EventID)
+	taskID := TaskIDOf(decl.Envelope.EventID, "拉取数据")
 	resolved := StoredEvent{Envelope: protocol.Envelope{
 		EventID: "evt_tr1", TenantID: "ten_t", RoomID: "room_t", Seq: 3,
 		Type: protocol.EventTaskResolved, SchemaVersion: 1, OccurredAt: "2026-09-03T00:00:01Z",
@@ -138,19 +201,19 @@ func m33UUID() string {
 func TestServiceResolveTask(t *testing.T) {
 	svc, store := newTaskTestService(t)
 	ctx := context.Background()
-	// 房间 + agent 宣言
+	// 房间 + agent 协议申报
 	seed := []protocol.Envelope{
 		{EventID: "evt_r1", TenantID: "ten_t", RoomID: "room_t", Seq: 1, Type: protocol.EventRoomCreated,
 			SchemaVersion: 1, OccurredAt: "2026-09-03T00:00:00Z", Actor: protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
 			Visibility: protocol.Visibility{Kind: "public"}, Payload: mustJSON(map[string]any{"display_name": "T", "thread_id": "thr_1", "agents": []string{}}), Metadata: map[string]any{}},
 		{EventID: "evt_m1", TenantID: "ten_t", RoomID: "room_t", Seq: 2, Type: protocol.EventMessagePosted,
 			SchemaVersion: 1, OccurredAt: "2026-09-03T00:00:00Z", Actor: protocol.Actor{ParticipantID: "par_codex", Kind: "agent"},
-			Visibility: protocol.Visibility{Kind: "public"}, Payload: mustJSON(map[string]any{"body": "好，开拉数据，稍后给出结果。"}), Metadata: map[string]any{}},
+			Visibility: protocol.Visibility{Kind: "public"}, Payload: mustJSON(map[string]any{"body": todoBody("好，收到。", "- [ ] 开拉数据，稍后给出结果")}), Metadata: map[string]any{}},
 	}
 	if _, err := store.AppendEvents(ctx, seed); err != nil {
 		t.Fatal(err)
 	}
-	taskID := TaskIDOf("evt_m1")
+	taskID := TaskIDOf("evt_m1", "开拉数据，稍后给出结果")
 	v, _ := store.RoomVersion(ctx, "room_t")
 
 	mk := func(payload string) Command {
@@ -365,7 +428,8 @@ func TestRetrieveRelated(t *testing.T) {
 // ---- 快照投影 ----
 
 func TestSnapshotTasksProjection(t *testing.T) {
-	decl := taskEvent(t, 2, protocol.EventMessagePosted, "agent", "par_codex", "我来拉数据，稍后给出结果。")
+	decl := taskEvent(t, 2, protocol.EventMessagePosted, "agent", "par_codex",
+		todoBody("好，收到。", "- [ ] 拉取数据，稍后给出结果"))
 	events := []StoredEvent{
 		taskEvent(t, 1, protocol.EventRoomCreated, "human", "par_owner", ""), decl,
 		taskEvent(t, 3, protocol.EventRoundOpened, "system", "par_system", ""),
@@ -404,8 +468,8 @@ func TestAssembleChatMemoryFaces(t *testing.T) {
 		{EventID: "evt_cap1", Type: protocol.EventClosureAccepted, Payload: mustJSON(protocol.ClosureAcceptedPayload{ClosureID: "clo_1", ClosureType: "consensus", ThreadID: "thr_1", Capsule: capsule}), Actor: protocol.Actor{ParticipantID: "par_owner", Kind: "human"}, Visibility: protocol.Visibility{Kind: "public"}, Metadata: map[string]any{}},
 		// 旧消息含关键词（按需召回面）
 		{EventID: "evt_old1", Type: protocol.EventMessagePosted, Payload: mustJSON(map[string]any{"body": "预算口径是 5 万"}), Actor: protocol.Actor{ParticipantID: "par_codex", Kind: "agent"}, Visibility: protocol.Visibility{Kind: "public"}, Metadata: map[string]any{}},
-		// agent 宣言（tasklist 面）
-		{EventID: "evt_decl1", Type: protocol.EventMessagePosted, Payload: mustJSON(map[string]any{"body": "好，我来拉数据。"}), Actor: protocol.Actor{ParticipantID: "par_codex", Kind: "agent"}, Visibility: protocol.Visibility{Kind: "public"}, Metadata: map[string]any{}},
+		// agent 协议申报（tasklist 面）
+		{EventID: "evt_decl1", Type: protocol.EventMessagePosted, Payload: mustJSON(map[string]any{"body": todoBody("好，收到。", "- [ ] 拉取数据")}), Actor: protocol.Actor{ParticipantID: "par_codex", Kind: "agent"}, Visibility: protocol.Visibility{Kind: "public"}, Metadata: map[string]any{}},
 		// 刺激（关键词：预算）
 		{EventID: "evt_stim1", Type: protocol.EventMessagePosted, Payload: mustJSON(map[string]any{"body": "预算是不是超了"}), Actor: protocol.Actor{ParticipantID: "par_owner", Kind: "human"}, Visibility: protocol.Visibility{Kind: "public"}, Metadata: map[string]any{}},
 	}
@@ -419,10 +483,13 @@ func TestAssembleChatMemoryFaces(t *testing.T) {
 	if len(caps) != 1 {
 		t.Fatalf("capsule 注入 = %v（期望 1 条——v1.36 曾为死代码）", asm.Inline["capsules"])
 	}
-	// tasklist 面：pending 承诺带 owner
+	// tasklist 面：pending 承诺带 owner + 申报协议常驻（v1.49：协议须先于首次承诺被知晓）
 	tasks, _ := asm.Inline["tasklist"].([]contextx.TaskBrief)
-	if len(tasks) != 1 || tasks[0].Owner != "par_codex" || tasks[0].Text != "好，我来拉数据" {
+	if len(tasks) != 1 || tasks[0].Owner != "par_codex" || tasks[0].Text != "拉取数据" {
 		t.Fatalf("tasklist 注入 = %+v", tasks)
+	}
+	if proto, _ := asm.Inline["tasklist_protocol"].(string); !strings.Contains(proto, "mosaic-todo") {
+		t.Fatalf("申报协议应随语境常驻：%v", asm.Inline["tasklist_protocol"])
 	}
 	// 按需平面：近窗外的旧消息按关键词召回（带 provenance）
 	retrieved, _ := asm.Inline["retrieved"].([]contextx.RetrievedItem)

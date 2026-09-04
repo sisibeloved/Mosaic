@@ -432,6 +432,9 @@ func (miniRunner) WSLDistros(ctx context.Context) []string { return nil }
 func (miniRunner) Glob(ctx context.Context, runtime harness.Runtime, distro, pattern string) []string {
 	return nil
 }
+func (miniRunner) ReadFile(ctx context.Context, runtime harness.Runtime, distro, path string) (string, bool) {
+	return "", false // 无配置文件：默认值走官方/出厂回退路径
+}
 
 func newHarnessTestServer(t *testing.T) (*httptest.Server, *harness.Registry) {
 	t.Helper()

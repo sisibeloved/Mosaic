@@ -51,6 +51,7 @@ type WaveView struct {
 	StimulusEventID string           `json:"stimulus_event_id"`
 	Proactive       bool             `json:"proactive,omitempty"` // OQ-A 主动波（round.opened metadata 标记投影）
 	OpenedSeq       int64            `json:"opened_seq"`
+	OpenedAt        string           `json:"opened_at,omitempty"`  // 开波墙钟（v1.49：长静默期波卡片可读时间）
 	ClosedSeq       int64            `json:"closed_seq,omitempty"` // 0 = 未收波（崩溃/在途）
 	Outcome         string           `json:"outcome,omitempty"`    // published | quiescent | revoked_all
 	Published       int              `json:"published"`
@@ -82,6 +83,7 @@ func WaveChainOf(events []StoredEvent) []WaveView {
 				StimulusEventID: p.StimulusEventID,
 				Proactive:       env.Metadata["proactive"] == true,
 				OpenedSeq:       env.Seq,
+				OpenedAt:        env.OccurredAt,
 				Intents:         []WaveIntentView{},
 				Grants:          []WaveGrantView{},
 			})

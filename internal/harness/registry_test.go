@@ -21,6 +21,7 @@ type fakeRunner struct {
 	homes   map[string]string   // key: runtime|distro
 	digests map[string]string   // key: path
 	globs   map[string][]string // key: pattern → 展开结果
+	files   map[string]string   // key: path → 文件内容（ReadFile 面）
 	distros []string
 }
 
@@ -67,6 +68,11 @@ func (f *fakeRunner) Glob(ctx context.Context, runtime Runtime, distro, pattern 
 	return f.globs[pattern]
 }
 
+func (f *fakeRunner) ReadFile(ctx context.Context, runtime Runtime, distro, path string) (string, bool) {
+	content, ok := f.files[path]
+	return content, ok
+}
+
 func newFakeRunner() *fakeRunner {
 	return &fakeRunner{
 		lookups: map[string]string{},
@@ -75,6 +81,7 @@ func newFakeRunner() *fakeRunner {
 		homes:   map[string]string{},
 		digests: map[string]string{},
 		globs:   map[string][]string{},
+		files:   map[string]string{},
 	}
 }
 

@@ -100,6 +100,11 @@ type Assembled struct {
 	Receipt Receipt
 }
 
+// TasklistProtocol 任务申报协议（v1.49：替代 v1.46 自然语言宣言模式匹配——狗粮
+// 误报严重，负责人裁定不能靠关键字匹配）。协议指令随语境常驻（agent 须先知道
+// 约定才可能在首次承诺时申报），任务面本体在 tasklist 键。
+const TasklistProtocol = "任务申报协议：若你在本房间有待办承诺，在回复 body 末尾用 ```mosaic-todo 围栏块维护你名下的全量在办清单，每行 '- [ ] 事项' 或 '- [x] 已完成'；再次申报即全量替换（打 x = 完成，移除 = 收束）。仅在事项有变化时附带。"
+
 // Assemble 从房间历史组装七层上下文。
 // Seat 参与者座位（引擎侧 AgentSeat 的最小投影，避免反向依赖）。
 type Seat struct{ ParticipantID string }
@@ -167,6 +172,7 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 		"room_id":                 cfg.RoomID,
 		"capsules":                capsuleBrief,
 		"tasklist":                tasklist,
+		"tasklist_protocol":       TasklistProtocol,
 		"retrieved":               retrieved,
 		"mode":                    cfg.Mode,
 		"participants":            participants,

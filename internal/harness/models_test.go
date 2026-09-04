@@ -151,3 +151,101 @@ func TestRuntimeOptionsCodexAndMinimax(t *testing.T) {
 		t.Fatal("不存在实例应报错")
 	}
 }
+
+// v1.49 确定量默认值：配置文件优先（顶层键——嵌套表内同名键不参与），
+// 官方/出厂常量回退。
+func TestRuntimeDefaultsFromConfig(t *testing.T) {
+	reg := runtimeTestRegistry(t)
+
+	// codex：顶层 model/model_reasoning_effort；[profiles.*] 内同名键必须被忽略
+	runner := &fakeRunner{
+		homes: map[string]string{"native|": "/home/u"},
+		files: map[string]string{
+			"/home/u/.codex/config.toml": "personality = \"pragmatic\"\n" +
+				"model = \"gpt-5.6-sol\"\n" +
+				"model_reasoning_effort = \"xhigh\"\n" +
+				"service_tier = \"fast\"\n" +
+				"[profiles.p]\nmodel = \"nested-ignored\"\n",
+		},
+	}
+	opts, err := reg.RuntimeOptionsOf(context.Background(), "codex_1", runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.DefaultModel != "gpt-5.6-sol" || opts.DefaultEffort != "xhigh" || opts.DefaultSource != "config" {
+		t.Fatalf("codex 配置默认值 = %s/%s/%s，期望 gpt-5.6-sol/xhigh/config", opts.DefaultModel, opts.DefaultEffort, opts.DefaultSource)
+	}
+
+	// kimi：default_model（[models.*] 段的 model 是目录定义，不参与）
+	runner2 := &fakeRunner{
+		homes: map[string]string{"wsl|d1": "/home/u"},
+		files: map[string]string{
+			"/home/u/.kimi-code/config.toml": "default_model = \"kimi-code/k3\"\n[models.\"kimi-code/k3\"]\nmodel = \"k3\"\nsupport_efforts = [\"low\"]\n",
+		},
+	}
+	opts, err = reg.RuntimeOptionsOf(context.Background(), "kimi_1", runner2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.DefaultModel != "kimi-code/k3" || opts.DefaultEffort != "" || opts.DefaultSource != "config" {
+		t.Fatalf("kimi 配置默认值: %+v", opts)
+	}
+
+	// mcode：config.yaml 顶层 defaultModel（缩进的嵌套 models 不参与）
+	runner3 := &fakeRunner{
+		homes: map[string]string{"wsl|d1": "/home/u"},
+		files: map[string]string{
+			"/home/u/.minimax/config.yaml": "agent:\n  models:\n    m: 1\ndefaultModel: minimax/MiniMax-M3\n",
+		},
+	}
+	opts, err = reg.RuntimeOptionsOf(context.Background(), "mcode_1", runner3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.DefaultModel != "minimax/MiniMax-M3" || opts.DefaultSource != "config" {
+		t.Fatalf("mcode 配置默认值: %+v", opts)
+	}
+}
+
+func TestRuntimeDefaultsFallback(t *testing.T) {
+	reg := runtimeTestRegistry(t)
+
+	// codex 无配置文件：模型 = CLI 内置预设（官方未公布常量，不虚构），
+	// 强度回退官方默认 medium
+	runner := &fakeRunner{homes: map[string]string{"native|": "/home/u"}}
+	opts, err := reg.RuntimeOptionsOf(context.Background(), "codex_1", runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.DefaultModel != "" || opts.DefaultEffort != "medium" || opts.DefaultSource != "builtin" {
+		t.Fatalf("codex 回退默认值: %+v", opts)
+	}
+
+	// kimi 无配置：出厂默认（首启生成的 default_model 实证值）
+	runner2 := &fakeRunner{homes: map[string]string{"wsl|d1": "/home/u"}}
+	opts, err = reg.RuntimeOptionsOf(context.Background(), "kimi_1", runner2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.DefaultModel != "kimi-code/k3-256k" || opts.DefaultSource != "builtin" {
+		t.Fatalf("kimi 回退默认值: %+v", opts)
+	}
+
+	// nil runner（无探测面）同样回退——确定量不依赖探测可用性
+	opts, err = reg.RuntimeOptionsOf(context.Background(), "kimi_1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.DefaultModel != "kimi-code/k3-256k" {
+		t.Fatalf("nil runner 回退: %+v", opts)
+	}
+
+	// mcode 回退
+	opts, err = reg.RuntimeOptionsOf(context.Background(), "mcode_1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.DefaultModel != "minimax/MiniMax-M3" {
+		t.Fatalf("mcode 回退: %+v", opts)
+	}
+}

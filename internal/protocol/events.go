@@ -37,8 +37,9 @@ const (
 	EventEvidenceRequestResolved = "evidence_request.resolved"
 	EventRoomDeleted             = "room.deleted"
 	// tasklist（RFC-0012 OQ-A 修订 / v1.45 负责人裁定：带责任人的承诺追踪——
-	// 非 Memory 系统，独立成物）：派生是确定性纯投影（宣言模式匹配，零 LLM），
-	// 不落声明事件；人类门控事件族只有 resolved（delivered/dismissed 由人裁定）。
+	// 非 Memory 系统，独立成物）：派生是确定性纯投影（mosaic-todo 申报协议，零 LLM；
+	// v1.46 宣言模式匹配因误报严重废弃），不落声明事件；人类门控事件族只有
+	// resolved（delivered/dismissed 由人裁定）。
 	EventTaskResolved = "task.resolved"
 	// 记忆编辑（RFC-0007 §7.4 裁定 5：记忆可纠错——人工编辑留 edit_history，
 	// 生效于下次组装；胶囊为一等 Memory 的最小编辑面）。

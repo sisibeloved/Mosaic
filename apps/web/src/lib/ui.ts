@@ -8,6 +8,13 @@ export function relativeTime(iso: string): string {
   const diff = Date.now() - t;
   if (diff < 60_000) return "刚刚";
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  return absoluteTime(iso);
+}
+
+/** 绝对时间（v1.49 长静默排障）：当天 HH:mm / 昨天 HH:mm / 更早 MM-DD HH:mm。 */
+export function absoluteTime(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "";
   const d = new Date(t);
   const now = new Date();
   const hhmm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;

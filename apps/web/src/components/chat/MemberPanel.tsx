@@ -89,7 +89,7 @@ export function MemberPanel({
   taskBusy: string | null;
   onEditMemory: (memoryID: string, edits: { conclusions?: string[]; assumptions?: string[] }, note: string) => void;
   memoryBusy: string | null;
-  /** event_id → 时间线定位（任务宣言消息/检索命中跳转）。 */
+  /** event_id → 时间线定位（任务申报消息/检索命中跳转）。 */
   onJumpToEvent: (eventID: string) => void;
   /** Tab 打开/切换时回调（触发投影刷新）。 */
   onTabActive: (tab: Tab) => void;

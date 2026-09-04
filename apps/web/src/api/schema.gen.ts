@@ -581,7 +581,7 @@ export interface components {
              */
             reasoning_effort: "" | "minimal" | "low" | "medium" | "high" | "xhigh";
         };
-        /** @description 模型候选与思考强度档位（设置页下拉数据源）。 */
+        /** @description 模型候选与思考强度档位（设置页下拉数据源）+ 确定量默认值（v1.49）。 */
         RuntimeOptions: {
             models: {
                 /** @description 传给 CLI 的模型名（kimi 为 alias） */
@@ -592,22 +592,31 @@ export interface components {
             dynamic: boolean;
             /** @description 思考强度档位（仅 codex 非空） */
             effort_levels: string[];
+            /** @description 不覆盖时的 CLI 默认模型（配置文件值优先；空 = CLI 内置预设未公布） */
+            default_model?: string;
+            /** @description 不覆盖时的 CLI 默认思考强度（codex 官方默认 medium） */
+            default_effort?: string;
+            /**
+             * @description 默认值来源——config=CLI 配置文件；builtin=官方文档/出厂回退
+             * @enum {string}
+             */
+            default_source?: "config" | "builtin" | "";
         };
-        /** @description 任务清单项（M3-3 tasklist）：确定性派生（agent 消息宣言句）+ 人工门控裁定（task.resolved）。 */
+        /** @description 任务清单项（M3-3 tasklist）：显式申报协议派生（mosaic-todo 围栏块）+ 人工门控裁定（task.resolved）。 */
         TaskItem: {
             /** @description tsk_ 前缀（源事件哈希派生，确定性） */
             task_id: string;
             /** @description 责任人（承诺者 participant_id——多 Agent 群聊对常见 tasklist 的必要增量） */
             owner: string;
-            /** @description 宣言句（截断 120 字） */
+            /** @description 申报事项文本（mosaic-todo 行，归一化后截断 120 字） */
             text: string;
-            /** @description 派生源消息（provenance 跳转位） */
+            /** @description 首次申报消息（provenance 跳转位） */
             source_event_id: string;
             /** Format: date-time */
             declared_at: string;
             /** Format: int64 */
             declared_seq: number;
-            /** @description 声明后经过的波数 */
+            /** @description 申报后经过的波数 */
             waves_since: number;
             /** @description pending 且 waves_since ≥ 2 */
             overdue: boolean;

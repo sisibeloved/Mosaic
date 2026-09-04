@@ -4,9 +4,62 @@ import { useEffect, useRef } from "react";
 import type { TimelineEntry } from "../../api/room";
 import type { ParticipantView } from "../../api/client";
 import { adapterLabel, channelLabel, kindLabel } from "../../lib/copy";
-import { displayNameOf, participantOf, relativeTime } from "../../lib/ui";
+import { absoluteTime, displayNameOf, participantOf, relativeTime } from "../../lib/ui";
 import { Avatar } from "./Avatar";
 import { MarkdownBody } from "./MarkdownBody";
+
+interface TodoLine {
+  text: string;
+  done: boolean;
+}
+
+/**
+ * 剥离 body 里的 mosaic-todo 申报块（v1.49 协议）：围栏块是机器协议载荷而非
+ * 聊天内容，气泡里渲染为独立的申报芯片；正文其余部分照常 Markdown 渲染。
+ * 与服务端 tasklist.go 同语义：最后一个块生效、未闭合容忍、零有效行不构成申报。
+ */
+function splitTodoBlock(body: string): { clean: string; todos: TodoLine[] | null } {
+  const lines = body.split("\n");
+  const clean: string[] = [];
+  let todos: TodoLine[] | null = null;
+  let current: TodoLine[] | null = null;
+  for (const ln of lines) {
+    const t = ln.trim();
+    if (current === null) {
+      if (t.startsWith("```mosaic-todo")) {
+        current = [];
+        continue;
+      }
+      clean.push(ln);
+      continue;
+    }
+    if (t.startsWith("```")) {
+      if (current.length > 0) todos = current; // 块闭合：零有效行不构成申报
+      current = null;
+      continue;
+    }
+    const m = /^[-*+]\s*\[([ xX])\]\s*(.+)$/.exec(t);
+    if (m) current.push({ done: m[1].toLowerCase() === "x", text: m[2].trim() });
+  }
+  if (current !== null && current.length > 0) todos = current; // 未闭合兜底
+  return { clean: clean.join("\n").trimEnd(), todos };
+}
+
+/** 申报芯片：agent 回复里的任务申报渲染为紧凑清单（协议可视化，非正文）。 */
+function TodoChip({ items }: { items: TodoLine[] }) {
+  return (
+    <div className="mt-1.5 rounded-lg border border-border bg-surface-3/60 px-2.5 py-1.5 text-[11px] leading-5 text-dim">
+      <span className="text-faint">任务申报</span>
+      <ul className="mt-0.5">
+        {items.map((it, i) => (
+          <li key={i}>
+            {it.done ? "✓" : "○"} {it.text}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 export function MessageList({
   entries,
@@ -45,7 +98,7 @@ export function MessageList({
         )}
         {entries.map((e) =>
           e.kind === "system" ? (
-            <SystemBar key={e.key} text={e.detail ?? ""} />
+            <SystemBar key={e.key} text={e.detail ?? ""} time={absoluteTime(e.occurredAt)} />
           ) : e.actorKind === "human" ? (
             <div key={e.key} data-event-id={e.key} className="rounded-xl">
               <HumanBubble entry={e} participants={participants} />
@@ -61,11 +114,15 @@ export function MessageList({
   );
 }
 
-function SystemBar({ text }: { text: string }) {
+// 系统条带绝对时间（v1.49 长静默排障：[dev] 条目只有序没有钟，分不清何时发生）。
+function SystemBar({ text, time }: { text: string; time: string }) {
   return (
     <div className="my-1 flex items-center gap-3 text-[11px] text-faint">
       <span className="h-px flex-1 bg-border" />
-      <span className="shrink-0">{text}</span>
+      <span className="shrink-0">
+        {time && <span className="mr-1.5 tabular-nums">{time}</span>}
+        {text}
+      </span>
       <span className="h-px flex-1 bg-border" />
     </div>
   );
@@ -116,6 +173,7 @@ function AgentBubble({
 }) {
   const p = participantOf(participants, entry.actorID);
   const name = p?.display_name ?? displayNameOf(participants, entry.actorID);
+  const { clean, todos } = splitTodoBlock(entry.body ?? ""); // 协议块不入正文渲染
   return (
     <div className="animate-rise flex gap-2.5">
       <Avatar participantID={entry.actorID} displayName={name} />
@@ -135,7 +193,8 @@ function AgentBubble({
         </div>
         <div className="w-fit max-w-full rounded-2xl rounded-tl-md bg-surface-2 px-3.5 py-2 text-sm">
           <AddressedLine entry={entry} participants={participants} />
-          <MarkdownBody text={entry.body ?? ""} />
+          <MarkdownBody text={clean} />
+          {todos && <TodoChip items={todos} />}
         </div>
       </div>
     </div>

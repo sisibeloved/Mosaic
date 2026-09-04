@@ -1,7 +1,9 @@
-// Agent 实例运行参数编辑器（v1.48：模型覆盖与思考强度）：设置页实例行展开。
-// 模型候选：kimi 为 CLI 实查（provider list --json，动态）；codex/mcode 无官方
-// 列表命令（空候选+自由输入，placeholder 示例）。强度档位：仅 codex（五档）。
-// 保存 = PUT 全量替换（空 = 清除覆盖回 CLI 默认）；座位 ≤10s resync 生效。
+// Agent 实例运行参数编辑器（v1.48：模型覆盖与思考强度；v1.49 确定量默认值）：
+// 设置页实例行展开。模型候选：kimi 为 CLI 实查（provider list --json，动态）；
+// codex/mcode 无官方列表命令（空候选+自由输入）。强度档位：仅 codex（五档）。
+// 默认值（v1.49）：不覆盖时的 CLI 默认是确定量——读 CLI 配置文件，缺失回退
+// 官方文档/出厂默认，行内直接展示"CLI 当前默认"。保存 = PUT 全量替换
+//（空 = 清除覆盖回 CLI 默认）；座位 ≤10s resync 生效。
 import { useEffect, useState } from "react";
 import { api, type Executable, type RuntimeOptions } from "../api/client";
 
@@ -23,10 +25,25 @@ export function RuntimeOptsEditor({ exe }: { exe: Executable }) {
       .catch(() => setOpts({ models: [], dynamic: false, effort_levels: [] }));
   }, [open, exe.id, opts]);
 
-  const modelPlaceholder =
-    exe.adapter === "codex" ? "如 gpt-5.6-sol（留空 = CLI 默认）"
-    : exe.adapter === "minimax" ? "如 minimax/MiniMax-M2（留空 = CLI 默认）"
-    : "留空 = CLI 默认";
+  const modelPlaceholder = opts?.default_model
+    ? `留空 = ${opts.default_model}`
+    : exe.adapter === "codex"
+      ? "如 gpt-5.6-sol（留空 = CLI 默认）"
+      : exe.adapter === "minimax"
+        ? "如 minimax/MiniMax-M2（留空 = CLI 默认）"
+        : "留空 = CLI 默认";
+
+  // v1.49 确定量默认值行："CLI 当前默认：gpt-5.6-sol · xhigh（来自配置文件）"。
+  // 模型空 = CLI 内置预设（官方未公布常量——如实展示不虚构）。
+  const defaultLine = (() => {
+    if (!opts) return null;
+    const modelPart = opts.default_model || "CLI 内置预设（未公布）";
+    const effortPart = opts.default_effort ? ` · 思考 ${opts.default_effort}` : "";
+    const sourcePart =
+      opts.default_source === "config" ? "来自配置文件" : opts.default_source === "builtin" ? "官方默认" : "";
+    if (!opts.default_model && !opts.default_effort) return null;
+    return `CLI 当前默认：${modelPart}${effortPart}${sourcePart ? `（${sourcePart}）` : ""}`;
+  })();
 
   const save = async () => {
     setBusy(true);
@@ -60,6 +77,9 @@ export function RuntimeOptsEditor({ exe }: { exe: Executable }) {
       </button>
       {open && (
         <div className="mt-2 flex flex-col gap-2 rounded-lg bg-surface-2 p-2.5">
+          {defaultLine && (
+            <p className="rounded-lg bg-surface-3/60 px-2 py-1.5 text-[11px] text-dim">{defaultLine}</p>
+          )}
           <label className="flex flex-col gap-1 text-[11px] text-faint">
             模型{opts?.dynamic ? "（CLI 实查候选，可直接输入）" : "（自由输入，留空 = CLI 默认）"}
             <input
@@ -85,13 +105,13 @@ export function RuntimeOptsEditor({ exe }: { exe: Executable }) {
           </label>
           {(opts?.effort_levels?.length ?? 0) > 0 ? (
             <label className="flex flex-col gap-1 text-[11px] text-faint">
-              思考强度（留空 = CLI 默认）
+              思考强度{opts?.default_effort ? `（留空 = CLI 默认 ${opts.default_effort}）` : "（留空 = CLI 默认）"}
               <select
                 value={effort}
                 onChange={(e) => setEffort(e.target.value)}
                 className="rounded-lg border border-border bg-surface px-2 py-1.5 text-xs text-text outline-none focus:border-accent"
               >
-                <option value="">CLI 默认</option>
+                <option value="">{opts?.default_effort ? `CLI 默认（${opts.default_effort}）` : "CLI 默认"}</option>
                 {opts?.effort_levels.map((lv) => (
                   <option key={lv} value={lv}>
                     {lv}

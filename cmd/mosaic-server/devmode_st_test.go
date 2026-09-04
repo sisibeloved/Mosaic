@@ -56,10 +56,9 @@ func startLoggedServer(t *testing.T, bin, dataDir string, extra ...string) (*exe
 			cap.mu.Lock()
 			cap.lines = append(cap.lines, line)
 			cap.mu.Unlock()
-			var l logLine
-			if json.Unmarshal([]byte(line), &l) == nil && l.Msg == "mosaic-server listening" && l.Addr != "" {
+			if addr := parseListeningLine([]byte(line)); addr != "" {
 				select {
-				case addrCh <- l.Addr:
+				case addrCh <- addr:
 				default:
 				}
 			}

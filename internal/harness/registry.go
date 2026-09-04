@@ -87,6 +87,10 @@ type Runner interface {
 	// RunWithDir 在把 binDir 前置到 PATH 后执行（nvm 布局：CLI 是 #!/usr/bin/env node
 	// 脚本，其 node 运行时在同目录——探测必须带上）。
 	RunWithDir(ctx context.Context, runtime Runtime, distro, binDir string, args []string) (stdout string, exitCode int, err error)
+	// ReadFile 读目标运行面的小文本文件（v1.49：CLI 配置的确定量默认值——模型/
+	// 思考强度；native 直读、wsl 经 cat）。ok=false = 不存在/不可读。只用于提取
+	// 目标键值，调用方不得回传或记录文件其余内容（配置文件可能含密钥）。
+	ReadFile(ctx context.Context, runtime Runtime, distro, path string) (content string, ok bool)
 }
 
 // ProbeSpec 单个 adapter 的探测规格（来源：Harness 调研 2026-08-25 实证）。

@@ -1,7 +1,8 @@
-// 任务 Tab（M3-3 tasklist，RFC-0012 OQ-A 修订 / v1.45 负责人裁定）：带责任人的
-// 承诺追踪——确定性派生（agent 消息宣言句，零 LLM）+ 人工门控（delivered/
-// dismissed 由人类裁定）。pending 任务按声明序（旧债在前）；波龄 ≥2 标 overdue。
-// provenance 跳转：点任务定位宣言消息（时间线按 event_id 高亮滚动）。
+// 任务 Tab（M3-3 tasklist，RFC-0012 OQ-A 修订 / v1.45 负责人裁定；v1.49 派生改
+// 显式申报协议）：带责任人的承诺追踪——agent 在回复里用 mosaic-todo 围栏块申报
+// （确定性解析，零 LLM；v1.46 关键字匹配误报严重已废弃）。人工门控保留：
+// delivered/dismissed 人类裁定优先，agent 打 x 也可自动结案。pending 按申报序
+//（旧债在前）；波龄 ≥2 标 overdue。provenance 跳转：点任务定位申报消息。
 import { useState } from "react";
 import type { ParticipantView } from "../../api/client";
 import type { TaskItem } from "../../api/room";
@@ -28,7 +29,7 @@ export function TasksTab({
       <h3 className="px-3 pb-1 pt-2 text-xs font-medium text-dim">待交付承诺（{pending.length}）</h3>
       {pending.length === 0 ? (
         <p className="px-3 py-2 text-xs text-faint">
-          Agent 在消息里做出承诺（如"我来拉数据"）会自动进入此清单，按责任人跟踪到交付。
+          Agent 在回复里用 mosaic-todo 围栏块申报待办（语境中已内置申报协议），按责任人跟踪到交付。
         </p>
       ) : (
         <ul className="divide-y divide-border">
@@ -52,7 +53,7 @@ export function TasksTab({
                 type="button"
                 onClick={() => onJumpToEvent(t.source_event_id)}
                 className="mt-1 block w-full text-left text-dim transition-colors hover:text-text"
-                title={`定位宣言消息（${t.source_event_id}）`}
+                title={`定位申报消息（${t.source_event_id}）`}
               >
                 “{t.text}”
               </button>

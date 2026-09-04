@@ -185,30 +185,51 @@ func (e RoomCommandCommandKind) Valid() bool {
 	}
 }
 
+// Defines values for RuntimeOptionsDefaultSource.
+const (
+	RuntimeOptionsDefaultSourceBuiltin RuntimeOptionsDefaultSource = "builtin"
+	RuntimeOptionsDefaultSourceConfig  RuntimeOptionsDefaultSource = "config"
+	RuntimeOptionsDefaultSourceEmpty   RuntimeOptionsDefaultSource = ""
+)
+
+// Valid indicates whether the value is a known member of the RuntimeOptionsDefaultSource enum.
+func (e RuntimeOptionsDefaultSource) Valid() bool {
+	switch e {
+	case RuntimeOptionsDefaultSourceBuiltin:
+		return true
+	case RuntimeOptionsDefaultSourceConfig:
+		return true
+	case RuntimeOptionsDefaultSourceEmpty:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for RuntimeUpdateRequestReasoningEffort.
 const (
-	Empty   RuntimeUpdateRequestReasoningEffort = ""
-	High    RuntimeUpdateRequestReasoningEffort = "high"
-	Low     RuntimeUpdateRequestReasoningEffort = "low"
-	Medium  RuntimeUpdateRequestReasoningEffort = "medium"
-	Minimal RuntimeUpdateRequestReasoningEffort = "minimal"
-	Xhigh   RuntimeUpdateRequestReasoningEffort = "xhigh"
+	RuntimeUpdateRequestReasoningEffortEmpty   RuntimeUpdateRequestReasoningEffort = ""
+	RuntimeUpdateRequestReasoningEffortHigh    RuntimeUpdateRequestReasoningEffort = "high"
+	RuntimeUpdateRequestReasoningEffortLow     RuntimeUpdateRequestReasoningEffort = "low"
+	RuntimeUpdateRequestReasoningEffortMedium  RuntimeUpdateRequestReasoningEffort = "medium"
+	RuntimeUpdateRequestReasoningEffortMinimal RuntimeUpdateRequestReasoningEffort = "minimal"
+	RuntimeUpdateRequestReasoningEffortXhigh   RuntimeUpdateRequestReasoningEffort = "xhigh"
 )
 
 // Valid indicates whether the value is a known member of the RuntimeUpdateRequestReasoningEffort enum.
 func (e RuntimeUpdateRequestReasoningEffort) Valid() bool {
 	switch e {
-	case Empty:
+	case RuntimeUpdateRequestReasoningEffortEmpty:
 		return true
-	case High:
+	case RuntimeUpdateRequestReasoningEffortHigh:
 		return true
-	case Low:
+	case RuntimeUpdateRequestReasoningEffortLow:
 		return true
-	case Medium:
+	case RuntimeUpdateRequestReasoningEffortMedium:
 		return true
-	case Minimal:
+	case RuntimeUpdateRequestReasoningEffortMinimal:
 		return true
-	case Xhigh:
+	case RuntimeUpdateRequestReasoningEffortXhigh:
 		return true
 	default:
 		return false
@@ -558,8 +579,17 @@ type RoomSummary struct {
 	RoomId string `json:"room_id"`
 }
 
-// RuntimeOptions 模型候选与思考强度档位（设置页下拉数据源）。
+// RuntimeOptions 模型候选与思考强度档位（设置页下拉数据源）+ 确定量默认值（v1.49）。
 type RuntimeOptions struct {
+	// DefaultEffort 不覆盖时的 CLI 默认思考强度（codex 官方默认 medium）
+	DefaultEffort *string `json:"default_effort,omitempty"`
+
+	// DefaultModel 不覆盖时的 CLI 默认模型（配置文件值优先；空 = CLI 内置预设未公布）
+	DefaultModel *string `json:"default_model,omitempty"`
+
+	// DefaultSource 默认值来源——config=CLI 配置文件；builtin=官方文档/出厂回退
+	DefaultSource *RuntimeOptionsDefaultSource `json:"default_source,omitempty"`
+
 	// Dynamic true = CLI 实查候选（kimi）；false = 无官方列表命令（空候选+自由输入）
 	Dynamic bool `json:"dynamic"`
 
@@ -572,6 +602,9 @@ type RuntimeOptions struct {
 		Id string `json:"id"`
 	} `json:"models"`
 }
+
+// RuntimeOptionsDefaultSource 默认值来源——config=CLI 配置文件；builtin=官方文档/出厂回退
+type RuntimeOptionsDefaultSource string
 
 // RuntimeUpdateRequest 运行参数更新体（全量替换；空串 = 清除覆盖回 CLI 默认）。
 type RuntimeUpdateRequest struct {
@@ -668,7 +701,7 @@ type Snapshot struct {
 // SnapshotThreadsState defines model for Snapshot.Threads.State.
 type SnapshotThreadsState string
 
-// TaskItem 任务清单项（M3-3 tasklist）：确定性派生（agent 消息宣言句）+ 人工门控裁定（task.resolved）。
+// TaskItem 任务清单项（M3-3 tasklist）：显式申报协议派生（mosaic-todo 围栏块）+ 人工门控裁定（task.resolved）。
 type TaskItem struct {
 	DeclaredAt  time.Time `json:"declared_at"`
 	DeclaredSeq int64     `json:"declared_seq"`
@@ -683,17 +716,17 @@ type TaskItem struct {
 	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 	ResolvedBy *string    `json:"resolved_by,omitempty"`
 
-	// SourceEventId 派生源消息（provenance 跳转位）
+	// SourceEventId 首次申报消息（provenance 跳转位）
 	SourceEventId string         `json:"source_event_id"`
 	Status        TaskItemStatus `json:"status"`
 
 	// TaskId tsk_ 前缀（源事件哈希派生，确定性）
 	TaskId string `json:"task_id"`
 
-	// Text 宣言句（截断 120 字）
+	// Text 申报事项文本（mosaic-todo 行，归一化后截断 120 字）
 	Text string `json:"text"`
 
-	// WavesSince 声明后经过的波数
+	// WavesSince 申报后经过的波数
 	WavesSince int `json:"waves_since"`
 }
 

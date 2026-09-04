@@ -109,6 +109,11 @@ func TestRuntimeModelsEndpoint(t *testing.T) {
 	if len(opts.EffortLevels) != 5 || opts.EffortLevels[4] != "xhigh" {
 		t.Fatalf("codex 五档: %+v", opts.EffortLevels)
 	}
+	// v1.49 确定量默认：miniRunner 无配置文件 → 官方回退（强度 medium；模型为
+	// CLI 内置预设，不虚构）
+	if opts.DefaultModel != "" || opts.DefaultEffort != "medium" || opts.DefaultSource != "builtin" {
+		t.Fatalf("codex 默认值应官方回退: %+v", opts)
+	}
 	// 不存在 → 404
 	resp404, _ := http.Get(ts.URL + "/v1/harness/executables/nope/models")
 	resp404.Body.Close()

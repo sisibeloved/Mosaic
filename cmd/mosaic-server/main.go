@@ -32,11 +32,12 @@ func main() {
 	defer stop()
 
 	// 日志级别：-dev 下放开 debug；常规模式维持 info——埋点零输出。
+	// v1.49：TextHandler 人类可读时间（长静默排障；JSON RFC3339 阅读成本高）。
 	logLevel := new(slog.LevelVar)
 	if *dev {
 		logLevel.Set(slog.LevelDebug)
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
+	logger := app.NewLogger(os.Stdout, logLevel)
 
 	if host, _, err := net.SplitHostPort(*addr); err == nil {
 		// 复审 #4：空 host（":7420"）与通配地址 = 全接口监听，不是回环。

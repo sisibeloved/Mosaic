@@ -245,6 +245,22 @@ func (h *HostRunner) Glob(ctx context.Context, runtime Runtime, distro, pattern 
 	return lines
 }
 
+// ReadFile 目标运行面文本文件读取：native os.ReadFile；wsl cat（UTF-16 解码同 Run）。
+func (h *HostRunner) ReadFile(ctx context.Context, runtime Runtime, distro, path string) (string, bool) {
+	if runtime == RuntimeNative {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return "", false
+		}
+		return string(b), true
+	}
+	out, code, err := h.Run(ctx, runtime, distro, []string{"cat", path})
+	if err != nil || code != 0 {
+		return "", false
+	}
+	return out, true
+}
+
 // RunWithDir 在 binDir 前置 PATH 后执行：native 注入 cmd.Env；
 // wsl 用 sh -c 'export PATH=…; exec "$@"' -- 参数透传。
 func (h *HostRunner) RunWithDir(ctx context.Context, runtime Runtime, distro, binDir string, args []string) (string, int, error) {

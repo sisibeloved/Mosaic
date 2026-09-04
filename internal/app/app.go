@@ -92,7 +92,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		if opts.Dev {
 			level.Set(slog.LevelDebug)
 		}
-		logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+		logger = NewLogger(os.Stdout, level) // v1.49：人类可读时间（TextHandler）
 	}
 
 	// 二轮审校 #19：数据目录 owner-only；四轮复审 #6：收紧失败 fail closed。
