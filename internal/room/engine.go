@@ -663,8 +663,10 @@ func (e *Engine) assembleChat(ctx context.Context, cfg contextx.Config, envs []p
 		asm.Inline["silence_minutes"] = int(e.cfg.ProactiveSilence.Minutes())
 		// OQ-A 承诺指令（v1.44 狗粮实证的治本位：主动波语境此前无"未履行承诺"
 		// 概念，宣言后全静默空转）：清单已含 owner，各 agent 对照自查名下任务。
+		// v1.53 补执行模型硬事实（mcode 实证：宣言轮零工具调用、后续两轮以
+		// "在执行中"为由自选静默——模型误以为有后台执行，任务空转）。
 		if len(cfg.Tasklist) > 0 {
-			asm.Inline["tasklist_note"] = "本房间有未交付的承诺（见 tasklist，按 owner 认领）：若是你名下的，有结果就交付；没有进展就说明情况"
+			asm.Inline["tasklist_note"] = "本房间有未交付的承诺（见 tasklist，按 owner 认领）：若是你名下的，本轮就该交付——你的会话按轮拉起、没有后台执行，不开口动手任务不会自己推进；'已在执行中'不是静默理由，要么本轮就做（调用工具当场完成），要么说明真实阻塞"
 		}
 	}
 	if e.cfg.Receipts != nil {
