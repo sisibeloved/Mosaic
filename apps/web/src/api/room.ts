@@ -28,7 +28,7 @@ export interface TimelineEntry {
   /** 引用回复的目标事件 id（message.posted 载荷同名字段；快照/SSE 双路同形）。 */
   replyTo?: string;
   /** 消息附件描述子（RFC-0013；下载 URL = /v1/rooms/{id}/attachments/{att}）。 */
-  attachments?: { attachment_id: string; name: string; size_bytes: number }[];
+  attachments?: { attachment_id: string; name: string; mime?: string; size_bytes: number }[];
   detail?: string;
 }
 
@@ -290,7 +290,7 @@ export function useRoom(roomID: string | null): RoomHandle {
         switch (type) {
           case "message.posted": {
             const payload = view.payload as
-              | { body?: string; addressed_to?: string[] | null; reply_to?: string | null; attachments?: { attachment_id: string; name: string; size_bytes: number }[] | null }
+              | { body?: string; addressed_to?: string[] | null; reply_to?: string | null; attachments?: { attachment_id: string; name: string; mime?: string; size_bytes: number }[] | null }
               | null;
             append({
               key: view.event_id,

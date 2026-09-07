@@ -10,6 +10,27 @@ import { Avatar } from "./Avatar";
 
 const MAX_TARGETS = 3;
 
+/**
+ * 剪贴板粘贴图片（RFC-0013 附件面）：paste 事件的 clipboardData.items 里
+ * 截图/复制的图像以 kind=file、image/* 出现（Win+Shift+S、网页复制图均此形态，
+ * WebView2/Chromium 系全支持）。命名带时间戳（剪贴板 Blob 本无名或恒 image.png）。
+ */
+function imagesFromClipboard(dt: DataTransfer | null): File[] {
+  if (!dt) return [];
+  const out: File[] = [];
+  for (const item of dt.items) {
+    if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+    const f = item.getAsFile();
+    if (!f) continue;
+    const ext = f.type === "image/jpeg" ? "jpg" : (f.type.split("/")[1] || "png");
+    const ts = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const name = `截图-${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.${ext}`;
+    out.push(new File([f], name, { type: f.type }));
+  }
+  return out;
+}
+
 /** 引用回复的目标消息（RoomPage 自时间线条目构造）。 */
 export interface QuotedMessage {
   eventID: string;
@@ -239,6 +260,13 @@ export function Composer({
                 setBody(e.target.value);
                 setMention(detectMention(e.target.value, e.target.selectionStart ?? e.target.value.length));
                 setHighlight(0);
+              }}
+              onPaste={(e) => {
+                const imgs = imagesFromClipboard(e.clipboardData);
+                if (imgs.length === 0) return;
+                const hasText = Array.from(e.clipboardData.items).some((it) => it.kind === "string");
+                if (!hasText) e.preventDefault(); // 纯图剪贴板：不向输入框贴空文本
+                for (const f of imgs) onAddAttachment(f);
               }}
               onKeyDown={onKeyDown}
             />

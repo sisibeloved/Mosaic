@@ -148,28 +148,47 @@ function BubbleActions({
   );
 }
 
-/** 附件卡片（RFC-0013）：名称/大小，点击经下载端点取回文件。 */
-function AttachmentCards({ roomID, attachments }: { roomID: string | null; attachments?: { attachment_id: string; name: string; size_bytes: number }[] }) {
+/** 附件卡片（RFC-0013）：名称/大小，点击经下载端点取回文件；image/* 缩略图
+ * 预览（同源本地内容——与 Markdown 不渲外链 img 的白名单规则不冲突：那是防
+ * 外链请求/追踪/布局破坏，此处是用户自传的有界本地文件）。 */
+function AttachmentCards({ roomID, attachments }: { roomID: string | null; attachments?: { attachment_id: string; name: string; mime?: string; size_bytes: number }[] }) {
   if (!attachments || attachments.length === 0) return null;
   return (
     <div className="mt-1.5 flex flex-col gap-1">
-      {attachments.map((a) =>
-        roomID ? (
-          <a
-            key={a.attachment_id}
-            href={`/v1/rooms/${encodeURIComponent(roomID)}/attachments/${encodeURIComponent(a.attachment_id)}`}
-            title="下载附件"
-            className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-3/50 px-2 py-1 text-[11px] text-dim transition-colors hover:bg-surface-3 hover:text-text"
-          >
-            📎 <span className="truncate">{a.name}</span>
-            <span className="shrink-0 text-faint">{(a.size_bytes / 1024).toFixed(0)} KiB</span>
-          </a>
-        ) : (
-          <span key={a.attachment_id} className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-3/50 px-2 py-1 text-[11px] text-dim">
-            📎 {a.name} · {(a.size_bytes / 1024).toFixed(0)} KiB
-          </span>
-        ),
-      )}
+      {attachments.map((a) => {
+        const url = roomID
+          ? `/v1/rooms/${encodeURIComponent(roomID)}/attachments/${encodeURIComponent(a.attachment_id)}`
+          : null;
+        const isImage = (a.mime ?? "").startsWith("image/");
+        return (
+          <div key={a.attachment_id} className="flex flex-col gap-1">
+            {isImage && url && (
+              <a href={url} title={`查看/下载 ${a.name}`} className="block w-fit">
+                <img
+                  src={url}
+                  alt={a.name}
+                  loading="lazy"
+                  className="max-h-44 max-w-full rounded-lg border border-border object-contain"
+                />
+              </a>
+            )}
+            {url ? (
+              <a
+                href={url}
+                title="下载附件"
+                className="flex w-fit items-center gap-1.5 rounded-lg border border-border bg-surface-3/50 px-2 py-1 text-[11px] text-dim transition-colors hover:bg-surface-3 hover:text-text"
+              >
+                {isImage ? "🖼️" : "📎"} <span className="truncate">{a.name}</span>
+                <span className="shrink-0 text-faint">{(a.size_bytes / 1024).toFixed(0)} KiB</span>
+              </a>
+            ) : (
+              <span className="flex w-fit items-center gap-1.5 rounded-lg border border-border bg-surface-3/50 px-2 py-1 text-[11px] text-dim">
+                {isImage ? "🖼️" : "📎"} {a.name} · {(a.size_bytes / 1024).toFixed(0)} KiB
+              </span>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
