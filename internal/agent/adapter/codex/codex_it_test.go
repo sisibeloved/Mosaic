@@ -3,6 +3,8 @@
 // IT 层：native-codex 适配器真机 conformance（真实 codex CLI + 真实登录态）。
 // 断言结构契约（结构化块字段齐全、usage 真实、会话连续），不断言具体内容（真实模型非确定性）。
 // CI 无 codex/未登录时跳过；解析契约已由 UT fixtures 钉死。
+// 供应商侧不可用（配额耗尽/鉴权/限流）降级跳过（负责人裁定 2026-09-04：
+// 真实场景该态是按座位降级，断言失败与使用场景不符）。
 package codex
 
 import (
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/agent"
+	"github.com/sisibeloved/Mosaic/internal/ittest"
 )
 
 // requireCodex 返回本机 codex 路径（PATH + nvm glob 位置），未安装则跳过。
@@ -57,11 +60,11 @@ func TestCodexRealEvaluateIntent_IT(t *testing.T) {
 			"body": "Stimulus: should a personal desktop app use SQLite for storage? Decide whether to speak now.",
 		}},
 	})
-	if err != nil {
+	if err != nil && !ittest.SkipIfProviderUnavailable(t, "run", err) {
 		t.Fatalf("run: %v", err)
 	}
 	res, err := h.Result()
-	if err != nil {
+	if err != nil && !ittest.SkipIfProviderUnavailable(t, "result", err) {
 		t.Fatalf("result: %v", err)
 	}
 	if res.Block != "turn_intent" {
@@ -104,19 +107,19 @@ func TestCodexRealSessionResume_IT(t *testing.T) {
 		}
 	}
 	h1, err := session.Run(ctx, mk("t-it-g1", "Remember the codeword: mosaic-blue-42. Reply with just the codeword."))
-	if err != nil {
+	if err != nil && !ittest.SkipIfProviderUnavailable(t, "run1", err) {
 		t.Fatalf("run1: %v", err)
 	}
-	if _, err := h1.Result(); err != nil {
+	if _, err := h1.Result(); err != nil && !ittest.SkipIfProviderUnavailable(t, "result1", err) {
 		t.Fatalf("result1: %v", err)
 	}
 	// 第二任务：凭 resume 上下文回忆 codeword（连续性可观察验证）
 	h2, err := session.Run(ctx, mk("t-it-g2", "What was the codeword you just remembered? Reply with just the codeword."))
-	if err != nil {
+	if err != nil && !ittest.SkipIfProviderUnavailable(t, "run2", err) {
 		t.Fatalf("run2: %v", err)
 	}
 	res2, err := h2.Result()
-	if err != nil {
+	if err != nil && !ittest.SkipIfProviderUnavailable(t, "result2", err) {
 		t.Fatalf("result2: %v", err)
 	}
 	body, _ := res2.Data["body"].(string)
@@ -141,11 +144,11 @@ func TestCodexRealGeneratePublishable_IT(t *testing.T) {
 			"body": "Topic: best storage for a single-user desktop app. State your position in one short paragraph.",
 		}},
 	})
-	if err != nil {
+	if err != nil && !ittest.SkipIfProviderUnavailable(t, "run", err) {
 		t.Fatalf("run: %v", err)
 	}
 	res, err := h.Result()
-	if err != nil {
+	if err != nil && !ittest.SkipIfProviderUnavailable(t, "result", err) {
 		t.Fatalf("result: %v", err)
 	}
 	if res.Block != "public_draft" {

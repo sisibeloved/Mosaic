@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.57 |
+| 版本 | v1.58 |
 | 日期 | 2026-09-04 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -16,6 +16,7 @@
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v1.58 | 2026-09-04 | 陆尘裁定 / ZCode | **IT 真实 CLI 用例降级语义（负责人裁定："在真实场景碰到配额耗尽怎么处理？应该是降级，直接断言成失败跟使用场景不符"）**。(1) **internal/ittest 共享判定**：ProviderUnavailable/SkipIfProviderUnavailable——供应商侧不可用（配额耗尽/鉴权失败/限流/网络不可达）时用例降级跳过；判定刻意保守（只认供应商拒绝与不可达的明确措辞，适配器自身缺陷——解析失败/发布门拒绝/超时——仍按失败断言，不得借道跳过掩盖回归）；产品侧该语义本就存在（引擎对评估/生成失败的座位按波跳过、不阻塞其他座位），本切片只把测试侧对齐到同一现实。(2) **三家适配器 IT 接入**（codex/kimi/minimax 各 8 处 run/result 断言位）：实证——kimi 周配额 403 下三用例由 FAIL 变 SKIP 且跳过消息携带完整配额真相；codex 日配额重置后三用例 PASS，同晚国际路由抖动（"waiting for network (Connection failed)"）下 SKIP（网络不可达与配额同类：环境态）；minimax 全程 PASS。(3) **kimi 诊断行修复（连带可观测性缺口）**：退出码错误的行选取由"合并流首行"改为"error: 诊断行优先"——0.39.1 实证配额耗尽时首行是无信息量的 meta 版本行、真实原因在其后的 stderr error: 行（此前 IT 报错只见 meta 行，配额原因不可见）；UT 钉住。(4) **TestHostRunnerScanRealCLIs_IT 登录态断言修正（负责人指出）**：codex 分支由写死 logged_in（"换任何一台未登录的机器都会红"）改为"可判定"（logged_in \\| logged_out，仅 LoginUnknown 是缺陷）——扫描语义在未登录机器上同样成立，与 kimi 分支口径对齐。门禁：gofmt/vet 双 OS/UT/ST/交叉编译全绿；IT 真实 CLI 腿按降级语义收敛（环境态 SKIP / 可用时 PASS） |
 | v1.57 | 2026-09-04 | Mosaic 项目组 / ZCode | **M4-0 开工（首切片：聊天交互补齐前两项 + Room 管理收口）**。(1) **消息复制**：气泡 hover 动作条一键复制原文（Async Clipboard + execCommand 兜底；复制含 mosaic-todo 块的原始 body——所见即所发）。(2) **引用回复全链**：点"引用"带出输入区引用卡片（作者+摘要，可取消，发送成功才弃）→ post_message reply_to → 气泡顶部引用条（点击 data-event-id 锚定跳原消息）；**顺手修复既有不对称**——快照 TimelineItem 此前不投影 addressed_to/reply_to（SSE 是唯一来源，刷新后 @点名与引用丢失），本版补齐两路同形（projection + OpenAPI + 双生成链）；命令面补 reply_to 形状校验（evt_*，对齐 relations.target_event_id 纪律）+ UT（非法拒收/合法固化）。(3) **Room 管理收口**：删除确认弹层（reason 必填 1..280 留痕——M3-6 delete_room 命令既有、UI 缺口补齐）→ 级联清库 → 回列表；新建/列表排序（last_event_at 服务端序）/详情/改名/暂停恢复均已在席，本条目勾选。(4) **文件上传 mini-RFC 已立**：RFC-0013（Draft 待负责人评审）——两步上传（令牌 24h 单次消费）、描述子封闭字段集、上限建议（单件 8MiB/每消息 4 件/每房 512MiB/注入摘录 8k runes）、文本摘录注入 + 图像/二进制按适配器能力如实降级、DLP 摘录剔除；实现待评审后进行。(5) **门禁**：gofmt/vet 双 OS/UT/ST/六目标交叉编译/gen 新鲜度全绿；IT 真实 CLI 腿（codex/kimi 各三用例）因**供应商配额耗尽**失败（codex："usage limit…try again at 8:25 PM"；kimi：周配额 403 "weekly (7-day) usage limit"——探针实证，与本改动无关，未触碰适配器代码；CI 无 CLI 环境该腿跳过） |
 | v1.0 | 2026-08-25 | Mosaic 项目组 / ZCode | 初版：交付目标与 DoD、四个形态决策（含建议）、范围裁定、里程碑 M0–M5、双平台工程要求、风险、治理 |
 | v1.1 | 2026-08-25 | Mosaic 项目组 / ZCode | M0 执行更新：形态决策确认（ADR-0008~0010）；新增测试分层约定（§5.5，UT/IT/ST + TDD backlog 机制）；M0 勾选同步（脚手架/端口与 echo/测试分层完成；协议生成链与严格校验、SQLite/Wails spike、Apple 账号待办） |

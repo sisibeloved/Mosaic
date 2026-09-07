@@ -166,7 +166,7 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 		s.mu.Unlock()
 	}
 	if code != 0 {
-		h.err = fmt.Errorf("kimi: kimi 退出码 %d：%s", code, firstLineOf(stdout, 200))
+		h.err = fmt.Errorf("kimi: kimi 退出码 %d：%s", code, diagLineOf(stdout, 200))
 		return
 	}
 	if len(parsed.Messages) == 0 {
@@ -334,10 +334,27 @@ func firstLineOf(s string, max int) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
+	return capRunes(s, max)
+}
+
+func capRunes(s string, max int) string {
 	if len([]rune(s)) > max {
-		s = string([]rune(s)[:max]) + "…"
+		return string([]rune(s)[:max]) + "…"
 	}
 	return s
+}
+
+// diagLineOf 非零退出的诊断行选取：kimi 诊断走 stderr、以 "error:" 起行
+// （0.39.1 实证：配额耗尽时合并流首行是无信息量的 meta 版本行，真实原因
+// 在其后的 error: 行——此前取首行把诊断真相丢了，IT 报错只见 meta 行）。
+// 无 error: 行时回退首行（既有行为）。
+func diagLineOf(s string, max int) string {
+	for _, ln := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(ln); strings.HasPrefix(strings.ToLower(t), "error:") {
+			return capRunes(t, max)
+		}
+	}
+	return firstLineOf(s, max)
 }
 
 // ---- 提示词与结果映射 ----

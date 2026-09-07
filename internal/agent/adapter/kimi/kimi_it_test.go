@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/agent"
+	"github.com/sisibeloved/Mosaic/internal/ittest"
 )
 
 // requireKimi 返回本机 kimi 路径（PATH + 官方安装位置），未安装则跳过。
@@ -69,11 +70,11 @@ func TestKimiRealEvaluateIntent_IT(t *testing.T) {
 			"body": "Stimulus: should a personal desktop app use SQLite for storage? Decide whether to speak now.",
 		}},
 	})
-	if err != nil {
+	if err != nil && !ittest.SkipIfProviderUnavailable(t, "run", err) {
 		t.Fatalf("run: %v", err)
 	}
 	res, err := h.Result()
-	if err != nil {
+	if err != nil && !ittest.SkipIfProviderUnavailable(t, "result", err) {
 		t.Fatalf("result: %v", err)
 	}
 	if res.Block != agent.BlockTurnIntent {
@@ -107,19 +108,19 @@ func TestKimiRealSessionResume_IT(t *testing.T) {
 		}
 	}
 	h1, err := session.Run(ctx, mk("t-it-g1", "Remember the codeword: mosaic-kimi-42. Reply with just the codeword."))
-	if err != nil {
+	if err != nil && !ittest.SkipIfProviderUnavailable(t, "run1", err) {
 		t.Fatalf("run1: %v", err)
 	}
-	if _, err := h1.Result(); err != nil {
+	if _, err := h1.Result(); err != nil && !ittest.SkipIfProviderUnavailable(t, "result1", err) {
 		t.Fatalf("result1: %v", err)
 	}
 	// 第二任务：凭 -S 恢复的上下文回忆 codeword
 	h2, err := session.Run(ctx, mk("t-it-g2", "What was the codeword you just remembered? Reply with just the codeword."))
-	if err != nil {
+	if err != nil && !ittest.SkipIfProviderUnavailable(t, "run2", err) {
 		t.Fatalf("run2: %v", err)
 	}
 	res2, err := h2.Result()
-	if err != nil {
+	if err != nil && !ittest.SkipIfProviderUnavailable(t, "result2", err) {
 		t.Fatalf("result2: %v", err)
 	}
 	body, _ := res2.Data["body"].(string)
@@ -144,11 +145,11 @@ func TestKimiRealGeneratePublishable_IT(t *testing.T) {
 			"body": "Topic: best storage for a single-user desktop app. State your position in one short paragraph.",
 		}},
 	})
-	if err != nil {
+	if err != nil && !ittest.SkipIfProviderUnavailable(t, "run", err) {
 		t.Fatalf("run: %v", err)
 	}
 	res, err := h.Result()
-	if err != nil {
+	if err != nil && !ittest.SkipIfProviderUnavailable(t, "result", err) {
 		t.Fatalf("result: %v", err)
 	}
 	if res.Block != agent.BlockPublicDraft {

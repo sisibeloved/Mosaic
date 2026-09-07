@@ -242,6 +242,25 @@ func TestNoAssistantAndNonZeroExit(t *testing.T) {
 	}
 }
 
+// TestNonZeroExitSurfacesDiagLine：诊断行选取——stderr 的 "error:" 行优先于
+// 合并流首行（0.39.1 实证：配额耗尽时首行是无信息量的 meta 版本行，真实
+// 原因在 error: 行；取首行会把配额真相吞掉）。
+func TestNonZeroExitSurfacesDiagLine(t *testing.T) {
+	combined := "{\"role\":\"meta\",\"type\":\"system.version\",\"version\":\"0.39.1\"}\n" +
+		"error: failed to run prompt: provider.auth_error: 403 You've reached your weekly (7-day) usage limit.\n"
+	exec := &fakeExecer{outputs: []string{combined}, code: 1}
+	sess, _ := newTestAdapter(exec).Boot(context.Background(), agent.Profile{ProfileID: "p-diag", Adapter: "kimi"})
+	defer sess.Close()
+	h, _ := sess.Run(context.Background(), agent.Task{TaskID: "t-diag", Kind: agent.KindGenerate})
+	_, err := h.Result()
+	if err == nil {
+		t.Fatal("非零退出应失败")
+	}
+	if !strings.Contains(err.Error(), "provider.auth_error") || strings.Contains(err.Error(), "system.version") {
+		t.Fatalf("退出码错误应携带诊断行而非 meta 行：%v", err)
+	}
+}
+
 // TestCancelBeforeResult：取消后 Result 返回 ErrStale（迟到拒绝语义）。
 func TestCancelBeforeResult(t *testing.T) {
 	exec := &fakeExecer{block: true}

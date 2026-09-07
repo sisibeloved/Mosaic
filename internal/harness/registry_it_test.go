@@ -29,8 +29,11 @@ func TestHostRunnerScanRealCLIs_IT(t *testing.T) {
 		switch exe.Adapter {
 		case "codex":
 			if _, err := exec.LookPath("codex"); err == nil {
-				if exe.Login != LoginLoggedIn {
-					t.Errorf("本机 codex 应为 logged_in（已实证 login status 输出 Logged in）：got %s", exe.Login)
+				// 登录态断言的是"可判定"（logged_in | logged_out），不是"已登录"——
+				// 扫描语义在未登录机器上同样成立；此前写死 logged_in，换任何一台
+				// 未登录的机器必红（负责人裁定 2026-09-04）。仅 LoginUnknown 是缺陷。
+				if exe.Login != LoginLoggedIn && exe.Login != LoginLoggedOut {
+					t.Errorf("codex 登录态应可判定（logged_in | logged_out）：got %s", exe.Login)
 				}
 				if exe.Version == "" || exe.Digest == "" {
 					t.Errorf("codex 版本/摘要缺失：%+v", exe)
