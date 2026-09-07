@@ -43,7 +43,9 @@ func TestAttachmentPathHint(t *testing.T) {
 	}
 
 	// POSIX 数据目录（WSL 侧运行 mosaic-server 的形态）：只绝对路径，无双形态
-	hint2 := attachmentPathHint("/home/u/.local/mosaic", "attachments/rooms/r/a")
+	// （断言前做分隔符归一——Windows CI 腿上 filepath.Join 会给 POSIX 样例
+	// 也拼反斜杠，路径语义不变）
+	hint2 := strings.ReplaceAll(attachmentPathHint("/home/u/.local/mosaic", "attachments/rooms/r/a"), "\\", "/")
 	if !strings.Contains(hint2, "/home/u/.local/mosaic/attachments/rooms/r/a") || strings.Contains(hint2, "/mnt/") {
 		t.Errorf("POSIX 目录不应附 WSL 视图: %q", hint2)
 	}
