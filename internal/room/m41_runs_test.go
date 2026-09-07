@@ -5,7 +5,9 @@ package room
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -136,7 +138,7 @@ func TestRunLifecycleFailed(t *testing.T) {
 		Seats:  []AgentSeat{{ParticipantID: "par_fail", Profile: agent.Profile{ProfileID: "pf", Adapter: "fail_ad"}}},
 		Budget: contextx.Limits{}, ReactionWindow: 5 * time.Millisecond,
 		Clock: testClock, Now: time.Now,
-		NewID:  func(p string) string { return p + "_m41f_" + time.Now().Format("150405.000000000") },
+		NewID:  func(p string) string { return p + "_m41f_" + m41Seq() },
 		Tenant: "ten_local",
 	})
 	t.Cleanup(eng.Close)
@@ -227,6 +229,14 @@ func TestRunTaskCommandValidation(t *testing.T) {
 		Payload: mustJSON(map[string]any{"run_id": "run_nope", "reason": "x"})}); err == nil {
 		t.Fatal("未知 run 取消应拒绝")
 	}
+}
+
+// m41Seq 测试事件 ID 序号（CI 快机上同纳秒时间戳会撞 EventID 唯一约束——
+// 原子计数保证互异）。
+var m41n atomic.Int64
+
+func m41Seq() string {
+	return strconv.FormatInt(m41n.Add(1), 36) + time.Now().Format("150405.000000000")
 }
 
 func validUUIDv7Suffix(i int) string {
