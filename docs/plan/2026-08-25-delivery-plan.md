@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.54 |
+| 版本 | v1.55 |
 | 日期 | 2026-09-01 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -71,6 +71,7 @@
 | v1.52 | 2026-09-04 | 陆尘裁定 / ZCode | **权限档裁定范围纠正（"codex 也有权限策略啊……各个 Agent 要么有 YOLO 模式，要么权限可以设置成 Full 级别的，只是名称不一样，都得适配上"）——v1.51 把 codex 排除出裁定域、把 kimi --auto 当权限档均有误**。逐家落地与实证：(1) **codex**：sandbox 即其权限面（exec 非交互下审批本就 never，-s 是唯一闸）——`-s read-only` → **`-s danger-full-access`**（Full 档；read-only 曾连网络一并封死；实证 0.151 full 档最小调用跑通；resume 子命令不接受 -s——沙箱随会话首轮固定，首轮 Full 即全会话 Full；argv 契约 UT 钉死 TestRuntimeSandboxFullCodex）；(2) **kimi**：YOLO 档是 `-y/--yolo`（"Auto-approve regular tool calls"，v1.51 误把 --auto 当权限档——auto 是"完全自治模式"且与 -p 互斥），实证 **--yolo 同样与 -p 互斥**（"Cannot combine --prompt with --yolo."）——-p 是 kimi 唯一无头通道（2026-08-31 实证无 --input/文件通道），该形态自带审批语义（工具直接执行，狗粮 web 抓取已证可用），无旗标可叠加，维持现状并注记；(3) mcode 已于 v1.51 落地 `--permission full`。三家对齐结果：**能在无头形态显式设 Full 的都设了（codex/mcode），形态本身自带放行的维持并注记（kimi）**；爆炸半径统一由 per-profile 工作目录与机主信任域承担。登记：codex 0.151 exec 无 --search 旗标（web 工具面未开放，与权限无关） |
 | v1.53 | 2026-09-04 | Mosaic 项目组 / ZCode | **dogfood 诊断+修复（"MiniMax 说开抓 10 分钟无动静"）——执行模型认知错配**。三层取证：(1) 事件流/日志时间线（DB=UTC/日志=本地 MDT 对齐）——07:12Z minimax 发"开抓，10 分钟内回前两条"（带 mosaic-todo 申报块，v1.49 协议已被模型自发使用 ✓）+ 07:12Z/07:17Z 两波全静默（minimax rationale："再说话是空转，留在执行上"）；(2) **mcode 会话日志实锤：宣言轮（07-12-08 会话）content 只有 text/thinking、零工具调用**——模型只是"说"了要抓；(3) 引擎侧无恙——主动波 5min 起搏正常（07:17:25Z proactive=true 实证，07:22:57Z 会再来）、Timeout 装配 180s 非瓶颈。**根因：mcode exec 按轮拉起、轮末即结束、无后台执行，而模型抱持"我会在后台执行 10 分钟"的自我模型**——两轮机会均以"执行中"为由自选静默，tasklist_note 的"没有进展就说明情况"被解读成"无话可说"而非"任务停滞"。修复（认知矫正进协议指令，两处单源）：TasklistProtocol 增执行模型硬事实（"你的会话按轮拉起、轮末即结束，没有后台执行——任务须在某一轮回复中当场完成，只承诺不执行任务永远停在原地"）；主动波 tasklist_note 改写（"'已在执行中'不是静默理由，要么本轮就做（调用工具当场完成），要么说明真实阻塞"）。登记：若矫正后仍空转，下一步候选为评估指令面向主动波的条件化（intentInstruction 静态通用文案与 tasklist_note 的张力）+ 生成任务超时按抓取类任务放宽（180s 对多页抓取+撰写余量未实证） |
 | v1.54 | 2026-09-04 | Mosaic 项目组 / ZCode | **M3 完成度核对与收口（负责人指令"确认 M3 规划内容是否已完成，没有完成的补上"）**。逐切片对照代码核实：M3-2/3-6 已按既有裁定落地（RFC-0005 附录 B 群聊制裁剪 / v1.36 数据主权），本版勾选并补注记；**两个真实缺口补齐**：(1) **M3-5 认领**——claim_evidence_request 命令 + evidence_request.claimed 事件（owners 追加、open 态单次、同人不重复、终态后拒绝；幂等投影去重；命令面仅 human/system，agent 自主认领随工具面分期）+ Schema/fixtures/gate 反例 + [dev] 文案 + 命令枚举 21 + 认领命令链 UT；(2) **M3-4 Claim 投影（"按 flag 离线启用"）**——ClaimsOf 确定性最小账本（零 LLM）：胶囊结论→strengthened、同 thread 后到胶囊取代早者→superseded（重开后再收束的演化留痕）、假设→open、证据需求单问题→open_question（resolved→strengthened/dismissed→weakened）；取编辑后胶囊视图（与注入同源）；"按 flag 离线启用"落地为仅 dev 门禁端点 GET /v1/debug/rooms/{id}/claims（不入组装/公开快照）+ 端点 UT（含非 dev 404）；RFC-0006 E-03 模型混合提取为其后续分期。**贯穿观测读数归档（出口判据项）**：GPT-6 预测讨论房 195 带 timing 收波——波全程 p50 17.8s/max 201.9s，评估Σ p50 16.9s 占 ~95%（完全主导）；逐座评估 p50 codex 14.1s/kimi 9.6s/minimax 14.6s，kimi 方差极端（max 109.3s）；Σ→max 并行化节省 max 164.5s——**裁定建议：评估相并行化（不改发布语义）**；M3-1 狗粮基座与 M3-2/3-4/3-5/3-6 全部勾选；出口判据四项三项 ✓（bounded_disagreement 真实讨论实录待狗粮——机制 UT/IT 钉死） |
+| v1.55 | 2026-09-06 | 陆尘指令 / ZCode | **M4 规划扩容（负责人三指令）**。(1) **M4 Patch 应用未遂**：指定路径 `~/.codex/visualizations/2026/09/06/01a07742-…/mosaic-m4-v1.55.patch` 目录存在但为空，.codex 全树/Desktop/Downloads/WSL home 与 /tmp 均无 *.patch——**待负责人重出 patch 后另行应用**（同源 Codex 会话遗留笔记 /tmp/mosaic-m4-hermes-plan-notes.md 的借鉴项已并入下条）。(2) **ZCode 接入自 M5 提前至 M4**（时间线汇总与风险表同步改写；保险条款随迁：headless 缺口未解除则降级可见、不阻塞 v1.0.0）。(3) **M4 增补特性**：聊天交互补齐（消息复制/引用回复/文件上传——交互参考飞书/Grok Bot/Hermes Agent；文件附件实现前立 mini-RFC 定存储与注入语义）；Room 管理增删改查（后端 create/rename/delete/pause 命令多既有，主补 SPA 管理面整合）；Hermes Bot Mode 借鉴（单次 reply-or-pass 仅限明确点名与任务交付场景，其余保留两阶段——实现前以 dogfood 实录标注适用面） |
 
 # 1. 交付目标与"完全可用"定义
 
@@ -247,11 +248,14 @@
 - [ ] 72h 无人值守稳定性专项：内存/句柄监控、泄漏修复、崩溃自恢复演练（双平台各一轮）
 - [ ] i18n 中英；快速上手 + FAQ + 本地隐私说明
 - [ ] 反半成品走查：全 UI 走查失败态文案与恢复建议；无占位功能
+- [ ] 聊天交互补齐（负责人指令 2026-09-04；交互参考飞书 / Grok Bot / Hermes Agent）：**消息复制**（气泡 hover 一键复制原文，纯前端）；**消息引用回复**（点引用带出被引消息卡片、发送携带 reply_to——事件与关系面既有，补交互与引用渲染）；**文件上传**（附件面：本地存储 + message.posted attachments + 组装注入策略——文本注入摘录、二进制走路径与元数据（CLI 能力差异如实降级，参考 kimi 图像入参/minimax image_in 能力标记）；实现前立 mini-RFC 定附件语义与大小上限）
+- [ ] Room 管理（增删改查，负责人指令 2026-09-04）：SPA 房间管理面整合——新建入口 / 列表与最近房间 / 详情 / 改名（rename_room 既有）/ 暂停恢复（既有）/ 删除确认（delete_room 既有 + M3-6 级联清库）——后端命令多已在，主补 UI 整合与缺口（列表排序、空态引导）
+- [ ] ZCode 适配器（自 M5 提前，负责人指令 2026-09-04）：依赖 headless 缺口（issue #29）解除；未解除则能力降级可见、不阻塞 v1.0.0（保险条款随迁不变）
+- [ ] Hermes Bot Mode 借鉴（Codex 会话分析 2026-09-06）：单次 reply-or-pass 快路径**仅适用于明确点名单人与已有任务交付**场景，其余保留意图评估 + 生成两阶段流程——实现前以 dogfood 实录标注适用面与收益（评估相省时 vs 误静默风险）
 - **出口判据**：第 1 节 DoD 1–10 全绿（由用户按清单逐项验收）；双平台各一台干净机器完成全新安装→向导→首场讨论全程录屏存档。
 
 ## M5 第二梯队与打磨（M4 后并行/后续，2–3 周）
 
-- [ ] ZCode 适配器（依赖 headless 缺口解除；未解除则保持能力降级可见，不阻塞 v1.0.0 发布）
 - [ ] 评测框架 lite：回放一致性门禁 + 指标只读页（RFC-0011 个人版裁剪）
 - [ ] 性能：10 万事件房间快照/续传达标；冷启动 < 10s
 - [ ] macOS/Windows 细节打磨（通知、快捷键、深色模式跟随系统）
@@ -267,7 +271,7 @@
 | M4 产品化 | 4 周 | 17 |
 | M5 二梯队与打磨 | 2–3 周（可并行尾部） | ~18–20 |
 
-约 4.5–5 个月交付 v1.0.0；v1.0.0 的定义不含 ZCode 适配器（分级晋级语义，RFC-0002 v0.5）。
+约 4.5–5 个月交付 v1.0.0；ZCode 适配器已按负责人指令提前至 M4（v1.55）——headless 缺口未解除时能力降级可见、不阻塞 v1.0.0（分级晋级语义 RFC-0002 v0.5 保持）。
 
 # 5. 双平台工程要求（贯穿所有里程碑）
 
@@ -281,7 +285,7 @@
 
 | 依赖/风险 | 影响 | 缓解 |
 |---|---|---|
-| ZCode headless 缺口（issue #29） | ZCode 适配器无法进入 v1.0 | 分级晋级（已定）：v1.0 至少 2 个真实适配器（Codex + Kimi）；内部推动需求，解除后按 M5 晋级 |
+| ZCode headless 缺口（issue #29） | ZCode 适配器无法进入 v1.0 | 分级晋级（已定）：v1.0 至少 2 个真实适配器（Codex + Kimi）；内部推动需求，解除后按 M4 晋级（v1.55 提前；未解除则降级可见不阻塞） |
 | macOS Gatekeeper 拦截未公证 app | 个人机器首次打开多一步确认 | 已裁定不购 Apple 开发者账号：ad-hoc 签名 + 首次打开指引（右键→打开 / `xattr -cr`）写入 README 与 FAQ；个人使用可接受，公开分发需求出现时再购号公证 |
 | Codex/Kimi 输出 schema 漂移 | 适配器解析失败率上升 | 版本固定（RFC-0002 修订 #14）+ fixture 阈值告警 + 适配器更新通道 |
 | D-1 SQLite 回退风险 | 存储层返工 | M0 内 spike 冒烟三用例前置排雷；回退预案（内嵌 PG）已评估 |
