@@ -417,7 +417,7 @@ export interface components {
          */
         RoomCommand: {
             /** @enum {string} */
-            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "rename_room" | "endorse_intent" | "invite_agent" | "fork_thread" | "pause_thread" | "resume_thread" | "close_thread" | "reopen_thread" | "merge_thread" | "propose_closure" | "accept_closure" | "create_evidence_request" | "claim_evidence_request" | "resolve_evidence_request" | "resolve_task" | "edit_memory" | "delete_room";
+            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "rename_room" | "endorse_intent" | "invite_agent" | "fork_thread" | "pause_thread" | "resume_thread" | "close_thread" | "reopen_thread" | "merge_thread" | "propose_closure" | "accept_closure" | "create_evidence_request" | "claim_evidence_request" | "resolve_evidence_request" | "resolve_task" | "edit_memory" | "delete_room" | "run_task" | "cancel_run";
             expected_room_version: number;
             /** @description UUIDv7（服务端按 tenant+key+kind 去重；同键异指纹 409） */
             idempotency_key: string;
@@ -580,6 +580,8 @@ export interface components {
             closures?: components["schemas"]["ClosureSummary"][];
             /** @description 任务清单（M3-3 tasklist，RFC-0012 OQ-A：带责任人 owner 的承诺追踪——确定性派生 + 人工门控裁定）。 */
             tasks?: components["schemas"]["TaskItem"][];
+            /** @description 任务执行通道（M4-1，RFC-0002 执行生命周期补编）：独立于群聊波的长任务执行与结果回传。 */
+            runs?: components["schemas"]["RunView"][];
             /** @description 证据需求单（M3-5：open/resolved/dismissed）。 */
             evidence_requests?: components["schemas"]["EvidenceRequestView"][];
             /** @description 开发者模式回放条目（M3-1 持久化补全：事件支撑的 [dev] 内联信息，重启还原）。 */
@@ -651,6 +653,28 @@ export interface components {
             /** @description 相对数据目录的存储路径 */
             storage_path: string;
             sha256: string;
+        };
+        /** @description 任务执行视图（M4-1）：status ∈ requested | running | completed | failed | canceled | unknown；迟到审计（late）不改终态。 */
+        RunView: {
+            run_id: string;
+            /** @description 可选关联的 tasklist 项 */
+            task_id?: string;
+            /** @description 负责人（agent 座位） */
+            assignee: string;
+            instruction: string;
+            /** @description 提出方（人类） */
+            requester: string;
+            /** @enum {string} */
+            status: "requested" | "running" | "completed" | "failed" | "canceled" | "unknown";
+            error?: string;
+            /** @description 结果消息事件（message.posted） */
+            result_event_id?: string;
+            /** @description 迟到结果审计标记（取消后/暂停期到达——不发布正文） */
+            late?: boolean;
+            /** Format: date-time */
+            requested_at: string;
+            /** Format: date-time */
+            updated_at: string;
         };
         BackupSummary: {
             /** @description bkp_<ts36>_<hex>（本包生成，白名单字符） */

@@ -691,7 +691,7 @@ components:
       properties:
         command_kind:
           type: string
-          enum: [create_room, post_message, pause_room, resume_room, rename_room, endorse_intent, invite_agent, fork_thread, pause_thread, resume_thread, close_thread, reopen_thread, merge_thread, propose_closure, accept_closure, create_evidence_request, claim_evidence_request, resolve_evidence_request, resolve_task, edit_memory, delete_room]
+          enum: [create_room, post_message, pause_room, resume_room, rename_room, endorse_intent, invite_agent, fork_thread, pause_thread, resume_thread, close_thread, reopen_thread, merge_thread, propose_closure, accept_closure, create_evidence_request, claim_evidence_request, resolve_evidence_request, resolve_task, edit_memory, delete_room, run_task, cancel_run]
         expected_room_version:
           type: integer
           minimum: 0
@@ -957,6 +957,11 @@ components:
           description: 任务清单（M3-3 tasklist，RFC-0012 OQ-A：带责任人 owner 的承诺追踪——确定性派生 + 人工门控裁定）。
           items:
             $ref: "#/components/schemas/TaskItem"
+        runs:
+          type: array
+          description: 任务执行通道（M4-1，RFC-0002 执行生命周期补编）：独立于群聊波的长任务执行与结果回传。
+          items:
+            $ref: "#/components/schemas/RunView"
         evidence_requests:
           type: array
           description: 证据需求单（M3-5：open/resolved/dismissed）。
@@ -1032,6 +1037,22 @@ components:
         size_bytes: { type: integer, format: int64, minimum: 0 }
         storage_path: { type: string, description: 相对数据目录的存储路径 }
         sha256: { type: string }
+    RunView:
+      type: object
+      required: [run_id, assignee, instruction, requester, status, requested_at, updated_at]
+      description: "任务执行视图（M4-1）：status ∈ requested | running | completed | failed | canceled | unknown；迟到审计（late）不改终态。"
+      properties:
+        run_id: { type: string, pattern: "^run_[0-9A-Za-z_-]+$" }
+        task_id: { type: string, description: 可选关联的 tasklist 项 }
+        assignee: { type: string, description: 负责人（agent 座位） }
+        instruction: { type: string }
+        requester: { type: string, description: 提出方（人类） }
+        status: { type: string, enum: [requested, running, completed, failed, canceled, unknown] }
+        error: { type: string }
+        result_event_id: { type: string, description: 结果消息事件（message.posted） }
+        late: { type: boolean, description: 迟到结果审计标记（取消后/暂停期到达——不发布正文） }
+        requested_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
     BackupSummary:
       type: object
       required: [backup_id, created_at, size_bytes]

@@ -1,0 +1,17 @@
+{
+  "event_id": "evt_runrequested01",
+  "tenant_id": "ten_local",
+  "room_id": "room_fixture01",
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "type": "run.requested",
+  "schema_version": 1,
+  "occurred_at": "2026-09-07T07:00:00.000Z",
+  "actor": { "participant_id": "par_owner", "kind": "human" },
+  "causation_id": null,
+  "correlation_id": null,
+  "visibility": { "kind": "public" },
+  "payload": { "run_id": "run_01H8RUN01", "assignee": "par_codex_native1", "instruction": "抓取 https://example.com 并总结三点", "task_id": "tsk_01H8T1", "requester": "par_owner" },
+  "seq": 104,
+  "metadata": {}
+}

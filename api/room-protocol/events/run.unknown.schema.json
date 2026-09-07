@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/run.unknown.schema.json",
+  "title": "RunUnknownPayload",
+  "description": "重启后发现 running 态但无活进程——结果未知；不自动重跑（可能已产生副作用），由人类显式重发或忽略。",
+  "type": "object",
+  "required": ["run_id", "assignee", "note"],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": { "type": "string", "pattern": "^run_[0-9A-Za-z_-]+$" },
+    "assignee": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" },
+    "note": { "type": "string", "maxLength": 280 }
+  }
+}

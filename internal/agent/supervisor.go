@@ -80,6 +80,21 @@ func (s *Supervisor) Submit(ctx context.Context, profile Profile, task Task) (Ha
 	return session.Run(ctx, task)
 }
 
+// CapableOf 查询 Profile 解析到的适配器是否具备某能力（与 Submit 同一解析
+// 顺序：先 ProfileID 后适配器名）。M4-1：run_task 命令面的能力门。
+func (s *Supervisor) CapableOf(profile Profile, has func(Capabilities) bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	adapter, ok := s.adapters[profile.ProfileID]
+	if !ok {
+		adapter, ok = s.adapters[profile.Adapter]
+	}
+	if !ok {
+		return false
+	}
+	return has(adapter.Capabilities())
+}
+
 // Shutdown 关闭全部逻辑会话。
 func (s *Supervisor) Shutdown() {
 	s.mu.Lock()

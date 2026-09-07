@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.63 |
+| 版本 | v1.64 |
 | 日期 | 2026-09-07 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -16,6 +16,7 @@
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v1.64 | 2026-09-07 | Mosaic 项目组 / ZCode | **M4-1 切片 A：任务执行通道（run）——独立于波的长任务执行与结果回传（RFC-0002 执行生命周期补编）**。(1) **契约**：任务身份（tasklist 承诺）与执行尝试（run）分离；六事件族（requested/started/completed/failed/canceled/unknown）+ Schema/fixtures/门禁；状态只由执行器回执产生，不由正文"正在执行"推断（v1.53 实证问题的机制化收口）。(2) **命令面**：run_task（assignee/instruction/task_id 关联；Capabilities.TaskRuns 能力门——echo 等测试桩如实拒绝）+ cancel_run（终态不可取消）。(3) **引擎 RunManager**：与波解耦的专用 exec（RunTimeout 缺省 10min）；结果以负责人名义发布 message.posted（AppendEventsIf 迟到围栏 + 发布门 + metadata.run_id/task_id 可追溯）；取消后代次过期 → run.completed{late:true} 仅审计不发布；Close 取消全部在途（防孤儿子进程）；**重启恢复 RecoverRuns**：running 态无活进程 → run.unknown（结果未知，不自动重跑——可能已产生副作用）。(4) **投影与 UI**：快照 runs（迟到审计不翻终态）；任务 Tab pending 任务"执行"按钮 + run 状态 chip（执行中/已执行/失败/结果未知）；活动 Tab 任务执行区。(5) 测试：room UT 5 例（投影折叠含迟到/生命周期 happy（结果消息 agent 名义+metadata）/failed（真实错误串）/重启 unknown/命令校验含能力门）。**登记**：等待用户/等待外部条件状态需 CLI 交互通道（无头 exec 不存在），不虚构——随 ACP/MCP 演进；M4-2 切片 B 的长任务状态接入以本通道为基 |
 | v1.63 | 2026-09-07 | Mosaic 项目组 / ZCode | **M4-2 切片 A：协作状态与用户反馈（状态映射 + 静默/错误可见性；RFC-0012 附录 H）**。(1) **能力核对**：三家 CLI 流消费面均为终态事件（codex item.completed / kimi meta+assistant / mcode item——fixtures 与实证），无过程态可消费、无运行查询通道——过程态以引擎自有阶段为准，"等待用户/外部条件"待 M4-1 执行通道，不虚构。(2) **座位失败可见性**（v1.50/58 痛点：配额/网络原因只进日志）：Engine OnSeatStatus → SSE seat.status 瞬态帧（eval_failed/generate_failed 携适配器错误串）；正在输入区失败行（头像+状态+原因截断）；新一轮 round.opened 清空（波间保留供"上轮为何没人说话"回看）。(3) **活动 Tab**：最近一轮各座结果自权威事件重建（intent.recorded：主动沉默+公开理由/已发言；无记录=未参与）+ 瞬态失败区（标注断线不重建）；语义纪律钉死——静默≠共识、失败/超时≠同意、瞬态不构成第二权威账本。(4) 测试：引擎 UT（failAdapter 注入 403 错误串 → seatStatus 帧携原因；race 修复：测试内非原子计数器）；typecheck/门禁全绿。长任务状态（等待用户/执行中/迟到结果）按计划依赖 M4-1 接入 |
 | v1.62 | 2026-09-07 | 陆尘裁定 / ZCode | **RFC-0013 OQ-1 提前裁定：附件路径注入（"保存到临时文件夹传 PATH 给 Agent"→ 直接注入附件本体绝对路径，不复制临时文件——附件即稳定存储、hash 已校验、免临时生命周期）**。附件语境注入行追加：绝对路径 + WSL `/mnt/<drive>` 视图（agent 座位在发行版内，Windows 盘符路径不可直达——winPathToWSL 纯函数，盘符归一小写、UNC/相对/POSIX 不附）+ 工具提示（图像能否查看取决于各 CLI 工具能力，如实标注）。安全口径入档 RFC：v1.52 全权限裁定下 agent 本就能读数据目录（同用户进程；M1"位置隔离非强制隔离"登记不变）——路径注入不新增暴露面，只把"能读"变成"知道去读"。UT：盘符转换表（大小写/UNC/相对/非字母盘）+ 提示行组合（双形态/POSIX 单形态，平台无关断言）。 |
 | v1.61 | 2026-09-07 | 陆尘问询 / ZCode | **剪贴板粘贴图片 + 附件缩略图（纯前端，RFC-0013 附件面体验补齐）**。(1) **粘贴捕获**：输入区 onPaste 捕获 clipboardData 的 image/* 文件项（Win+Shift+S 截图/网页复制图在 WebView2/Chromium 系均以此形态出现），时间戳命名（剪贴板 Blob 本无名或恒 image.png）→ 走既有上传链路（8MiB/4 件上限不变）；纯图剪贴板阻止空文本贴入。(2) **缩略图**：气泡附件卡对 image/* 经下载端点渲染有界缩略图（同源本地内容——与 v1.47 Markdown 不渲外链 img 的白名单不冲突：那是防外链请求/追踪，此处是用户自传本地文件），点击查看/下载。**如实边界**：agent 侧看不见图像内容（无头 CLI 无图像入参通道，语境注入维持元数据降级标注）——粘贴截图对人类可见/存档，agent 仅知"发了张图"；图像通道若随 ACP/流式演进解除，注入策略按 RFC-0013 §2.4 能力标记升级。 |

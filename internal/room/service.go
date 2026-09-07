@@ -60,6 +60,9 @@ type Config struct {
 	// Attachments 可选：附件面（RFC-0013）。post_message 携带上传令牌时定稿
 	// 为描述子嵌入载荷；delete_room 级联清理附件目录。nil = 附件字段不可用。
 	Attachments AttachmentStore
+	// RunCapable 可选（M4-1）：assignee 座位的适配器是否支持独立任务执行
+	// （echo 等测试桩不支持——如实拒绝）。nil = 不做能力门（测试装配）。
+	RunCapable func(assignee string) bool
 }
 
 // AttachmentDescriptor 事件载荷中的附件描述子（attach.Descriptor 类型别名——
@@ -132,6 +135,10 @@ func (s *Service) ExecuteCommand(ctx context.Context, actor Actor, cmd Command) 
 		return s.editMemory(ctx, actor, cmd)
 	case "delete_room":
 		return s.deleteRoom(ctx, actor, cmd)
+	case "run_task":
+		return s.runTask(ctx, actor, cmd)
+	case "cancel_run":
+		return s.cancelRun(ctx, actor, cmd)
 	case "fork_thread", "pause_thread", "resume_thread", "close_thread", "reopen_thread", "merge_thread":
 		eventType := map[string]string{
 			"fork_thread": "thread.forked", "pause_thread": "thread.paused",

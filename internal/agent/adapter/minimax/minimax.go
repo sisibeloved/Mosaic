@@ -80,6 +80,7 @@ func (a *Adapter) Capabilities() agent.Capabilities {
 		Continuity:     true, // --session <id>
 		UsageReporting: true, // turn.completed.usage（含 cache/reasoning 细分）
 		Observe:        false,
+		TaskRuns:       true, // M4-1：exec 进程可由 Mosaic 托管为长任务（结果回传房间）
 	}
 }
 

@@ -75,11 +75,13 @@ type EngineConfig struct {
 	// AttachExcerpt 可选：附件语境摘录渲染器（RFC-0013）——nil = 不注入附件
 	// 内容（纯测试装配）；生产由 app 注入（读数据目录 + RedactSecrets）。
 	AttachExcerpt func(contextx.AttachmentInfo) string
-	Clock         func() string    // occurred_at（RFC3339）
-	Now           func() time.Time // 过期时刻计算
-	NewID         func(prefix string) string
-	Tenant        string
-	RoomID        string // 非空 = 只处理该房间；空 = 全部房间（M1 默认）
+	// RunTimeout 独立任务执行时长上限（M4-1；0 = 缺省 10min——长于单轮 180s）。
+	RunTimeout time.Duration
+	Clock      func() string    // occurred_at（RFC3339）
+	Now        func() time.Time // 过期时刻计算
+	NewID      func(prefix string) string
+	Tenant     string
+	RoomID     string // 非空 = 只处理该房间；空 = 全部房间（M1 默认）
 }
 
 // chatGrantPolicy 群聊模型的引擎内固定策略（RFC-0012：无房间策略面——
@@ -120,6 +122,9 @@ type Engine struct {
 	// seats 动态座位（二轮审校 #1：运行时启用的适配器要能加入当前引擎）。
 	seatsMu sync.RWMutex
 	seats   []AgentSeat
+	// runs 任务执行通道（M4-1）：在途 run 的取消句柄（Close/取消命令处置）。
+	runsMu   sync.Mutex
+	runsRuns map[string]*runState
 }
 
 // queueJob 房间串行队列作业：closureEventID 空 = 反应波；非空 = 收束评估
@@ -166,6 +171,7 @@ func (e *Engine) seatsSnapshot() []AgentSeat {
 // 停掉全部反应窗口、拒绝新波。已提交事件构成可恢复状态。幂等。
 func (e *Engine) Close() {
 	e.stop()
+	e.closeRuns() // M4-1：在途任务执行取消（防孤儿子进程）
 	e.reactionTimers.Range(func(_, t any) bool {
 		t.(*time.Timer).Stop()
 		return true
@@ -190,6 +196,19 @@ func (e *Engine) Deliver(ctx context.Context, entry outbox.Entry) error {
 		return nil
 	}
 	switch {
+	case env.Type == protocol.EventRunRequested:
+		// M4-1 任务执行通道：run.requested → 独立执行（与波解耦）。
+		var p protocol.RunRequestedPayload
+		if json.Unmarshal(env.Payload, &p) == nil && p.RunID != "" {
+			e.LaunchRun(env.RoomID, p)
+		}
+		return nil
+	case env.Type == protocol.EventRunCanceled:
+		var p protocol.RunCanceledPayload
+		if json.Unmarshal(env.Payload, &p) == nil {
+			e.CancelRun(p.RunID)
+		}
+		return nil
 	case env.Type == protocol.EventRoomStarted:
 		if err := e.redriveRoomClaims(env.RoomID); err != nil {
 			return fmt.Errorf("engine: redrive room %s claims: %w", env.RoomID, err)

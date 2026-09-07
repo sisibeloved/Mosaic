@@ -1,0 +1,17 @@
+{
+  "event_id": "evt_rununknown01",
+  "tenant_id": "ten_local",
+  "room_id": "room_fixture01",
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "type": "run.unknown",
+  "schema_version": 1,
+  "occurred_at": "2026-09-07T07:00:00.000Z",
+  "actor": { "participant_id": "par_owner", "kind": "system" },
+  "causation_id": null,
+  "correlation_id": null,
+  "visibility": { "kind": "public" },
+  "payload": { "run_id": "run_01H8RUN04", "assignee": "par_minimax_mcode1", "note": "重启后发现运行中态但无活进程" },
+  "seq": 109,
+  "metadata": {}
+}

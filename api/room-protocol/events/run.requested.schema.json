@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/run.requested.schema.json",
+  "title": "RunRequestedPayload",
+  "description": "任务执行请求（M4-1，RFC-0002 执行生命周期补编）：人类经 run_task 命令发起；tasklist 仍表示承诺，run 表示真实执行。",
+  "type": "object",
+  "required": ["run_id", "assignee", "instruction", "requester"],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": { "type": "string", "pattern": "^run_[0-9A-Za-z_-]+$" },
+    "assignee": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" },
+    "instruction": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "task_id": { "type": "string", "pattern": "^tsk_[0-9A-Za-z_-]+$" },
+    "requester": { "type": "string", "minLength": 1 }
+  }
+}

@@ -90,6 +90,7 @@ func (a *Adapter) Capabilities() agent.Capabilities {
 		Continuity:     true,  // -S <session_id>
 		UsageReporting: false, // stream-json 未见 usage 面（实证 0.39.1）：缺失记 unknown，不虚构
 		Observe:        false,
+		TaskRuns:       true, // M4-1：exec 进程可由 Mosaic 托管为长任务（结果回传房间）
 	}
 }
 

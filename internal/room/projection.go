@@ -53,6 +53,7 @@ type Snapshot struct {
 	Graph             []GraphEdge           `json:"graph"`
 	Participants      []ParticipantView     `json:"participants"`
 	Tasks             []TaskItem            `json:"tasks"`
+	Runs              []RunView             `json:"runs"`
 }
 
 // ParticipantView 快照参与者视图项（装配层注入：本地 owner + 引擎座位）。
@@ -97,6 +98,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 		Scorecard:         []ScorecardItem{},
 		Participants:      []ParticipantView{}, // 装配层注入位：投影恒空（ADR-0011 注记）
 		Tasks:             []TaskItem{},
+		Runs:              []RunView{},
 	}
 	endorsedSet := map[string]bool{} // intent.endorsed 合并键
 	for _, ev := range events {
@@ -211,6 +213,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 	snap.EvidenceRequests = EvidenceRequestsOf(events)
 	snap.DevNotes = DevNotesOf(events)
 	snap.Tasks = TasksOf(events)
+	snap.Runs = RunsOf(events)
 	return snap
 }
 

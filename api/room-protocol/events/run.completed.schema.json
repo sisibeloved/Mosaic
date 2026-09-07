@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/run.completed.schema.json",
+  "title": "RunCompletedPayload",
+  "description": "执行完成；late=true 为迟到结果（取消后/代次过期）——仅审计，不发布正文（result_event_id 为空、body 为审计快照）。",
+  "type": "object",
+  "required": ["run_id", "assignee"],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": { "type": "string", "pattern": "^run_[0-9A-Za-z_-]+$" },
+    "assignee": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" },
+    "result_event_id": { "type": "string", "pattern": "^evt_[0-9A-Za-z_-]+$" },
+    "late": { "type": "boolean" },
+    "body": { "type": "string", "maxLength": 8000 }
+  }
+}

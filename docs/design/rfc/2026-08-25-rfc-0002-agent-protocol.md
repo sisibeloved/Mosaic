@@ -451,3 +451,11 @@ FloorGrant 绑定 `(room, thread, round, participant)` 与冻结水位随 genera
 - 评审期（Draft → Reviewing）：重点收敛未解决问题 1–4 与结构化输出契约细节；
 - Accepted 后：`api/room-protocol` 增加结构化块 Schema；启动 `internal/agent` 端口、supervisor、首个原生适配器与 conformance 套件工程；架构文档 v0.7 同步修订 8.2.5 的 IF-AGENT-PROTOCOL 行（形态定为"本地进程 + 适配器，ACP 可选"）；
 - 后续：RFC-0003/0007/0009 落地时扩展任务 kind 与查询维度，新适配器登记进 Profile 注册表，同步修订本 RFC。
+
+# 附录：任务执行通道（M4-1 执行生命周期补编，2026-09-07）
+
+**契约**：任务身份（tasklist 承诺，RFC-0012 附录 G）与执行尝试（run）分离——run 由人类经 run_task 命令发起（assignee 负责人 + instruction + 可选 task_id 关联），状态只由执行器回执或运行事件产生（run.requested → run.started → completed/failed/canceled/unknown），**不得由正文"正在执行"推断**（v1.53 实证：mcode 按轮拉起、轮末即结束，宣称后台执行是认知错误）。能力声明：Capabilities.TaskRuns——echo 等测试桩为 false，命令面如实拒绝。
+
+**迟到与恢复**：结果发布走 AppendEventsIf 迟到围栏（房间暂停/取消代次过期 → run.completed{late:true} 仅审计，不发布正文）；重启后 running 态无活进程 → run.unknown（结果未知——不自动重跑，可能已产生副作用，由人类显式重发或忽略）。上限 RunTimeout 缺省 10min（长于单轮 180s）。执行完成**不自动结案** tasklist（人工门控权威不变）；结果消息以负责人名义发布、metadata 携 run_id/task_id（可追溯关联）。
+
+**状态集**：requested（排队）| running（执行中）| completed | failed | canceled | unknown。等待用户/等待外部条件状态需要 CLI 侧交互通道（无头 exec 不存在），不虚构——待后续通道演进（ACP/MCP）再入状态机。

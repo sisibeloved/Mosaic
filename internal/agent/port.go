@@ -100,6 +100,10 @@ type Capabilities struct {
 	Continuity     bool   `json:"continuity"`
 	UsageReporting bool   `json:"usage_reporting"`
 	Observe        bool   `json:"observe"`
+	// TaskRuns 独立任务执行通道（M4-1，RFC-0002 执行生命周期补编）：Mosaic
+	// 托管专用 exec 进程执行长任务、结果回传房间。echo 等测试桩为 false——
+	// 能力如实声明，不支持者命令面拒绝（不静默假装在跑）。
+	TaskRuns bool `json:"task_runs"`
 }
 
 // Adapter 适配器接口（M0 最小面；进程管理细节由各适配器自持）。

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/run.started.schema.json",
+  "title": "RunStartedPayload",
+  "description": "执行器已接受并启动（排队 → 执行中；状态由执行器回执产生，不由正文推断）。",
+  "type": "object",
+  "required": ["run_id", "assignee"],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": { "type": "string", "pattern": "^run_[0-9A-Za-z_-]+$" },
+    "assignee": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/run.canceled.schema.json",
+  "title": "RunCanceledPayload",
+  "description": "取消终态（取消中 → 已取消；迟到结果以 run.completed{late:true} 审计）。",
+  "type": "object",
+  "required": ["run_id", "reason"],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": { "type": "string", "pattern": "^run_[0-9A-Za-z_-]+$" },
+    "reason": { "type": "string", "minLength": 1, "maxLength": 280 }
+  }
+}

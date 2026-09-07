@@ -1,0 +1,17 @@
+{
+  "event_id": "evt_runcompleted01",
+  "tenant_id": "ten_local",
+  "room_id": "room_fixture01",
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "type": "run.completed",
+  "schema_version": 1,
+  "occurred_at": "2026-09-07T07:00:00.000Z",
+  "actor": { "participant_id": "par_owner", "kind": "agent" },
+  "causation_id": null,
+  "correlation_id": null,
+  "visibility": { "kind": "public" },
+  "payload": { "run_id": "run_01H8RUN01", "assignee": "par_codex_native1", "result_event_id": "evt_runresult01" },
+  "seq": 106,
+  "metadata": {}
+}

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/run.failed.schema.json",
+  "title": "RunFailedPayload",
+  "description": "执行失败（错误串为适配器/超时真实原因）。",
+  "type": "object",
+  "required": ["run_id", "assignee", "error"],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": { "type": "string", "pattern": "^run_[0-9A-Za-z_-]+$" },
+    "assignee": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" },
+    "error": { "type": "string", "minLength": 1, "maxLength": 1000 }
+  }
+}

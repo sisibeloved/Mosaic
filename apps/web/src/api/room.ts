@@ -59,6 +59,9 @@ export type ClosureSummary = NonNullable<Snapshot["closures"]>[number];
 /** M3-3 任务清单项（快照 tasks 视图；owner = 责任人）。 */
 export type TaskItem = NonNullable<Snapshot["tasks"]>[number];
 
+/** M4-1 任务执行视图（快照 runs；状态由执行器回执产生）。 */
+export type RunItem = NonNullable<Snapshot["runs"]>[number];
+
 const SUBSCRIBED_EVENTS = [
   "message.posted",
   "round.opened",
@@ -79,6 +82,12 @@ const SUBSCRIBED_EVENTS = [
   "evidence_request.claimed",
   "task.resolved",
   "memory.edited",
+  "run.requested",
+  "run.started",
+  "run.completed",
+  "run.failed",
+  "run.canceled",
+  "run.unknown",
 ] as const;
 
 
@@ -130,6 +139,8 @@ interface RoomModelState {
   closures: ClosureSummary[];
   /** M3-3 任务清单（带责任人的承诺追踪）。 */
   tasks: TaskItem[];
+  /** M4-1 任务执行通道（独立于波的长任务执行）。 */
+  runs: RunItem[];
   roundOpen: boolean;
   paused: boolean;
   /** M4-2：座位级失败（瞬态；新一轮清空——波间保留供"上轮为何没人说话"回看）。 */
@@ -150,6 +161,8 @@ export interface RoomHandle {
   edges: GraphEdge[];
   closures: ClosureSummary[];
   tasks: TaskItem[];
+  /** M4-1 任务执行通道。 */
+  runs: RunItem[];
   roundOpen: boolean;
   /** M4-2：座位级失败（瞬态；活动 Tab 与正在输入区消费）。 */
   seatFailures: SeatFailure[];
@@ -171,6 +184,12 @@ export interface RoomHandle {
   acceptClosure(closureID?: string): Promise<void>;
   /** M3-3 任务裁定（task.resolved：delivered=已交付；dismissed=误报/撤销）。 */
   resolveTask(taskID: string, resolution: "delivered" | "dismissed", note?: string): Promise<void>;
+  /** M4-1：发起独立任务执行（run_task）。 */
+  runTask(assignee: string, instruction: string, taskID?: string): Promise<void>;
+  cancelRun(runID: string, reason: string): Promise<void>;
+  /** M4-1：发起独立任务执行（run_task）。 */
+  runTask(assignee: string, instruction: string, taskID?: string): Promise<void>;
+  cancelRun(runID: string, reason: string): Promise<void>;
   /** M3-3 记忆编辑（memory.edited：整组替换，生效于下次组装）。 */
   editMemory(memoryID: string, edits: { conclusions?: string[]; assumptions?: string[] }, note: string): Promise<void>;
   /** 重取快照投影区（成员/记分卡/谱系/策略）——抽屉 Tab 打开时调用。 */
@@ -187,6 +206,7 @@ function projections(snap: Snapshot) {
     edges: snap.graph,
     closures: snap.closures ?? [],
     tasks: snap.tasks ?? [],
+    runs: snap.runs ?? [],
     roster: snap.roster ?? null,
   };
 }
@@ -697,6 +717,15 @@ export function useRoom(roomID: string | null): RoomHandle {
     (closureID?: string) => runCommand((id, v) => api.acceptClosure(id, v, closureID ?? null)),
     [runCommand],
   );
+  const runTask = useCallback(
+    (assignee: string, instruction: string, taskID?: string) =>
+      runCommand((id, v) => api.runTask(id, v, assignee, instruction, taskID)),
+    [runCommand],
+  );
+  const cancelRun = useCallback(
+    (runID: string, reason: string) => runCommand((id, v) => api.cancelRun(id, v, runID, reason)),
+    [runCommand],
+  );
   const resolveTask = useCallback(
     (taskID: string, resolution: "delivered" | "dismissed", note?: string) =>
       runCommand((id, v) => api.resolveTask(id, v, taskID, resolution, note)),
@@ -720,6 +749,7 @@ export function useRoom(roomID: string | null): RoomHandle {
     edges: state?.edges ?? [],
     closures: state?.closures ?? [],
     tasks: state?.tasks ?? [],
+    runs: state?.runs ?? [],
     roundOpen: state?.roundOpen ?? false,
     seatFailures: state?.seatFailures ?? [],
     paused: state?.paused ?? false,
@@ -736,6 +766,8 @@ export function useRoom(roomID: string | null): RoomHandle {
     proposeClosure,
     acceptClosure,
     resolveTask,
+    runTask,
+    cancelRun,
     editMemory,
     refreshProjections: refreshProjectionsNow,
   };

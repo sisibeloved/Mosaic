@@ -170,6 +170,13 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			return nil
 		},
 		Attachments: attachStore, // 令牌定稿（描述子入事件载荷）+ 删除级联
+		// M4-1 能力门：assignee 的适配器须声明 TaskRuns（echo 等测试桩拒绝）。
+		RunCapable: func(assignee string) bool {
+			if engine := enginePtr.Load(); engine != nil {
+				return engine.CanRun(assignee)
+			}
+			return false
+		},
 	})
 
 	supervisor := agent.NewSupervisor()
@@ -417,6 +424,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		})
 		enginePtr.Store(engine)
 		engine.RecoverClaims() // 崩溃窗口重驱动（二轮审校 #9）
+		engine.RecoverRuns()   // M4-1：running 态无活进程 → run.unknown（结果未知，不自动重跑）
 		go func() {
 			ticker := time.NewTicker(10 * time.Second)
 			defer ticker.Stop()

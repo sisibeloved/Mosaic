@@ -39,6 +39,12 @@ const (
 	// 需求单被认领——claimed_by 入 owners（open 态单次追加，幂等投影去重；
 	// 命令面仅 human/system，agent 自主认领随工具面分期）。
 	EventEvidenceRequestClaimed = "evidence_request.claimed"
+	EventRunRequested           = "run.requested"
+	EventRunStarted             = "run.started"
+	EventRunCompleted           = "run.completed"
+	EventRunFailed              = "run.failed"
+	EventRunCanceled            = "run.canceled"
+	EventRunUnknown             = "run.unknown"
 	EventRoomDeleted            = "room.deleted"
 	// tasklist（RFC-0012 OQ-A 修订 / v1.45 负责人裁定：带责任人的承诺追踪——
 	// 非 Memory 系统，独立成物）：派生是确定性纯投影（mosaic-todo 申报协议，零 LLM；
@@ -192,6 +198,30 @@ func (e *Envelope) DecodePayload() any {
 		var p EvidenceRequestClaimedPayload
 		_ = json.Unmarshal(e.Payload, &p)
 		return p
+	case EventRunRequested:
+		var p RunRequestedPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
+	case EventRunStarted:
+		var p RunStartedPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
+	case EventRunCompleted:
+		var p RunCompletedPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
+	case EventRunFailed:
+		var p RunFailedPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
+	case EventRunCanceled:
+		var p RunCanceledPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
+	case EventRunUnknown:
+		var p RunUnknownPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
 	default:
 		return nil
 	}
@@ -330,4 +360,56 @@ type MemoryEditedPayload struct {
 	Note        string   `json:"note,omitempty"`
 	EditVersion int      `json:"edit_version"`
 	EditedBy    string   `json:"edited_by"`
+}
+
+// ---- 任务执行通道（M4-1，RFC-0002 执行生命周期补编）----
+// run 表示独立于群聊波的任务执行：由人类经 run_task 命令发起（关联可选
+// tasklist 项），引擎托管专用 exec 进程；状态只由执行器回执或运行事件产生，
+// 不得由正文"正在执行"推断（v1.53 实证问题）。迟到结果（取消后代次过期/
+// 重启后 unknown）保留审计、不作为当前有效结果发布。
+
+// RunRequestedPayload run.requested：人类请求执行（run_task 命令直落）。
+type RunRequestedPayload struct {
+	RunID       string `json:"run_id"`
+	Assignee    string `json:"assignee"`          // 负责人（agent 座位）
+	Instruction string `json:"instruction"`       // 执行指令（≤4000 runes）
+	TaskID      string `json:"task_id,omitempty"` // 关联 tasklist 项（可选）
+	Requester   string `json:"requester"`         // 提出方（人类）
+}
+
+// RunStartedPayload run.started：执行器已接受并启动（排队 → 执行中）。
+type RunStartedPayload struct {
+	RunID    string `json:"run_id"`
+	Assignee string `json:"assignee"`
+}
+
+// RunCompletedPayload run.completed：执行完成。late=true 为迟到结果
+// （取消后/代次过期）——仅审计，result_event_id 为空（不发布正文）。
+type RunCompletedPayload struct {
+	RunID         string `json:"run_id"`
+	Assignee      string `json:"assignee"`
+	ResultEventID string `json:"result_event_id,omitempty"` // 结果消息（message.posted）
+	Late          bool   `json:"late,omitempty"`
+	Body          string `json:"body,omitempty"` // 审计面正文快照（迟到时唯一留存）
+}
+
+// RunFailedPayload run.failed：执行失败（错误串为适配器/超时真实原因）。
+type RunFailedPayload struct {
+	RunID    string `json:"run_id"`
+	Assignee string `json:"assignee"`
+	Error    string `json:"error"`
+}
+
+// RunCanceledPayload run.canceled：取消终态（取消中 → 已取消）。
+type RunCanceledPayload struct {
+	RunID  string `json:"run_id"`
+	Reason string `json:"reason"`
+}
+
+// RunUnknownPayload run.unknown：重启后发现 running 态但无活进程——结果
+// 未知；不自动重跑（可能已产生副作用），由人类显式重发或忽略。
+type RunUnknownPayload struct {
+	RunID    string `json:"run_id"`
+	Assignee string `json:"assignee"`
+	Note     string `json:"note"`
 }

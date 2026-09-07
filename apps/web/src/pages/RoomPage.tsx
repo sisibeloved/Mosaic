@@ -140,6 +140,18 @@ export function RoomPage() {
   }, [deleteReason, deleteBusy, room, navigate]);
 
   // M3-3 任务裁定 / 记忆编辑：SSE 事件驱动快照重投影；SSE 未达时兜底手刷一次。
+  // M4-1：任务 Tab"执行"按钮 → run_task（负责人 + 任务文本 + task_id 关联）。
+  const onRunTask = useCallback(
+    (taskID: string, assignee: string, instruction: string) => {
+      setTaskBusy(taskID);
+      void room
+        .runTask(assignee, instruction, taskID)
+        .catch(() => {})
+        .finally(() => setTaskBusy(null));
+    },
+    [room],
+  );
+
   const onResolveTask = useCallback(
     (taskID: string, resolution: "delivered" | "dismissed") => {
       setTaskBusy(taskID);
@@ -331,6 +343,7 @@ export function RoomPage() {
             edges={room.edges}
             closures={room.closures}
             tasks={room.tasks}
+            runs={room.runs}
             seatFailures={room.seatFailures}
             endorseBusy={endorseBusy}
             onEndorse={onEndorse}
@@ -340,6 +353,7 @@ export function RoomPage() {
             onAcceptClosure={(closureID) => void room.acceptClosure(closureID)}
             closureBusy={false}
             onResolveTask={onResolveTask}
+            onRun={onRunTask}
             taskBusy={taskBusy}
             onEditMemory={onEditMemory}
             memoryBusy={memoryBusy}

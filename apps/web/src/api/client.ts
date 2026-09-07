@@ -227,6 +227,19 @@ export const api = {
       commandBody("resume_room", version, {}),
     );
   },
+  /** M4-1 任务执行通道：发起独立执行（结果回传房间；assignee 须为支持执行的 agent 座位）。 */
+  runTask(roomID: string, version: number, assignee: string, instruction: string, taskID?: string): Promise<CommandResponse> {
+    return post(
+      `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
+      commandBody("run_task", version, { assignee, instruction, ...(taskID ? { task_id: taskID } : {}) }),
+    );
+  },
+  cancelRun(roomID: string, version: number, runID: string, reason: string): Promise<CommandResponse> {
+    return post(
+      `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
+      commandBody("cancel_run", version, { run_id: runID, reason }),
+    );
+  },
   deleteRoom(roomID: string, version: number, reason: string): Promise<CommandResponse> {
     // M3-6：reason 必填 1..280 字（删除不可逆、级联清库，理由留痕）。
     return post(

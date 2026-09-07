@@ -71,6 +71,7 @@ func (a *Adapter) Capabilities() agent.Capabilities {
 		Continuity:     true, // resume <thread_id>
 		UsageReporting: true, // turn.completed.usage
 		Observe:        false,
+		TaskRuns:       true, // M4-1：exec 进程可由 Mosaic 托管为长任务（结果回传房间）
 	}
 }
 

@@ -5,7 +5,7 @@
 // 内部枚举一律经 lib/copy 映射层转为用户语言，不裸显。
 import { useEffect, useState } from "react";
 import { api, type AgentSeatInfo, type ParticipantView } from "../../api/client";
-import type { GraphEdge, ScorecardItem, SeatFailure, TaskItem, ThreadItem } from "../../api/room";
+import type { GraphEdge, RunItem, ScorecardItem, SeatFailure, TaskItem, ThreadItem } from "../../api/room";
 import { useDevMode } from "../../state/dev";
 import type { ClosureSummary } from "../../api/room";
 import { DevPanel } from "../DevPanel";
@@ -50,6 +50,7 @@ export function MemberPanel({
   edges,
   closures,
   tasks,
+  runs,
   seatFailures,
   endorseBusy,
   onEndorse,
@@ -59,6 +60,7 @@ export function MemberPanel({
   onAcceptClosure,
   closureBusy,
   onResolveTask,
+  onRun,
   taskBusy,
   onEditMemory,
   memoryBusy,
@@ -79,6 +81,8 @@ export function MemberPanel({
   closures: ClosureSummary[];
   /** M3-3 任务清单（快照 tasks 视图；带责任人）。 */
   tasks: TaskItem[];
+  /** M4-1 任务执行通道（任务 Tab 状态 chip/执行按钮）。 */
+  runs: RunItem[];
   /** M4-2 座位级失败（瞬态；活动 Tab 消费）。 */
   seatFailures: SeatFailure[];
   endorseBusy: string | null;
@@ -91,6 +95,8 @@ export function MemberPanel({
   closureBusy: boolean;
   /** M3-3 任务裁定与记忆编辑（版本校准+409 重试在 room.ts 命令链内）。 */
   onResolveTask: (taskID: string, resolution: "delivered" | "dismissed") => void;
+  /** M4-1：任务 Tab"执行"按钮。 */
+  onRun: (taskID: string, assignee: string, instruction: string) => void;
   taskBusy: string | null;
   onEditMemory: (memoryID: string, edits: { conclusions?: string[]; assumptions?: string[] }, note: string) => void;
   memoryBusy: string | null;
@@ -158,15 +164,18 @@ export function MemberPanel({
               }))}
             participants={participants}
             failures={seatFailures}
+            runs={runs}
             agentPids={participants.filter((p) => p.kind === "agent").map((p) => p.participant_id)}
           />
         )}
         {tab === "tasks" && (
           <TasksTab
             tasks={tasks}
+            runs={runs}
             participants={participants}
             busyTaskID={taskBusy}
             onResolve={onResolveTask}
+            onRun={onRun}
             onJumpToEvent={onJumpToEvent}
           />
         )}

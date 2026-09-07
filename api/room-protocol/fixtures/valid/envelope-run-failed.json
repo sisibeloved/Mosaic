@@ -1,0 +1,17 @@
+{
+  "event_id": "evt_runfailed01",
+  "tenant_id": "ten_local",
+  "room_id": "room_fixture01",
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "type": "run.failed",
+  "schema_version": 1,
+  "occurred_at": "2026-09-07T07:00:00.000Z",
+  "actor": { "participant_id": "par_owner", "kind": "agent" },
+  "causation_id": null,
+  "correlation_id": null,
+  "visibility": { "kind": "public" },
+  "payload": { "run_id": "run_01H8RUN02", "assignee": "par_kimi_wsl_d1", "error": "provider.auth_error: 403 usage limit" },
+  "seq": 107,
+  "metadata": {}
+}

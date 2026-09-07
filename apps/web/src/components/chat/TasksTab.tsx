@@ -6,7 +6,7 @@
 // = 全量替换后未再申报（自动）或人工移除。provenance：点任务定位申报消息。
 import { useState } from "react";
 import type { ParticipantView } from "../../api/client";
-import type { TaskItem } from "../../api/room";
+import type { RunItem, TaskItem } from "../../api/room";
 import { displayNameOf, relativeTime } from "../../lib/ui";
 import { Avatar } from "./Avatar";
 
@@ -48,15 +48,21 @@ function resolutionLabel(t: TaskItem): string {
 
 export function TasksTab({
   tasks,
+  runs,
   participants,
   busyTaskID,
   onResolve,
+  onRun,
   onJumpToEvent,
 }: {
   tasks: TaskItem[];
+  /** M4-1 任务执行通道：task_id 关联的 run 状态（执行按钮/状态 chip）。 */
+  runs: RunItem[];
   participants: ParticipantView[];
   busyTaskID: string | null;
   onResolve: (taskID: string, resolution: "delivered" | "dismissed") => void;
+  /** 发起独立执行（assignee = 任务负责人；指令 = 任务文本）。 */
+  onRun: (taskID: string, assignee: string, instruction: string) => void;
   onJumpToEvent: (eventID: string) => void;
 }) {
   const pending = tasks.filter((t) => t.status === "pending");
@@ -107,7 +113,48 @@ export function TasksTab({
                 >
                   {t.text}
                 </button>
-                <div className="mt-1.5 flex gap-1.5">
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {(() => {
+                    // M4-1：关联 run 状态 chip（最新一条）；无 run 时给"执行"按钮
+                    const linked = runs.filter((r) => r.task_id === t.task_id);
+                    const latest = linked[linked.length - 1];
+                    if (latest) {
+                      const label =
+                        latest.status === "running"
+                          ? "执行中…"
+                          : latest.status === "requested"
+                            ? "排队中"
+                            : latest.status === "completed"
+                              ? "已执行 ✓"
+                              : latest.status === "unknown"
+                                ? "结果未知"
+                                : latest.status === "canceled"
+                                  ? "已取消"
+                                  : "执行失败";
+                      const tone =
+                        latest.status === "failed"
+                          ? "text-danger"
+                          : latest.status === "running" || latest.status === "requested"
+                            ? "text-warn"
+                            : "text-dim";
+                      return (
+                        <span className={`rounded-lg border border-border px-2 py-1 text-[11px] ${tone}`} title={latest.error || latest.run_id}>
+                          {label}
+                        </span>
+                      );
+                    }
+                    return (
+                      <button
+                        type="button"
+                        disabled={busyTaskID === t.task_id}
+                        onClick={() => onRun(t.task_id, t.owner, t.text)}
+                        title="发起独立任务执行（run_task）——负责人在专用通道执行并把结果发回房间"
+                        className="rounded-lg bg-accent-soft px-2.5 py-1 text-[11px] text-accent transition-opacity hover:opacity-85 disabled:opacity-40"
+                      >
+                        执行
+                      </button>
+                    );
+                  })()}
                   <button
                     type="button"
                     disabled={busyTaskID === t.task_id}

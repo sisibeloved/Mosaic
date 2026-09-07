@@ -117,6 +117,7 @@ func (e ParticipantViewKind) Valid() bool {
 // Defines values for RoomCommandCommandKind.
 const (
 	AcceptClosure          RoomCommandCommandKind = "accept_closure"
+	CancelRun              RoomCommandCommandKind = "cancel_run"
 	ClaimEvidenceRequest   RoomCommandCommandKind = "claim_evidence_request"
 	CloseThread            RoomCommandCommandKind = "close_thread"
 	CreateEvidenceRequest  RoomCommandCommandKind = "create_evidence_request"
@@ -137,12 +138,15 @@ const (
 	ResolveTask            RoomCommandCommandKind = "resolve_task"
 	ResumeRoom             RoomCommandCommandKind = "resume_room"
 	ResumeThread           RoomCommandCommandKind = "resume_thread"
+	RunTask                RoomCommandCommandKind = "run_task"
 )
 
 // Valid indicates whether the value is a known member of the RoomCommandCommandKind enum.
 func (e RoomCommandCommandKind) Valid() bool {
 	switch e {
 	case AcceptClosure:
+		return true
+	case CancelRun:
 		return true
 	case ClaimEvidenceRequest:
 		return true
@@ -183,6 +187,38 @@ func (e RoomCommandCommandKind) Valid() bool {
 	case ResumeRoom:
 		return true
 	case ResumeThread:
+		return true
+	case RunTask:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RunViewStatus.
+const (
+	Canceled  RunViewStatus = "canceled"
+	Completed RunViewStatus = "completed"
+	Failed    RunViewStatus = "failed"
+	Requested RunViewStatus = "requested"
+	Running   RunViewStatus = "running"
+	Unknown   RunViewStatus = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the RunViewStatus enum.
+func (e RunViewStatus) Valid() bool {
+	switch e {
+	case Canceled:
+		return true
+	case Completed:
+		return true
+	case Failed:
+		return true
+	case Requested:
+		return true
+	case Running:
+		return true
+	case Unknown:
 		return true
 	default:
 		return false
@@ -631,6 +667,33 @@ type RoomSummary struct {
 	RoomId string `json:"room_id"`
 }
 
+// RunView 任务执行视图（M4-1）：status ∈ requested | running | completed | failed | canceled | unknown；迟到审计（late）不改终态。
+type RunView struct {
+	// Assignee 负责人（agent 座位）
+	Assignee    string  `json:"assignee"`
+	Error       *string `json:"error,omitempty"`
+	Instruction string  `json:"instruction"`
+
+	// Late 迟到结果审计标记（取消后/暂停期到达——不发布正文）
+	Late        *bool     `json:"late,omitempty"`
+	RequestedAt time.Time `json:"requested_at"`
+
+	// Requester 提出方（人类）
+	Requester string `json:"requester"`
+
+	// ResultEventId 结果消息事件（message.posted）
+	ResultEventId *string       `json:"result_event_id,omitempty"`
+	RunId         string        `json:"run_id"`
+	Status        RunViewStatus `json:"status"`
+
+	// TaskId 可选关联的 tasklist 项
+	TaskId    *string   `json:"task_id,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// RunViewStatus defines model for RunView.Status.
+type RunViewStatus string
+
 // RuntimeOptions 模型候选与思考强度档位（设置页下拉数据源）+ 确定量默认值（v1.49）。
 type RuntimeOptions struct {
 	// DefaultEffort 不覆盖时的 CLI 默认思考强度（codex 官方默认 medium）
@@ -718,6 +781,9 @@ type Snapshot struct {
 
 	// Roster 房间成员投影（room.created.agents + participant.admitted 链；null/缺 = 全部在席）。
 	Roster *[]string `json:"roster,omitempty"`
+
+	// Runs 任务执行通道（M4-1，RFC-0002 执行生命周期补编）：独立于群聊波的长任务执行与结果回传。
+	Runs *[]RunView `json:"runs,omitempty"`
 
 	// Scorecard 记分卡（R-08/OQ-17：intent 全量投影，band + 未选理由 + 保送状态）。
 	Scorecard []struct {

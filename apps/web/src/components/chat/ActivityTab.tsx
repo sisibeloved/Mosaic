@@ -2,7 +2,7 @@
 // 失败了"。最近一轮各座结果自权威事件重建（intent.recorded 的沉默与意愿 +
 // message.posted 的发言——刷新/断线不丢）；座位失败是瞬态帧（断线不重建，标注时点）。
 // 语义纪律（M4-2 条款）：静默 ≠ 共识；失败/超时 ≠ 同意。
-import type { SeatFailure } from "../../api/room";
+import type { RunItem, SeatFailure } from "../../api/room";
 import type { ParticipantView } from "../../api/client";
 import { displayNameOf, relativeTime, truncate } from "../../lib/ui";
 import { Avatar } from "./Avatar";
@@ -13,6 +13,15 @@ type ScorecardEntry = {
   public_rationale?: string | null;
   round_id?: string;
   occurred_at: string;
+};
+
+const RUN_STATUS_TEXT: Record<string, string> = {
+  requested: "排队中",
+  running: "执行中",
+  completed: "已完成",
+  failed: "执行失败",
+  canceled: "已取消",
+  unknown: "结果未知",
 };
 
 const FAILURE_TEXT: Record<SeatFailure["status"], string> = {
@@ -50,11 +59,14 @@ export function ActivityTab({
   scorecard,
   participants,
   failures,
+  runs,
   agentPids,
 }: {
   scorecard: ScorecardEntry[];
   participants: ParticipantView[];
   failures: SeatFailure[];
+  /** M4-1 任务执行通道（活动面板显示在途/最近执行）。 */
+  runs: RunItem[];
   /** 在席 agent 座位（未出现在最近一轮记分里的座位=未参与/未评估）。 */
   agentPids: string[];
 }) {
@@ -98,6 +110,29 @@ export function ActivityTab({
                   <span className="text-faint">本轮未参与（无评估记录）</span>
                 </li>
               ))}
+          </ul>
+        )}
+      </section>
+
+      <section>
+        <h4 className="mb-1.5 font-medium text-text">任务执行</h4>
+        {runs.length === 0 ? (
+          <p className="text-faint">暂无执行记录——任务 Tab 可对 pending 任务发起独立执行。</p>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {[...runs].reverse().slice(0, 8).map((r) => (
+              <li key={r.run_id} className="flex items-baseline gap-2">
+                <Avatar participantID={r.assignee} displayName={displayNameOf(participants, r.assignee)} size={16} />
+                <span className="font-medium text-text">{displayNameOf(participants, r.assignee)}</span>
+                <span className={r.status === "failed" || r.status === "unknown" ? "text-danger" : r.status === "running" ? "text-warn" : "text-dim"}>
+                  {RUN_STATUS_TEXT[r.status] ?? r.status}
+                </span>
+                <span className="min-w-0 truncate text-faint" title={r.error || r.instruction}>
+                  {truncate(r.error || r.instruction, 60)}
+                </span>
+                <span className="ml-auto shrink-0 text-faint">{relativeTime(r.updated_at)}</span>
+              </li>
+            ))}
           </ul>
         )}
       </section>
