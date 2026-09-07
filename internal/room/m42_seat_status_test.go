@@ -43,22 +43,17 @@ type m42Error struct{}
 
 func (*m42Error) Error() string { return "provider.auth_error: 403 usage limit（测试注入）" }
 
-// m42Engine 双座：stub（评估 speak + 生成成功）与 fail（评估/生成均失败）。
-// 失败帧经 channel 收集（闭包并发安全）。
+// m42Engine 单失败座（全局 stubIntentData 曾致 macOS CI 数据竞争——波内
+// goroutine 读全局与测试清理写并发；本用例断言失败帧，无需成功座）。
 func m42Engine(t *testing.T, store *MemStore) (*Engine, chan [2]string) {
 	t.Helper()
 	sup := agent.NewSupervisor()
 	t.Cleanup(sup.Shutdown)
-	stubIntentData = map[string]any{"action": "speak", "type": "answer",
-		"scores": map[string]any{"relevance": .8, "novelty": .5, "urgency": .5, "confidence": .8}}
-	t.Cleanup(func() { stubIntentData = nil })
-	_ = sup.Register(intentStubAdapter{})
 	_ = sup.Register(failAdapter{})
 	ch := make(chan [2]string, 16)
 	eng := NewEngine(EngineConfig{
 		Store: store, Reader: store, Agents: sup,
 		Seats: []AgentSeat{
-			{ParticipantID: "par_stub", Profile: agent.Profile{ProfileID: "ps", Adapter: "stub_intent"}},
 			{ParticipantID: "par_fail", Profile: agent.Profile{ProfileID: "pf", Adapter: "fail_ad"}},
 		},
 		Budget: contextx.Limits{}, ReactionWindow: 5 * time.Millisecond,
