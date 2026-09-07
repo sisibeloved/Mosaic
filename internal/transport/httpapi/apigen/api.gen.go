@@ -742,14 +742,20 @@ type TaskItemStatus string
 // TimelineItem RFC-0012 群聊模型：Timeline = 消息族 + 暂停/恢复系统提醒（round.* 内部化，
 // 不入用户可见时间线）。
 type TimelineItem struct {
-	ActorId    string    `json:"actor_id"`
-	ActorKind  string    `json:"actor_kind"`
-	Body       *string   `json:"body,omitempty"`
-	EventId    string    `json:"event_id"`
-	OccurredAt time.Time `json:"occurred_at"`
-	Position   string    `json:"position"`
-	ThreadId   *string   `json:"thread_id,omitempty"`
-	Type       string    `json:"type"`
+	ActorId   string `json:"actor_id"`
+	ActorKind string `json:"actor_kind"`
+
+	// AddressedTo 消息点名的参与者（message.posted 载荷同名字段；M4-0 快照/SSE 两路同形）。
+	AddressedTo *[]string `json:"addressed_to,omitempty"`
+	Body        *string   `json:"body,omitempty"`
+	EventId     string    `json:"event_id"`
+	OccurredAt  time.Time `json:"occurred_at"`
+	Position    string    `json:"position"`
+
+	// ReplyTo 引用回复的目标事件（M4-0 聊天交互补齐）。
+	ReplyTo  *string `json:"reply_to,omitempty"`
+	ThreadId *string `json:"thread_id,omitempty"`
+	Type     string  `json:"type"`
 }
 
 // ExecutableID defines model for ExecutableID.

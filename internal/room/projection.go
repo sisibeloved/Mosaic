@@ -16,16 +16,20 @@ const (
 )
 
 // TimelineItem Timeline 视图项（对外形态：无 seq/tenant；RFC-0012：消息族 +
-// 暂停/恢复系统提醒——round.* 已内部化不入列表）。
+// 暂停/恢复系统提醒——round.* 已内部化不入列表）。AddressedTo/ReplyTo 为
+// message.posted 载荷字段（M4-0：快照路与 SSE 路此前不对称——刷新后 @点名
+// 与引用回复丢失；投影补齐两路同形）。
 type TimelineItem struct {
-	Position   string  `json:"position"`
-	EventID    string  `json:"event_id"`
-	Type       string  `json:"type"`
-	ActorID    string  `json:"actor_id"`
-	ActorKind  string  `json:"actor_kind"`
-	Body       string  `json:"body,omitempty"`
-	ThreadID   *string `json:"thread_id,omitempty"`
-	OccurredAt string  `json:"occurred_at"`
+	Position    string   `json:"position"`
+	EventID     string   `json:"event_id"`
+	Type        string   `json:"type"`
+	ActorID     string   `json:"actor_id"`
+	ActorKind   string   `json:"actor_kind"`
+	Body        string   `json:"body,omitempty"`
+	AddressedTo []string `json:"addressed_to,omitempty"`
+	ReplyTo     *string  `json:"reply_to,omitempty"`
+	ThreadID    *string  `json:"thread_id,omitempty"`
+	OccurredAt  string   `json:"occurred_at"`
 }
 
 // Snapshot 快照载体：版本三元组 + 水位（opaque cursor）+ Timeline + 策略区。
@@ -182,18 +186,22 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 			continue
 		}
 		var body struct {
-			Body string `json:"body"`
+			Body        string   `json:"body"`
+			AddressedTo []string `json:"addressed_to"`
+			ReplyTo     *string  `json:"reply_to"`
 		}
 		_ = json.Unmarshal(ev.Envelope.Payload, &body)
 		snap.Timeline = append(snap.Timeline, TimelineItem{
-			Position:   ev.Cursor,
-			EventID:    ev.Envelope.EventID,
-			Type:       ev.Envelope.Type,
-			ActorID:    ev.Envelope.Actor.ParticipantID,
-			ActorKind:  ev.Envelope.Actor.Kind,
-			Body:       body.Body,
-			ThreadID:   ev.Envelope.ThreadID,
-			OccurredAt: ev.Envelope.OccurredAt,
+			Position:    ev.Cursor,
+			EventID:     ev.Envelope.EventID,
+			Type:        ev.Envelope.Type,
+			ActorID:     ev.Envelope.Actor.ParticipantID,
+			ActorKind:   ev.Envelope.Actor.Kind,
+			Body:        body.Body,
+			AddressedTo: body.AddressedTo,
+			ReplyTo:     body.ReplyTo,
+			ThreadID:    ev.Envelope.ThreadID,
+			OccurredAt:  ev.Envelope.OccurredAt,
 		})
 	}
 	snap.Closures = closuresOf(events)

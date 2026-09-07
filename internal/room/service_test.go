@@ -285,6 +285,61 @@ func TestPostMessageHappyPath(t *testing.T) {
 	}
 }
 
+// M4-0 引用回复：reply_to 形状纪律（evt_*，对齐 relations.target_event_id）
+// + 合法引用全链落库（载荷固化 reply_to，投影侧由 projection_test 覆盖）。
+func TestPostMessageReplyTo(t *testing.T) {
+	store := NewMemStore()
+	svc := newTestService(store)
+	ctx := context.Background()
+	actor := Actor{ParticipantID: "par_owner", Kind: "human"}
+
+	created, err := svc.ExecuteCommand(ctx, actor, createCmd("create_room", validUUIDv7, 0, map[string]any{"display_name": "d"}))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	first, err := svc.ExecuteCommand(ctx, actor, Command{
+		RoomID:              created.RoomID,
+		CommandKind:         "post_message",
+		ExpectedRoomVersion: 1,
+		IdempotencyKey:      "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e72",
+		IssuedAt:            "2026-08-28T09:00:03.000Z",
+		Payload:             []byte(`{"body":"被引消息"}`),
+	})
+	if err != nil {
+		t.Fatalf("first post: %v", err)
+	}
+
+	bad, err := svc.ExecuteCommand(ctx, actor, Command{
+		RoomID:              created.RoomID,
+		CommandKind:         "post_message",
+		ExpectedRoomVersion: first.RoomVersion,
+		IdempotencyKey:      "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e73",
+		IssuedAt:            "2026-08-28T09:00:04.000Z",
+		Payload:             []byte(`{"body":"坏引用","reply_to":"not-an-event"}`),
+	})
+	if !errors.Is(err, ErrInvalidCommand) || bad != nil {
+		t.Fatalf("非法 reply_to 应拒收，got res=%v err=%v", bad, err)
+	}
+
+	if _, err := svc.ExecuteCommand(ctx, actor, Command{
+		RoomID:              created.RoomID,
+		CommandKind:         "post_message",
+		ExpectedRoomVersion: first.RoomVersion,
+		IdempotencyKey:      "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4d5e74",
+		IssuedAt:            "2026-08-28T09:00:05.000Z",
+		Payload:             []byte(`{"body":"引用回复","reply_to":"` + first.EventID + `"}`),
+	}); err != nil {
+		t.Fatalf("reply post: %v", err)
+	}
+	events := store.byRoom[created.RoomID]
+	var payload struct {
+		ReplyTo string `json:"reply_to"`
+	}
+	if err := json.Unmarshal(events[len(events)-1].Payload, &payload); err != nil || payload.ReplyTo != first.EventID {
+		t.Fatalf("reply_to 未固化进载荷：%v %q（期望 %s）", err, payload.ReplyTo, first.EventID)
+	}
+}
+
 func TestIdempotentReplayReturnsSameEvent(t *testing.T) {
 	store := NewMemStore()
 	svc := newTestService(store)

@@ -153,12 +153,18 @@ export const api = {
       commandBody("rename_room", version, { display_name: displayName }),
     );
   },
-  postMessage(roomID: string, version: number, body: string, addressedTo: string[] = []): Promise<CommandResponse> {
+  postMessage(
+    roomID: string,
+    version: number,
+    body: string,
+    addressedTo: string[] = [],
+    replyTo: string | null = null,
+  ): Promise<CommandResponse> {
     return post(
       `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
       commandBody("post_message", version, {
         body,
-        reply_to: null,
+        reply_to: replyTo,
         addressed_to: addressedTo,
         relations: [],
       }),
@@ -186,6 +192,13 @@ export const api = {
     return post(
       `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
       commandBody("resume_room", version, {}),
+    );
+  },
+  deleteRoom(roomID: string, version: number, reason: string): Promise<CommandResponse> {
+    // M3-6：reason 必填 1..280 字（删除不可逆、级联清库，理由留痕）。
+    return post(
+      `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
+      commandBody("delete_room", version, { reason }),
     );
   },
   endorseIntent(roomID: string, version: number, intentID: string): Promise<CommandResponse> {

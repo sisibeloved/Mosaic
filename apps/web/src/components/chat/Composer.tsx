@@ -1,12 +1,21 @@
 // 输入框：自动增高 textarea（Enter 发送 / Shift+Enter 换行）；
 // 输入 @ 弹成员补全（snapshot.participants 的 agent 项，键盘可选），选中成 chip
 // （可点 × 移除；上限 3——契约 PostMessagePayload.addressed_to maxItems=3）。
+// M4-0 引用回复：quoted 非空时输入区顶部渲染引用卡片（作者 + 摘要，× 取消），
+// 发送携带 reply_to（message.posted 既有载荷字段）。
 import { useEffect, useRef, useState } from "react";
 import type { ParticipantView } from "../../api/client";
 import { adapterLabel } from "../../lib/copy";
 import { Avatar } from "./Avatar";
 
 const MAX_TARGETS = 3;
+
+/** 引用回复的目标消息（RoomPage 自时间线条目构造）。 */
+export interface QuotedMessage {
+  eventID: string;
+  author: string;
+  excerpt: string;
+}
 
 interface Mention {
   query: string;
@@ -25,12 +34,17 @@ export function Composer({
   disabled,
   paused,
   agents,
+  quoted,
+  onCancelQuote,
   onSend,
 }: {
   disabled: boolean;
   paused: boolean;
   agents: ParticipantView[];
-  onSend: (body: string, addressedTo: string[]) => void;
+  /** 引用回复目标（null = 普通发言）；发送后由调用方清除。 */
+  quoted: QuotedMessage | null;
+  onCancelQuote: () => void;
+  onSend: (body: string, addressedTo: string[], replyTo: string | null) => void;
 }) {
   const [body, setBody] = useState("");
   const [chips, setChips] = useState<ParticipantView[]>([]);
@@ -73,7 +87,7 @@ export function Composer({
   const submit = () => {
     const text = body.trim();
     if (!text || blocked) return;
-    onSend(text, chips.map((c) => c.participant_id));
+    onSend(text, chips.map((c) => c.participant_id), quoted?.eventID ?? null);
     setBody("");
     setChips([]);
     setMention(null);
@@ -105,6 +119,23 @@ export function Composer({
   return (
     <div className="border-t border-border py-3 pl-4 pr-6">
       <div className="mx-auto max-w-3xl">
+        {quoted && (
+          <div className="mb-1.5 flex items-start gap-2 rounded-lg border-l-2 border-accent/60 bg-surface-2 px-2.5 py-1.5 text-xs text-dim">
+            <div className="min-w-0 flex-1">
+              <span className="text-faint">回复 {quoted.author}：</span>
+              <span className="block truncate">{quoted.excerpt || "（空消息）"}</span>
+            </div>
+            <button
+              type="button"
+              aria-label="取消引用"
+              title="取消引用"
+              onClick={onCancelQuote}
+              className="shrink-0 rounded-full px-1.5 leading-4 text-dim transition-colors hover:bg-surface-3 hover:text-text"
+            >
+              ×
+            </button>
+          </div>
+        )}
         {chips.length > 0 && (
           <div className="mb-1.5 flex flex-wrap gap-1.5">
             {chips.map((c) => (

@@ -1,9 +1,10 @@
-// 房间页：顶栏（房名双击/编辑图标改名、连接态、暂停/恢复、抽屉开关）
+// 房间页：顶栏（房名双击/编辑图标改名、连接态、暂停/恢复/删除、抽屉开关）
 // + 消息流 + 正在输入区 + 输入框 + 右侧可折叠抽屉（成员/发言评估/话题线）。
+// M4-0：消息复制/引用回复接线（引用状态在此持有）；删除房间确认（reason 必填留痕）。
 import { useCallback, useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useRoom, type Connection } from "../api/room";
-import { Composer } from "../components/chat/Composer";
+import { Composer, type QuotedMessage } from "../components/chat/Composer";
 import { MemberPanel } from "../components/chat/MemberPanel";
 import { MessageList } from "../components/chat/MessageList";
 import { TypingBar } from "../components/chat/TypingBar";
@@ -21,6 +22,7 @@ const CONNECTION_TEXT: Record<Connection, string> = {
 export function RoomPage() {
   const { roomId = null } = useParams();
   const room = useRoom(roomId);
+  const navigate = useNavigate();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [endorseBusy, setEndorseBusy] = useState<string | null>(null);
   const [inviteBusy, setInviteBusy] = useState<string | null>(null);
@@ -28,6 +30,11 @@ export function RoomPage() {
   const [memoryBusy, setMemoryBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
+  // M4-0 引用回复：被引消息（发送成功后清除）；删除房间：确认弹层 + 留痕理由。
+  const [quoted, setQuoted] = useState<QuotedMessage | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteReason, setDeleteReason] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   // 房间内有新事件 → 防抖轻量刷新侧栏列表（last_event_at 排序；不轮询）
   const entryCount = room.entries.length;
@@ -83,6 +90,35 @@ export function RoomPage() {
   const onTabActive = useCallback(() => {
     void room.refreshProjections();
   }, []);
+
+  // M4-0 引用回复：从时间线条目构造引用卡片（作者 + 摘要）；发送成功才清除。
+  const onQuote = useCallback(
+    (eventID: string) => {
+      const e = room.entries.find((x) => x.key === eventID);
+      if (!e || e.kind !== "message") return;
+      setQuoted({
+        eventID,
+        author: displayNameOf(room.participants, e.actorID),
+        excerpt: truncate((e.body ?? "").replace(/\s+/g, " ").trim(), 64),
+      });
+    },
+    [room.entries, room.participants],
+  );
+
+  // M4-0 删除房间：M3-6 命令（reason 必填 1..280 字）→ 级联清库 → 回列表。
+  const onDeleteConfirm = useCallback(async () => {
+    const reason = deleteReason.trim();
+    if (!reason || deleteBusy) return;
+    setDeleteBusy(true);
+    try {
+      await room.del(reason);
+      await refreshRooms();
+      navigate("/");
+    } catch {
+      // 失败信息已在 room.error 条展示；弹层保留供重试或取消
+      setDeleteBusy(false);
+    }
+  }, [deleteReason, deleteBusy, room, navigate]);
 
   // M3-3 任务裁定 / 记忆编辑：SSE 事件驱动快照重投影；SSE 未达时兜底手刷一次。
   const onResolveTask = useCallback(
@@ -211,6 +247,17 @@ export function RoomPage() {
         </button>
         <button
           type="button"
+          onClick={() => {
+            setDeleteReason("");
+            setDeleting(true);
+          }}
+          title="删除房间（不可逆，事件与任务记录一并清除）"
+          className="rounded-lg px-2.5 py-1 text-xs text-dim transition-colors hover:bg-[color-mix(in_srgb,var(--danger)_12%,transparent)] hover:text-danger"
+        >
+          删除
+        </button>
+        <button
+          type="button"
           onClick={() => setDrawerOpen((v) => !v)}
           aria-pressed={drawerOpen}
           className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
@@ -227,13 +274,25 @@ export function RoomPage() {
       )}
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
-          <MessageList entries={room.entries} participants={room.participants} />
+          <MessageList
+            entries={room.entries}
+            participants={room.participants}
+            onQuote={(e) => onQuote(e.key)}
+            onJumpToEvent={onJumpToEvent}
+          />
           <TypingBar typing={room.typing} participants={room.participants} />
           <Composer
             disabled={!room.roomID}
             paused={room.paused}
             agents={agents}
-            onSend={(body, addressedTo) => void room.send(body, addressedTo).catch(() => {})}
+            quoted={quoted}
+            onCancelQuote={() => setQuoted(null)}
+            onSend={(body, addressedTo, replyTo) => {
+              void room
+                .send(body, addressedTo, replyTo)
+                .then(() => setQuoted(null)) // 发送成功才弃引用（失败保留可重试）
+                .catch(() => {});
+            }}
           />
         </div>
         {drawerOpen && (
@@ -264,6 +323,57 @@ export function RoomPage() {
           />
         )}
       </div>
+      {deleting && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          role="dialog"
+          aria-modal="true"
+          aria-label="删除房间确认"
+          onClick={() => !deleteBusy && setDeleting(false)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && !deleteBusy) setDeleting(false);
+          }}
+        >
+          <div
+            className="mx-4 w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-sm font-semibold text-text">删除房间「{room.displayName}」</h2>
+            <p className="mt-2 text-xs leading-5 text-dim">
+              删除不可逆：本房间的全部消息、任务与记忆记录将被清除（事件日志级联删除，仅保留墓碑与删除理由）。
+            </p>
+            <textarea
+              autoFocus
+              value={deleteReason}
+              onChange={(e) => setDeleteReason(e.target.value)}
+              maxLength={280}
+              rows={2}
+              disabled={deleteBusy}
+              placeholder="删除理由（必填，1–280 字，留痕审计）"
+              aria-label="删除理由"
+              className="mt-3 w-full resize-none rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-sm outline-none placeholder:text-faint focus:border-danger"
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={deleteBusy}
+                onClick={() => setDeleting(false)}
+                className="rounded-lg px-3 py-1.5 text-xs text-dim transition-colors hover:bg-surface-2 hover:text-text disabled:opacity-40"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={deleteBusy || !deleteReason.trim()}
+                onClick={() => void onDeleteConfirm()}
+                className="rounded-lg bg-danger px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+              >
+                {deleteBusy ? "删除中…" : "确认删除"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

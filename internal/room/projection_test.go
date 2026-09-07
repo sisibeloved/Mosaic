@@ -23,7 +23,7 @@ func snapEvents() []StoredEvent {
 			Payload: []byte(`{"body":"hi"}`), OccurredAt: "t3"}, Cursor: "c3"},
 		{Envelope: protocol.Envelope{EventID: "e4", RoomID: "r", Seq: 4, Type: protocol.EventMessagePosted,
 			Actor:   protocol.Actor{ParticipantID: "par_echo", Kind: "agent"},
-			Payload: []byte(`{"body":"hello"}`), OccurredAt: "t4"}, Cursor: "c4"},
+			Payload: []byte(`{"body":"hello","addressed_to":["par_kimi_x"],"reply_to":"e3"}`), OccurredAt: "t4"}, Cursor: "c4"},
 	}
 }
 
@@ -56,6 +56,17 @@ func TestProjectSnapshotQuadruple(t *testing.T) {
 	}
 	if snap.Timeline[0].ThreadID == nil || *snap.Timeline[0].ThreadID != "thr_root" {
 		t.Fatalf("thread_id 丢失：%v", snap.Timeline[0].ThreadID)
+	}
+	// M4-0：message.posted 载荷的 addressed_to/reply_to 必须入快照 Timeline
+	// （SSE 路此前是唯一来源——刷新后 @点名与引用回复丢失，两路不对称）。
+	if len(snap.Timeline[1].AddressedTo) != 1 || snap.Timeline[1].AddressedTo[0] != "par_kimi_x" {
+		t.Fatalf("addressed_to 未投影：%+v", snap.Timeline[1].AddressedTo)
+	}
+	if snap.Timeline[1].ReplyTo == nil || *snap.Timeline[1].ReplyTo != "e3" {
+		t.Fatalf("reply_to 未投影：%v", snap.Timeline[1].ReplyTo)
+	}
+	if snap.Timeline[0].AddressedTo != nil || snap.Timeline[0].ReplyTo != nil {
+		t.Fatalf("无载荷字段的消息不应投影 addressed_to/reply_to：%+v", snap.Timeline[0])
 	}
 	raw, _ := json.Marshal(snap.Timeline[1])
 	if strings.Contains(string(raw), `"seq"`) {

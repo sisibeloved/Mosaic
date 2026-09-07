@@ -893,6 +893,16 @@ components:
         actor_id: { type: string }
         actor_kind: { type: string }
         body: { type: string }
+        addressed_to:
+          type: array
+          description: 消息点名的参与者（message.posted 载荷同名字段；M4-0 快照/SSE 两路同形）。
+          items: { type: string }
+        reply_to:
+          oneOf:
+            - type: "null"
+            - type: string
+              pattern: "^evt_[0-9A-Za-z_-]+$"
+          description: 引用回复的目标事件（M4-0 聊天交互补齐）。
         thread_id:
           oneOf:
             - type: "null"

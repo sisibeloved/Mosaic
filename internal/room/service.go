@@ -234,6 +234,11 @@ func (s *Service) postMessage(ctx context.Context, actor Actor, cmd Command) (*C
 	if payload.ThreadID != nil && !threadIDPattern.MatchString(*payload.ThreadID) {
 		return nil, fmt.Errorf("%w: thread_id 形如 thr_*", ErrInvalidCommand)
 	}
+	// M4-0 引用回复打通：reply_to 与 relations.target_event_id 同形状纪律
+	// （Schema/OpenAPI 均为 evt_* pattern——命令面校验对齐，不收任意串）。
+	if payload.ReplyTo != nil && !eventIDPattern.MatchString(*payload.ReplyTo) {
+		return nil, fmt.Errorf("%w: reply_to 形如 evt_*", ErrInvalidCommand)
+	}
 	bodyRunes := len([]rune(payload.Body))
 	if bodyRunes < 1 || bodyRunes > MaxBodyRunes {
 		return nil, fmt.Errorf("%w: body 长度 1..%d 字", ErrInvalidCommand, MaxBodyRunes)

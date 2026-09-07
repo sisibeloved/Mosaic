@@ -25,6 +25,8 @@ export interface TimelineEntry {
   occurredAt: string;
   body?: string;
   addressedTo?: string[];
+  /** 引用回复的目标事件 id（message.posted 载荷同名字段；快照/SSE 双路同形）。 */
+  replyTo?: string;
   detail?: string;
 }
 
@@ -130,10 +132,12 @@ export interface RoomHandle {
   roster: string[] | null;
   connection: Connection;
   error: string | null;
-  send(body: string, addressedTo?: string[]): Promise<void>;
+  send(body: string, addressedTo?: string[], replyTo?: string | null): Promise<void>;
   pause(): Promise<void>;
   resume(): Promise<void>;
   rename(displayName: string): Promise<void>;
+  /** M3-6 删除房间（M4-0 补 UI）：reason 留痕；成功后由调用方导航收尾。 */
+  del(reason: string): Promise<void>;
   endorse(intentID: string): Promise<void>;
   /** invite_agent 拉人入房（RFC-0001 Membership：participant.admitted）。 */
   invite(participantID: string): Promise<void>;
@@ -283,7 +287,9 @@ export function useRoom(roomID: string | null): RoomHandle {
         };
         switch (type) {
           case "message.posted": {
-            const payload = view.payload as { body?: string; addressed_to?: string[] | null } | null;
+            const payload = view.payload as
+              | { body?: string; addressed_to?: string[] | null; reply_to?: string | null }
+              | null;
             append({
               key: view.event_id,
               kind: "message",
@@ -292,6 +298,7 @@ export function useRoom(roomID: string | null): RoomHandle {
               occurredAt: view.occurred_at,
               body: payload?.body,
               addressedTo: payload?.addressed_to ?? undefined,
+              replyTo: payload?.reply_to ?? undefined,
             });
             if (view.actor.kind === "agent") {
               delete next.typing[view.actor.participant_id];
@@ -478,6 +485,8 @@ export function useRoom(roomID: string | null): RoomHandle {
                 actorKind: item.actor_kind,
                 occurredAt: item.occurred_at,
                 body: item.body,
+                addressedTo: item.addressed_to ?? undefined,
+                replyTo: item.reply_to ?? undefined,
               }
             : {
                 // 系统事件持久化项（v1.25）：round/pause 提醒不再随 SSE 瞬态丢失
@@ -596,8 +605,8 @@ export function useRoom(roomID: string | null): RoomHandle {
   );
 
   const send = useCallback(
-    (body: string, addressedTo: string[] = []) =>
-      runCommand((id, v) => api.postMessage(id, v, body, addressedTo)),
+    (body: string, addressedTo: string[] = [], replyTo: string | null = null) =>
+      runCommand((id, v) => api.postMessage(id, v, body, addressedTo, replyTo)),
     [runCommand],
   );
   const pause = useCallback(
@@ -611,6 +620,17 @@ export function useRoom(roomID: string | null): RoomHandle {
       setState((prev) => (prev ? { ...prev, displayName } : prev)); // SSE room.renamed 到达前的即时反馈
     },
     [runCommand],
+  );
+  // M3-6 删除（M4-0 补 UI）：墓碑 + 级联清事件/outbox/回执/声明——成功后流与状态
+  // 由调用方导航收尾（本 handle 不自持路由）。
+  const del = useCallback(
+    async (reason: string) => {
+      await runCommand((id, v) => api.deleteRoom(id, v, reason));
+      closeStream();
+      setState(null);
+      setConnection("idle");
+    },
+    [runCommand, closeStream],
   );
   const endorse = useCallback(
     (intentID: string) => runCommand((id, v) => api.endorseIntent(id, v, intentID)),
@@ -661,6 +681,7 @@ export function useRoom(roomID: string | null): RoomHandle {
     pause,
     resume,
     rename,
+    del,
     endorse,
     invite,
     proposeClosure,

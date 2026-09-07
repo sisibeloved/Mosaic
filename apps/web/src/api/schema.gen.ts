@@ -528,6 +528,10 @@ export interface components {
             actor_id: string;
             actor_kind: string;
             body?: string;
+            /** @description 消息点名的参与者（message.posted 载荷同名字段；M4-0 快照/SSE 两路同形）。 */
+            addressed_to?: string[];
+            /** @description 引用回复的目标事件（M4-0 聊天交互补齐）。 */
+            reply_to?: null | string;
             thread_id?: null | string;
             /** Format: date-time */
             occurred_at: string;
