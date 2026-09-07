@@ -146,7 +146,10 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		return attach.RenderForContext(attach.Descriptor{
 			AttachmentID: info.AttachmentID, Name: info.Name, MIME: info.MIME,
 			SizeBytes: info.SizeBytes, StoragePath: info.StoragePath, SHA256: info.SHA256,
-		}, agent.RedactSecrets, head)
+		}, agent.RedactSecrets, head) +
+			// OQ-1 裁定（2026-09-07）：路径注入——agent 用自身文件工具按路径读
+			// 全文/原图（图像可读性取决于各 CLI 工具能力，如实标注）。
+			"\n" + attachmentPathHint(opts.DataDir, info.StoragePath)
 	}
 
 	// 引擎指针先于服务构造声明：create_room 缺省选人要读当时在席座位做名单
