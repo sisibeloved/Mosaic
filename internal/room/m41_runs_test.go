@@ -68,7 +68,7 @@ func m41Engine(t *testing.T, store *MemStore) *Engine {
 		Seats:  []AgentSeat{{ParticipantID: "par_echo", Profile: agent.Profile{ProfileID: "p", Adapter: "echo"}}},
 		Budget: contextx.Limits{}, ReactionWindow: 5 * time.Millisecond,
 		Clock: testClock, Now: time.Now,
-		NewID:  func(p string) string { return p + "_m41_" + time.Now().Format("150405.000000000") },
+		NewID:  func(p string) string { return p + "_m41_" + m41Seq() },
 		Tenant: "ten_local",
 	})
 	_ = eng.cfg.Agents.Register(echoAdapterForRuns())
