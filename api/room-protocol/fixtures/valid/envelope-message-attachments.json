@@ -1,0 +1,32 @@
+{
+  "event_id": "evt_01H8TESTMESSAGEATT00000000000",
+  "tenant_id": "ten_local",
+  "room_id": "room_01H8TESTROOM00000000000000",
+  "thread_id": "thr_01H8TESTTHREAD00000000000",
+  "discussion_epoch_id": "epoch_01H8TESTEPOCH0000000000",
+  "seq": 151,
+  "type": "message.posted",
+  "schema_version": 1,
+  "occurred_at": "2026-09-07T10:00:00.123Z",
+  "actor": { "participant_id": "par_01H8TESTOWNER00000000000", "kind": "human" },
+  "causation_id": null,
+  "correlation_id": null,
+  "visibility": { "kind": "public" },
+  "payload": {
+    "body": "fixture: 带附件的人类消息",
+    "reply_to": null,
+    "addressed_to": [],
+    "relations": [],
+    "attachments": [
+      {
+        "attachment_id": "att_01h8testatt000000000000000",
+        "name": "build.log",
+        "mime": "text/plain",
+        "size_bytes": 1024,
+        "storage_path": "attachments/rooms/room_01H8TESTROOM00000000000000/att_01h8testatt000000000000000",
+        "sha256": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+      }
+    ]
+  },
+  "metadata": {}
+}

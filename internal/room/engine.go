@@ -56,16 +56,19 @@ type EngineConfig struct {
 	// ProactiveSilence 主动开口静默期（OQ-A/M3-3，MaiBot 式）：波链静默（quiescent
 	// 收波）后该时长无人类消息，则主动开一波（agent 自决是否起话）。0 = 关闭。
 	ProactiveSilence time.Duration
-	Receipts         ReceiptStore     // 可选
-	OnDraft          DraftSink        // 可选：草稿流出口
-	OnWaveSkip       WaveSkipSink     // 可选：波门控跳过通知（开发者模式可观测性）
-	Logger           *slog.Logger     // 可选，缺省 slog.Default()（波中止/门控不再静默）
-	Claims           ClaimStore       // 可选：durable handoff（二轮审校 #9；nil = 无声明直驱，测试场景）
-	Clock            func() string    // occurred_at（RFC3339）
-	Now              func() time.Time // 过期时刻计算
-	NewID            func(prefix string) string
-	Tenant           string
-	RoomID           string // 非空 = 只处理该房间；空 = 全部房间（M1 默认）
+	Receipts         ReceiptStore // 可选
+	OnDraft          DraftSink    // 可选：草稿流出口
+	OnWaveSkip       WaveSkipSink // 可选：波门控跳过通知（开发者模式可观测性）
+	Logger           *slog.Logger // 可选，缺省 slog.Default()（波中止/门控不再静默）
+	Claims           ClaimStore   // 可选：durable handoff（二轮审校 #9；nil = 无声明直驱，测试场景）
+	// AttachExcerpt 可选：附件语境摘录渲染器（RFC-0013）——nil = 不注入附件
+	// 内容（纯测试装配）；生产由 app 注入（读数据目录 + RedactSecrets）。
+	AttachExcerpt func(contextx.AttachmentInfo) string
+	Clock         func() string    // occurred_at（RFC3339）
+	Now           func() time.Time // 过期时刻计算
+	NewID         func(prefix string) string
+	Tenant        string
+	RoomID        string // 非空 = 只处理该房间；空 = 全部房间（M1 默认）
 }
 
 // chatGrantPolicy 群聊模型的引擎内固定策略（RFC-0012：无房间策略面——
@@ -574,7 +577,7 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 	}
 	evalsAsm := e.assembleChat(ctx, contextx.Config{
 		RoomID: roomID, TaskID: roundID + ":eval", Mode: "chat", Seats: seatsMin,
-		RecentWindow: evalRecentWindow, Budget: waveBudget,
+		RecentWindow: evalRecentWindow, Budget: waveBudget, AttachExcerpt: e.cfg.AttachExcerpt,
 	}, envs, *anchor, false)
 	timing.AssembleMs = msSince(tStage)
 	evalContext := agent.Context{
@@ -606,7 +609,7 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 		}
 		genAsm := e.assembleChat(ctx, contextx.Config{
 			RoomID: roomID, TaskID: roundID + ":gen" + fmt.Sprintf("%d", i), Mode: "chat",
-			Seats: seatsMin, RecentWindow: 10, Budget: waveBudget,
+			Seats: seatsMin, RecentWindow: 10, Budget: waveBudget, AttachExcerpt: e.cfg.AttachExcerpt,
 		}, genEnvs, *anchor, proactive)
 		genContext := agent.Context{Inline: genAsm.Inline, ReceiptRef: genAsm.Receipt.ReceiptID}
 		outcome := e.revealCandidate(ctx, roomID, roundID, *anchor, w.selection(), epoch, w.intentEventID, genContext, policy, timing)

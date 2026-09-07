@@ -167,3 +167,36 @@ func layerNames(layers []Layer) []string {
 	}
 	return out
 }
+
+// RFC-0013 附件摘录注入：近窗消息与刺激携带 attachments 时，渲染器输出进
+// recent_messages/stimulus；渲染器 nil = 不注入（纯测试装配语义不变）。
+func TestAssembleAttachmentExcerptInjection(t *testing.T) {
+	withAtt := ev(protocol.EventMessagePosted, 2, "human", "带附件", nil)
+	withAtt.Payload = []byte(`{"body":"带附件","attachments":[{"attachment_id":"att_x","name":"a.log","mime":"text/plain","size_bytes":5,"storage_path":"attachments/rooms/r/att_x","sha256":"aa"}]}`)
+	history := stored(
+		ev(protocol.EventRoomCreated, 1, "human", "room", nil),
+		withAtt,
+	)
+	cfg := Config{RoomID: "room_c", TaskID: "tsk_1", Mode: "chat",
+		RecentWindow: 10, Budget: BudgetState{RemainingTokens: 100, Level: 0},
+		AttachExcerpt: func(a AttachmentInfo) string { return "[RENDERED " + a.Name + "]" },
+	}
+	assembled := Assemble(cfg, history, withAtt)
+	recent := assembled.Inline["recent"].([]map[string]any)
+	got, ok := recent[0]["attachments"].([]string)
+	if !ok || len(got) != 1 || got[0] != "[RENDERED a.log]" {
+		t.Fatalf("近窗应含渲染摘录: %v", recent[0]["attachments"])
+	}
+	stimAtt := assembled.Inline["stimulus_attachments"].([]string)
+	if len(stimAtt) != 1 || stimAtt[0] != "[RENDERED a.log]" {
+		t.Fatalf("刺激应含渲染摘录: %v", stimAtt)
+	}
+
+	// nil 渲染器：不注入（既有装配零变化）
+	assembled2 := Assemble(Config{RoomID: "room_c", TaskID: "tsk_1", Mode: "chat",
+		RecentWindow: 10}, history, withAtt)
+	recent2 := assembled2.Inline["recent"].([]map[string]any)
+	if _, exists := recent2[0]["attachments"]; exists {
+		t.Fatal("nil 渲染器不应注入 attachments 键")
+	}
+}

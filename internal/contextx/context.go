@@ -54,6 +54,20 @@ type Config struct {
 	// Retrieved 按需平面（RFC-0007 §7.4 裁定 2）：组装时按刺激关键词召回的
 	// 近窗外旧消息（provenance=event_id；FTS5 同语义的线性实现）。
 	Retrieved []RetrievedItem
+	// AttachExcerpt 附件摘录渲染器（RFC-0013 §2.4）：输入描述子，返回语境
+	// 注入串（文本类头部摘录/图像二进制元数据降级）。nil = 不注入（纯测试
+	// 装配）；生产由 app 注入（读数据目录附件 + RedactSecrets）。
+	AttachExcerpt func(descriptor AttachmentInfo) string
+}
+
+// AttachmentInfo 近窗消息携带的附件最小投影（描述子字段集，供渲染器消费）。
+type AttachmentInfo struct {
+	AttachmentID string `json:"attachment_id"`
+	Name         string `json:"name"`
+	MIME         string `json:"mime"`
+	SizeBytes    int64  `json:"size_bytes"`
+	StoragePath  string `json:"storage_path"`
+	SHA256       string `json:"sha256"`
 }
 
 // TaskBrief 任务语境项（注入用最小投影；owner 是多 Agent 群聊对常见 tasklist
@@ -135,15 +149,25 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 	}
 	for _, m := range messages[start:] {
 		var body struct {
-			Body        string   `json:"body"`
-			AddressedTo []string `json:"addressed_to"`
-			ReplyTo     *string  `json:"reply_to"`
+			Body        string           `json:"body"`
+			AddressedTo []string         `json:"addressed_to"`
+			ReplyTo     *string          `json:"reply_to"`
+			Attachments []AttachmentInfo `json:"attachments"`
 		}
 		_ = json.Unmarshal(m.Payload, &body)
-		recent = append(recent, map[string]any{
+		item := map[string]any{
 			"event_id": m.EventID, "actor": m.Actor.ParticipantID, "kind": m.Actor.Kind,
 			"body": body.Body, "addressed_to": body.AddressedTo, "reply_to": body.ReplyTo,
-		})
+		}
+		// RFC-0013：附件摘录注入（渲染器 nil = 纯测试装配，跳过）。
+		if cfg.AttachExcerpt != nil && len(body.Attachments) > 0 {
+			rendered := make([]string, 0, len(body.Attachments))
+			for _, a := range body.Attachments {
+				rendered = append(rendered, cfg.AttachExcerpt(a))
+			}
+			item["attachments"] = rendered
+		}
+		recent = append(recent, item)
 	}
 	participants := make([]string, 0, len(cfg.Seats))
 	for _, s := range cfg.Seats {
@@ -151,12 +175,20 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 	}
 
 	stimulusBody := ""
+	var stimulusAttachments []string
 	{
 		var p struct {
-			Body string `json:"body"`
+			Body        string           `json:"body"`
+			Attachments []AttachmentInfo `json:"attachments"`
 		}
 		_ = json.Unmarshal(stimulus.Payload, &p)
 		stimulusBody = p.Body
+		if cfg.AttachExcerpt != nil && len(p.Attachments) > 0 {
+			stimulusAttachments = make([]string, 0, len(p.Attachments))
+			for _, a := range p.Attachments {
+				stimulusAttachments = append(stimulusAttachments, cfg.AttachExcerpt(a))
+			}
+		}
 	}
 
 	relations := map[string]any{"reply_edges": countReplies(messages), "addressed_edges": countAddressed(messages)}
@@ -173,6 +205,7 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 	retrieved := make([]RetrievedItem, 0, len(cfg.Retrieved))
 	retrieved = append(retrieved, cfg.Retrieved...)
 	inline := map[string]any{
+		"stimulus_attachments":    stimulusAttachments,
 		"room_id":                 cfg.RoomID,
 		"capsules":                capsuleBrief,
 		"tasklist":                tasklist,
@@ -195,7 +228,7 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 	}{
 		{"charter", map[string]any{"mode": cfg.Mode, "rules": "attention: deterministic; no hidden reasoning"}},
 		{"participants", participants},
-		{"stimulus", map[string]any{"id": stimulus.EventID, "body": stimulusBody}},
+		{"stimulus", map[string]any{"id": stimulus.EventID, "body": stimulusBody, "attachments": stimulusAttachments}},
 		{"recent_messages", recent},
 		{"relations", relations},
 		{"budget_watermark", map[string]any{"watermark": watermark, "budget": cfg.Budget}},

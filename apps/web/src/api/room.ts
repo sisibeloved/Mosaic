@@ -27,6 +27,8 @@ export interface TimelineEntry {
   addressedTo?: string[];
   /** 引用回复的目标事件 id（message.posted 载荷同名字段；快照/SSE 双路同形）。 */
   replyTo?: string;
+  /** 消息附件描述子（RFC-0013；下载 URL = /v1/rooms/{id}/attachments/{att}）。 */
+  attachments?: { attachment_id: string; name: string; size_bytes: number }[];
   detail?: string;
 }
 
@@ -132,7 +134,7 @@ export interface RoomHandle {
   roster: string[] | null;
   connection: Connection;
   error: string | null;
-  send(body: string, addressedTo?: string[], replyTo?: string | null): Promise<void>;
+  send(body: string, addressedTo?: string[], replyTo?: string | null, attachments?: string[]): Promise<void>;
   pause(): Promise<void>;
   resume(): Promise<void>;
   rename(displayName: string): Promise<void>;
@@ -288,7 +290,7 @@ export function useRoom(roomID: string | null): RoomHandle {
         switch (type) {
           case "message.posted": {
             const payload = view.payload as
-              | { body?: string; addressed_to?: string[] | null; reply_to?: string | null }
+              | { body?: string; addressed_to?: string[] | null; reply_to?: string | null; attachments?: { attachment_id: string; name: string; size_bytes: number }[] | null }
               | null;
             append({
               key: view.event_id,
@@ -299,6 +301,7 @@ export function useRoom(roomID: string | null): RoomHandle {
               body: payload?.body,
               addressedTo: payload?.addressed_to ?? undefined,
               replyTo: payload?.reply_to ?? undefined,
+              attachments: payload?.attachments ?? undefined,
             });
             if (view.actor.kind === "agent") {
               delete next.typing[view.actor.participant_id];
@@ -487,6 +490,7 @@ export function useRoom(roomID: string | null): RoomHandle {
                 body: item.body,
                 addressedTo: item.addressed_to ?? undefined,
                 replyTo: item.reply_to ?? undefined,
+                attachments: item.attachments ?? undefined,
               }
             : {
                 // 系统事件持久化项（v1.25）：round/pause 提醒不再随 SSE 瞬态丢失
@@ -605,8 +609,8 @@ export function useRoom(roomID: string | null): RoomHandle {
   );
 
   const send = useCallback(
-    (body: string, addressedTo: string[] = [], replyTo: string | null = null) =>
-      runCommand((id, v) => api.postMessage(id, v, body, addressedTo, replyTo)),
+    (body: string, addressedTo: string[] = [], replyTo: string | null = null, attachments: string[] = []) =>
+      runCommand((id, v) => api.postMessage(id, v, body, addressedTo, replyTo, attachments)),
     [runCommand],
   );
   const pause = useCallback(

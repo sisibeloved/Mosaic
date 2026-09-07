@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/agent"
+	"github.com/sisibeloved/Mosaic/internal/attach"
 	"github.com/sisibeloved/Mosaic/internal/backup"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/harness"
@@ -60,6 +61,8 @@ type Deps struct {
 	Searcher room.MessageSearcher
 	// Backups 备份面（M4-0）：nil = 备份/恢复端点 404（测试装配）。
 	Backups *backup.Manager
+	// Attachments 附件面（RFC-0013，M4-0）：nil = 上传/下载端点 404。
+	Attachments *attach.Store
 	// Diagnostics 自诊断 bundle 构造器（M4-0）：nil = 诊断端点 404。
 	// 内容纪律：不含凭据/环境变量（OQ-20）——版本/运行时/数据面统计/注册表状态/日志尾。
 	Diagnostics func() (map[string]any, error)

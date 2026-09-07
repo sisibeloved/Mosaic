@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/oapi-codegen/runtime"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 // Defines values for ClosureSummaryClosureType.
@@ -378,6 +379,31 @@ func (e RequestRestoreJSONBodyConfirm) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// AttachmentDescriptor message.posted 载荷与快照 Timeline 中的附件描述子（RFC-0013 §2.1 封闭字段集）。
+type AttachmentDescriptor struct {
+	AttachmentId string `json:"attachment_id"`
+	Mime         string `json:"mime"`
+	Name         string `json:"name"`
+	Sha256       string `json:"sha256"`
+	SizeBytes    int64  `json:"size_bytes"`
+
+	// StoragePath 相对数据目录的存储路径
+	StoragePath string `json:"storage_path"`
+}
+
+// AttachmentUploadMeta defines model for AttachmentUploadMeta.
+type AttachmentUploadMeta struct {
+	Mime string `json:"mime"`
+
+	// Name 净化后的文件名（basename 化、控制字符剔除、≤200 字）
+	Name      string `json:"name"`
+	Sha256    string `json:"sha256"`
+	SizeBytes int64  `json:"size_bytes"`
+
+	// Token 上传令牌（upl_*；24h 有效、单次消费）
+	Token string `json:"token"`
 }
 
 // BackupSummary defines model for BackupSummary.
@@ -770,10 +796,13 @@ type TimelineItem struct {
 
 	// AddressedTo 消息点名的参与者（message.posted 载荷同名字段；M4-0 快照/SSE 两路同形）。
 	AddressedTo *[]string `json:"addressed_to,omitempty"`
-	Body        *string   `json:"body,omitempty"`
-	EventId     string    `json:"event_id"`
-	OccurredAt  time.Time `json:"occurred_at"`
-	Position    string    `json:"position"`
+
+	// Attachments 消息附件描述子（RFC-0013；缺省 = 无附件）。
+	Attachments *[]AttachmentDescriptor `json:"attachments,omitempty"`
+	Body        *string                 `json:"body,omitempty"`
+	EventId     string                  `json:"event_id"`
+	OccurredAt  time.Time               `json:"occurred_at"`
+	Position    string                  `json:"position"`
 
 	// ReplyTo 引用回复的目标事件（M4-0 聊天交互补齐）。
 	ReplyTo  *string `json:"reply_to,omitempty"`
@@ -826,6 +855,11 @@ type DisableHarnessExecutable200JSONResponseBodyEnabled bool
 // EnableHarnessExecutable200JSONResponseBodyEnabled defines parameters for EnableHarnessExecutable.
 type EnableHarnessExecutable200JSONResponseBodyEnabled bool
 
+// UploadRoomAttachmentMultipartBody defines parameters for UploadRoomAttachment.
+type UploadRoomAttachmentMultipartBody struct {
+	File openapi_types.File `json:"file"`
+}
+
 // SubscribeRoomEventsParams defines parameters for SubscribeRoomEvents.
 type SubscribeRoomEventsParams struct {
 	// Cursor opaque 游标（空 = 从头）；与 Last-Event-ID 同义，query 优先
@@ -859,6 +893,9 @@ type UpdateHarnessExecutableJSONRequestBody = RuntimeUpdateRequest
 
 // CreateRoomJSONRequestBody defines body for CreateRoom for application/json ContentType.
 type CreateRoomJSONRequestBody = RoomCommand
+
+// UploadRoomAttachmentMultipartRequestBody defines body for UploadRoomAttachment for multipart/form-data ContentType.
+type UploadRoomAttachmentMultipartRequestBody UploadRoomAttachmentMultipartBody
 
 // SubmitRoomCommandJSONRequestBody defines body for SubmitRoomCommand for application/json ContentType.
 type SubmitRoomCommandJSONRequestBody = RoomCommand
@@ -901,6 +938,12 @@ type ServerInterface interface {
 	// CreateRoom 创建房间（create_room 命令）
 	// (POST /v1/rooms)
 	CreateRoom(w http.ResponseWriter, r *http.Request)
+	// UploadRoomAttachment 上传附件（第一步：落盘 + 返回上传令牌）
+	// (POST /v1/rooms/{room_id}/attachments)
+	UploadRoomAttachment(w http.ResponseWriter, r *http.Request, roomId string)
+	// DownloadRoomAttachment 下载附件（读路径）
+	// (GET /v1/rooms/{room_id}/attachments/{attachment_id})
+	DownloadRoomAttachment(w http.ResponseWriter, r *http.Request, roomId string, attachmentId string)
 	// SubmitRoomCommand 提交房间命令（post_message / pause_room / resume_room / rename_room 等）
 	// (POST /v1/rooms/{room_id}/commands)
 	SubmitRoomCommand(w http.ResponseWriter, r *http.Request, roomId RoomID)
@@ -1132,6 +1175,67 @@ func (siw *ServerInterfaceWrapper) CreateRoom(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateRoom(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UploadRoomAttachment operation middleware
+func (siw *ServerInterfaceWrapper) UploadRoomAttachment(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "room_id" -------------
+	var roomId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "room_id", r.PathValue("room_id"), &roomId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "room_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UploadRoomAttachment(w, r, roomId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DownloadRoomAttachment operation middleware
+func (siw *ServerInterfaceWrapper) DownloadRoomAttachment(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "room_id" -------------
+	var roomId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "room_id", r.PathValue("room_id"), &roomId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "room_id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "attachment_id" -------------
+	var attachmentId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "attachment_id", r.PathValue("attachment_id"), &attachmentId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "attachment_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DownloadRoomAttachment(w, r, roomId, attachmentId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1514,6 +1618,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/memory", wrapper.GetRoomMemory)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/search", wrapper.SearchRoomMessages)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/agents", wrapper.ListAgents)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/rooms/{room_id}/attachments", wrapper.UploadRoomAttachment)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/attachments/{attachment_id}", wrapper.DownloadRoomAttachment)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/system/backups", wrapper.ListBackups)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/system/backups", wrapper.CreateBackup)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/system/restore", wrapper.RequestRestore)

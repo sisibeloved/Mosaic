@@ -38,6 +38,12 @@
       "items": { "type": "string", "maxLength": 200 },
       "maxItems": 8,
       "description": "agent 侧自由文本关系声明（适配器发布门整形后的封闭投影）"
+    },
+    "attachments": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/attachmentDescriptor" },
+      "maxItems": 4,
+      "description": "消息附件描述子（RFC-0013，M4-0 文件上传）：人类路径经上传令牌定稿；agent 路径不产生附件。缺省 = 无附件。"
     }
   },
   "additionalProperties": false,
@@ -57,6 +63,20 @@
           "const": "explicit",
           "description": "事件载荷中恒为 explicit；推断关系不进 payload（RFC-0004 原则 13）"
         }
+      },
+      "additionalProperties": false
+    },
+    "attachmentDescriptor": {
+      "type": "object",
+      "required": ["attachment_id", "name", "mime", "size_bytes", "storage_path", "sha256"],
+      "description": "附件描述子（RFC-0013 §2.1 封闭字段集；storage_path 相对数据目录）",
+      "properties": {
+        "attachment_id": { "type": "string", "pattern": "^att_[0-9a-z_]+$" },
+        "name": { "type": "string", "maxLength": 200 },
+        "mime": { "type": "string" },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "storage_path": { "type": "string" },
+        "sha256": { "type": "string" }
       },
       "additionalProperties": false
     }

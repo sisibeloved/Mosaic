@@ -168,6 +168,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/rooms/{room_id}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 上传附件（第一步：落盘 + 返回上传令牌）
+         * @description RFC-0013 两步上传的第一步。multipart/form-data（字段 file，单文件）；
+         *     写端点门（Origin + X-Owner-Token；Content-Type 为 multipart）。
+         *     令牌 24h 有效、单次消费（post_message.attachments 引用后定稿）。
+         *     单附件 8MiB、每房间总量 512MiB，超限 413。
+         */
+        post: operations["uploadRoomAttachment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/rooms/{room_id}/attachments/{attachment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 下载附件（读路径） */
+        get: operations["downloadRoomAttachment"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/system/backups": {
         parameters: {
             query?: never;
@@ -422,6 +462,8 @@ export interface components {
             reply_to?: null | string;
             addressed_to?: string[];
             relations?: components["schemas"]["TypedRelationInput"][];
+            /** @description RFC-0013 上传令牌（POST /v1/rooms/{id}/attachments 第一步产物）；服务端定稿为描述子嵌入事件——令牌不进事件载荷。 */
+            attachments?: string[];
             thread_id?: null | string;
         };
         TypedRelationInput: {
@@ -589,6 +631,27 @@ export interface components {
             /** @description seated（在座；离座语义随 UI 重设计后续切片定稿） */
             seat_status: string;
         };
+        AttachmentUploadMeta: {
+            /** @description 上传令牌（upl_*；24h 有效、单次消费） */
+            token: string;
+            /** @description 净化后的文件名（basename 化、控制字符剔除、≤200 字） */
+            name: string;
+            mime: string;
+            /** Format: int64 */
+            size_bytes: number;
+            sha256: string;
+        };
+        /** @description message.posted 载荷与快照 Timeline 中的附件描述子（RFC-0013 §2.1 封闭字段集）。 */
+        AttachmentDescriptor: {
+            attachment_id: string;
+            name: string;
+            mime: string;
+            /** Format: int64 */
+            size_bytes: number;
+            /** @description 相对数据目录的存储路径 */
+            storage_path: string;
+            sha256: string;
+        };
         BackupSummary: {
             /** @description bkp_<ts36>_<hex>（本包生成，白名单字符） */
             backup_id: string;
@@ -612,6 +675,8 @@ export interface components {
             addressed_to?: string[];
             /** @description 引用回复的目标事件（M4-0 聊天交互补齐）。 */
             reply_to?: null | string;
+            /** @description 消息附件描述子（RFC-0013；缺省 = 无附件）。 */
+            attachments?: components["schemas"]["AttachmentDescriptor"][];
             thread_id?: null | string;
             /** Format: date-time */
             occurred_at: string;
@@ -1125,6 +1190,70 @@ export interface operations {
                         }[];
                     };
                 };
+            };
+        };
+    };
+    uploadRoomAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                room_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 上传元数据（token 进 post_message.attachments） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentUploadMeta"];
+                };
+            };
+            /** @description 超单文件或房间总量上限 */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    downloadRoomAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                room_id: string;
+                attachment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 附件字节流（application/octet-stream） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 附件不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

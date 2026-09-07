@@ -30,6 +30,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/agent/adapter/kimi"
 	"github.com/sisibeloved/Mosaic/internal/agent/adapter/minimax"
 	"github.com/sisibeloved/Mosaic/internal/agent/echo"
+	"github.com/sisibeloved/Mosaic/internal/attach"
 	"github.com/sisibeloved/Mosaic/internal/backup"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/harness"
@@ -132,6 +133,22 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	}
 	clock := func() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
+	// RFC-0013 附件面（M4-0 文件上传）：数据目录内存储；上传令牌定稿与
+	// 删除级联走服务端口，语境摘录注入走 contextx 渲染器。
+	attachStore := &attach.Store{Root: opts.DataDir}
+	attachExcerpt := func(info contextx.AttachmentInfo) string {
+		head := make([]byte, 64<<10) // 摘录上限 8k runes——64KiB 头部足够多字节场景
+		if f, err := os.Open(filepath.Join(opts.DataDir, filepath.FromSlash(info.StoragePath))); err == nil {
+			n, _ := f.Read(head)
+			head = head[:n]
+			f.Close()
+		}
+		return attach.RenderForContext(attach.Descriptor{
+			AttachmentID: info.AttachmentID, Name: info.Name, MIME: info.MIME,
+			SizeBytes: info.SizeBytes, StoragePath: info.StoragePath, SHA256: info.SHA256,
+		}, agent.RedactSecrets, head)
+	}
+
 	// 引擎指针先于服务构造声明：create_room 缺省选人要读当时在席座位做名单
 	// 快照（v1.24：引擎在扫描完成后创建——首开窗口内为 nil，物化为空名单，
 	// 与"扫描完成前无席"的实态一致）。
@@ -149,6 +166,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			}
 			return nil
 		},
+		Attachments: attachStore, // 令牌定稿（描述子入事件载荷）+ 删除级联
 	})
 
 	supervisor := agent.NewSupervisor()
@@ -209,6 +227,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		OwnerToken:       ownerToken,
 		UI:               ui,
 		Backups:          backupMgr,
+		Attachments:      attachStore,
 		Diagnostics: diagnosticsBundle(opts.DataDir,
 			func() (int, error) { return countRooms(store) },
 			func() int {
@@ -383,6 +402,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			// OQ-A 主动开口静默期：零值即禁用（scheduleProactive 直接返回）——
 			// v1.36 曾漏配此处，主动波从未排上（dogfood 实证），勿再省略。
 			ProactiveSilence: 5 * time.Minute,
+			AttachExcerpt:    attachExcerpt,
 			OnDraft:          httpapi.DraftConsumer(hub),
 			OnWaveSkip:       httpapi.WaveSkipConsumer(hub),
 			Logger:           logger,

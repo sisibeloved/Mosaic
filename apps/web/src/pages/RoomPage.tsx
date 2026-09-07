@@ -3,6 +3,7 @@
 // M4-0：消息复制/引用回复接线（引用状态在此持有）；删除房间确认（reason 必填留痕）。
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { api } from "../api/client";
 import { useRoom, type Connection } from "../api/room";
 import { Composer, type QuotedMessage } from "../components/chat/Composer";
 import { MemberPanel } from "../components/chat/MemberPanel";
@@ -32,6 +33,8 @@ export function RoomPage() {
   const [nameDraft, setNameDraft] = useState("");
   // M4-0 引用回复：被引消息（发送成功后清除）；删除房间：确认弹层 + 留痕理由。
   const [quoted, setQuoted] = useState<QuotedMessage | null>(null);
+  // RFC-0013 附件：已上传待发送的令牌集（上传即时、发送定稿）。
+  const [pendingAttachments, setPendingAttachments] = useState<{ token: string; name: string; sizeBytes: number }[]>([]);
   const [deleting, setDeleting] = useState(false);
   const [deleteReason, setDeleteReason] = useState("");
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -90,6 +93,22 @@ export function RoomPage() {
   const onTabActive = useCallback(() => {
     void room.refreshProjections();
   }, []);
+
+  // RFC-0013 附件：选中即上传（令牌 24h 有效），发送时随消息定稿；失败留提示。
+  const onAddAttachment = useCallback(
+    (file: File) => {
+      if (!roomId) return;
+      void api
+        .uploadAttachment(roomId, file)
+        .then((meta) =>
+          setPendingAttachments((prev) =>
+            prev.length >= 4 ? prev : [...prev, { token: meta.token, name: meta.name, sizeBytes: meta.size_bytes }],
+          ),
+        )
+        .catch(() => {});
+    },
+    [roomId],
+  );
 
   // M4-0 引用回复：从时间线条目构造引用卡片（作者 + 摘要）；发送成功才清除。
   const onQuote = useCallback(
@@ -277,6 +296,7 @@ export function RoomPage() {
           <MessageList
             entries={room.entries}
             participants={room.participants}
+            roomID={roomId}
             onQuote={(e) => onQuote(e.key)}
             onJumpToEvent={onJumpToEvent}
           />
@@ -287,10 +307,16 @@ export function RoomPage() {
             agents={agents}
             quoted={quoted}
             onCancelQuote={() => setQuoted(null)}
-            onSend={(body, addressedTo, replyTo) => {
+            attachments={pendingAttachments}
+            onAddAttachment={onAddAttachment}
+            onRemoveAttachment={(token) => setPendingAttachments((prev) => prev.filter((a) => a.token !== token))}
+            onSend={(body, addressedTo, replyTo, attachments) => {
               void room
-                .send(body, addressedTo, replyTo)
-                .then(() => setQuoted(null)) // 发送成功才弃引用（失败保留可重试）
+                .send(body, addressedTo, replyTo, attachments)
+                .then(() => {
+                  setQuoted(null); // 发送成功才弃引用（失败保留可重试）
+                  setPendingAttachments([]); // 附件令牌已被服务端消费
+                })
                 .catch(() => {});
             }}
           />

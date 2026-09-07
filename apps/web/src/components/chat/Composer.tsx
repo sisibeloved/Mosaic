@@ -36,6 +36,9 @@ export function Composer({
   agents,
   quoted,
   onCancelQuote,
+  attachments,
+  onAddAttachment,
+  onRemoveAttachment,
   onSend,
 }: {
   disabled: boolean;
@@ -44,7 +47,11 @@ export function Composer({
   /** 引用回复目标（null = 普通发言）；发送后由调用方清除。 */
   quoted: QuotedMessage | null;
   onCancelQuote: () => void;
-  onSend: (body: string, addressedTo: string[], replyTo: string | null) => void;
+  /** RFC-0013 附件：已上传待发送（token + 展示元数据）；上传由 RoomPage 经 api 发起。 */
+  attachments: { token: string; name: string; sizeBytes: number }[];
+  onAddAttachment: (file: File) => void;
+  onRemoveAttachment: (token: string) => void;
+  onSend: (body: string, addressedTo: string[], replyTo: string | null, attachments: string[]) => void;
 }) {
   const [body, setBody] = useState("");
   const [chips, setChips] = useState<ParticipantView[]>([]);
@@ -87,7 +94,7 @@ export function Composer({
   const submit = () => {
     const text = body.trim();
     if (!text || blocked) return;
-    onSend(text, chips.map((c) => c.participant_id), quoted?.eventID ?? null);
+    onSend(text, chips.map((c) => c.participant_id), quoted?.eventID ?? null, attachments.map((a) => a.token));
     setBody("");
     setChips([]);
     setMention(null);
@@ -136,6 +143,23 @@ export function Composer({
             </button>
           </div>
         )}
+        {attachments.length > 0 && (
+          <div className="mb-1.5 flex flex-wrap gap-1.5">
+            {attachments.map((a) => (
+              <span key={a.token} className="flex items-center gap-1 rounded-full bg-surface-3 py-0.5 pl-2 pr-1.5 text-xs text-dim">
+                📎 {a.name}（{(a.sizeBytes / 1024).toFixed(0)} KiB）
+                <button
+                  type="button"
+                  aria-label={`移除附件 ${a.name}`}
+                  onClick={() => onRemoveAttachment(a.token)}
+                  className="rounded-full px-1 text-dim hover:text-text"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         {chips.length > 0 && (
           <div className="mb-1.5 flex flex-wrap gap-1.5">
             {chips.map((c) => (
@@ -179,6 +203,24 @@ export function Composer({
             </ul>
           )}
           <div className="flex items-center gap-2 rounded-2xl border border-border bg-surface-2 px-3 py-2 transition-colors focus-within:border-accent">
+            <label
+              title="上传附件（≤8MiB，随消息发送）"
+              className="shrink-0 cursor-pointer text-faint transition-colors hover:text-text"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+              <input
+                type="file"
+                multiple
+                className="hidden"
+                disabled={blocked}
+                onChange={(e) => {
+                  for (const f of e.target.files ?? []) onAddAttachment(f);
+                  e.target.value = "";
+                }}
+              />
+            </label>
             <textarea
               ref={areaRef}
               rows={1}

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sisibeloved/Mosaic/internal/attach"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 )
 
@@ -56,6 +57,22 @@ type Config struct {
 	// 物化当时在席名单（v1.24：roster 是创建时点快照——建房后新启用的 Agent
 	// 不自动入房，增量走 invite_agent）。nil = 不物化（空 agents，旧语义）。
 	Seats func() []AgentSeat
+	// Attachments 可选：附件面（RFC-0013）。post_message 携带上传令牌时定稿
+	// 为描述子嵌入载荷；delete_room 级联清理附件目录。nil = 附件字段不可用。
+	Attachments AttachmentStore
+}
+
+// AttachmentDescriptor 事件载荷中的附件描述子（attach.Descriptor 类型别名——
+// 字段集由 message.posted Schema 钉死；alias 使 *attach.Store 天然满足
+// AttachmentStore 端口，无需胶水转换）。
+type AttachmentDescriptor = attach.Descriptor
+
+// AttachmentStore 附件存储端口（internal/attach 实现）。
+type AttachmentStore interface {
+	// Resolve 上传令牌 → 定稿描述子（重命名即消费；任一无效整体拒绝）。
+	Resolve(roomID string, tokens []string) ([]AttachmentDescriptor, error)
+	// DeleteRoom 删除房间级联清理。
+	DeleteRoom(roomID string) error
 }
 
 // Service 命令处理服务：校验 → 幂等 → 并发检查 → 事件生产（原子落库）。
@@ -258,6 +275,38 @@ func (s *Service) postMessage(ctx context.Context, actor Actor, cmd Command) (*C
 		rel.Provenance = "explicit"
 		payload.Relations[i] = rel
 	}
+	// RFC-0013 附件（M4-0 文件上传）：上传令牌 ≤4、形状校验、定稿为描述子——
+	// 令牌不进事件（载荷是描述子封闭投影）；未装附件面时携带令牌即拒。
+	var attachments []AttachmentDescriptor
+	if len(payload.Attachments) > 0 {
+		if s.cfg.Attachments == nil {
+			return nil, fmt.Errorf("%w: 本装配未启用附件面", ErrInvalidCommand)
+		}
+		if len(payload.Attachments) > 4 {
+			return nil, fmt.Errorf("%w: attachments ≤4", ErrInvalidCommand)
+		}
+		for i, tk := range payload.Attachments {
+			if !uploadTokenPattern.MatchString(tk) {
+				return nil, fmt.Errorf("%w: attachments[%d] 形如 upl_*", ErrInvalidCommand, i)
+			}
+		}
+		resolved, err := s.cfg.Attachments.Resolve(cmd.RoomID, payload.Attachments)
+		if err != nil {
+			return nil, fmt.Errorf("%w: 附件定稿失败: %v", ErrInvalidCommand, err)
+		}
+		attachments = resolved
+	}
+
+	// 事件载荷：描述子形态（attachments 缺省 = 无附件；与 Schema 对齐）。
+	eventPayload := struct {
+		Body        string                 `json:"body"`
+		ReplyTo     *string                `json:"reply_to"`
+		AddressedTo []string               `json:"addressed_to"`
+		Relations   []typedRelation        `json:"relations"`
+		ThreadID    *string                `json:"thread_id"`
+		Attachments []AttachmentDescriptor `json:"attachments,omitempty"`
+	}{Body: payload.Body, ReplyTo: payload.ReplyTo, AddressedTo: payload.AddressedTo,
+		Relations: payload.Relations, ThreadID: payload.ThreadID, Attachments: attachments}
 
 	env := protocol.Envelope{
 		EventID:       s.cfg.NewID("evt"),
@@ -269,7 +318,7 @@ func (s *Service) postMessage(ctx context.Context, actor Actor, cmd Command) (*C
 		OccurredAt:    s.cfg.Clock(),
 		Actor:         protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
 		Visibility:    protocol.Visibility{Kind: "public"},
-		Payload:       mustJSON(payload),
+		Payload:       mustJSON(eventPayload),
 		Metadata:      map[string]any{},
 	}
 	receipt := CommandReceipt{
@@ -286,13 +335,16 @@ func (s *Service) postMessage(ctx context.Context, actor Actor, cmd Command) (*C
 }
 
 // postMessagePayload 消息命令载荷（严格字段集：多余字段拒绝；
-// 字段集与 events/message.posted.schema.json 对齐，M2 定稿）。
+// 字段集与 events/message.posted.schema.json 对齐，M2 定稿；attachments 为
+// RFC-0013 上传令牌数组——落库前由服务定稿为描述子，令牌不进事件）。
 type postMessagePayload struct {
-	Body        string          `json:"body"`
-	ReplyTo     *string         `json:"reply_to"`
-	AddressedTo []string        `json:"addressed_to"`
-	Relations   []typedRelation `json:"relations"`
-	ThreadID    *string         `json:"thread_id"` // 可选：发往指定线程（根线程随 room.created 载荷）
+	Body        string                 `json:"body"`
+	ReplyTo     *string                `json:"reply_to"`
+	AddressedTo []string               `json:"addressed_to"`
+	Relations   []typedRelation        `json:"relations"`
+	ThreadID    *string                `json:"thread_id"` // 可选：发往指定线程（根线程随 room.created 载荷）
+	Attachments []string               `json:"attachments"`
+	Resolved    []AttachmentDescriptor `json:"-"` // 定稿产物（不参与命令解码——DisallowUnknownFields 之外的内部字段）
 }
 
 // typedRelation 类型化关系声明（RFC-0004 §3.1.4）。命令侧不收 provenance
@@ -316,6 +368,7 @@ var (
 	participantIDPattern = regexp.MustCompile(`^par_[0-9A-Za-z_-]+$`)
 	taskIDPattern        = regexp.MustCompile(`^tsk_[0-9A-Za-z_-]+$`)
 	closureIDPattern     = regexp.MustCompile(`^clo_[0-9A-Za-z_-]+$`)
+	uploadTokenPattern   = regexp.MustCompile(`^upl_[0-9a-z_]+$`) // RFC-0013 上传令牌
 )
 
 // resolveTask 人类裁定派生任务（tasklist 人工门控——delivered/dismissed 由人
@@ -1091,6 +1144,13 @@ func (s *Service) deleteRoom(ctx context.Context, actor Actor, cmd Command) (*Co
 	}
 	if err := s.cfg.Store.DeleteRoom(ctx, cmd.RoomID); err != nil {
 		return nil, fmt.Errorf("room: delete cascade: %w", err)
+	}
+	// RFC-0013：附件目录随房间级联清理（墓碑不保留内容）；清理失败不回滚删除
+	// （事件已提交）——错误如实上抛，重试经回执幂等返回成功。
+	if s.cfg.Attachments != nil {
+		if err := s.cfg.Attachments.DeleteRoom(cmd.RoomID); err != nil {
+			return nil, fmt.Errorf("room: delete attachments cascade: %w", err)
+		}
 	}
 	return res, nil
 }

@@ -312,6 +312,55 @@ paths:
                         adapter: { type: string }
                         channel: { type: string }
                         version: { type: string }
+  /v1/rooms/{room_id}/attachments:
+    post:
+      operationId: uploadRoomAttachment
+      summary: 上传附件（第一步：落盘 + 返回上传令牌）
+      description: |
+        RFC-0013 两步上传的第一步。multipart/form-data（字段 file，单文件）；
+        写端点门（Origin + X-Owner-Token；Content-Type 为 multipart）。
+        令牌 24h 有效、单次消费（post_message.attachments 引用后定稿）。
+        单附件 8MiB、每房间总量 512MiB，超限 413。
+      parameters:
+        - name: room_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: 上传元数据（token 进 post_message.attachments）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AttachmentUploadMeta" }
+        "413":
+          description: 超单文件或房间总量上限
+  /v1/rooms/{room_id}/attachments/{attachment_id}:
+    get:
+      operationId: downloadRoomAttachment
+      summary: 下载附件（读路径）
+      parameters:
+        - name: room_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: attachment_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^att_[0-9a-z_]+$" }
+      responses:
+        "200":
+          description: 附件字节流（application/octet-stream）
+        "404":
+          description: 附件不存在
   /v1/system/backups:
     get:
       operationId: listBackups
@@ -721,6 +770,11 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/TypedRelationInput"
+        attachments:
+          type: array
+          maxItems: 4
+          description: "RFC-0013 上传令牌（POST /v1/rooms/{id}/attachments 第一步产物）；服务端定稿为描述子嵌入事件——令牌不进事件载荷。"
+          items: { type: string, pattern: "^upl_[0-9a-z_]+$" }
         thread_id:
           oneOf:
             - type: "null"
@@ -958,6 +1012,26 @@ components:
         adapter: { type: string, description: agent 座位的适配器名（human 无此键） }
         channel: { type: string, description: harness 渠道标签（cli/app:codex-desktop 等；无则省略） }
         seat_status: { type: string, description: seated（在座；离座语义随 UI 重设计后续切片定稿） }
+    AttachmentUploadMeta:
+      type: object
+      required: [token, name, mime, size_bytes, sha256]
+      properties:
+        token: { type: string, description: "上传令牌（upl_*；24h 有效、单次消费）" }
+        name: { type: string, description: 净化后的文件名（basename 化、控制字符剔除、≤200 字） }
+        mime: { type: string }
+        size_bytes: { type: integer, format: int64, minimum: 0 }
+        sha256: { type: string }
+    AttachmentDescriptor:
+      type: object
+      required: [attachment_id, name, mime, size_bytes, storage_path, sha256]
+      description: message.posted 载荷与快照 Timeline 中的附件描述子（RFC-0013 §2.1 封闭字段集）。
+      properties:
+        attachment_id: { type: string, pattern: "^att_[0-9a-z_]+$" }
+        name: { type: string }
+        mime: { type: string }
+        size_bytes: { type: integer, format: int64, minimum: 0 }
+        storage_path: { type: string, description: 相对数据目录的存储路径 }
+        sha256: { type: string }
     BackupSummary:
       type: object
       required: [backup_id, created_at, size_bytes]
@@ -988,6 +1062,10 @@ components:
             - type: string
               pattern: "^evt_[0-9A-Za-z_-]+$"
           description: 引用回复的目标事件（M4-0 聊天交互补齐）。
+        attachments:
+          type: array
+          description: 消息附件描述子（RFC-0013；缺省 = 无附件）。
+          items: { $ref: "#/components/schemas/AttachmentDescriptor" }
         thread_id:
           oneOf:
             - type: "null"

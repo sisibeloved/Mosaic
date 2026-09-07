@@ -46,6 +46,17 @@ export interface MessagePostedPayload {
     | [string, string, string, string, string, string]
     | [string, string, string, string, string, string, string]
     | [string, string, string, string, string, string, string, string];
+  /**
+   * 消息附件描述子（RFC-0013，M4-0 文件上传）：人类路径经上传令牌定稿；agent 路径不产生附件。缺省 = 无附件。
+   *
+   * @maxItems 4
+   */
+  attachments?:
+    | []
+    | [AttachmentDescriptor]
+    | [AttachmentDescriptor, AttachmentDescriptor]
+    | [AttachmentDescriptor, AttachmentDescriptor, AttachmentDescriptor]
+    | [AttachmentDescriptor, AttachmentDescriptor, AttachmentDescriptor, AttachmentDescriptor];
 }
 export interface TypedRelation {
   target_event_id: string;
@@ -54,4 +65,15 @@ export interface TypedRelation {
    * 事件载荷中恒为 explicit；推断关系不进 payload（RFC-0004 原则 13）
    */
   provenance: "explicit";
+}
+/**
+ * 附件描述子（RFC-0013 §2.1 封闭字段集；storage_path 相对数据目录）
+ */
+export interface AttachmentDescriptor {
+  attachment_id: string;
+  name: string;
+  mime: string;
+  size_bytes: number;
+  storage_path: string;
+  sha256: string;
 }

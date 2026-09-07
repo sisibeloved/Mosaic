@@ -18,18 +18,19 @@ const (
 // TimelineItem Timeline 视图项（对外形态：无 seq/tenant；RFC-0012：消息族 +
 // 暂停/恢复系统提醒——round.* 已内部化不入列表）。AddressedTo/ReplyTo 为
 // message.posted 载荷字段（M4-0：快照路与 SSE 路此前不对称——刷新后 @点名
-// 与引用回复丢失；投影补齐两路同形）。
+// 与引用回复丢失，投影补齐两路同形）；Attachments 为 RFC-0013 附件描述子。
 type TimelineItem struct {
-	Position    string   `json:"position"`
-	EventID     string   `json:"event_id"`
-	Type        string   `json:"type"`
-	ActorID     string   `json:"actor_id"`
-	ActorKind   string   `json:"actor_kind"`
-	Body        string   `json:"body,omitempty"`
-	AddressedTo []string `json:"addressed_to,omitempty"`
-	ReplyTo     *string  `json:"reply_to,omitempty"`
-	ThreadID    *string  `json:"thread_id,omitempty"`
-	OccurredAt  string   `json:"occurred_at"`
+	Position    string                 `json:"position"`
+	EventID     string                 `json:"event_id"`
+	Type        string                 `json:"type"`
+	ActorID     string                 `json:"actor_id"`
+	ActorKind   string                 `json:"actor_kind"`
+	Body        string                 `json:"body,omitempty"`
+	AddressedTo []string               `json:"addressed_to,omitempty"`
+	ReplyTo     *string                `json:"reply_to,omitempty"`
+	Attachments []AttachmentDescriptor `json:"attachments,omitempty"`
+	ThreadID    *string                `json:"thread_id,omitempty"`
+	OccurredAt  string                 `json:"occurred_at"`
 }
 
 // Snapshot 快照载体：版本三元组 + 水位（opaque cursor）+ Timeline + 策略区。
@@ -186,9 +187,10 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 			continue
 		}
 		var body struct {
-			Body        string   `json:"body"`
-			AddressedTo []string `json:"addressed_to"`
-			ReplyTo     *string  `json:"reply_to"`
+			Body        string                 `json:"body"`
+			AddressedTo []string               `json:"addressed_to"`
+			ReplyTo     *string                `json:"reply_to"`
+			Attachments []AttachmentDescriptor `json:"attachments"`
 		}
 		_ = json.Unmarshal(ev.Envelope.Payload, &body)
 		snap.Timeline = append(snap.Timeline, TimelineItem{
@@ -200,6 +202,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 			Body:        body.Body,
 			AddressedTo: body.AddressedTo,
 			ReplyTo:     body.ReplyTo,
+			Attachments: body.Attachments,
 			ThreadID:    ev.Envelope.ThreadID,
 			OccurredAt:  ev.Envelope.OccurredAt,
 		})

@@ -148,14 +148,42 @@ function BubbleActions({
   );
 }
 
+/** 附件卡片（RFC-0013）：名称/大小，点击经下载端点取回文件。 */
+function AttachmentCards({ roomID, attachments }: { roomID: string | null; attachments?: { attachment_id: string; name: string; size_bytes: number }[] }) {
+  if (!attachments || attachments.length === 0) return null;
+  return (
+    <div className="mt-1.5 flex flex-col gap-1">
+      {attachments.map((a) =>
+        roomID ? (
+          <a
+            key={a.attachment_id}
+            href={`/v1/rooms/${encodeURIComponent(roomID)}/attachments/${encodeURIComponent(a.attachment_id)}`}
+            title="下载附件"
+            className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-3/50 px-2 py-1 text-[11px] text-dim transition-colors hover:bg-surface-3 hover:text-text"
+          >
+            📎 <span className="truncate">{a.name}</span>
+            <span className="shrink-0 text-faint">{(a.size_bytes / 1024).toFixed(0)} KiB</span>
+          </a>
+        ) : (
+          <span key={a.attachment_id} className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-3/50 px-2 py-1 text-[11px] text-dim">
+            📎 {a.name} · {(a.size_bytes / 1024).toFixed(0)} KiB
+          </span>
+        ),
+      )}
+    </div>
+  );
+}
+
 export function MessageList({
   entries,
   participants,
+  roomID,
   onQuote,
   onJumpToEvent,
 }: {
   entries: TimelineEntry[];
   participants: ParticipantView[];
+  roomID: string | null;
   /** 点"引用"：把该消息带入输入框上方的引用卡片（RoomPage 持状态）。 */
   onQuote: (entry: TimelineEntry) => void;
   /** 引用条 / 跳转：滚到对应事件（RoomPage 的 onJumpToEvent——data-event-id 锚定）。 */
@@ -204,6 +232,7 @@ export function MessageList({
               <HumanBubble
                 entry={e}
                 participants={participants}
+                roomID={roomID}
                 quoteTarget={e.replyTo ? (entryIndex.get(e.replyTo) ?? null) : null}
                 onJump={onJumpToEvent}
                 onQuote={onQuote}
@@ -214,6 +243,7 @@ export function MessageList({
               <AgentBubble
                 entry={e}
                 participants={participants}
+                roomID={roomID}
                 quoteTarget={e.replyTo ? (entryIndex.get(e.replyTo) ?? null) : null}
                 onJump={onJumpToEvent}
                 onQuote={onQuote}
@@ -255,12 +285,14 @@ function AddressedLine({
 function HumanBubble({
   entry,
   participants,
+  roomID,
   quoteTarget,
   onJump,
   onQuote,
 }: {
   entry: TimelineEntry;
   participants: ParticipantView[];
+  roomID: string | null;
   quoteTarget: TimelineEntry | null;
   onJump: (eventID: string) => void;
   onQuote: (entry: TimelineEntry) => void;
@@ -274,6 +306,7 @@ function HumanBubble({
             <ReplyQuoteBar target={quoteTarget} fallbackID={entry.replyTo} participants={participants} onJump={onJump} />
           )}
           <MarkdownBody text={entry.body ?? ""} />
+          <AttachmentCards roomID={roomID} attachments={entry.attachments} />
         </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-faint">
           <AddressedLine entry={entry} participants={participants} />
@@ -289,12 +322,14 @@ function HumanBubble({
 function AgentBubble({
   entry,
   participants,
+  roomID,
   quoteTarget,
   onJump,
   onQuote,
 }: {
   entry: TimelineEntry;
   participants: ParticipantView[];
+  roomID: string | null;
   quoteTarget: TimelineEntry | null;
   onJump: (eventID: string) => void;
   onQuote: (entry: TimelineEntry) => void;
@@ -326,6 +361,7 @@ function AgentBubble({
           )}
           <AddressedLine entry={entry} participants={participants} />
           <MarkdownBody text={clean} />
+          <AttachmentCards roomID={roomID} attachments={entry.attachments} />
           {todos && <TodoChip items={todos} />}
         </div>
       </div>

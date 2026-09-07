@@ -178,6 +178,7 @@ export const api = {
     body: string,
     addressedTo: string[] = [],
     replyTo: string | null = null,
+    attachments: string[] = [],
   ): Promise<CommandResponse> {
     return post(
       `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
@@ -186,8 +187,21 @@ export const api = {
         reply_to: replyTo,
         addressed_to: addressedTo,
         relations: [],
+        ...(attachments.length > 0 ? { attachments } : {}),
       }),
     );
+  },
+  /** RFC-0013 第一步：multipart 上传 → 令牌（进 postMessage attachments）。 */
+  uploadAttachment(roomID: string, file: File): Promise<{ token: string; name: string; size_bytes: number }> {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request(`/v1/rooms/${encodeURIComponent(roomID)}/attachments`, {
+      method: "POST",
+      body: fd, // Content-Type 由浏览器带 multipart boundary；不经 JSON 序列化
+    });
+  },
+  attachmentURL(roomID: string, attachmentID: string): string {
+    return `/v1/rooms/${encodeURIComponent(roomID)}/attachments/${encodeURIComponent(attachmentID)}`;
   },
   proposeClosure(roomID: string, version: number, threadID: string | null, hint?: string): Promise<CommandResponse> {
     return post(
