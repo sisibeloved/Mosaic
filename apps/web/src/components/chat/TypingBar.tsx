@@ -1,6 +1,7 @@
 // "正在输入"区（计划 v1.11 静默期反馈 + draft.update 草稿流预览）：
 // 座位级条目——头像小圆点 + 阶段文案 + 草稿预览（渐显、斜体、截断 140 字）；无活动时隐藏。
-import type { TypingState } from "../../api/room";
+// M4-2：座位失败行（配额/网络/超时原因直接可见——v1.50/58 实证此类原因此前只进日志）。
+import type { SeatFailure, TypingState } from "../../api/room";
 import type { ParticipantView } from "../../api/client";
 import { displayNameOf, truncate } from "../../lib/ui";
 import { Avatar } from "./Avatar";
@@ -13,18 +14,41 @@ const PHASE_TEXT: Record<TypingState["phase"], string> = {
   drafting: "正在起草",
 };
 
+const FAILURE_TEXT: Record<SeatFailure["status"], string> = {
+  eval_failed: "评估失败",
+  generate_failed: "生成失败",
+};
+
 export function TypingBar({
   typing,
   participants,
+  failures,
 }: {
   typing: Record<string, TypingState>;
   participants: ParticipantView[];
+  /** M4-2 座位失败（瞬态，新一轮 round.opened 清空）。 */
+  failures: SeatFailure[];
 }) {
   const pids = Object.keys(typing);
-  if (pids.length === 0) return null;
+  if (pids.length === 0 && failures.length === 0) return null;
   return (
     <div aria-live="polite" className="border-t border-border py-1.5 pl-4 pr-6">
       <div className="mx-auto flex max-w-3xl flex-col gap-1">
+        {failures.map((f, i) => {
+          const name = displayNameOf(participants, f.participantID);
+          return (
+            <div key={`fail-${i}-${f.participantID}`} className="animate-fade-in flex items-baseline gap-2 text-xs">
+              <span className="flex shrink-0 items-center gap-1.5 text-dim">
+                <Avatar participantID={f.participantID} displayName={name} size={16} />
+                <span className="font-medium text-text">{name}</span>
+                <span className="text-danger">{FAILURE_TEXT[f.status]}</span>
+              </span>
+              <span className="min-w-0 truncate text-faint" title={f.detail}>
+                {truncate(f.detail, 120)}
+              </span>
+            </div>
+          );
+        })}
         {pids.map((pid) => {
           const t = typing[pid];
           const name = displayNameOf(participants, pid);

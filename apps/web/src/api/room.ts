@@ -95,6 +95,25 @@ interface WaveSkipFrame {
   reason?: string;
 }
 
+/** 座位级失败（M4-2 协作状态；seat.status 瞬态帧——断线不补发，面板标注时点）。 */
+export interface SeatFailure {
+  participantID: string;
+  status: "eval_failed" | "generate_failed";
+  detail: string;
+  at: string;
+}
+
+/** seat.status 线上帧（httpapi.SeatStatusConsumer）。 */
+interface SeatStatusFrame {
+  room_id: string;
+  participant_id: string;
+  status: "eval_failed" | "generate_failed";
+  detail: string;
+}
+
+/** 座位失败保留上限（瞬态环形：只保最近 N 条，新一轮 round.opened 清空）。 */
+const SEAT_FAILURE_CAP = 10;
+
 /** 草稿文本内存上界（展示侧另截断 140 字）。 */
 const DRAFT_TEXT_CAP = 800;
 
@@ -113,6 +132,8 @@ interface RoomModelState {
   tasks: TaskItem[];
   roundOpen: boolean;
   paused: boolean;
+  /** M4-2：座位级失败（瞬态；新一轮清空——波间保留供"上轮为何没人说话"回看）。 */
+  seatFailures: SeatFailure[];
   /** 入房 Agent 名单（null = 全席模式：建房未选人，所有在席 Agent 均在房内）。 */
   roster: string[] | null;
 }
@@ -130,6 +151,8 @@ export interface RoomHandle {
   closures: ClosureSummary[];
   tasks: TaskItem[];
   roundOpen: boolean;
+  /** M4-2：座位级失败（瞬态；活动 Tab 与正在输入区消费）。 */
+  seatFailures: SeatFailure[];
   paused: boolean;
   roster: string[] | null;
   connection: Connection;
@@ -309,8 +332,10 @@ export function useRoom(roomID: string | null): RoomHandle {
             break;
           }
           case "round.opened":
-            // RFC-0012：round 内部化——不进时间线，仅维护进行中状态
+            // RFC-0012：round 内部化——不进时间线，仅维护进行中状态；
+            // 新一轮开始——上一轮的座位失败快照清空（活动面板随快照重取）。
             next.roundOpen = true;
+            next.seatFailures = [];
             scheduleRefresh();
             break;
           case "round.closed":
@@ -422,6 +447,21 @@ export function useRoom(roomID: string | null): RoomHandle {
     });
   }, []);
 
+  /** seat.status 瞬态帧（M4-2）：座位失败进房间可见面（环形上限，新一轮清空）。 */
+  const applySeatStatus = useCallback(
+    (frame: SeatStatusFrame) => {
+      setState((prev) => {
+        if (!prev || frame.room_id !== prev.roomID) return prev;
+        const next = [
+          ...prev.seatFailures,
+          { participantID: frame.participant_id, status: frame.status, detail: frame.detail, at: new Date().toISOString() },
+        ];
+        return { ...prev, seatFailures: next.slice(-SEAT_FAILURE_CAP) };
+      });
+    },
+    [],
+  );
+
   /** wave.skipped 瞬态帧：开发者模式下内联静默原因（门控跳过不落事件——
       没有这条路房间里只剩死寂；瞬态不入快照，刷新后不重现）。 */
   const applyWaveSkip = useCallback(
@@ -510,6 +550,7 @@ export function useRoom(roomID: string | null): RoomHandle {
         typing: {},
         roundOpen: false,
         paused: false,
+        seatFailures: [], // 瞬态：断线/重载不重建（如实——失败态无事件源）
         ...projections(snap),
       });
       const es = new EventSource(
@@ -541,12 +582,15 @@ export function useRoom(roomID: string | null): RoomHandle {
       es.addEventListener("wave.skipped", (ev) => {
         applyWaveSkip(JSON.parse((ev as MessageEvent).data) as WaveSkipFrame);
       });
+      es.addEventListener("seat.status", (ev) => {
+        applySeatStatus(JSON.parse((ev as MessageEvent).data) as SeatStatusFrame);
+      });
       es.addEventListener("resync_required", () => {
         setConnection("resync");
         void loadAndSubscribe(id);
       });
     },
-    [applyEvent, applyDraft, applyWaveSkip, closeStream],
+    [applyEvent, applyDraft, applyWaveSkip, applySeatStatus, closeStream],
   );
 
   useEffect(() => {
@@ -677,6 +721,7 @@ export function useRoom(roomID: string | null): RoomHandle {
     closures: state?.closures ?? [],
     tasks: state?.tasks ?? [],
     roundOpen: state?.roundOpen ?? false,
+    seatFailures: state?.seatFailures ?? [],
     paused: state?.paused ?? false,
     roster: state?.roster ?? null,
     connection,

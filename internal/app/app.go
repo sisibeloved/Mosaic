@@ -408,6 +408,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			AttachExcerpt:    attachExcerpt,
 			OnDraft:          httpapi.DraftConsumer(hub),
 			OnWaveSkip:       httpapi.WaveSkipConsumer(hub),
+			OnSeatStatus:     httpapi.SeatStatusConsumer(hub),
 			Logger:           logger,
 			Clock:            clock,
 			Now:              time.Now,

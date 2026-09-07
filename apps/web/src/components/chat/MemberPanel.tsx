@@ -5,7 +5,7 @@
 // 内部枚举一律经 lib/copy 映射层转为用户语言，不裸显。
 import { useEffect, useState } from "react";
 import { api, type AgentSeatInfo, type ParticipantView } from "../../api/client";
-import type { GraphEdge, ScorecardItem, TaskItem, ThreadItem } from "../../api/room";
+import type { GraphEdge, ScorecardItem, SeatFailure, TaskItem, ThreadItem } from "../../api/room";
 import { useDevMode } from "../../state/dev";
 import type { ClosureSummary } from "../../api/room";
 import { DevPanel } from "../DevPanel";
@@ -22,13 +22,15 @@ import {
 } from "../../lib/copy";
 import { displayNameOf, shortId, truncate } from "../../lib/ui";
 import { Avatar } from "./Avatar";
+import { ActivityTab } from "./ActivityTab";
 import { MemoryTab } from "./MemoryTab";
 import { TasksTab } from "./TasksTab";
 
-type Tab = "members" | "tasks" | "memory" | "scorecard" | "graph" | "debug";
+type Tab = "members" | "activity" | "tasks" | "memory" | "scorecard" | "graph" | "debug";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "members", label: "成员" },
+  { id: "activity", label: "活动" },
   { id: "tasks", label: "任务" },
   { id: "memory", label: "记忆" },
   { id: "scorecard", label: "发言评估" },
@@ -48,6 +50,7 @@ export function MemberPanel({
   edges,
   closures,
   tasks,
+  seatFailures,
   endorseBusy,
   onEndorse,
   inviteBusy,
@@ -76,6 +79,8 @@ export function MemberPanel({
   closures: ClosureSummary[];
   /** M3-3 任务清单（快照 tasks 视图；带责任人）。 */
   tasks: TaskItem[];
+  /** M4-2 座位级失败（瞬态；活动 Tab 消费）。 */
+  seatFailures: SeatFailure[];
   endorseBusy: string | null;
   onEndorse: (intentID: string) => void;
   inviteBusy: string | null;
@@ -139,6 +144,22 @@ export function MemberPanel({
       <div className="flex-1 overflow-y-auto">
         {tab === "members" && (
           <MembersTab participants={participants} roster={roster} inviteBusy={inviteBusy} onInvite={onInvite} />
+        )}
+        {tab === "activity" && (
+          <ActivityTab
+            scorecard={scorecard
+              .filter((s) => s.participant_id && s.action && s.occurred_at)
+              .map((s) => ({
+                participant_id: s.participant_id,
+                action: s.action ?? "",
+                public_rationale: s.public_rationale ?? null,
+                round_id: s.round_id ?? undefined,
+                occurred_at: s.occurred_at ?? "",
+              }))}
+            participants={participants}
+            failures={seatFailures}
+            agentPids={participants.filter((p) => p.kind === "agent").map((p) => p.participant_id)}
+          />
         )}
         {tab === "tasks" && (
           <TasksTab

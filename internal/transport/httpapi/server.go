@@ -799,3 +799,20 @@ func WaveSkipConsumer(hub *sse.Hub) room.WaveSkipSink {
 		hub.Publish(roomID, sse.ViewEvent{Cursor: "", Type: "wave.skipped", Data: data})
 	}
 }
+
+// SeatStatusConsumer 把座位级状态通知桥到 SSE（seat.status 瞬态帧，M4-2 协作
+// 状态）：eval_failed/generate_failed 携适配器错误串——配额耗尽/网络不可达/
+// 超时的真实原因进房间可见面（v1.50/58 实证此类原因此前只进日志）。瞬态：
+// 断线不补发；权威重建面是 intent.recorded/message.posted。
+func SeatStatusConsumer(hub *sse.Hub) room.SeatStatusSink {
+	return func(roomID, participantID, status, detail string) {
+		data, err := json.Marshal(map[string]any{
+			"room_id": roomID, "participant_id": participantID,
+			"status": status, "detail": detail,
+		})
+		if err != nil {
+			return
+		}
+		hub.Publish(roomID, sse.ViewEvent{Cursor: "", Type: "seat.status", Data: data})
+	}
+}

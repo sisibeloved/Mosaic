@@ -300,7 +300,7 @@ export function RoomPage() {
             onQuote={(e) => onQuote(e.key)}
             onJumpToEvent={onJumpToEvent}
           />
-          <TypingBar typing={room.typing} participants={room.participants} />
+          <TypingBar typing={room.typing} participants={room.participants} failures={room.seatFailures} />
           <Composer
             disabled={!room.roomID}
             paused={room.paused}
@@ -331,6 +331,7 @@ export function RoomPage() {
             edges={room.edges}
             closures={room.closures}
             tasks={room.tasks}
+            seatFailures={room.seatFailures}
             endorseBusy={endorseBusy}
             onEndorse={onEndorse}
             inviteBusy={inviteBusy}

@@ -45,6 +45,13 @@ type DraftSink func(roomID, participantID string, update agent.DraftUpdate)
 // 供开发者模式在房间内向用户解释"为什么没人说话"。
 type WaveSkipSink func(roomID, reason string)
 
+// SeatStatusSink 座位级状态通知出口（M4-2 协作状态）。status ∈
+// eval_failed | generate_failed；detail 携适配器错误串（配额/网络/超时的
+// 真实原因——v1.50/58 实证此类原因此前只进日志，房间内零感知）。瞬态：
+// 失败不是事件族成员，权威重建面是 intent.recorded（沉默）/message.posted
+// （发言）——失败态断线不补发，面板如实标注时点。
+type SeatStatusSink func(roomID, participantID, status, detail string)
+
 // EngineConfig 引擎依赖。
 type EngineConfig struct {
 	Store          AtomicStore
@@ -59,8 +66,12 @@ type EngineConfig struct {
 	Receipts         ReceiptStore // 可选
 	OnDraft          DraftSink    // 可选：草稿流出口
 	OnWaveSkip       WaveSkipSink // 可选：波门控跳过通知（开发者模式可观测性）
-	Logger           *slog.Logger // 可选，缺省 slog.Default()（波中止/门控不再静默）
-	Claims           ClaimStore   // 可选：durable handoff（二轮审校 #9；nil = 无声明直驱，测试场景）
+	// OnSeatStatus 可选：座位级失败通知（M4-2 协作状态）——评估/生成失败时
+	// 携原因发瞬态帧（SSE seat.status；不入事件日志——失败不是事件族成员，
+	// 重建面以 intent.recorded/message.posted 权威事件为准）。
+	OnSeatStatus SeatStatusSink
+	Logger       *slog.Logger // 可选，缺省 slog.Default()（波中止/门控不再静默）
+	Claims       ClaimStore   // 可选：durable handoff（二轮审校 #9；nil = 无声明直驱，测试场景）
 	// AttachExcerpt 可选：附件语境摘录渲染器（RFC-0013）——nil = 不注入附件
 	// 内容（纯测试装配）；生产由 app 注入（读数据目录 + RedactSecrets）。
 	AttachExcerpt func(contextx.AttachmentInfo) string
@@ -378,6 +389,13 @@ func (e *Engine) debug(roomID, msg string, args ...any) {
 func (e *Engine) waveSkip(roomID, reason string) {
 	if e.cfg.OnWaveSkip != nil {
 		e.cfg.OnWaveSkip(roomID, reason)
+	}
+}
+
+// seatStatus 座位级状态通知（nil 安全；M4-2：失败原因进房间可见面，不再只进日志）。
+func (e *Engine) seatStatus(roomID, participantID, status, detail string) {
+	if e.cfg.OnSeatStatus != nil {
+		e.cfg.OnSeatStatus(roomID, participantID, status, detail)
 	}
 }
 
@@ -836,6 +854,7 @@ func (e *Engine) evaluateWave(ctx context.Context, roomID, roundID string, ancho
 			if err != nil {
 				if ctx.Err() == nil { // 取消路径静默——gather 后统一判定整波中止
 					e.warn(roomID, "意图评估失败，跳过该座", "seat", seat.ParticipantID, "err", err)
+					e.seatStatus(roomID, seat.ParticipantID, "eval_failed", err.Error())
 				}
 				return
 			}
@@ -1062,6 +1081,7 @@ func (e *Engine) runGenerate(ctx context.Context, roomID, roundID string, stimul
 			return agent.Result{}, false
 		}
 		e.warn(roomID, "生成失败，撤销该授", "round", roundID, "grant", grantID, "err", err)
+		e.seatStatus(roomID, sel.ParticipantID, "generate_failed", err.Error())
 		e.revoke(ctx, roomID, grantEnv.EventID, grantID, roundID, stimulus, "generation_failed", nil)
 		return agent.Result{}, false
 	}
