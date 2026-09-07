@@ -170,6 +170,19 @@ func (s *Store) JournalMode(ctx context.Context) (string, error) {
 	return mode, err
 }
 
+// BackupTo 生成一致快照到 destPath（M4-0 备份面：VACUUM INTO——SQLite 官方
+// 备份路径，无需停写、不搬 WAL/SHM，产物自包含单文件）。destPath 不得已存在
+// （VACUUM INTO 语义：已存在即报错——由调用方保证新目录）。
+func (s *Store) BackupTo(ctx context.Context, destPath string) error {
+	if _, err := os.Stat(destPath); err == nil {
+		return fmt.Errorf("sqlite: backup dest 已存在: %s", destPath)
+	}
+	if _, err := s.db.ExecContext(ctx, "VACUUM INTO ?", destPath); err != nil {
+		return fmt.Errorf("sqlite: vacuum into: %w", err)
+	}
+	return os.Chmod(destPath, 0o600)
+}
+
 // AppendEvents 在单个 BEGIN IMMEDIATE 事务内追加一批事件并同事务写 outbox：
 // seq 由存储按房间分配（调用方不指定）；任一 event_id 重复则整批回滚。
 // 返回落库后的信封（含分配的 seq），顺序与入参一致。

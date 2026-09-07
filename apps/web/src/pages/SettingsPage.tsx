@@ -1,13 +1,13 @@
 // 设置页（纯全局层，不读取任何"当前房间"状态）：Agent 实例（harness 可执行项管理 +
-// 手动登记）/ 开发者（全局开关——开启后调试面板出现在各房间抽屉的"调试"Tab；
-// 调试端点仍由服务端 -dev 决定是否装配）。
+// 手动登记）/ 数据与诊断（M4-0：备份/恢复/自诊断）/ 开发者（全局开关——开启后调试
+// 面板出现在各房间抽屉的"调试"Tab；调试端点仍由服务端 -dev 决定是否装配）。
 // 分层规矩：房间讨论策略在房间内调（抽屉"策略"Tab）；外观主题在个人中心。
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, type Executable } from "../api/client";
+import { api, ApiError, type BackupSummary, type Executable } from "../api/client";
 import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
 import { useDevMode } from "../state/dev";
 import { adapterLabel, channelLabel } from "../lib/copy";
-import { truncate } from "../lib/ui";
+import { absoluteTime, truncate } from "../lib/ui";
 
 export function SettingsPage() {
   const [devMode, setDevMode] = useDevMode();
@@ -16,6 +16,12 @@ export function SettingsPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [form, setForm] = useState({ adapter: "", runtime: "native", distro: "", path: "", version: "", channel: "" });
   const [formMsg, setFormMsg] = useState<string | null>(null);
+  // M4-0 数据与诊断区
+  const [backups, setBackups] = useState<BackupSummary[] | null>(null);
+  const [dataMsg, setDataMsg] = useState<string | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [restoreConfirmID, setRestoreConfirmID] = useState<string | null>(null);
+  const [restoreBusy, setRestoreBusy] = useState(false);
 
   const refreshExecutables = useCallback(async () => {
     try {
@@ -30,6 +36,70 @@ export function SettingsPage() {
   useEffect(() => {
     void refreshExecutables();
   }, [refreshExecutables]);
+
+  // M4-0 备份面：列表加载（404 = 装配未启用，如实提示）
+  const refreshBackups = useCallback(async () => {
+    try {
+      const { backups } = await api.listBackups();
+      setBackups(backups);
+    } catch (e) {
+      setBackups(null);
+      if (e instanceof ApiError && e.status === 404) {
+        setDataMsg("本装配未启用备份面");
+      } else {
+        setDataMsg(e instanceof Error ? e.message : String(e));
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshBackups();
+  }, [refreshBackups]);
+
+  const onCreateBackup = async () => {
+    setBackupBusy(true);
+    setDataMsg(null);
+    try {
+      const sum = await api.createBackup();
+      setDataMsg(`备份完成：${sum.backup_id}（${(sum.size_bytes / 1024).toFixed(0)} KiB）`);
+      await refreshBackups();
+    } catch (e) {
+      setDataMsg(`备份失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  // 恢复两段式的在线段：落标记后需重启应用（实际换库在下次启动、开库之前）
+  const onRequestRestore = async (backupID: string) => {
+    setRestoreBusy(true);
+    setDataMsg(null);
+    try {
+      await api.requestRestore(backupID);
+      setDataMsg("恢复已排程：重启应用后生效（被换下的数据保留在安全副本目录）");
+      setRestoreConfirmID(null);
+    } catch (e) {
+      setDataMsg(`恢复请求失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setRestoreBusy(false);
+    }
+  };
+
+  // 自诊断：拉取 bundle 存本地文件（浏览器下载面）
+  const onDownloadDiagnostics = async () => {
+    try {
+      const bundle = await api.diagnostics();
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `mosaic-diagnostics-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setDataMsg(`诊断报告获取失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
 
   const toggle = async (exe: Executable) => {
     setBusy(exe.id);
@@ -215,6 +285,81 @@ export function SettingsPage() {
             </div>
             <p className="mt-2 text-[11px] text-faint">登记时服务端会探测该路径（探测失败拒收）。</p>
           </details>
+        </section>
+
+        <section>
+          <h2 className="mb-1 text-sm font-medium">数据与诊断</h2>
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={backupBusy || backups === null}
+              onClick={() => void onCreateBackup()}
+              className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              {backupBusy ? "备份中…" : "立即备份"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void onDownloadDiagnostics()}
+              className="rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-xs text-text transition-colors hover:border-faint"
+            >
+              下载诊断报告
+            </button>
+            {dataMsg && <span className="text-xs text-dim">{dataMsg}</span>}
+          </div>
+          {backups === null ? (
+            <p className="text-xs text-faint">备份面未装配（旧装配或测试形态）。</p>
+          ) : backups.length === 0 ? (
+            <p className="text-xs text-faint">还没有备份——"立即备份"生成当前数据的完整快照（含校验清单）。</p>
+          ) : (
+            <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border">
+              {backups.map((b) => (
+                <li key={b.backup_id} className="flex items-center gap-3 px-3 py-2 text-xs">
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-text" title={b.backup_id}>
+                      {absoluteTime(b.created_at)}
+                    </span>
+                    <span className="block text-faint">
+                      {b.backup_id} · {(b.size_bytes / 1024).toFixed(0)} KiB
+                    </span>
+                  </span>
+                  {restoreConfirmID === b.backup_id ? (
+                    <>
+                      <button
+                        type="button"
+                        disabled={restoreBusy}
+                        onClick={() => void onRequestRestore(b.backup_id)}
+                        className="rounded-lg bg-danger px-2.5 py-1 font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+                      >
+                        {restoreBusy ? "排程中…" : "确认恢复"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRestoreConfirmID(null)}
+                        className="rounded-lg px-2 py-1 text-dim hover:text-text"
+                      >
+                        取消
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setRestoreConfirmID(b.backup_id)}
+                      title="恢复此备份（重启应用后生效；当前数据保留在安全副本目录）"
+                      className="rounded-lg px-2.5 py-1 text-dim transition-colors hover:bg-[color-mix(in_srgb,var(--danger)_12%,transparent)] hover:text-danger"
+                    >
+                      恢复
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-1.5 text-[11px] leading-4 text-faint">
+            备份是 SQLite 一致快照（VACUUM INTO，不停写）+ 逐文件校验清单；恢复在重启时
+            应用——被换下的数据自动保留在数据目录 restore-safety/（可手工回滚）。
+            诊断报告含版本/运行时/数据面统计/Agent 注册表状态/日志尾，不含任何凭据。
+          </p>
         </section>
 
         <section>

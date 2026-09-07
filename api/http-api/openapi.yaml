@@ -312,6 +312,84 @@ paths:
                         adapter: { type: string }
                         channel: { type: string }
                         version: { type: string }
+  /v1/system/backups:
+    get:
+      operationId: listBackups
+      summary: 备份列表（新→旧）
+      description: |
+        M4-0 备份面：每个备份 = VACUUM INTO 一致快照 + manifest（sha256 校验）。
+        未装配备份面（测试装配）返回 404。
+      responses:
+        "200":
+          description: 备份摘要列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [backups]
+                properties:
+                  backups:
+                    type: array
+                    items: { $ref: "#/components/schemas/BackupSummary" }
+    post:
+      operationId: createBackup
+      summary: 立即备份（VACUUM INTO 一致快照）
+      description: |
+        写端点（Origin/Content-Type/OwnerToken 三层门）。备份落数据目录
+        backups/<id>/，含 manifest。活动进程不停写——VACUUM INTO 是 SQLite
+        官方在线备份路径。
+      responses:
+        "200":
+          description: 备份摘要
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupSummary" }
+  /v1/system/restore:
+    post:
+      operationId: requestRestore
+      summary: 请求恢复（校验 + 落标记；实际换库在下次启动）
+      description: |
+        写端点（三层门）。两段式：在线段校验备份完整性（sha256）并落
+        pending-restore 标记；活动进程握着库文件句柄（Windows 下被握文件不可
+        替换），实际换库在下次启动、开库之前执行——被换下的库文件移入
+        restore-safety/（回滚保护）。confirm 必须为 true。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [backup_id, confirm]
+              additionalProperties: false
+              properties:
+                backup_id: { type: string, pattern: "^bkp_[0-9a-z_]+$" }
+                confirm: { type: boolean, enum: [true] }
+      responses:
+        "200":
+          description: 恢复已排程（重启后生效）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [restart_required]
+                properties:
+                  restart_required: { type: boolean }
+  /v1/system/diagnostics:
+    get:
+      operationId: getDiagnostics
+      summary: 自诊断报告（版本/环境/数据面/注册表/日志尾打包）
+      description: |
+        M4-0 自诊断面。内容刻意排除凭据与环境变量（OQ-20 纪律）：版本与运行时、
+        数据目录统计（大小/房间数）、座位与注册表状态（adapter/runtime/login）、
+        日志尾（最近 N 行）。未装配返回 404。
+      responses:
+        "200":
+          description: 诊断快照（JSON bundle，附加字段随版本演进）
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
   /v1/owner/bootstrap:
     get:
       operationId: getOwnerBootstrap
@@ -880,6 +958,13 @@ components:
         adapter: { type: string, description: agent 座位的适配器名（human 无此键） }
         channel: { type: string, description: harness 渠道标签（cli/app:codex-desktop 等；无则省略） }
         seat_status: { type: string, description: seated（在座；离座语义随 UI 重设计后续切片定稿） }
+    BackupSummary:
+      type: object
+      required: [backup_id, created_at, size_bytes]
+      properties:
+        backup_id: { type: string, description: "bkp_<ts36>_<hex>（本包生成，白名单字符）" }
+        created_at: { type: string, format: date-time }
+        size_bytes: { type: integer, format: int64, minimum: 0 }
     TimelineItem:
       type: object
       required: [position, event_id, type, actor_id, actor_kind, occurred_at]

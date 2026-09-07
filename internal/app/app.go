@@ -30,6 +30,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/agent/adapter/kimi"
 	"github.com/sisibeloved/Mosaic/internal/agent/adapter/minimax"
 	"github.com/sisibeloved/Mosaic/internal/agent/echo"
+	"github.com/sisibeloved/Mosaic/internal/backup"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
@@ -101,6 +102,14 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	}
 	if err := os.Chmod(opts.DataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("app: chmod data (fail closed): %w", err)
+	}
+	// M4-0 恢复启动段：pending 标记在开库之前换库（活动句柄不可替换——Windows
+	// 下结构性约束）。失败不阻断启动：以当前数据继续（标记已转 .failed 留痕）。
+	if applied, err := backup.ApplyPendingRestore(opts.DataDir); err != nil {
+		logger.Error("待恢复备份应用失败（以当前数据继续启动）", "err", err)
+	} else if applied != nil {
+		logger.Info("备份恢复已应用（原库移入安全副本目录，可回滚）",
+			"backup_id", applied.BackupID, "safety_dir", applied.SafetyDir)
 	}
 	store, err := sqlite.Open(filepath.Join(opts.DataDir, "mosaic.db"))
 	if err != nil {
@@ -182,6 +191,8 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		ui = web.Dist()
 	}
 
+	// M4-0 备份面（数据目录内 backups/；VACUUM INTO 一致快照）与自诊断 bundle。
+	backupMgr := &backup.Manager{DB: store, Dir: opts.DataDir}
 	deps := httpapi.Deps{
 		SVC:              svc,
 		Reader:           store,
@@ -197,6 +208,26 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		ExtraOriginHosts: opts.ExtraOriginHosts,
 		OwnerToken:       ownerToken,
 		UI:               ui,
+		Backups:          backupMgr,
+		Diagnostics: diagnosticsBundle(opts.DataDir,
+			func() (int, error) { return countRooms(store) },
+			func() int {
+				if engine := enginePtr.Load(); engine != nil {
+					return len(engine.Seats())
+				}
+				return 0
+			},
+			func() []map[string]any {
+				out := make([]map[string]any, 0, len(harnessRegistry.List()))
+				for _, exe := range harnessRegistry.List() {
+					out = append(out, map[string]any{
+						"adapter": exe.Adapter, "runtime": exe.Runtime, "distro": exe.Distro,
+						"enabled": exe.Enabled, "login": exe.Login, "version": exe.Version,
+					})
+				}
+				return out
+			},
+		),
 		Seats: func() []room.AgentSeat {
 			if engine := enginePtr.Load(); engine != nil {
 				return engine.Seats()
@@ -459,6 +490,15 @@ func loadOrCreateOwnerToken(path string) (string, error) {
 		return "", fmt.Errorf("persist: %w", err)
 	}
 	return tok, nil
+}
+
+// countRooms 房间数（诊断面数据统计；ListRooms 是既有读路径）。
+func countRooms(store *sqlite.Store) (int, error) {
+	rooms, err := store.ListRooms(context.Background())
+	if err != nil {
+		return 0, err
+	}
+	return len(rooms), nil
 }
 
 // sanitizeProfileKey 注册表 ID → 身份/目录名安全字符（四轮复审 #3）。

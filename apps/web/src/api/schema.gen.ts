@@ -168,6 +168,78 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/system/backups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 备份列表（新→旧）
+         * @description M4-0 备份面：每个备份 = VACUUM INTO 一致快照 + manifest（sha256 校验）。
+         *     未装配备份面（测试装配）返回 404。
+         */
+        get: operations["listBackups"];
+        put?: never;
+        /**
+         * 立即备份（VACUUM INTO 一致快照）
+         * @description 写端点（Origin/Content-Type/OwnerToken 三层门）。备份落数据目录
+         *     backups/<id>/，含 manifest。活动进程不停写——VACUUM INTO 是 SQLite
+         *     官方在线备份路径。
+         */
+        post: operations["createBackup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/system/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 请求恢复（校验 + 落标记；实际换库在下次启动）
+         * @description 写端点（三层门）。两段式：在线段校验备份完整性（sha256）并落
+         *     pending-restore 标记；活动进程握着库文件句柄（Windows 下被握文件不可
+         *     替换），实际换库在下次启动、开库之前执行——被换下的库文件移入
+         *     restore-safety/（回滚保护）。confirm 必须为 true。
+         */
+        post: operations["requestRestore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/system/diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 自诊断报告（版本/环境/数据面/注册表/日志尾打包）
+         * @description M4-0 自诊断面。内容刻意排除凭据与环境变量（OQ-20 纪律）：版本与运行时、
+         *     数据目录统计（大小/房间数）、座位与注册表状态（adapter/runtime/login）、
+         *     日志尾（最近 N 行）。未装配返回 404。
+         */
+        get: operations["getDiagnostics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/owner/bootstrap": {
         parameters: {
             query?: never;
@@ -516,6 +588,14 @@ export interface components {
             channel?: string;
             /** @description seated（在座；离座语义随 UI 重设计后续切片定稿） */
             seat_status: string;
+        };
+        BackupSummary: {
+            /** @description bkp_<ts36>_<hex>（本包生成，白名单字符） */
+            backup_id: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: int64 */
+            size_bytes: number;
         };
         /**
          * @description RFC-0012 群聊模型：Timeline = 消息族 + 暂停/恢复系统提醒（round.* 内部化，
@@ -1043,6 +1123,100 @@ export interface operations {
                             channel?: string;
                             version?: string;
                         }[];
+                    };
+                };
+            };
+        };
+    };
+    listBackups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 备份摘要列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        backups: components["schemas"]["BackupSummary"][];
+                    };
+                };
+            };
+        };
+    };
+    createBackup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 备份摘要 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupSummary"];
+                };
+            };
+        };
+    };
+    requestRestore: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    backup_id: string;
+                    /** @enum {boolean} */
+                    confirm: true;
+                };
+            };
+        };
+        responses: {
+            /** @description 恢复已排程（重启后生效） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        restart_required: boolean;
+                    };
+                };
+            };
+        };
+    };
+    getDiagnostics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 诊断快照（JSON bundle，附加字段随版本演进） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
                     };
                 };
             };

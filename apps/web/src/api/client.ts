@@ -128,9 +128,28 @@ export interface DisabledAgentInfo {
   version?: string;
 }
 
+/** M4-0 备份摘要（GET/POST /v1/system/backups）。 */
+export interface BackupSummary {
+  backup_id: string;
+  created_at: string;
+  size_bytes: number;
+}
+
 export const api = {
   agents(): Promise<{ agents: AgentSeatInfo[]; disabled?: DisabledAgentInfo[] }> {
     return request<{ agents: AgentSeatInfo[]; disabled?: DisabledAgentInfo[] }>("/v1/agents");
+  },
+  listBackups(): Promise<{ backups: BackupSummary[] }> {
+    return request<{ backups: BackupSummary[] }>("/v1/system/backups");
+  },
+  createBackup(): Promise<BackupSummary> {
+    return post("/v1/system/backups", {});
+  },
+  requestRestore(backupID: string): Promise<{ restart_required: boolean }> {
+    return post(`/v1/system/restore`, { backup_id: backupID, confirm: true });
+  },
+  diagnostics(): Promise<Record<string, unknown>> {
+    return request<Record<string, unknown>>("/v1/system/diagnostics");
   },
   listRooms(): Promise<{ rooms: RoomSummary[] }> {
     return request<{ rooms: RoomSummary[] }>("/v1/rooms");

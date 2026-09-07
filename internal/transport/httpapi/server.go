@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/agent"
+	"github.com/sisibeloved/Mosaic/internal/backup"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
@@ -57,6 +58,11 @@ type Deps struct {
 	// Searcher 按需检索端口（M3-3）：nil = 回退线性基准（读全量事件 +
 	// room.SearchMessages 纯函数——语义一致）；SQLite 装配注入 FTS5 实现。
 	Searcher room.MessageSearcher
+	// Backups 备份面（M4-0）：nil = 备份/恢复端点 404（测试装配）。
+	Backups *backup.Manager
+	// Diagnostics 自诊断 bundle 构造器（M4-0）：nil = 诊断端点 404。
+	// 内容纪律：不含凭据/环境变量（OQ-20）——版本/运行时/数据面统计/注册表状态/日志尾。
+	Diagnostics func() (map[string]any, error)
 }
 
 // New 构造路由。对外契约面（ADR-0007）由 apigen 生成的 ServerInterface +

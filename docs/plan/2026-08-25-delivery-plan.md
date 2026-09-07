@@ -5,8 +5,8 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.58 |
-| 日期 | 2026-09-04 |
+| 版本 | v1.59 |
+| 日期 | 2026-09-07 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
 | 交付目标 | **个人完全可用的 App**：单用户本地运行，一等公民支持 Windows 与 macOS；不是验证性半成品 |
@@ -16,6 +16,7 @@
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v1.59 | 2026-09-07 | 陆尘裁定 / ZCode | **M4-0 切片 2：备份/恢复一键化 + 自诊断报告；首启向导刈除（负责人裁定"不需要向导"）**。(1) **internal/backup**：备份 = VACUUM INTO 一致快照（SQLite 官方在线路径——不停写、不搬 WAL/SHM、自包含单文件）+ manifest（sha256 逐文件校验）；恢复**两段式**（在线段只校验+落 pending 标记——活动进程握库句柄，Windows 下被握文件不可替换，在线换库结构性不可行；启动段 ApplyPendingRestore 在开库前换库，被换下库文件移 restore-safety/<ts>/ 回滚保护；备份损坏 fail safe——标记转 .failed 留痕、以当前数据继续启动）；backup_id 白名单字符防穿越。(2) **HTTP**：GET/POST /v1/system/backups、POST /v1/system/restore（confirm 必填 true）、GET /v1/system/diagnostics（bundle：版本/运行时/数据面统计/座位/注册表状态/日志尾 200 行——OQ-20 纪律不含凭据与环境变量）；写端点过三层门；OpenAPI + 双生成链。(3) **SPA**：设置页"数据与诊断"区（备份列表新→旧/立即备份/恢复确认（重启生效提示）/诊断报告下载）。(4) **测试**：backup UT 8 例（创建校验列表/两段恢复/损坏 fail safe/穿越防御/格式守卫）+ sqlite IT 2 例（VACUUM INTO 快照独立可开——WAL 未 checkpoint 事件在内；真实库全链 roundtrip）+ httpapi UT 5 例 + **ST 两段式端到端**（实例 A 建房→备份→演进→请求恢复→杀进程→实例 B 同数据目录重启：备份时点房在/演进房消失/安全副本非空）。(5) **首启向导刈除**（负责人 2026-09-07 指令"不需要向导"）：M4-0 首条目移除向导子项，保留安装器/图标/托盘。过程中修复：backupIDPattern 字符类漏下划线致自家产物被拒（UT 抓住）；ST 时间戳笔误 |
 | v1.58 | 2026-09-04 | 陆尘裁定 / ZCode | **IT 真实 CLI 用例降级语义（负责人裁定："在真实场景碰到配额耗尽怎么处理？应该是降级，直接断言成失败跟使用场景不符"）**。(1) **internal/ittest 共享判定**：ProviderUnavailable/SkipIfProviderUnavailable——供应商侧不可用（配额耗尽/鉴权失败/限流/网络不可达）时用例降级跳过；判定刻意保守（只认供应商拒绝与不可达的明确措辞，适配器自身缺陷——解析失败/发布门拒绝/超时——仍按失败断言，不得借道跳过掩盖回归）；产品侧该语义本就存在（引擎对评估/生成失败的座位按波跳过、不阻塞其他座位），本切片只把测试侧对齐到同一现实。(2) **三家适配器 IT 接入**（codex/kimi/minimax 各 8 处 run/result 断言位）：实证——kimi 周配额 403 下三用例由 FAIL 变 SKIP 且跳过消息携带完整配额真相；codex 日配额重置后三用例 PASS，同晚国际路由抖动（"waiting for network (Connection failed)"）下 SKIP（网络不可达与配额同类：环境态）；minimax 全程 PASS。(3) **kimi 诊断行修复（连带可观测性缺口）**：退出码错误的行选取由"合并流首行"改为"error: 诊断行优先"——0.39.1 实证配额耗尽时首行是无信息量的 meta 版本行、真实原因在其后的 stderr error: 行（此前 IT 报错只见 meta 行，配额原因不可见）；UT 钉住。(4) **TestHostRunnerScanRealCLIs_IT 登录态断言修正（负责人指出）**：codex 分支由写死 logged_in（"换任何一台未登录的机器都会红"）改为"可判定"（logged_in \\| logged_out，仅 LoginUnknown 是缺陷）——扫描语义在未登录机器上同样成立，与 kimi 分支口径对齐。门禁：gofmt/vet 双 OS/UT/ST/交叉编译全绿；IT 真实 CLI 腿按降级语义收敛（环境态 SKIP / 可用时 PASS） |
 | v1.57 | 2026-09-04 | Mosaic 项目组 / ZCode | **M4-0 开工（首切片：聊天交互补齐前两项 + Room 管理收口）**。(1) **消息复制**：气泡 hover 动作条一键复制原文（Async Clipboard + execCommand 兜底；复制含 mosaic-todo 块的原始 body——所见即所发）。(2) **引用回复全链**：点"引用"带出输入区引用卡片（作者+摘要，可取消，发送成功才弃）→ post_message reply_to → 气泡顶部引用条（点击 data-event-id 锚定跳原消息）；**顺手修复既有不对称**——快照 TimelineItem 此前不投影 addressed_to/reply_to（SSE 是唯一来源，刷新后 @点名与引用丢失），本版补齐两路同形（projection + OpenAPI + 双生成链）；命令面补 reply_to 形状校验（evt_*，对齐 relations.target_event_id 纪律）+ UT（非法拒收/合法固化）。(3) **Room 管理收口**：删除确认弹层（reason 必填 1..280 留痕——M3-6 delete_room 命令既有、UI 缺口补齐）→ 级联清库 → 回列表；新建/列表排序（last_event_at 服务端序）/详情/改名/暂停恢复均已在席，本条目勾选。(4) **文件上传 mini-RFC 已立**：RFC-0013（Draft 待负责人评审）——两步上传（令牌 24h 单次消费）、描述子封闭字段集、上限建议（单件 8MiB/每消息 4 件/每房 512MiB/注入摘录 8k runes）、文本摘录注入 + 图像/二进制按适配器能力如实降级、DLP 摘录剔除；实现待评审后进行。(5) **门禁**：gofmt/vet 双 OS/UT/ST/六目标交叉编译/gen 新鲜度全绿；IT 真实 CLI 腿（codex/kimi 各三用例）因**供应商配额耗尽**失败（codex："usage limit…try again at 8:25 PM"；kimi：周配额 403 "weekly (7-day) usage limit"——探针实证，与本改动无关，未触碰适配器代码；CI 无 CLI 环境该腿跳过） |
 | v1.0 | 2026-08-25 | Mosaic 项目组 / ZCode | 初版：交付目标与 DoD、四个形态决策（含建议）、范围裁定、里程碑 M0–M5、双平台工程要求、风险、治理 |
@@ -250,10 +251,10 @@
 
 ### M4-0 既有产品化交付
 
-- [ ] Wails 壳：安装器（Windows NSIS/绿色版 + macOS dmg）、应用图标、托盘常驻、首次启动向导（存储初始化 → CLI 检测/安装引导 → agent 登录态检查 → 建房演示）
+- [ ] Wails 壳：安装器（Windows NSIS/绿色版 + macOS dmg）、应用图标、托盘常驻（**首启向导已刈除——负责人裁定 2026-09-07"不需要向导"**：CLI 检测/登录态由设置页 Agent 实例区与侧栏如实展示承担，不设一次性引导流）
 - [ ] macOS ad-hoc 签名 + 首次打开指引（个人分发不做公证：未购 Apple 开发者账号，指引右键→打开或 `xattr -cr`；若未来公开分发再评估购号公证）；Windows 代码签名（可选，无则 SmartScreen 提示文案）
 - [ ] 升级与迁移：版本检查 + 一键下载替换 + 启动时自动迁移 + 迁移失败回滚保护
-- [ ] 备份/恢复一键化（副本即拷贝 + 校验）；自诊断报告（版本/环境/日志尾/指标快照打包）
+- [x] 备份/恢复一键化（副本即拷贝 + 校验）；自诊断报告（版本/环境/日志尾/指标快照打包）**（v1.59：VACUUM INTO 快照 + manifest 校验 + 两段式恢复（启动段换库 + restore-safety 回滚保护）+ 诊断 bundle 端点与设置页入口；ST 两段式端到端钉住）**
 - [ ] 72h 无人值守稳定性专项：内存/句柄监控、泄漏修复、崩溃自恢复演练（双平台各一轮）
 - [ ] i18n 中英；快速上手 + FAQ + 本地隐私说明
 - [ ] 反半成品走查：全 UI 走查失败态文案与恢复建议；无占位功能

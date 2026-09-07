@@ -352,17 +352,40 @@ func (e DisableHarnessExecutable200JSONResponseBodyEnabled) Valid() bool {
 
 // Defines values for EnableHarnessExecutable200JSONResponseBodyEnabled.
 const (
-	True EnableHarnessExecutable200JSONResponseBodyEnabled = true
+	EnableHarnessExecutable200JSONResponseBodyEnabledTrue EnableHarnessExecutable200JSONResponseBodyEnabled = true
 )
 
 // Valid indicates whether the value is a known member of the EnableHarnessExecutable200JSONResponseBodyEnabled enum.
 func (e EnableHarnessExecutable200JSONResponseBodyEnabled) Valid() bool {
 	switch e {
-	case True:
+	case EnableHarnessExecutable200JSONResponseBodyEnabledTrue:
 		return true
 	default:
 		return false
 	}
+}
+
+// Defines values for RequestRestoreJSONBodyConfirm.
+const (
+	RequestRestoreJSONBodyConfirmTrue RequestRestoreJSONBodyConfirm = true
+)
+
+// Valid indicates whether the value is a known member of the RequestRestoreJSONBodyConfirm enum.
+func (e RequestRestoreJSONBodyConfirm) Valid() bool {
+	switch e {
+	case RequestRestoreJSONBodyConfirmTrue:
+		return true
+	default:
+		return false
+	}
+}
+
+// BackupSummary defines model for BackupSummary.
+type BackupSummary struct {
+	// BackupId bkp_<ts36>_<hex>（本包生成，白名单字符）
+	BackupId  string    `json:"backup_id"`
+	CreatedAt time.Time `json:"created_at"`
+	SizeBytes int64     `json:"size_bytes"`
 }
 
 // ClosureSummary defines model for ClosureSummary.
@@ -819,6 +842,15 @@ type SearchRoomMessagesParams struct {
 	Limit *int    `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// RequestRestoreJSONBody defines parameters for RequestRestore.
+type RequestRestoreJSONBody struct {
+	BackupId string                        `json:"backup_id"`
+	Confirm  RequestRestoreJSONBodyConfirm `json:"confirm"`
+}
+
+// RequestRestoreJSONBodyConfirm defines parameters for RequestRestore.
+type RequestRestoreJSONBodyConfirm bool
+
 // AddHarnessExecutableJSONRequestBody defines body for AddHarnessExecutable for application/json ContentType.
 type AddHarnessExecutableJSONRequestBody = ManualExecutableRequest
 
@@ -830,6 +862,9 @@ type CreateRoomJSONRequestBody = RoomCommand
 
 // SubmitRoomCommandJSONRequestBody defines body for SubmitRoomCommand for application/json ContentType.
 type SubmitRoomCommandJSONRequestBody = RoomCommand
+
+// RequestRestoreJSONRequestBody defines body for RequestRestore for application/json ContentType.
+type RequestRestoreJSONRequestBody RequestRestoreJSONBody
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -881,6 +916,18 @@ type ServerInterface interface {
 	// GetRoomSnapshot 快照（版本 + 水位 + 投影/算法版本 + Timeline 投影 + 房间名/参与者视图）
 	// (GET /v1/rooms/{room_id}/snapshot)
 	GetRoomSnapshot(w http.ResponseWriter, r *http.Request, roomId RoomID)
+	// ListBackups 备份列表（新→旧）
+	// (GET /v1/system/backups)
+	ListBackups(w http.ResponseWriter, r *http.Request)
+	// CreateBackup 立即备份（VACUUM INTO 一致快照）
+	// (POST /v1/system/backups)
+	CreateBackup(w http.ResponseWriter, r *http.Request)
+	// GetDiagnostics 自诊断报告（版本/环境/数据面/注册表/日志尾打包）
+	// (GET /v1/system/diagnostics)
+	GetDiagnostics(w http.ResponseWriter, r *http.Request)
+	// RequestRestore 请求恢复（校验 + 落标记；实际换库在下次启动）
+	// (POST /v1/system/restore)
+	RequestRestore(w http.ResponseWriter, r *http.Request)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -1282,6 +1329,62 @@ func (siw *ServerInterfaceWrapper) GetRoomSnapshot(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// ListBackups operation middleware
+func (siw *ServerInterfaceWrapper) ListBackups(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListBackups(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateBackup operation middleware
+func (siw *ServerInterfaceWrapper) CreateBackup(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateBackup(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetDiagnostics operation middleware
+func (siw *ServerInterfaceWrapper) GetDiagnostics(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetDiagnostics(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RequestRestore operation middleware
+func (siw *ServerInterfaceWrapper) RequestRestore(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RequestRestore(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -1411,6 +1514,10 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/memory", wrapper.GetRoomMemory)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/search", wrapper.SearchRoomMessages)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/agents", wrapper.ListAgents)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/system/backups", wrapper.ListBackups)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/system/backups", wrapper.CreateBackup)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/system/restore", wrapper.RequestRestore)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/system/diagnostics", wrapper.GetDiagnostics)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/owner/bootstrap", wrapper.GetOwnerBootstrap)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)
