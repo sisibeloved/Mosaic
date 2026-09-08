@@ -182,9 +182,18 @@ func TestMonitorScriptLifecycle_ST(t *testing.T) {
 		t.Fatalf("变化应发起新 run, got %d", got)
 	}
 
-	// 源失败：独立记录、不动水位、不调模型
-	if err := os.Chmod(script, 0o644); err != nil {
-		t.Fatalf("chmod: %v", err)
+	// 源失败：独立记录、不动水位、不调模型（覆写为失败脚本——chmod 在 Windows
+	// 不剥夺 .bat 可执行性，内容替换双平台确定）
+	goodScript, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatalf("read script: %v", err)
+	}
+	failScript := []byte("#!/bin/sh\nexit 1\n")
+	if goruntime.GOOS == "windows" {
+		failScript = []byte("@exit /b 1\r\n")
+	}
+	if err := os.WriteFile(script, failScript, 0o755); err != nil {
+		t.Fatalf("break script: %v", err)
 	}
 	postMonitorActionST(t, base, tok, monID, "check")
 	time.Sleep(500 * time.Millisecond)
@@ -197,7 +206,9 @@ func TestMonitorScriptLifecycle_ST(t *testing.T) {
 	}
 
 	// 恢复（无新变化）：错误清空、不补跑
-	_ = os.Chmod(script, 0o755)
+	if err := os.WriteFile(script, goodScript, 0o755); err != nil {
+		t.Fatalf("restore script: %v", err)
+	}
 	postMonitorActionST(t, base, tok, monID, "check")
 	time.Sleep(500 * time.Millisecond)
 	st = monitorStateOf(t, base, monID)
