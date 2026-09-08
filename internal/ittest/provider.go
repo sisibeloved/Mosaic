@@ -21,6 +21,10 @@ import (
 // provider.auth_error: 403 You've reached your weekly (7-day) usage limit."；
 // codex 网络不可达 "Reconnecting... waiting for network (Connection failed:
 // error sending request)"（同晚国际路由抖动实录——与配额同类：环境态）。
+// 模型版本门（2026-09-08 实证）：codex "The 'gpt-6-astra' model requires a
+// newer version of Codex. Please upgrade to the latest app or CLI and try
+// again."——ambient CLI 配置指向的模型被上游按 CLI 版本拒收，环境态非代码缺陷，
+// 同裁定降级跳过。
 var providerUnavailableMarkers = []string{
 	"usage limit",
 	"rate limit",
@@ -32,6 +36,7 @@ var providerUnavailableMarkers = []string{
 	"waiting for network",
 	"connection failed",
 	"error sending request",
+	"requires a newer version",
 }
 
 // ProviderUnavailable 报告 err 是否为供应商侧不可用（nil 恒 false）。

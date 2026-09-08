@@ -332,12 +332,14 @@ func ExtractJSON(text string) (map[string]any, error) {
 
 const intentInstruction = `You are a participant in an ongoing group chat. You have just observed the latest messages. Decide whether to reply; staying silent is a valid, often good choice — reply only when you have something to add.
 Reply with ONLY a JSON object, no prose, no code fences:
-{"action":"speak|react|fork|summarize|silent","type":"answer|extend|challenge|support|question|redirect|synthesize","public_rationale":"<=280 chars","scores":{"relevance":0.0-1.0,"novelty":0.0-1.0,"urgency":0.0-1.0,"confidence":0.0-1.0}}`
+{"action":"speak|react|fork|summarize|silent","type":"answer|extend|challenge|support|question|redirect|synthesize","public_rationale":"<=280 chars","scores":{"relevance":0.0-1.0,"novelty":0.0-1.0,"urgency":0.0-1.0,"confidence":0.0-1.0}}
+This is an internal arbitration request, not a message to the room: never answer, perform, or start the discussion's tasks here — the only valid reply is the JSON decision above.`
 
 const generateInstruction = `You are a participant in an ongoing group chat and have decided to reply.
 Write your chat message directly below — concise, conversational, addressed to the room (no speeches, no meta commentary).
 Reply with ONLY a JSON object, no prose, no code fences:
-{"body":"your public message","declared_relations":[]}`
+{"body":"your public message","declared_relations":[]}
+The JSON must contain your public chat message in "body" — never an arbitration decision (action/silent/scores) or any other internal JSON.`
 
 const summarizeInstruction = `Summarize the discussion below faithfully.
 Reply with ONLY a JSON object: {"summary":"...","cited_event_ids":["..."]}`
@@ -429,22 +431,28 @@ func mapResult(kind agent.TaskKind, parsed Parsed) (agent.Result, error) {
 				}
 			}
 		}
+		agent.CapIntentRationale(data) // 超长 rationale 截断保决策（与 kimi/minimax 同口径）
 		return agent.Result{Block: "turn_intent", Data: data, Usage: parsed.Usage}, nil
 	case agent.KindGenerate:
 		// 复审 #6：封闭 DTO——模型输出只投影已知字段进 message.posted 载荷，
 		// 附加键（潜在的走私通道）不透传；declared_relations 非数组按缺省处理。
+		// JSON 而无可用 body = 决策/内部件误入生成位（v1.69 狗粮实证事故链：silent
+		// 意图 JSON 被散文回退原样发布进房间正文）——拒绝发布，不冒充发言；纯散文
+		// 回复仍走回退。
 		if data, err := ExtractJSON(text); err == nil {
-			if body, ok := data["body"].(string); ok && body != "" {
-				relations, _ := data["declared_relations"].([]any)
-				if data["declared_relations"] == nil {
-					relations = []any{}
-				}
-				return agent.Result{
-					Block: "public_draft",
-					Data:  map[string]any{"body": body, "declared_relations": relations},
-					Usage: parsed.Usage,
-				}, nil
+			body, _ := data["body"].(string)
+			if strings.TrimSpace(body) == "" {
+				return agent.Result{}, fmt.Errorf("codex: generate 输出为 JSON 但缺可用 body（不发布）")
 			}
+			relations, _ := data["declared_relations"].([]any)
+			if data["declared_relations"] == nil {
+				relations = []any{}
+			}
+			return agent.Result{
+				Block: "public_draft",
+				Data:  map[string]any{"body": body, "declared_relations": relations},
+				Usage: parsed.Usage,
+			}, nil
 		}
 		// 纯文本回退：正文即发言
 		return agent.Result{

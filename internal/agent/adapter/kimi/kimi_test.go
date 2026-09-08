@@ -197,11 +197,13 @@ func TestGeneratePublishGate(t *testing.T) {
 	})
 
 	t.Run("空正文拒发布", func(t *testing.T) {
+		// v1.69：JSON 而无可用 body（含纯空白）在映射层即拒绝——不再经散文回退
+		// 把内部件形状送到发布门。产出等价（任务失败、零发布），归因更早更准。
 		exec := &fakeExecer{outputs: []string{mkStream(`{"body":"   ","declared_relations":[]}`)}}
 		sess, _ := newTestAdapter(exec).Boot(context.Background(), agent.Profile{ProfileID: "p2", Adapter: "kimi"})
 		defer sess.Close()
 		h, _ := sess.Run(context.Background(), task)
-		if _, err := h.Result(); err == nil || !strings.Contains(err.Error(), "发布正文为空") {
+		if _, err := h.Result(); err == nil || !strings.Contains(err.Error(), "缺可用 body") {
 			t.Fatalf("空正文应拒发布：%v", err)
 		}
 	})
@@ -295,15 +297,17 @@ func TestWSLArgvShape(t *testing.T) {
 }
 
 // TestConformanceSuite：桩输出按任务类型回合法块——kimi 适配器过 conformance 全套检查
-// （RFC-0002 A-11 注册门禁；真机结构由 IT 三件套验证）。
+// （RFC-0002 A-11 注册门禁；真机结构由 IT 三件套验证）。路由标记必须是现行指令的
+// 逐字子串（v1.69 教训：旧标记 "decide whether to speak"/"granted the floor" 均已不在
+// 指令中，generate 检查靠散文回退假绿——回退收紧后当场暴露）。
 func TestConformanceSuite(t *testing.T) {
 	// 按提示词内容识别任务类型（桩：模型面确定性代理）
 	execFn := func(prompt string) string {
 		var data string
 		switch {
-		case strings.Contains(prompt, "decide whether to speak"):
+		case strings.Contains(prompt, "Decide whether to reply"):
 			data = `{"action":"speak","type":"extend","public_rationale":"stub intent","scores":{"relevance":0.5,"novelty":0.5,"urgency":0.5,"confidence":0.5}}`
-		case strings.Contains(prompt, "granted the floor"):
+		case strings.Contains(prompt, "Write your chat message"):
 			data = `{"body":"[kimi-stub] draft body","declared_relations":[]}`
 		case strings.Contains(prompt, "Summarize the discussion"):
 			data = `{"summary":"[kimi-stub] summary","cited_event_ids":[]}`
@@ -368,4 +372,45 @@ func hasArg(argv []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// v1.69（2026-09-08 狗粮实证事故链，首发于 minimax）：generate 位回决策 JSON
+// （无 body）曾被散文回退原样发布进房间正文——现在拒绝发布，不冒充发言。
+func TestGenerateRejectsDecisionJSON(t *testing.T) {
+	out := `{"role":"meta","type":"system.version","version":"0.39.1"}` + "\n" +
+		`{"role":"assistant","content":"{\"action\":\"silent\",\"public_rationale\":\"已交付\"}"}` + "\n"
+	exec := &fakeExecer{outputs: []string{out}}
+	adapter := newTestAdapter(exec)
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "kimi"})
+	defer sess.Close()
+	h, err := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if _, rerr := h.Result(); rerr == nil {
+		t.Fatal("决策 JSON 误入 generate 位必须失败，不得发布")
+	} else if !strings.Contains(rerr.Error(), "缺可用 body") {
+		t.Fatalf("错误应指明缺可用 body：%v", rerr)
+	}
+}
+
+// 评估/生成指令必须隔离元任务与房间任务（措辞与 codex/minimax 同源——三适配器
+// 狗粮口径一致；conformance 桩路由标记同源于此）。
+func TestPromptIsolatesArbitration(t *testing.T) {
+	p, err := buildPrompt(agent.Task{TaskID: "t", Kind: agent.KindEvaluateIntent,
+		Context: agent.Context{Inline: map[string]any{"k": "v"}}})
+	if err != nil {
+		t.Fatalf("buildPrompt: %v", err)
+	}
+	if !strings.Contains(p, "internal arbitration request") {
+		t.Fatal("评估指令应声明内部仲裁语义（不执行房间任务）")
+	}
+	g, err := buildPrompt(agent.Task{TaskID: "t", Kind: agent.KindGenerate,
+		Context: agent.Context{Inline: map[string]any{"k": "v"}}})
+	if err != nil {
+		t.Fatalf("buildPrompt: %v", err)
+	}
+	if !strings.Contains(g, "never an arbitration decision") {
+		t.Fatal("生成指令应排除决策 JSON")
+	}
 }

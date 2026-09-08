@@ -48,6 +48,22 @@ var turnIntentTypes = map[string]bool{
 	"question": true, "redirect": true, "synthesize": true,
 }
 
+// RationaleMaxRunes turn_intent.public_rationale 上限（与 intent.recorded
+// payload schema 同源）。
+const RationaleMaxRunes = 280
+
+// CapIntentRationale 防御性规范化：模型偶发超写 public_rationale（2026-09-08
+// IT 实证：仲裁指令语义被复述进 rationale 撑爆上限）——决策本体
+// （action/type/scores）仍有效，截断展示文本保留决策，不让整座意图评估因
+// rationale 超长而失败。CLI 适配器在返回 turn_intent 块前调用。
+func CapIntentRationale(data map[string]any) {
+	if r, ok := data["public_rationale"].(string); ok {
+		if runes := []rune(r); len(runes) > RationaleMaxRunes {
+			data["public_rationale"] = string(runes[:RationaleMaxRunes])
+		}
+	}
+}
+
 func validateTurnIntent(data map[string]any) error {
 	action, _ := data["action"].(string)
 	if !turnIntentActions[action] {
@@ -58,8 +74,8 @@ func validateTurnIntent(data map[string]any) error {
 		if !isStr {
 			return fmt.Errorf("agent: turn_intent.public_rationale 必须为字符串")
 		}
-		if len([]rune(s)) > 280 {
-			return fmt.Errorf("agent: turn_intent.public_rationale 超 280 字符上限")
+		if len([]rune(s)) > RationaleMaxRunes {
+			return fmt.Errorf("agent: turn_intent.public_rationale 超 %d 字符上限", RationaleMaxRunes)
 		}
 	}
 	if action == "silent" {

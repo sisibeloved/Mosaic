@@ -213,13 +213,15 @@ func TestWSLArgvShape(t *testing.T) {
 }
 
 // TestConformanceSuite：桩输出按任务类型回合法块——minimax 适配器过 conformance 全套
-// 检查（RFC-0002 A-11 注册门禁；真机结构由 IT 验证）。路由标记与 kimi 桩同源
-// （charter/summarize/closure 指令内），intent 缺省走 silent（合法块）。
+// 检查（RFC-0002 A-11 注册门禁；真机结构由 IT 验证）。路由标记必须是现行指令的
+// 逐字子串（v1.69 教训：旧标记 "granted the floor" 已不在任何指令中，generate 检查
+// 靠散文回退假绿——回退收紧后当场暴露；标记与指令不再漂移由
+// TestPromptIsolatesArbitration 钉住）。
 func TestConformanceSuite(t *testing.T) {
 	execFn := func(prompt string) string {
 		var data string
 		switch {
-		case strings.Contains(prompt, "granted the floor"):
+		case strings.Contains(prompt, "Write your chat message"):
 			data = `{"body":"[minimax-stub] draft body","declared_relations":[]}`
 		case strings.Contains(prompt, "Summarize the discussion"):
 			data = `{"summary":"[minimax-stub] summary","cited_event_ids":[]}`
@@ -285,4 +287,126 @@ func hasArg(argv []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// ---- v1.69：真机评估漂移矫正（2026-09-08 狗粮实证事故链） ----
+// 事故：会话历史含强待办语境时，MiniMax 把仲裁元任务当作房间任务执行——评估提示词
+// 下直接交付报告正文（CLI 转录思考链明确"不要 JSON 包装"），无 JSON 可提取，座位
+// 整轮弃权；此前一轮 generate 位回了 silent 意图 JSON，被散文回退原样发布进房间
+// 正文（房间投诉"仲裁 JSON 是内部件"即此）。
+
+// agentMessageStream 单条 agent_message 的成功流（usage 固定 100/50，重试合计断言用）。
+func agentMessageStream(t *testing.T, content string) string {
+	t.Helper()
+	return `{"type":"session.started","sessionId":"mvs_retry"}` + "\n" +
+		`{"type":"item.completed","item":{"type":"agent_message","content":` + mustJSON(t, content) + `}}` + "\n" +
+		`{"type":"turn.completed","usage":{"inputTokens":100,"outputTokens":50}}` + "\n" +
+		`{"type":"exec.completed","result":{"status":"succeeded"}}` + "\n"
+}
+
+// TestGenerateRejectsDecisionJSON：generate 位回决策 JSON（无 body）→ 拒绝发布，
+// 不得把内部件冒充发言正文（旧散文回退会原样发布）；generate 非严格契约，无重试。
+func TestGenerateRejectsDecisionJSON(t *testing.T) {
+	exec := &fakeExecer{outputs: []string{
+		agentMessageStream(t, `{"action":"silent","public_rationale":"已交付"}`),
+	}}
+	adapter := newTestAdapter(exec)
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "minimax"})
+	defer sess.Close()
+	h, err := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	_, rerr := h.Result()
+	if rerr == nil {
+		t.Fatal("决策 JSON 误入 generate 位必须失败，不得发布")
+	}
+	if !strings.Contains(rerr.Error(), "缺可用 body") {
+		t.Fatalf("错误应指明缺可用 body：%v", rerr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("generate 非严格契约不得重试：%d 次调用", len(exec.calls))
+	}
+}
+
+// TestEvalCorrectiveRetry：评估输出漂移（散文正文，无 JSON）→ 一次矫正重试（同会话，
+// 模型可见自己的跑偏输出）恢复合法意图；两跳真实消耗合计入账。
+func TestEvalCorrectiveRetry(t *testing.T) {
+	exec := &fakeExecer{outputs: []string{
+		agentMessageStream(t, "会，重贴一遍，仲裁 JSON 不再带进来。"),
+		agentMessageStream(t, `{"action":"silent","public_rationale":"等待原稿"}`),
+	}}
+	adapter := newTestAdapter(exec)
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "minimax"})
+	defer sess.Close()
+	h, err := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindEvaluateIntent})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	res, rerr := h.Result()
+	if rerr != nil {
+		t.Fatalf("矫正重试应恢复：%v", rerr)
+	}
+	if res.Block != agent.BlockTurnIntent {
+		t.Fatalf("block = %q", res.Block)
+	}
+	if err := agent.ValidateBlock(res.Block, res.Data); err != nil {
+		t.Fatalf("端口级结构校验: %v", err)
+	}
+	if len(exec.calls) != 2 {
+		t.Fatalf("应恰好一次矫正重试：%d 次调用", len(exec.calls))
+	}
+	if !strings.Contains(exec.calls[1].stdin, "CORRECTION") {
+		t.Fatal("重试提示词应带矫正追记（原提示词 + CORRECTION 段）")
+	}
+	if !strings.Contains(strings.Join(exec.calls[1].argv, "\x00"), "--session\x00mvs_retry") {
+		t.Fatalf("重试应同会话连续：%v", exec.calls[1].argv)
+	}
+	if res.Usage == nil || res.Usage.InputTokens != 200 || res.Usage.OutputTokens != 100 {
+		t.Fatalf("两跳消耗应合计入账：%+v", res.Usage)
+	}
+}
+
+// TestEvalRetryExhausted：两跳皆漂移 → 失败保留末次语义并附模型输出首行——
+// 排障不再依赖 CLI 侧转录（本轮定位靠 mcode runtime-state 才拿到原文）。
+func TestEvalRetryExhausted(t *testing.T) {
+	exec := &fakeExecer{outputs: []string{
+		agentMessageStream(t, "会，重贴一遍，仲裁 JSON 不再带进来。"),
+		agentMessageStream(t, "还是决定直接贴报告。"),
+	}}
+	adapter := newTestAdapter(exec)
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "minimax"})
+	defer sess.Close()
+	h, _ := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindEvaluateIntent})
+	_, rerr := h.Result()
+	if rerr == nil {
+		t.Fatal("两跳皆漂移应失败")
+	}
+	if !strings.Contains(rerr.Error(), "还是决定直接贴报告") {
+		t.Fatalf("错误应附模型输出首行：%v", rerr)
+	}
+	if len(exec.calls) != 2 {
+		t.Fatalf("重试上限一次：%d 次调用", len(exec.calls))
+	}
+}
+
+// TestPromptIsolatesArbitration：评估/生成指令必须隔离元任务与房间任务（措辞与
+// codex/kimi 同源——三适配器狗粮口径一致；conformance 桩路由标记同源于此）。
+func TestPromptIsolatesArbitration(t *testing.T) {
+	p, err := buildPrompt(agent.Task{TaskID: "t", Kind: agent.KindEvaluateIntent,
+		Context: agent.Context{Inline: map[string]any{"k": "v"}}})
+	if err != nil {
+		t.Fatalf("buildPrompt: %v", err)
+	}
+	if !strings.Contains(p, "internal arbitration request") {
+		t.Fatal("评估指令应声明内部仲裁语义（不执行房间任务）")
+	}
+	g, err := buildPrompt(agent.Task{TaskID: "t", Kind: agent.KindGenerate,
+		Context: agent.Context{Inline: map[string]any{"k": "v"}}})
+	if err != nil {
+		t.Fatalf("buildPrompt: %v", err)
+	}
+	if !strings.Contains(g, "never an arbitration decision") {
+		t.Fatal("生成指令应排除决策 JSON")
+	}
 }

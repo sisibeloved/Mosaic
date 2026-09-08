@@ -112,7 +112,7 @@ func (s *session) Cancel(string) {}
 func (s *session) Close()        {}
 
 // execute 单任务执行：构建提示词 → mcode exec（stdin 提示词 + --session 连续性）→
-// 解析 → 映射。
+// 解析 → 映射；严格 JSON 契约任务在输出形状失败时做一次矫正重试。
 func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 	defer close(h.done)
 
@@ -122,6 +122,27 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 		return
 	}
 
+	parsed, err := s.execOnce(taskCtx, task, prompt)
+	if err != nil {
+		if taskCtx.Err() != nil {
+			h.stale = true // 取消/超时：不发布正文，语义同迟到拒绝
+			return
+		}
+		h.err = err
+		return
+	}
+	h.result, h.err = mapResult(task.Kind, parsed)
+	if h.err != nil && strictJSONTask(task.Kind) && taskCtx.Err() == nil {
+		h.result, h.err = s.retryStrictTask(taskCtx, task, prompt, h.err, parsed)
+	}
+	if h.err == nil && task.Kind == agent.KindGenerate {
+		h.sanitizePublish()
+	}
+}
+
+// execOnce 单次 mcode exec 全链：argv 组装（会话连续性）→ 执行 → stream 解析 →
+// 执行级错误检查（退出码/run failed/空输出）。映射级错误（mapResult）留给调用方。
+func (s *session) execOnce(taskCtx context.Context, task agent.Task, prompt string) (Parsed, error) {
 	s.mu.Lock()
 	sessID := s.sessID
 	s.mu.Unlock()
@@ -138,12 +159,7 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 
 	stdout, code, err := s.execer().Exec(taskCtx, argv, s.envFor(), prompt)
 	if err != nil {
-		if taskCtx.Err() != nil {
-			h.stale = true // 取消/超时：不发布正文，语义同迟到拒绝
-			return
-		}
-		h.err = fmt.Errorf("minimax: exec: %w", err)
-		return
+		return Parsed{}, fmt.Errorf("minimax: exec: %w", err)
 	}
 	parsed := ParseStream([]byte(stdout))
 	if parsed.SessionID != "" && parsed.SessionID != sessID {
@@ -152,21 +168,74 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 		s.mu.Unlock()
 	}
 	if code != 0 {
-		h.err = fmt.Errorf("minimax: mcode 退出码 %d：%s", code, firstLineOf(stdout, 200))
-		return
+		return parsed, fmt.Errorf("minimax: mcode 退出码 %d：%s", code, firstLineOf(stdout, 200))
 	}
 	if parsed.Err != "" {
-		h.err = fmt.Errorf("minimax: run failed: %s", parsed.Err)
-		return
+		return parsed, fmt.Errorf("minimax: run failed: %s", parsed.Err)
 	}
 	if len(parsed.Messages) == 0 {
-		h.err = fmt.Errorf("minimax: 无 agent_message 输出")
-		return
+		return parsed, fmt.Errorf("minimax: 无 agent_message 输出")
 	}
-	h.result, h.err = mapResult(task.Kind, parsed)
-	if h.err == nil && task.Kind == agent.KindGenerate {
-		h.sanitizePublish()
+	return parsed, nil
+}
+
+// retryStrictTask 矫正重试（一次，仅严格 JSON 契约任务）：v1.69 真机实证
+// （2026-09-08 狗粮）——会话历史含强待办语境时，MiniMax 会把仲裁元任务当作房间
+// 任务执行：评估提示词下直接交付报告正文（CLI 转录思考链明确"不要 JSON 包装"），
+// 无 JSON 可提取，座位整轮弃权。矫正追记附在原提示词之后（同会话：模型可见自己
+// 的跑偏输出），恢复该座位；仍失败则保留末次错误并附输出首行，排障不再依赖
+// CLI 侧转录。codex/kimi 同类输出形状失败未观测，不加重试（成本/时延纪律）。
+func (s *session) retryStrictTask(taskCtx context.Context, task agent.Task, prompt string, firstErr error, first Parsed) (agent.Result, error) {
+	second, err := s.execOnce(taskCtx, task, prompt+correctiveNote(task.Kind))
+	if err != nil {
+		if taskCtx.Err() != nil {
+			return agent.Result{}, err // 重试中取消/超时：无结果可发布，错误即语义
+		}
+		return agent.Result{}, fmt.Errorf("minimax: %v；矫正重试执行失败：%v", firstErr, err)
 	}
+	res, mapErr := mapResult(task.Kind, second)
+	if mapErr != nil {
+		return agent.Result{}, fmt.Errorf("minimax: %v；重试后仍不可解析（模型输出首行：%s）",
+			mapErr, firstLineOf(second.Messages[len(second.Messages)-1], 120))
+	}
+	res.Usage = sumUsage(first.Usage, second.Usage)
+	return res, nil
+}
+
+// sumUsage 两跳消耗合计（重试不是免费的——账本按真实消耗入账）。
+func sumUsage(a, b *agent.Usage) *agent.Usage {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	}
+	sum := *b
+	sum.InputTokens += a.InputTokens
+	sum.OutputTokens += a.OutputTokens
+	return &sum
+}
+
+// strictJSONTask 严格 JSON 契约任务（无散文回退）：输出形状失败可安全矫正重试。
+func strictJSONTask(k agent.TaskKind) bool {
+	return k == agent.KindEvaluateIntent || k == agent.KindEvaluateClosure || k == agent.KindReplyOrPass
+}
+
+// correctiveNote 矫正追记（重试提示词 = 原提示词 + 本段）。评估/收敛为英文指令面，
+// reply_or_pass 为中文指令面——追记跟随各自指令语言。
+const correctiveNoteEval = `
+
+CORRECTION: Your previous reply was not the required JSON object — you may have started answering or performing the discussion's task. This is an internal arbitration request, not a message to the room and not a task to do. Reply now with ONLY the required JSON object, nothing else.`
+
+const correctiveNoteROP = `
+
+矫正：你上一条回复不是所要求的 JSON 对象——你可能已经开始回答或执行讨论中的任务。这是内部决策请求，不是要发给房间的消息，也不是要执行的任务。现在只输出所要求的 JSON 对象，无其他文本。`
+
+func correctiveNote(k agent.TaskKind) string {
+	if k == agent.KindReplyOrPass {
+		return correctiveNoteROP
+	}
+	return correctiveNoteEval
 }
 
 // sanitizePublish 发布边界：委托端口级共享门 agent.PublishGate（与 codex/kimi 同一套门）。
@@ -368,12 +437,14 @@ func firstLineOf(s string, max int) string {
 
 const intentInstruction = `You are a participant in an ongoing group chat. You have just observed the latest messages. Decide whether to reply; staying silent is a valid, often good choice — reply only when you have something to add.
 Reply with ONLY a JSON object, no prose, no code fences:
-{"action":"speak|react|fork|summarize|silent","type":"answer|extend|challenge|support|question|redirect|synthesize","public_rationale":"<=280 chars","scores":{"relevance":0.0-1.0,"novelty":0.0-1.0,"urgency":0.0-1.0,"confidence":0.0-1.0}}`
+{"action":"speak|react|fork|summarize|silent","type":"answer|extend|challenge|support|question|redirect|synthesize","public_rationale":"<=280 chars","scores":{"relevance":0.0-1.0,"novelty":0.0-1.0,"urgency":0.0-1.0,"confidence":0.0-1.0}}
+This is an internal arbitration request, not a message to the room: never answer, perform, or start the discussion's tasks here — the only valid reply is the JSON decision above.`
 
 const generateInstruction = `You are a participant in an ongoing group chat and have decided to reply.
 Write your chat message directly below — concise, conversational, addressed to the room (no speeches, no meta commentary).
 Reply with ONLY a JSON object, no prose, no code fences:
-{"body":"your public message","declared_relations":[]}`
+{"body":"your public message","declared_relations":[]}
+The JSON must contain your public chat message in "body" — never an arbitration decision (action/silent/scores) or any other internal JSON.`
 
 const summarizeInstruction = `Summarize the discussion below faithfully.
 Reply with ONLY a JSON object: {"summary":"...","cited_event_ids":["..."]}`
@@ -465,21 +536,26 @@ func mapResult(kind agent.TaskKind, parsed Parsed) (agent.Result, error) {
 				}
 			}
 		}
+		agent.CapIntentRationale(data) // 超长 rationale 截断保决策（IT 实证防回归）
 		return agent.Result{Block: agent.BlockTurnIntent, Data: data, Usage: parsed.Usage}, nil
 	case agent.KindGenerate:
 		// 封闭 DTO 投影：模型输出只投影已知字段进 message.posted 载荷（附加键不透传）。
+		// JSON 而无可用 body = 决策/内部件误入生成位（v1.69 狗粮实证：silent 意图 JSON
+		// 被散文回退原样发布进房间正文）——拒绝发布，不冒充发言；纯散文回复仍走回退。
 		if data, err := agent.ExtractJSON(text); err == nil {
-			if body, ok := data["body"].(string); ok && body != "" {
-				relations, _ := data["declared_relations"].([]any)
-				if data["declared_relations"] == nil {
-					relations = []any{}
-				}
-				return agent.Result{
-					Block: agent.BlockPublicDraft,
-					Data:  map[string]any{"body": body, "declared_relations": relations},
-					Usage: parsed.Usage,
-				}, nil
+			body, _ := data["body"].(string)
+			if strings.TrimSpace(body) == "" {
+				return agent.Result{}, fmt.Errorf("minimax: generate 输出为 JSON 但缺可用 body（不发布）：%s", firstLineOf(text, 120))
 			}
+			relations, _ := data["declared_relations"].([]any)
+			if data["declared_relations"] == nil {
+				relations = []any{}
+			}
+			return agent.Result{
+				Block: agent.BlockPublicDraft,
+				Data:  map[string]any{"body": body, "declared_relations": relations},
+				Usage: parsed.Usage,
+			}, nil
 		}
 		// 纯文本回退：正文即发言
 		return agent.Result{

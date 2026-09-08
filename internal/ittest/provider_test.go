@@ -18,6 +18,7 @@ func TestProviderUnavailableMarkers(t *testing.T) {
 		{"限流", errors.New("provider: rate limit exceeded"), true},
 		{"配额泛措辞", errors.New("quota exceeded"), true},
 		{"网络不可达（codex 实证）", errors.New("codex: turn failed: Reconnecting... waiting for network (Connection failed: error sending request)"), true},
+		{"模型版本门（codex 2026-09-08 实证：ambient 配置模型被上游按 CLI 版本拒）", errors.New(`codex: turn failed: {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again."}}`), true},
 		{"解析失败不命中", errors.New("kimi: 无 assistant 输出"), false},
 		{"超时不命中", errors.New("codex: turn failed: context deadline exceeded"), false},
 		{"发布门拒绝不命中", errors.New("agent: 正文为空"), false},

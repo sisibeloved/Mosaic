@@ -534,3 +534,45 @@ func TestEvalModelArgsOnlyForEval(t *testing.T) {
 		}
 	}
 }
+
+// v1.69（2026-09-08 狗粮实证事故链，首发于 minimax）：generate 位回决策 JSON
+// （无 body）曾被散文回退原样发布进房间正文——现在拒绝发布，不冒充发言。
+func TestGenerateRejectsDecisionJSON(t *testing.T) {
+	stream := `{"type":"thread.started","thread_id":"thr_x"}` + "\n" +
+		`{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"{\"action\":\"silent\",\"public_rationale\":\"已交付\"}"}}` + "\n" +
+		`{"type":"turn.completed"}`
+	exec := &fakeExecer{outputs: []string{stream}}
+	adapter := newTestAdapter(exec)
+	session, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "codex"})
+	defer session.Close()
+	h, err := session.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if _, rerr := h.Result(); rerr == nil {
+		t.Fatal("决策 JSON 误入 generate 位必须失败，不得发布")
+	} else if !strings.Contains(rerr.Error(), "缺可用 body") {
+		t.Fatalf("错误应指明缺可用 body：%v", rerr)
+	}
+}
+
+// 评估/生成指令必须隔离元任务与房间任务（措辞与 kimi/minimax 同源——三适配器
+// 狗粮口径一致）。
+func TestPromptIsolatesArbitration(t *testing.T) {
+	p, err := buildPrompt(agent.Task{TaskID: "t", Kind: agent.KindEvaluateIntent,
+		Context: agent.Context{Inline: map[string]any{"k": "v"}}})
+	if err != nil {
+		t.Fatalf("buildPrompt: %v", err)
+	}
+	if !strings.Contains(p, "internal arbitration request") {
+		t.Fatal("评估指令应声明内部仲裁语义（不执行房间任务）")
+	}
+	g, err := buildPrompt(agent.Task{TaskID: "t", Kind: agent.KindGenerate,
+		Context: agent.Context{Inline: map[string]any{"k": "v"}}})
+	if err != nil {
+		t.Fatalf("buildPrompt: %v", err)
+	}
+	if !strings.Contains(g, "never an arbitration decision") {
+		t.Fatal("生成指令应排除决策 JSON")
+	}
+}
