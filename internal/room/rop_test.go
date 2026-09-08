@@ -295,12 +295,16 @@ func TestROPEngineOffFallsBackWithMetric(t *testing.T) {
 	if d == 0 {
 		t.Fatal("控制组指标应入账（A/B 面）")
 	}
-	// 两阶段照常出意图记录（silent）
-	events, _, _ := store.EventsAfter(context.Background(), "room_rop", "", 1000)
+	// 两阶段照常出意图记录（silent）——等待波完成落库（资格指标先于意图写入）
 	twoPhase := false
-	for _, ev := range events {
-		if ev.Envelope.Type == protocol.EventIntentRecorded && ev.Envelope.Metadata["path"] == nil {
-			twoPhase = true
+	intentDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(intentDeadline) && !twoPhase {
+		time.Sleep(10 * time.Millisecond)
+		events, _, _ := store.EventsAfter(context.Background(), "room_rop", "", 1000)
+		for _, ev := range events {
+			if ev.Envelope.Type == protocol.EventIntentRecorded && ev.Envelope.Metadata["path"] == nil {
+				twoPhase = true
+			}
 		}
 	}
 	if !twoPhase {

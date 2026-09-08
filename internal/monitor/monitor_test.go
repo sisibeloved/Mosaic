@@ -53,8 +53,9 @@ func newTestManager(t *testing.T, fetch Fetcher) (*Manager, *fakeLauncher, *map[
 	return m, l, &statuses
 }
 
-func validSource() Source {
-	return Source{Kind: KindScript, Target: "/abs/check.sh", RoomID: "room_x",
+func validSource(t *testing.T) Source {
+	t.Helper()
+	return Source{Kind: KindScript, Target: filepath.Join(t.TempDir(), "check.sh"), RoomID: "room_x",
 		Assignee: "par_minimax_t", IntervalSec: 60, Enabled: true}
 }
 
@@ -72,7 +73,7 @@ func viewOf(t *testing.T, m *Manager, id string) View {
 func TestMonitorLifecycleWatermarks(t *testing.T) {
 	current := "v1"
 	m, l, statuses := newTestManager(t, func(context.Context, Source) (string, error) { return current, nil })
-	v, err := m.Add(validSource())
+	v, err := m.Add(validSource(t))
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -143,7 +144,7 @@ func TestMonitorSourceFailureIsolatedAndRetries(t *testing.T) {
 		}
 		return current, nil
 	})
-	v, _ := m.Add(validSource())
+	v, _ := m.Add(validSource(t))
 	id := v.MonitorID
 
 	check(t, m, id)
