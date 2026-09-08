@@ -459,3 +459,5 @@ FloorGrant 绑定 `(room, thread, round, participant)` 与冻结水位随 genera
 **迟到与恢复**：结果发布走 AppendEventsIf 迟到围栏（房间暂停/取消代次过期 → run.completed{late:true} 仅审计，不发布正文）；重启后 running 态无活进程 → run.unknown（结果未知——不自动重跑，可能已产生副作用，由人类显式重发或忽略）。上限 RunTimeout 缺省 10min（长于单轮 180s）。执行完成**不自动结案** tasklist（人工门控权威不变）；结果消息以负责人名义发布、metadata 携 run_id/task_id（可追溯关联）。
 
 **状态集**：requested（排队）| running（执行中）| completed | failed | canceled | unknown。等待用户/等待外部条件状态需要 CLI 侧交互通道（无头 exec 不存在），不虚构——待后续通道演进（ACP/MCP）再入状态机。
+
+**切片 B 补记（2026-09-07，v1.65）**：(1) RunTimeout 进 OQ-B 设置族（RFC-0012 开放问题）首员：`GET/PUT /v1/system/settings`（run_timeout_seconds，60..7200，缺省 600；数据目录 settings.json 原子持久化，损坏 fail safe 回缺省）+ 引擎活读面（每次 run 拉起时读取——变更无须重启，在途 run 不受影响，代次语义与取消一致）。(2) 迟到结果正文可达：run.completed{late:true} 的 body 是未发布结果的唯一留存，投影 RunView.result_body 带出（任务 Tab 展开查看/复制；活动 Tab 标注）——引擎不代发迟到结果（不作为当前有效结果发布的纪律不变），去向由人类决定。(3) 超时收口：到点 → run.failed 携"执行超时（上限 …）"，与适配器自身错误区分。(4) 受控执行桩 slowrun（-dev 门）：指令 `SLEEP <秒>` 控时、TaskRuns:true——ST 与本地验证的"可控长执行"承担面；生产装配不注册（能力面如实）。

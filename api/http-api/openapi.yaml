@@ -439,6 +439,39 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+  /v1/system/settings:
+    get:
+      operationId: getSystemSettings
+      summary: 设置族（OQ-B 首员：run_timeout_seconds）
+      description: |
+        引擎可调常量的用户设置（RFC-0012 OQ-B 设置族）。当前成员：
+        run_timeout_seconds——独立任务执行时长上限（M4-1；缺省 600s，值域
+        60..7200）。未装配设置面（测试装配）返回 404。
+      responses:
+        "200":
+          description: 当前设置
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SettingsDoc" }
+    put:
+      operationId: updateSystemSettings
+      summary: 更新设置（全量替换；原子落盘）
+      description: |
+        写端点（三层门）。全量替换语义，未知字段拒绝。变更即刻对新拉起的
+        run 生效（引擎活读面；在途 run 不受影响——代次语义与取消一致）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SettingsDoc" }
+      responses:
+        "200":
+          description: 更新后的设置
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SettingsDoc" }
+        "400":
+          description: 载荷不合法或值越界
   /v1/owner/bootstrap:
     get:
       operationId: getOwnerBootstrap
@@ -1051,8 +1084,20 @@ components:
         error: { type: string }
         result_event_id: { type: string, description: 结果消息事件（message.posted） }
         late: { type: boolean, description: 迟到结果审计标记（取消后/暂停期到达——不发布正文） }
+        result_body: { type: string, description: 迟到审计保留的执行结果正文（late 时唯一留存——未发布，供人类查看/复制救济） }
         requested_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    SettingsDoc:
+      type: object
+      required: [run_timeout_seconds]
+      additionalProperties: false
+      description: "设置族文档（OQ-B 首员，M4-1 切片 B）：全量替换语义；新成员迁入时向后兼容（缺字段 = 缺省）。"
+      properties:
+        run_timeout_seconds:
+          type: integer
+          minimum: 60
+          maximum: 7200
+          description: 独立任务执行时长上限（秒；缺省 600；长于单轮 180s——"长任务"服务面）
     BackupSummary:
       type: object
       required: [backup_id, created_at, size_bytes]

@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/sisibeloved/Mosaic/internal/backup"
+	"github.com/sisibeloved/Mosaic/internal/settings"
 )
 
 // ListBackups GET /v1/system/backups。
@@ -97,4 +98,49 @@ func (s *server) GetDiagnostics(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, bundle)
+}
+
+// GetSystemSettings GET /v1/system/settings（OQ-B 设置族首员，M4-1 切片 B）。
+func (s *server) GetSystemSettings(w http.ResponseWriter, _ *http.Request) {
+	if s.deps.Settings == nil {
+		writeError(w, http.StatusNotFound, "settings_disabled", "本装配未启用设置面")
+		return
+	}
+	writeJSON(w, http.StatusOK, settingsDocOf(s.deps.Settings.Snapshot()))
+}
+
+// UpdateSystemSettings PUT /v1/system/settings（写端点三层门）。全量替换语义：
+// 未识别字段拒绝（解码纪律）；值域校验后原子落盘。引擎活读面即刻对新拉起的
+// run 生效（在途 run 不受影响——代次语义与取消一致）。
+func (s *server) UpdateSystemSettings(w http.ResponseWriter, r *http.Request) {
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	if s.deps.Settings == nil {
+		writeError(w, http.StatusNotFound, "settings_disabled", "本装配未启用设置面")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
+	var req struct {
+		RunTimeoutSeconds int `json:"run_timeout_seconds"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "载荷须为 {run_timeout_seconds}")
+		return
+	}
+	if err := settings.ValidateRunTimeoutSeconds(req.RunTimeoutSeconds); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_value", err.Error())
+		return
+	}
+	if err := s.deps.Settings.UpdateRunTimeoutSeconds(req.RunTimeoutSeconds); err != nil {
+		writeError(w, http.StatusInternalServerError, "settings_write_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, settingsDocOf(s.deps.Settings.Snapshot()))
+}
+
+func settingsDocOf(doc settings.Document) map[string]any {
+	return map[string]any{"run_timeout_seconds": doc.RunTimeoutSeconds}
 }

@@ -681,6 +681,9 @@ type RunView struct {
 	// Requester 提出方（人类）
 	Requester string `json:"requester"`
 
+	// ResultBody 迟到审计保留的执行结果正文（late 时唯一留存——未发布，供人类查看/复制救济）
+	ResultBody *string `json:"result_body,omitempty"`
+
 	// ResultEventId 结果消息事件（message.posted）
 	ResultEventId *string       `json:"result_event_id,omitempty"`
 	RunId         string        `json:"run_id"`
@@ -748,6 +751,12 @@ type SearchHit struct {
 
 // SearchHitActorKind defines model for SearchHit.ActorKind.
 type SearchHitActorKind string
+
+// SettingsDoc 设置族文档（OQ-B 首员，M4-1 切片 B）：全量替换语义；新成员迁入时向后兼容（缺字段 = 缺省）。
+type SettingsDoc struct {
+	// RunTimeoutSeconds 独立任务执行时长上限（秒；缺省 600；长于单轮 180s——"长任务"服务面）
+	RunTimeoutSeconds int `json:"run_timeout_seconds"`
+}
 
 // Snapshot defines model for Snapshot.
 type Snapshot struct {
@@ -969,6 +978,9 @@ type SubmitRoomCommandJSONRequestBody = RoomCommand
 // RequestRestoreJSONRequestBody defines body for RequestRestore for application/json ContentType.
 type RequestRestoreJSONRequestBody RequestRestoreJSONBody
 
+// UpdateSystemSettingsJSONRequestBody defines body for UpdateSystemSettings for application/json ContentType.
+type UpdateSystemSettingsJSONRequestBody = SettingsDoc
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// GetHealthz 存活探针
@@ -1037,6 +1049,12 @@ type ServerInterface interface {
 	// RequestRestore 请求恢复（校验 + 落标记；实际换库在下次启动）
 	// (POST /v1/system/restore)
 	RequestRestore(w http.ResponseWriter, r *http.Request)
+	// GetSystemSettings 设置族（OQ-B 首员：run_timeout_seconds）
+	// (GET /v1/system/settings)
+	GetSystemSettings(w http.ResponseWriter, r *http.Request)
+	// UpdateSystemSettings 更新设置（全量替换；原子落盘）
+	// (PUT /v1/system/settings)
+	UpdateSystemSettings(w http.ResponseWriter, r *http.Request)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -1555,6 +1573,34 @@ func (siw *ServerInterfaceWrapper) RequestRestore(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// GetSystemSettings operation middleware
+func (siw *ServerInterfaceWrapper) GetSystemSettings(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSystemSettings(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateSystemSettings operation middleware
+func (siw *ServerInterfaceWrapper) UpdateSystemSettings(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateSystemSettings(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -1690,6 +1736,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/system/backups", wrapper.CreateBackup)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/system/restore", wrapper.RequestRestore)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/system/diagnostics", wrapper.GetDiagnostics)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/system/settings", wrapper.GetSystemSettings)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/v1/system/settings", wrapper.UpdateSystemSettings)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/owner/bootstrap", wrapper.GetOwnerBootstrap)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)

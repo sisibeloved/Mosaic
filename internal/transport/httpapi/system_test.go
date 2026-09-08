@@ -14,6 +14,7 @@ import (
 
 	"github.com/sisibeloved/Mosaic/internal/backup"
 	"github.com/sisibeloved/Mosaic/internal/room"
+	"github.com/sisibeloved/Mosaic/internal/settings"
 	"github.com/sisibeloved/Mosaic/internal/transport/sse"
 )
 
@@ -23,7 +24,7 @@ func (fakeBackupDB) BackupTo(_ context.Context, destPath string) error {
 	return os.WriteFile(destPath, []byte("fake-snapshot"), 0o600)
 }
 
-// newSystemTestServer 装配备份面 + 诊断面（token 可选注入）。
+// newSystemTestServer 装配备份面 + 诊断面 + 设置面（token 可选注入）。
 func newSystemTestServer(t *testing.T, ownerToken string) *httptest.Server {
 	t.Helper()
 	store := room.NewMemStore()
@@ -31,6 +32,10 @@ func newSystemTestServer(t *testing.T, ownerToken string) *httptest.Server {
 		Clock:  func() string { return "2026-09-07T00:00:00.000Z" },
 		NewID:  func(p string) string { return p + "_sys" },
 		Tenant: "ten_local"})
+	settingsStore, err := settings.Open(filepath.Join(t.TempDir(), "settings.json"))
+	if err != nil {
+		t.Fatalf("settings open: %v", err)
+	}
 	ts := httptest.NewServer(New(Deps{
 		SVC:         svc,
 		Reader:      store,
@@ -39,14 +44,15 @@ func newSystemTestServer(t *testing.T, ownerToken string) *httptest.Server {
 		OwnerToken:  ownerToken,
 		Backups:     &backup.Manager{DB: fakeBackupDB{}, Dir: t.TempDir()},
 		Diagnostics: func() (map[string]any, error) { return map[string]any{"runtime": map[string]any{"os": "test"}}, nil },
+		Settings:    settingsStore,
 	}))
 	t.Cleanup(ts.Close)
 	return ts
 }
 
 func TestSystemEndpointsDisabledWithoutDeps(t *testing.T) {
-	ts, _, _ := newTestServer(t) // 未注入 Backups/Diagnostics
-	for _, path := range []string{"/v1/system/backups", "/v1/system/diagnostics"} {
+	ts, _, _ := newTestServer(t) // 未注入 Backups/Diagnostics/Settings
+	for _, path := range []string{"/v1/system/backups", "/v1/system/diagnostics", "/v1/system/settings"} {
 		resp, err := http.Get(ts.URL + path)
 		if err != nil {
 			t.Fatalf("get %s: %v", path, err)
@@ -164,6 +170,64 @@ func TestSystemDiagnostics(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || bundle["runtime"] == nil {
 		t.Fatalf("diagnostics 应返回 bundle: %d %+v", resp.StatusCode, bundle)
+	}
+}
+
+// TestSystemSettings 设置族端点（OQ-B 首员）：缺省读取、合法更新、值域与
+// 解码纪律拒绝、token 写门。
+func TestSystemSettings(t *testing.T) {
+	ts := newSystemTestServer(t, "")
+
+	// 缺省
+	resp, err := http.Get(ts.URL + "/v1/system/settings")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	var doc struct {
+		RunTimeoutSeconds int `json:"run_timeout_seconds"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&doc)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || doc.RunTimeoutSeconds != 600 {
+		t.Fatalf("缺省应 600: %d %+v", resp.StatusCode, doc)
+	}
+
+	put := func(body string) *http.Response {
+		req, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/system/settings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		r, e := http.DefaultClient.Do(req)
+		if e != nil {
+			t.Fatalf("put: %v", e)
+		}
+		return r
+	}
+	// 合法更新
+	resp = put(`{"run_timeout_seconds":120}`)
+	_ = json.NewDecoder(resp.Body).Decode(&doc)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || doc.RunTimeoutSeconds != 120 {
+		t.Fatalf("更新应生效: %d %+v", resp.StatusCode, doc)
+	}
+	// 值域拒绝
+	for _, bad := range []string{`{"run_timeout_seconds":10}`, `{"run_timeout_seconds":99999}`} {
+		resp = put(bad)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("越界应 400: %s → %d", bad, resp.StatusCode)
+		}
+	}
+	// 未知字段拒绝（解码纪律）
+	resp = put(`{"run_timeout_seconds":120,"extra":1}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("未知字段应 400，got %d", resp.StatusCode)
+	}
+	// 越界值未落盘：读回仍是 120
+	resp, _ = http.Get(ts.URL + "/v1/system/settings")
+	_ = json.NewDecoder(resp.Body).Decode(&doc)
+	resp.Body.Close()
+	if doc.RunTimeoutSeconds != 120 {
+		t.Fatalf("拒绝后不应改值: %+v", doc)
 	}
 }
 

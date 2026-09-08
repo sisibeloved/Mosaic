@@ -280,6 +280,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/system/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 设置族（OQ-B 首员：run_timeout_seconds）
+         * @description 引擎可调常量的用户设置（RFC-0012 OQ-B 设置族）。当前成员：
+         *     run_timeout_seconds——独立任务执行时长上限（M4-1；缺省 600s，值域
+         *     60..7200）。未装配设置面（测试装配）返回 404。
+         */
+        get: operations["getSystemSettings"];
+        /**
+         * 更新设置（全量替换；原子落盘）
+         * @description 写端点（三层门）。全量替换语义，未知字段拒绝。变更即刻对新拉起的
+         *     run 生效（引擎活读面；在途 run 不受影响——代次语义与取消一致）。
+         */
+        put: operations["updateSystemSettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/owner/bootstrap": {
         parameters: {
             query?: never;
@@ -671,10 +698,17 @@ export interface components {
             result_event_id?: string;
             /** @description 迟到结果审计标记（取消后/暂停期到达——不发布正文） */
             late?: boolean;
+            /** @description 迟到审计保留的执行结果正文（late 时唯一留存——未发布，供人类查看/复制救济） */
+            result_body?: string;
             /** Format: date-time */
             requested_at: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        /** @description 设置族文档（OQ-B 首员，M4-1 切片 B）：全量替换语义；新成员迁入时向后兼容（缺字段 = 缺省）。 */
+        SettingsDoc: {
+            /** @description 独立任务执行时长上限（秒；缺省 600；长于单轮 180s——"长任务"服务面） */
+            run_timeout_seconds: number;
         };
         BackupSummary: {
             /** @description bkp_<ts36>_<hex>（本包生成，白名单字符） */
@@ -1372,6 +1406,57 @@ export interface operations {
                         [key: string]: unknown;
                     };
                 };
+            };
+        };
+    };
+    getSystemSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 当前设置 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsDoc"];
+                };
+            };
+        };
+    };
+    updateSystemSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettingsDoc"];
+            };
+        };
+        responses: {
+            /** @description 更新后的设置 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsDoc"];
+                };
+            };
+            /** @description 载荷不合法或值越界 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

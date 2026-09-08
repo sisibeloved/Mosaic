@@ -152,6 +152,14 @@ export function RoomPage() {
     [room],
   );
 
+  // M4-1 切片 B：取消在途执行（理由 1..280 留痕；迟到结果只审计不发布）
+  const onCancelRun = useCallback(
+    (runID: string, reason: string) => {
+      void room.cancelRun(runID, reason).catch(() => {});
+    },
+    [room],
+  );
+
   const onResolveTask = useCallback(
     (taskID: string, resolution: "delivered" | "dismissed") => {
       setTaskBusy(taskID);
@@ -354,6 +362,7 @@ export function RoomPage() {
             closureBusy={false}
             onResolveTask={onResolveTask}
             onRun={onRunTask}
+            onCancelRun={onCancelRun}
             taskBusy={taskBusy}
             onEditMemory={onEditMemory}
             memoryBusy={memoryBusy}

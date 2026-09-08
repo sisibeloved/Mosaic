@@ -30,12 +30,14 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/agent/adapter/kimi"
 	"github.com/sisibeloved/Mosaic/internal/agent/adapter/minimax"
 	"github.com/sisibeloved/Mosaic/internal/agent/echo"
+	"github.com/sisibeloved/Mosaic/internal/agent/slowrun"
 	"github.com/sisibeloved/Mosaic/internal/attach"
 	"github.com/sisibeloved/Mosaic/internal/backup"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/room"
+	"github.com/sisibeloved/Mosaic/internal/settings"
 	"github.com/sisibeloved/Mosaic/internal/storage/sqlite"
 	"github.com/sisibeloved/Mosaic/internal/transport/httpapi"
 	"github.com/sisibeloved/Mosaic/internal/transport/sse"
@@ -125,6 +127,15 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		return nil, fmt.Errorf("app: owner token: %w", err)
 	}
 
+	// OQ-B 设置族（M4-1 切片 B 首员）：run_timeout 持久化 + 引擎活读——设置页
+	// 变更无须重启（下次 run 拉起即生效）。文件损坏 fail safe 回缺省（错误可见，
+	// 不阻断启动；首次保存会以合法文档覆写）。
+	settingsStore, err := settings.Open(filepath.Join(opts.DataDir, "settings.json"))
+	if err != nil {
+		logger.Error("设置文件读取失败（回缺省继续）", "err", err)
+		settingsStore = settings.Default()
+	}
+
 	// ID：时间有序前缀 + 随机后缀（uuidv7 语义）。
 	newID := func(prefix string) string {
 		var b [8]byte
@@ -184,6 +195,14 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		store.Close()
 		return nil, fmt.Errorf("app: register echo: %w", err)
 	}
+	// 受控执行桩（-dev 门）：M4-1 ST 与本地验证的 TaskRuns 能力面；生产装配
+	//（无 -dev）不注册、不入席——能力面如实。
+	if opts.Dev {
+		if err := supervisor.Register(slowrun.Adapter{}); err != nil {
+			store.Close()
+			return nil, fmt.Errorf("app: register slowrun: %w", err)
+		}
+	}
 
 	hub := sse.NewHub()
 
@@ -238,6 +257,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		UI:               ui,
 		Backups:          backupMgr,
 		Attachments:      attachStore,
+		Settings:         settingsStore,
 		Diagnostics: diagnosticsBundle(opts.DataDir,
 			func() (int, error) { return countRooms(store) },
 			func() int {
@@ -334,6 +354,12 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 				ParticipantID: "par_echo",
 				Profile:       agent.Profile{ProfileID: "prof_echo", Adapter: "echo", DisplayName: "Echo"},
 			}}
+			if opts.Dev {
+				seats = append(seats, room.AgentSeat{
+					ParticipantID: "par_slowrun",
+					Profile:       agent.Profile{ProfileID: "prof_slowrun", Adapter: "slowrun", DisplayName: "SlowRun"},
+				})
+			}
 			for _, exe := range harnessRegistry.EnabledList() {
 				// 四轮复审 #3：身份基于注册表唯一 ID 派生；C 轨多实例并存不折叠。
 				exeKey := sanitizeProfileKey(exe.ID)
@@ -413,14 +439,16 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			// v1.36 曾漏配此处，主动波从未排上（dogfood 实证），勿再省略。
 			ProactiveSilence: 5 * time.Minute,
 			AttachExcerpt:    attachExcerpt,
-			OnDraft:          httpapi.DraftConsumer(hub),
-			OnWaveSkip:       httpapi.WaveSkipConsumer(hub),
-			OnSeatStatus:     httpapi.SeatStatusConsumer(hub),
-			Logger:           logger,
-			Clock:            clock,
-			Now:              time.Now,
-			NewID:            newID,
-			Tenant:           "ten_local",
+			// OQ-B 设置族活读面：每次 run 拉起时读当前设置（变更无须重启引擎）
+			RunTimeoutFunc: settingsStore.RunTimeout,
+			OnDraft:        httpapi.DraftConsumer(hub),
+			OnWaveSkip:     httpapi.WaveSkipConsumer(hub),
+			OnSeatStatus:   httpapi.SeatStatusConsumer(hub),
+			Logger:         logger,
+			Clock:          clock,
+			Now:            time.Now,
+			NewID:          newID,
+			Tenant:         "ten_local",
 		})
 		enginePtr.Store(engine)
 		engine.RecoverClaims() // 崩溃窗口重驱动（二轮审校 #9）

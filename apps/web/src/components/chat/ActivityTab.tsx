@@ -127,6 +127,11 @@ export function ActivityTab({
                 <span className={r.status === "failed" || r.status === "unknown" ? "text-danger" : r.status === "running" ? "text-warn" : "text-dim"}>
                   {RUN_STATUS_TEXT[r.status] ?? r.status}
                 </span>
+                {r.late && (
+                  <span className="text-warn" title={r.result_body || "迟到正文未留存"}>
+                    迟到（未发布）
+                  </span>
+                )}
                 <span className="min-w-0 truncate text-faint" title={r.error || r.instruction}>
                   {truncate(r.error || r.instruction, 60)}
                 </span>

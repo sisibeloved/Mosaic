@@ -77,11 +77,15 @@ type EngineConfig struct {
 	AttachExcerpt func(contextx.AttachmentInfo) string
 	// RunTimeout 独立任务执行时长上限（M4-1；0 = 缺省 10min——长于单轮 180s）。
 	RunTimeout time.Duration
-	Clock      func() string    // occurred_at（RFC3339）
-	Now        func() time.Time // 过期时刻计算
-	NewID      func(prefix string) string
-	Tenant     string
-	RoomID     string // 非空 = 只处理该房间；空 = 全部房间（M1 默认）
+	// RunTimeoutFunc 可选的活读面（OQ-B 设置族首员，M4-1 切片 B）：非 nil 且
+	// 返回正值时优先于 RunTimeout——设置页变更无须重建引擎即时生效（每次
+	// executeRun 拉起时读取，在途 run 不受影响——代次语义与取消一致）。
+	RunTimeoutFunc func() time.Duration
+	Clock          func() string    // occurred_at（RFC3339）
+	Now            func() time.Time // 过期时刻计算
+	NewID          func(prefix string) string
+	Tenant         string
+	RoomID         string // 非空 = 只处理该房间；空 = 全部房间（M1 默认）
 }
 
 // chatGrantPolicy 群聊模型的引擎内固定策略（RFC-0012：无房间策略面——

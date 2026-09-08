@@ -61,6 +61,7 @@ export function MemberPanel({
   closureBusy,
   onResolveTask,
   onRun,
+  onCancelRun,
   taskBusy,
   onEditMemory,
   memoryBusy,
@@ -97,6 +98,8 @@ export function MemberPanel({
   onResolveTask: (taskID: string, resolution: "delivered" | "dismissed") => void;
   /** M4-1：任务 Tab"执行"按钮。 */
   onRun: (taskID: string, assignee: string, instruction: string) => void;
+  /** M4-1 切片 B：取消在途执行（理由留痕）。 */
+  onCancelRun: (runID: string, reason: string) => void;
   taskBusy: string | null;
   onEditMemory: (memoryID: string, edits: { conclusions?: string[]; assumptions?: string[] }, note: string) => void;
   memoryBusy: string | null;
@@ -176,6 +179,7 @@ export function MemberPanel({
             busyTaskID={taskBusy}
             onResolve={onResolveTask}
             onRun={onRun}
+            onCancelRun={onCancelRun}
             onJumpToEvent={onJumpToEvent}
           />
         )}

@@ -3,7 +3,7 @@
 // 面板出现在各房间抽屉的"调试"Tab；调试端点仍由服务端 -dev 决定是否装配）。
 // 分层规矩：房间讨论策略在房间内调（抽屉"策略"Tab）；外观主题在个人中心。
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, type BackupSummary, type Executable } from "../api/client";
+import { api, ApiError, type BackupSummary, type Executable, type SettingsDoc } from "../api/client";
 import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
 import { useDevMode } from "../state/dev";
 import { adapterLabel, channelLabel } from "../lib/copy";
@@ -22,6 +22,43 @@ export function SettingsPage() {
   const [backupBusy, setBackupBusy] = useState(false);
   const [restoreConfirmID, setRestoreConfirmID] = useState<string | null>(null);
   const [restoreBusy, setRestoreBusy] = useState(false);
+  // M4-1 任务执行设置（OQ-B 设置族首员：分钟粒度输入，秒粒度存储）
+  const [runTimeoutMin, setRunTimeoutMin] = useState<number | null>(null);
+  const [runTimeoutMsg, setRunTimeoutMsg] = useState<string | null>(null);
+  const [runTimeoutBusy, setRunTimeoutBusy] = useState(false);
+
+  // OQ-B 设置族：加载（404 = 装配未启用，如实提示）
+  useEffect(() => {
+    let alive = true;
+    void api
+      .settings()
+      .then((doc: SettingsDoc) => {
+        if (alive) setRunTimeoutMin(Math.round(doc.run_timeout_seconds / 60));
+      })
+      .catch((e) => {
+        if (alive && e instanceof ApiError && e.status === 404) {
+          setRunTimeoutMsg("本装配未启用设置面");
+        }
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const onSaveRunTimeout = async () => {
+    if (runTimeoutMin == null) return;
+    setRunTimeoutBusy(true);
+    setRunTimeoutMsg(null);
+    try {
+      const doc = await api.updateSettings({ run_timeout_seconds: runTimeoutMin * 60 });
+      setRunTimeoutMin(Math.round(doc.run_timeout_seconds / 60));
+      setRunTimeoutMsg("已保存——对新发起的任务执行即时生效（在途执行不受影响）");
+    } catch (e) {
+      setRunTimeoutMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunTimeoutBusy(false);
+    }
+  };
 
   const refreshExecutables = useCallback(async () => {
     try {
@@ -285,6 +322,38 @@ export function SettingsPage() {
             </div>
             <p className="mt-2 text-[11px] text-faint">登记时服务端会探测该路径（探测失败拒收）。</p>
           </details>
+        </section>
+
+        <section>
+          <h2 className="mb-1 text-sm font-medium">任务执行</h2>
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <label className="flex items-center gap-2">
+              <span className="text-faint">独立任务执行时长上限</span>
+              <input
+                type="number"
+                min={1}
+                max={120}
+                value={runTimeoutMin ?? ""}
+                disabled={runTimeoutMin == null}
+                onChange={(e) => setRunTimeoutMin(e.target.value ? Number(e.target.value) : null)}
+                className="w-20 rounded-lg border border-border bg-surface-2 px-2 py-1.5 outline-none focus:border-accent"
+              />
+              <span className="text-faint">分钟</span>
+            </label>
+            <button
+              type="button"
+              disabled={runTimeoutBusy || runTimeoutMin == null || runTimeoutMin < 1 || runTimeoutMin > 120}
+              onClick={() => void onSaveRunTimeout()}
+              className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              {runTimeoutBusy ? "保存中…" : "保存"}
+            </button>
+            {runTimeoutMsg && <span className="text-dim">{runTimeoutMsg}</span>}
+          </div>
+          <p className="mt-1.5 text-[11px] leading-4 text-faint">
+            任务 Tab"执行"发起的独立任务在此时限内运行（缺省 10 分钟，可调 1..120）；到点未完成按
+            执行失败收口，错误信息明示超时。群聊单轮回复不受此设置影响。
+          </p>
         </section>
 
         <section>

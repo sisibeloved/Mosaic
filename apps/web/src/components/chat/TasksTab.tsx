@@ -7,6 +7,7 @@
 import { useState } from "react";
 import type { ParticipantView } from "../../api/client";
 import type { RunItem, TaskItem } from "../../api/room";
+import { copyText } from "../../lib/clipboard";
 import { displayNameOf, relativeTime } from "../../lib/ui";
 import { Avatar } from "./Avatar";
 
@@ -46,6 +47,80 @@ function resolutionLabel(t: TaskItem): string {
   return "人工移除";
 }
 
+/** M4-1 切片 B：run 状态 chip——完成态可跳结果消息；迟到态携未发布正文
+ *（审计留存面，人类可复制救济）；失败/未知携原因提示。 */
+function RunChip({ run, onJumpToEvent }: { run: RunItem; onJumpToEvent: (eventID: string) => void }) {
+  const [copied, setCopied] = useState(false);
+  const resultID = run.result_event_id; // const 捕获：闭包内保持收窄
+  const label =
+    run.status === "running"
+      ? "执行中…"
+      : run.status === "requested"
+        ? "排队中"
+        : run.status === "completed"
+          ? run.late
+            ? "迟到结果（未发布）"
+            : "已执行 ✓"
+          : run.status === "unknown"
+            ? "结果未知"
+            : run.status === "canceled"
+              ? run.late
+                ? "已取消（有迟到结果）"
+                : "已取消"
+              : "执行失败";
+  const tone =
+    run.status === "failed" || run.status === "unknown"
+      ? "text-danger"
+      : run.status === "running" || run.status === "requested"
+        ? "text-warn"
+        : run.late
+          ? "text-warn"
+          : "text-dim";
+  const hint =
+    run.error ||
+    (run.late ? run.result_body || "（迟到正文未留存）" : run.run_id);
+  return (
+    <>
+      {run.status === "completed" && !run.late && resultID ? (
+        <button
+          type="button"
+          onClick={() => onJumpToEvent(resultID)}
+          title={`定位结果消息（${resultID}）`}
+          className={`rounded-lg border border-border px-2 py-1 text-[11px] transition-colors hover:border-faint ${tone}`}
+        >
+          {label}
+        </button>
+      ) : (
+        <span className={`rounded-lg border border-border px-2 py-1 text-[11px] ${tone}`} title={hint}>
+          {label}
+        </span>
+      )}
+      {run.late && run.result_body && (
+        <details className="w-full rounded-lg border border-border px-2 py-1">
+          <summary className="cursor-pointer text-[11px] text-dim">迟到结果正文（未发布——引擎不代发，由你决定去向）</summary>
+          <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-[11px] leading-4 text-dim">
+            {run.result_body}
+          </pre>
+          <button
+            type="button"
+            onClick={() =>
+              void copyText(run.result_body ?? "").then((ok) => {
+                if (ok) {
+                  setCopied(true);
+                  window.setTimeout(() => setCopied(false), 1500);
+                }
+              })
+            }
+            className="mt-1 rounded-lg bg-surface-3 px-2 py-0.5 text-[11px] text-text transition-opacity hover:opacity-85"
+          >
+            {copied ? "已复制" : "复制正文"}
+          </button>
+        </details>
+      )}
+    </>
+  );
+}
+
 export function TasksTab({
   tasks,
   runs,
@@ -53,6 +128,7 @@ export function TasksTab({
   busyTaskID,
   onResolve,
   onRun,
+  onCancelRun,
   onJumpToEvent,
 }: {
   tasks: TaskItem[];
@@ -63,9 +139,14 @@ export function TasksTab({
   onResolve: (taskID: string, resolution: "delivered" | "dismissed") => void;
   /** 发起独立执行（assignee = 任务负责人；指令 = 任务文本）。 */
   onRun: (taskID: string, assignee: string, instruction: string) => void;
+  /** 取消在途执行（M4-1 切片 B：理由 1..280 留痕）。 */
+  onCancelRun: (runID: string, reason: string) => void;
   onJumpToEvent: (eventID: string) => void;
 }) {
   const pending = tasks.filter((t) => t.status === "pending");
+  // M4-1 切片 B：取消在途执行——理由 1..280 留痕（事件载荷可追溯）
+  const [canceling, setCanceling] = useState<RunItem | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
   // 已完成/已收束按结案时间倒序（最新在前），截 SECTION_CAP
   const delivered = tasks
     .filter((t) => t.status === "delivered")
@@ -113,46 +194,71 @@ export function TasksTab({
                 >
                   {t.text}
                 </button>
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                   {(() => {
-                    // M4-1：关联 run 状态 chip（最新一条）；无 run 时给"执行"按钮
+                    // M4-1 切片 B：最新关联 run 的 chip + 操作面——在途（排队/执行中）
+                    // 给"取消"；终态（完成/失败/取消/未知）后"执行"重新可用（重发路径：
+                    // 结果未知的 run 不自动重跑，由人显式重发）。
                     const linked = runs.filter((r) => r.task_id === t.task_id);
                     const latest = linked[linked.length - 1];
-                    if (latest) {
-                      const label =
-                        latest.status === "running"
-                          ? "执行中…"
-                          : latest.status === "requested"
-                            ? "排队中"
-                            : latest.status === "completed"
-                              ? "已执行 ✓"
-                              : latest.status === "unknown"
-                                ? "结果未知"
-                                : latest.status === "canceled"
-                                  ? "已取消"
-                                  : "执行失败";
-                      const tone =
-                        latest.status === "failed"
-                          ? "text-danger"
-                          : latest.status === "running" || latest.status === "requested"
-                            ? "text-warn"
-                            : "text-dim";
-                      return (
-                        <span className={`rounded-lg border border-border px-2 py-1 text-[11px] ${tone}`} title={latest.error || latest.run_id}>
-                          {label}
-                        </span>
-                      );
-                    }
+                    const active =
+                      !!latest && (latest.status === "running" || latest.status === "requested");
                     return (
-                      <button
-                        type="button"
-                        disabled={busyTaskID === t.task_id}
-                        onClick={() => onRun(t.task_id, t.owner, t.text)}
-                        title="发起独立任务执行（run_task）——负责人在专用通道执行并把结果发回房间"
-                        className="rounded-lg bg-accent-soft px-2.5 py-1 text-[11px] text-accent transition-opacity hover:opacity-85 disabled:opacity-40"
-                      >
-                        执行
-                      </button>
+                      <>
+                        {latest && <RunChip run={latest} onJumpToEvent={onJumpToEvent} />}
+                        {active ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCanceling(latest ?? null);
+                              setCancelReason("");
+                            }}
+                            title="取消在途执行（进程组击杀；理由留痕）"
+                            className="rounded-lg px-2.5 py-1 text-[11px] text-dim transition-colors hover:bg-[color-mix(in_srgb,var(--danger)_12%,transparent)] hover:text-danger"
+                          >
+                            取消
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={busyTaskID === t.task_id}
+                            onClick={() => onRun(t.task_id, t.owner, t.text)}
+                            title="发起独立任务执行（run_task）——负责人在专用通道执行并把结果发回房间"
+                            className="rounded-lg bg-accent-soft px-2.5 py-1 text-[11px] text-accent transition-opacity hover:opacity-85 disabled:opacity-40"
+                          >
+                            执行
+                          </button>
+                        )}
+                        {canceling && canceling.run_id === latest?.run_id && (
+                          <span className="flex w-full items-center gap-1.5">
+                            <input
+                              autoFocus
+                              value={cancelReason}
+                              onChange={(e) => setCancelReason(e.target.value)}
+                              placeholder="取消理由（必填，留痕）"
+                              className="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-2 py-1 text-[11px] outline-none focus:border-accent"
+                            />
+                            <button
+                              type="button"
+                              disabled={!cancelReason.trim() || cancelReason.length > 280}
+                              onClick={() => {
+                                onCancelRun(canceling.run_id, cancelReason.trim());
+                                setCanceling(null);
+                              }}
+                              className="rounded-lg bg-danger px-2 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+                            >
+                              确认取消
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setCanceling(null)}
+                              className="rounded-lg px-2 py-1 text-[11px] text-dim hover:text-text"
+                            >
+                              放弃
+                            </button>
+                          </span>
+                        )}
+                      </>
                     );
                   })()}
                   <button

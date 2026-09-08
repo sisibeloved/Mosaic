@@ -96,6 +96,14 @@ function post<T = CommandResponse>(path: string, payload: unknown): Promise<T> {
   });
 }
 
+function put<T>(path: string, payload: unknown): Promise<T> {
+  return request<T>(path, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 /** UUIDv7（服务端幂等键契约：48bit 毫秒时间戳 + 版本/变体位 + 随机尾）。 */
 export function uuidv7(): string {
   const rnd = new Uint8Array(9);
@@ -135,6 +143,9 @@ export interface BackupSummary {
   size_bytes: number;
 }
 
+/** OQ-B 设置族文档（M4-1 首员 run_timeout_seconds）。 */
+export type SettingsDoc = Schemas["SettingsDoc"];
+
 export const api = {
   agents(): Promise<{ agents: AgentSeatInfo[]; disabled?: DisabledAgentInfo[] }> {
     return request<{ agents: AgentSeatInfo[]; disabled?: DisabledAgentInfo[] }>("/v1/agents");
@@ -150,6 +161,13 @@ export const api = {
   },
   diagnostics(): Promise<Record<string, unknown>> {
     return request<Record<string, unknown>>("/v1/system/diagnostics");
+  },
+  /** OQ-B 设置族（M4-1 首员）：run_timeout_seconds 读写（写后对新拉起的 run 即时生效）。 */
+  settings(): Promise<SettingsDoc> {
+    return request<SettingsDoc>("/v1/system/settings");
+  },
+  updateSettings(doc: SettingsDoc): Promise<SettingsDoc> {
+    return put("/v1/system/settings", doc);
   },
   listRooms(): Promise<{ rooms: RoomSummary[] }> {
     return request<{ rooms: RoomSummary[] }>("/v1/rooms");

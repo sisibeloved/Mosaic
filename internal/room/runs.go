@@ -32,8 +32,11 @@ type RunView struct {
 	Error         string `json:"error,omitempty"`
 	ResultEventID string `json:"result_event_id,omitempty"`
 	Late          bool   `json:"late,omitempty"`
-	RequestedAt   string `json:"requested_at"`
-	UpdatedAt     string `json:"updated_at"`
+	// ResultBody 迟到审计保留的执行结果正文（late 时唯一留存——未作为消息
+	// 发布，投影带出供人类查看/复制救济；正常完成的正文在结果消息里，不重复）。
+	ResultBody  string `json:"result_body,omitempty"`
+	RequestedAt string `json:"requested_at"`
+	UpdatedAt   string `json:"updated_at"`
 }
 
 // RunsOf 事件折叠投影：按 run_id 聚合，序内后到事件更新状态；迟到审计
@@ -71,7 +74,7 @@ func RunsOf(events []StoredEvent) []RunView {
 			runID = p.RunID
 			// 迟到审计（late）只在非终态外的任意态记录，不翻转已完成终态
 			if p.Late {
-				mutate(byID, runID, func(v *RunView) { v.Late = true })
+				mutate(byID, runID, func(v *RunView) { v.Late = true; v.ResultBody = p.Body })
 				continue
 			}
 			mutate(byID, runID, func(v *RunView) { v.Status = "completed"; v.ResultEventID = p.ResultEventID })
@@ -232,6 +235,20 @@ type runManager struct {
 	runs map[string]*runState
 }
 
+// runTimeoutLimit 本次执行的超时上限：活读面（设置族）优先，其次静态配置，
+// 最后缺省。每次拉起时解析——设置变更对后续 run 生效。
+func (e *Engine) runTimeoutLimit() time.Duration {
+	if e.cfg.RunTimeoutFunc != nil {
+		if t := e.cfg.RunTimeoutFunc(); t > 0 {
+			return t
+		}
+	}
+	if e.cfg.RunTimeout > 0 {
+		return e.cfg.RunTimeout
+	}
+	return defaultRunTimeout
+}
+
 // LaunchRun 执行一个已落 run.requested 的运行：started → exec → 结果回传。
 // 结果以 assignee 名义发布 message.posted（AppendEventsIf 迟到围栏 + 发布门），
 // metadata 携 run_id/task_id（可追溯关联）；迟到（取消后/房间暂停）→ 审计事件。
@@ -332,10 +349,8 @@ func (e *Engine) executeRun(ctx context.Context, roomID string, req protocol.Run
 		return
 	}
 
-	timeout := e.cfg.RunTimeout
-	if timeout <= 0 {
-		timeout = defaultRunTimeout
-	}
+	timeout := e.runTimeoutLimit()
+
 	runCtx, runCancel := context.WithTimeout(ctx, timeout)
 	defer runCancel()
 
