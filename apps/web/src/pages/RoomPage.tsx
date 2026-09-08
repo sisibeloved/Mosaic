@@ -172,7 +172,7 @@ export function RoomPage() {
     [room],
   );
   const onEditMemory = useCallback(
-    (memoryID: string, edits: { conclusions?: string[]; assumptions?: string[] }, note: string) => {
+    (memoryID: string, edits: { conclusions?: string[]; assumptions?: string[]; curatedContent?: string }, note: string) => {
       setMemoryBusy(memoryID);
       void room
         .editMemory(memoryID, edits, note)

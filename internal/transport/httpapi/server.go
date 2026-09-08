@@ -61,6 +61,8 @@ type Deps struct {
 	// Searcher 按需检索端口（M3-3）：nil = 回退线性基准（读全量事件 +
 	// room.SearchMessages 纯函数——语义一致）；SQLite 装配注入 FTS5 实现。
 	Searcher room.MessageSearcher
+	// ReceiptLister 回执流水（v1.70 展示对齐）：nil = 回执端点 404（测试装配）。
+	ReceiptLister room.ReceiptLister
 	// Backups 备份面（M4-0）：nil = 备份/恢复端点 404（测试装配）。
 	Backups *backup.Manager
 	// Attachments 附件面（RFC-0013，M4-0）：nil = 上传/下载端点 404。
@@ -665,6 +667,7 @@ func (s *server) ListRooms(w http.ResponseWriter, r *http.Request) {
 
 // GetRoomMemory 记忆查看面（M3-3，apigen.ServerInterface）：编辑后胶囊 +
 // edit_history + 容量水位——与语境注入同源投影（纠错生效于下次组装可证）。
+// v1.70 扩展：策展条目（agent 每波评审自助沉淀）+ 合并水位。
 func (s *server) GetRoomMemory(w http.ResponseWriter, r *http.Request, roomID apigen.RoomID) {
 	events, err := s.readAllEvents(r, roomID)
 	if err != nil {
@@ -679,11 +682,58 @@ func (s *server) GetRoomMemory(w http.ResponseWriter, r *http.Request, roomID ap
 	for i := range events {
 		envs[i] = events[i].Envelope
 	}
+	curated := room.CuratedEntriesOf(events)
+	if curated == nil {
+		curated = []room.CuratedEntry{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"room_id":        roomID,
 		"capsules":       room.MemoryCapsulesOf(events),
 		"capsule_budget": room.CapsuleBudgetOf(envs),
+		"curated":        curated,
+		"curated_budget": room.ConstantPlaneOf(envs).Stat,
 	})
+}
+
+// GetRoomContext 语境平面全景（v1.70 展示对齐，apigen.ServerInterface）：
+// 与引擎组装同源的纯函数快照——"模型看得到的，开发者也能看得到"。
+func (s *server) GetRoomContext(w http.ResponseWriter, r *http.Request, roomID apigen.RoomID) {
+	events, err := s.readAllEvents(r, roomID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "context_read_failed", err.Error())
+		return
+	}
+	if len(events) == 0 {
+		writeError(w, http.StatusNotFound, "room_not_found", "房间不存在或尚无事件")
+		return
+	}
+	writeJSON(w, http.StatusOK, room.ContextPanoramaOf(roomID, events))
+}
+
+// GetRoomReceipts 回执流水（v1.70 展示对齐，apigen.ServerInterface）：AR-16
+// 正式面——每次运行"实际交付了什么"可查；nil Lister（测试装配）404 不暴露面。
+func (s *server) GetRoomReceipts(w http.ResponseWriter, r *http.Request, roomID apigen.RoomID, params apigen.GetRoomReceiptsParams) {
+	if s.deps.ReceiptLister == nil {
+		writeError(w, http.StatusNotFound, "receipts_unavailable", "回执查询面未装配")
+		return
+	}
+	limit := 20
+	if params.Limit != nil {
+		if *params.Limit < 1 || *params.Limit > 100 {
+			writeError(w, http.StatusBadRequest, "bad_limit", "limit 须为 1..100")
+			return
+		}
+		limit = *params.Limit
+	}
+	receipts, err := s.deps.ReceiptLister.ReceiptsOf(r.Context(), roomID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "receipts_read_failed", err.Error())
+		return
+	}
+	if receipts == nil {
+		receipts = []contextx.Receipt{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"room_id": roomID, "receipts": receipts})
 }
 
 // SearchRoomMessages 房内全文检索（M3-3 按需平面，apigen.ServerInterface）：

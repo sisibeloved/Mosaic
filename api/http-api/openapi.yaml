@@ -218,12 +218,15 @@ paths:
   /v1/rooms/{room_id}/memory:
     get:
       operationId: getRoomMemory
-      summary: 房间记忆视图（胶囊 + 编辑历史 + 容量水位）
+      summary: 房间记忆视图（胶囊 + 策展条目 + 编辑历史 + 容量水位）
       description: |
         M3-3 记忆查看面（RFC-0007 §7.4 裁定 5）：已接受胶囊的编辑后视图
         （conclusions/assumptions 已应用 memory.edited 链，与语境注入同源不双轨）
         + edit_history（人工编辑留痕）+ capsule_budget（恒常平面容量水位——
         dropped_count > 0 即超预算倒逼合并的信号）。编辑走 edit_memory 命令。
+        v1.70 扩展：curated 策展条目（agent 每波评审自助沉淀，Hermes 同构——
+        add/replace/remove 操作留痕于 memory.curated 事件、人工纠错同走
+        memory.edited）+ curated_budget（策展面水位）。
       parameters:
         - $ref: "#/components/parameters/RoomID"
       responses:
@@ -233,6 +236,51 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MemoryView"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /v1/rooms/{room_id}/context:
+    get:
+      operationId: getRoomContext
+      summary: 语境平面全景（模型看到的，开发者也能看到）
+      description: |
+        v1.70 展示对齐（负责人原则）：与引擎组装同源的纯函数快照——近窗原文
+        （最新 10 条）、按需召回命中（含检索关键词）、恒常平面（策展条目 +
+        胶囊 + 单预算容量水位）、tasklist。零收束也有内容；与注入面共用同一
+        投影（不双轨）。
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: 语境平面全景
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextPanorama"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /v1/rooms/{room_id}/receipts:
+    get:
+      operationId: getRoomReceipts
+      summary: 上下文回执流水（每次运行实际交付了什么）
+      description: |
+        v1.70 展示对齐：Context Receipt（RFC-0007 §3.1.7 / AR-16）自 -dev
+        调试面提为正式面——每次评估/生成/评审运行的层摘要清单可查（给了什么
+        水位、哪些层、摘要为何），最新在前。任务号含语义后缀（:eval/:gen0/
+        :mrev 等）可辨运行类型。
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+          description: 返回条数（最新在前）
+      responses:
+        "200":
+          description: 回执流水
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReceiptListView"
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/Internal" }
   /v1/rooms/{room_id}/search:
@@ -1364,14 +1412,15 @@ components:
       additionalProperties: false
       description: 胶囊记忆人工编辑（memory.edited 事件载荷）：conclusions/assumptions 为编辑后全文（整组替换），至少一项提供。
       properties:
-        memory_id: { type: string, pattern: "^clo_[0-9A-Za-z_-]+$", description: 胶囊 closure_id }
+        memory_id: { type: string, description: "胶囊 closure_id（clo_*）或策展条目 ID（mem_*）" }
         conclusions: { type: array, maxItems: 12, items: { type: string, maxLength: 500 } }
         assumptions: { type: array, maxItems: 12, items: { type: string, maxLength: 500 } }
         note: { type: string, maxLength: 280, description: 编辑理由（留痕） }
+        curated_content: { type: string, maxLength: 200, description: "策展条目编辑后全文（memory_id=mem_* 时必填，整条替换）" }
     MemoryView:
       type: object
-      required: [room_id, capsules, capsule_budget]
-      description: 记忆查看面（GET /v1/rooms/{id}/memory）：编辑后胶囊 + 容量水位。
+      required: [room_id, capsules, capsule_budget, curated, curated_budget]
+      description: 记忆查看面（GET /v1/rooms/{id}/memory）：编辑后胶囊 + 策展条目 + 容量水位。
       properties:
         room_id: { type: string }
         capsules:
@@ -1417,6 +1466,160 @@ components:
             injected_runes: { type: integer }
             injected_count: { type: integer }
             dropped_count: { type: integer }
+        curated:
+          type: array
+          description: 策展条目（v1.70，agent 每波评审自助沉淀——最新在后；注入时倒序取新）
+          items:
+            type: object
+            required: [id, author, content, source_refs, created_at, updated_at, edited]
+            properties:
+              id: { type: string, description: "稳定条目 ID（mem_*，编辑面锚点）" }
+              author: { type: string, description: 执行评审的 agent（署名可追溯） }
+              content: { type: string }
+              source_refs:
+                type: array
+                description: provenance——触发评审的 round_id
+                items: { type: string }
+              created_at: { type: string, format: date-time }
+              updated_at: { type: string, format: date-time }
+              edited: { type: boolean, description: 人工纠错过（memory.edited 链已应用） }
+        curated_budget:
+          type: object
+          required: [budget_runes, curated_runes, curated_count, capsule_runes, capsule_count, over_budget_runes]
+          description: 恒常平面合并水位（策展条目优先注入，余量给胶囊；over_budget_runes > 0 即倒逼合并）
+          properties:
+            budget_runes: { type: integer }
+            curated_runes: { type: integer }
+            curated_count: { type: integer }
+            capsule_runes: { type: integer }
+            capsule_count: { type: integer }
+            over_budget_runes: { type: integer }
+    ContextPanorama:
+      type: object
+      required: [room_id, watermark, near_window, retrieved, retrieval_keywords, curated_memory, capsules, budget, tasklist]
+      description: 语境平面全景（GET /v1/rooms/{id}/context，v1.70 展示对齐）——与引擎组装同源的纯函数快照。
+      properties:
+        room_id: { type: string }
+        watermark: { type: string, description: 快照水位（最新事件 ID） }
+        near_window:
+          type: array
+          description: 近窗原文（最新 10 条，最新在前）
+          items:
+            type: object
+            required: [event_id, actor, actor_kind, body, occurred_at]
+            properties:
+              event_id: { type: string }
+              actor: { type: string }
+              actor_kind: { type: string, enum: [human, agent, system] }
+              body: { type: string }
+              occurred_at: { type: string, format: date-time }
+        retrieved:
+          type: array
+          description: 按需召回命中（近窗外旧消息，锚点关键词驱动；event_id 即 provenance）
+          items:
+            type: object
+            required: [event_id, actor, body]
+            properties:
+              event_id: { type: string }
+              actor: { type: string }
+              body: { type: string }
+        retrieval_keywords:
+          type: array
+          description: 召回所用关键词（自最新消息正文提取——确定性零模型）
+          items: { type: string }
+        curated_memory:
+          type: array
+          description: 恒常平面·策展条目（预算内注入集，最新在前）
+          items:
+            type: object
+            required: [id, author, content, source_refs, created_at, updated_at, edited]
+            properties:
+              id: { type: string }
+              author: { type: string }
+              content: { type: string }
+              source_refs: { type: array, items: { type: string } }
+              created_at: { type: string, format: date-time }
+              updated_at: { type: string, format: date-time }
+              edited: { type: boolean }
+        capsules:
+          type: array
+          description: 恒常平面·胶囊（预算余量内；同 MemoryView.capsules 条目形状）
+          items:
+            type: object
+            required: [closure_id, closure_type, thread_id, conclusions, assumptions, named_dissent, edit_history]
+            properties:
+              closure_id: { type: string }
+              closure_type: { type: string, enum: [consensus, bounded_disagreement] }
+              thread_id: { type: string }
+              watermark: { type: integer, format: int64 }
+              conclusions: { type: array, items: { type: string } }
+              assumptions: { type: array, items: { type: string } }
+              named_dissent:
+                type: array
+                items:
+                  type: object
+                  required: [participant_id, basis]
+                  properties:
+                    participant_id: { type: string }
+                    basis: { type: string }
+              falsifiers: { type: array, items: { type: string } }
+              reopen_triggers: { type: array, items: { type: string } }
+              edit_history:
+                type: array
+                items:
+                  type: object
+                  required: [event_id, edit_version, edited_by, occurred_at]
+                  properties:
+                    event_id: { type: string }
+                    edit_version: { type: integer }
+                    note: { type: string }
+                    edited_by: { type: string }
+                    occurred_at: { type: string, format: date-time }
+        budget:
+          type: object
+          required: [budget_runes, curated_runes, curated_count, capsule_runes, capsule_count, over_budget_runes]
+          description: 恒常平面合并水位（同 MemoryView.curated_budget 形状）
+          properties:
+            budget_runes: { type: integer }
+            curated_runes: { type: integer }
+            curated_count: { type: integer }
+            capsule_runes: { type: integer }
+            capsule_count: { type: integer }
+            over_budget_runes: { type: integer }
+        tasklist:
+          type: array
+          description: 承诺追踪（带责任人/波龄/逾期）
+          items:
+            type: object
+            required: [task_id, owner, requester, text, waves_since, overdue]
+            properties:
+              task_id: { type: string }
+              owner: { type: string }
+              requester: { type: string }
+              text: { type: string }
+              waves_since: { type: integer }
+              overdue: { type: boolean }
+    ReceiptListView:
+      type: object
+      required: [room_id, receipts]
+      description: 上下文回执流水（GET /v1/rooms/{id}/receipts，v1.70 展示对齐——AR-16 正式面）。
+      properties:
+        room_id: { type: string }
+        receipts:
+          type: array
+          description: 最新在前；task_id 语义后缀可辨运行类型（:eval/:gen0/:mrev）
+          items:
+            type: object
+            required: [receipt_id, task_id, watermark, layer_digests, created_at]
+            properties:
+              receipt_id: { type: string }
+              task_id: { type: string }
+              watermark: { type: string }
+              layer_digests:
+                type: array
+                description: 层摘要（sha256，按组装序——内容可复算验证）
+                items: { type: string }
+              created_at: { type: string, format: date-time }
     SearchHit:
       type: object
       required: [event_id, actor, actor_kind, body, occurred_at, position]

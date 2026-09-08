@@ -48,6 +48,9 @@ type Config struct {
 	// Capsules 一等 Memory（M3-3，RFC-0007 最小接入）：已接受收束胶囊注入上下文
 	//（结论/假设/异议边界——"这个房间已经聊定过什么"；编辑后视图，纠错生效）。
 	Capsules []CapsuleMemory
+	// Curated 策展记忆（v1.70，Hermes 同构）：agent 每波评审自助沉淀的条目
+	//（偏好/立场/局部结论——"这个房间值得一直记得什么"；与胶囊共单预算）。
+	Curated []CuratedItem
 	// Tasklist 带责任人的承诺追踪（RFC-0012 OQ-A 修订 / v1.45）：pending 任务
 	// 最小投影——"我曾承诺未交付"是主动开口的触发源（狗粮实证 v1.44）。
 	Tasklist []TaskBrief
@@ -97,6 +100,13 @@ type CapsuleMemory struct {
 	Conclusions []string `json:"conclusions"`
 	Assumptions []string `json:"assumptions"`
 	Dissent     []string `json:"named_dissent_brief"`
+}
+
+// CuratedItem 策展记忆项（注入用投影；ID 是编辑面锚点，author 署名可追溯）。
+type CuratedItem struct {
+	ID      string `json:"id"`
+	Author  string `json:"author"`
+	Content string `json:"content"`
 }
 
 // Receipt 上下文回执（落库可查：给了什么水位、哪些层、摘要为何）。
@@ -204,10 +214,13 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 	tasklist = append(tasklist, cfg.Tasklist...)
 	retrieved := make([]RetrievedItem, 0, len(cfg.Retrieved))
 	retrieved = append(retrieved, cfg.Retrieved...)
+	curated := make([]CuratedItem, 0, len(cfg.Curated))
+	curated = append(curated, cfg.Curated...)
 	inline := map[string]any{
 		"stimulus_attachments":    stimulusAttachments,
 		"room_id":                 cfg.RoomID,
 		"capsules":                capsuleBrief,
+		"curated_memory":          curated,
 		"tasklist":                tasklist,
 		"tasklist_protocol":       TasklistProtocol,
 		"retrieved":               retrieved,
@@ -233,7 +246,8 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 		{"relations", relations},
 		{"budget_watermark", map[string]any{"watermark": watermark, "budget": cfg.Budget}},
 		{"task_directive", taskDirectiveOf(cfg)},
-		{"capsule_memory", capsuleBrief}, // 恒常平面（M3-3：编辑后胶囊，容量纪律）
+		{"capsule_memory", capsuleBrief}, // 恒常平面·胶囊（M3-3：编辑后胶囊，容量纪律）
+		{"curated_memory", curated},      // 恒常平面·策展条目（v1.70：agent 自助沉淀，与胶囊共预算）
 		{"retrieved_memory", retrieved},  // 按需平面（M3-3：关键词召回，FTS5 同语义）
 		{"tasklist", tasklist},           // 承诺追踪（RFC-0012 OQ-A：带责任人）
 	}

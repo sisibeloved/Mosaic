@@ -73,6 +73,7 @@ func (a *Adapter) Capabilities() agent.Capabilities {
 		Observe:        false,
 		TaskRuns:       true, // M4-1：exec 进程可由 Mosaic 托管为长任务（结果回传房间）
 		ReplyOrPass:    true, // M4-3：单次 reply-or-pass（限定路径）
+		MemoryCuration: true, // v1.70：每波记忆评审（Hermes 同构自助策展）
 	}
 }
 
@@ -165,8 +166,8 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 		return
 	}
 	h.result, h.err = mapResult(task.Kind, parsed)
-	if h.err == nil && task.Kind == agent.KindGenerate {
-		h.sanitizePublish()
+	if h.err == nil && task.Kind == agent.KindGenerate && h.result.Block == agent.BlockPublicDraft {
+		h.sanitizePublish() // history_request 非发布物，不过发布门
 	}
 }
 
@@ -339,7 +340,18 @@ const generateInstruction = `You are a participant in an ongoing group chat and 
 Write your chat message directly below — concise, conversational, addressed to the room (no speeches, no meta commentary).
 Reply with ONLY a JSON object, no prose, no code fences:
 {"body":"your public message","declared_relations":[]}
-The JSON must contain your public chat message in "body" — never an arbitration decision (action/silent/scores) or any other internal JSON.`
+The JSON must contain your public chat message in "body" — never an arbitration decision (action/silent/scores) or any other internal JSON.
+If (and only if) the discussion clearly refers to earlier context you cannot see, reply {"history_query":"search phrase"} instead of a body — you will receive the matching room messages and retry once.`
+
+// reviewInstruction 每波记忆评审（v1.70，Hermes background_review 同构——
+// 措辞三家同源；容量门在引擎侧，提示词只强调"先查清单再动笔"的策展纪律）。
+const reviewInstruction = `You are the memory curator for this room. Review the wave transcript below and decide whether anything is worth persisting to the room's shared memory.
+Worth saving: user preferences and standing expectations; local conclusions or decisions reached; durable facts about the room or its members; corrections to existing entries.
+NOT worth saving: transient errors, one-off task narration, anything already captured, environment-specific failures the user can fix.
+Memory is a small curated list under a hard character budget — prefer replace/remove over adding near-duplicates, and consult the current inventory (memory_inventory / memory_budget in the Stimulus) before writing.
+Reply with ONLY a JSON object, no prose, no code fences:
+{"ops":[{"action":"add","content":"..."},{"action":"replace","old_text":"<unique substring of an existing entry>","content":"..."},{"action":"remove","old_text":"<unique substring>"}],"public_rationale":"<=120 chars"}
+Use {"ops":[],"public_rationale":"Nothing to save"} when nothing qualifies.`
 
 const summarizeInstruction = `Summarize the discussion below faithfully.
 Reply with ONLY a JSON object: {"summary":"...","cited_event_ids":["..."]}`
@@ -389,6 +401,8 @@ func buildPrompt(task agent.Task) (string, error) {
 		return closureInstruction + "\nTask identity: " + ident + "\n\nDiscussion: " + string(stimulus), nil
 	case agent.KindReplyOrPass:
 		return ropInstruction + "\nTask identity: " + ident + "\n\nStimulus: " + string(stimulus), nil
+	case agent.KindReviewMemory:
+		return reviewInstruction + "\nTask identity: " + ident + "\n\nStimulus: " + string(stimulus), nil
 	default:
 		return "", fmt.Errorf("codex: 未知任务类型 %q", task.Kind)
 	}
@@ -437,11 +451,18 @@ func mapResult(kind agent.TaskKind, parsed Parsed) (agent.Result, error) {
 		// 复审 #6：封闭 DTO——模型输出只投影已知字段进 message.posted 载荷，
 		// 附加键（潜在的走私通道）不透传；declared_relations 非数组按缺省处理。
 		// JSON 而无可用 body = 决策/内部件误入生成位（v1.69 狗粮实证事故链：silent
-		// 意图 JSON 被散文回退原样发布进房间正文）——拒绝发布，不冒充发言；纯散文
-		// 回复仍走回退。
+		// 意图 JSON 被散文回退原样发布进房间正文）——拒绝发布，不冒充发言；例外是
+		// 自报 history_query（v1.70 两段式检索，引擎携结果重发）；纯散文仍走回退。
 		if data, err := ExtractJSON(text); err == nil {
 			body, _ := data["body"].(string)
 			if strings.TrimSpace(body) == "" {
+				if q, _ := data["history_query"].(string); strings.TrimSpace(q) != "" {
+					return agent.Result{
+						Block: agent.BlockHistoryRequest,
+						Data:  map[string]any{"history_query": q},
+						Usage: parsed.Usage,
+					}, nil
+				}
 				return agent.Result{}, fmt.Errorf("codex: generate 输出为 JSON 但缺可用 body（不发布）")
 			}
 			relations, _ := data["declared_relations"].([]any)
@@ -460,6 +481,15 @@ func mapResult(kind agent.TaskKind, parsed Parsed) (agent.Result, error) {
 			Data:  map[string]any{"body": text, "declared_relations": []any{}},
 			Usage: parsed.Usage,
 		}, nil
+	case agent.KindReviewMemory:
+		data, err := ExtractJSON(text)
+		if err != nil {
+			return agent.Result{}, err
+		}
+		if data["ops"] == nil {
+			data["ops"] = []any{}
+		}
+		return agent.Result{Block: "memory_ops", Data: data, Usage: parsed.Usage}, nil
 	case agent.KindSummarize:
 		if data, err := ExtractJSON(text); err == nil {
 			if data["cited_event_ids"] == nil {

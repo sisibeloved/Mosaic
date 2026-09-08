@@ -54,6 +54,45 @@ func (e ClosureSummaryState) Valid() bool {
 	}
 }
 
+// Defines values for ContextPanoramaCapsulesClosureType.
+const (
+	ContextPanoramaCapsulesClosureTypeBoundedDisagreement ContextPanoramaCapsulesClosureType = "bounded_disagreement"
+	ContextPanoramaCapsulesClosureTypeConsensus           ContextPanoramaCapsulesClosureType = "consensus"
+)
+
+// Valid indicates whether the value is a known member of the ContextPanoramaCapsulesClosureType enum.
+func (e ContextPanoramaCapsulesClosureType) Valid() bool {
+	switch e {
+	case ContextPanoramaCapsulesClosureTypeBoundedDisagreement:
+		return true
+	case ContextPanoramaCapsulesClosureTypeConsensus:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ContextPanoramaNearWindowActorKind.
+const (
+	ContextPanoramaNearWindowActorKindAgent  ContextPanoramaNearWindowActorKind = "agent"
+	ContextPanoramaNearWindowActorKindHuman  ContextPanoramaNearWindowActorKind = "human"
+	ContextPanoramaNearWindowActorKindSystem ContextPanoramaNearWindowActorKind = "system"
+)
+
+// Valid indicates whether the value is a known member of the ContextPanoramaNearWindowActorKind enum.
+func (e ContextPanoramaNearWindowActorKind) Valid() bool {
+	switch e {
+	case ContextPanoramaNearWindowActorKindAgent:
+		return true
+	case ContextPanoramaNearWindowActorKindHuman:
+		return true
+	case ContextPanoramaNearWindowActorKindSystem:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for EvidenceRequestViewStatus.
 const (
 	EvidenceRequestViewStatusDismissed EvidenceRequestViewStatus = "dismissed"
@@ -531,6 +570,92 @@ type CommandResponse struct {
 	RoomVersion int64  `json:"room_version"`
 }
 
+// ContextPanorama 语境平面全景（GET /v1/rooms/{id}/context，v1.70 展示对齐）——与引擎组装同源的纯函数快照。
+type ContextPanorama struct {
+	// Budget 恒常平面合并水位（同 MemoryView.curated_budget 形状）
+	Budget struct {
+		BudgetRunes     int `json:"budget_runes"`
+		CapsuleCount    int `json:"capsule_count"`
+		CapsuleRunes    int `json:"capsule_runes"`
+		CuratedCount    int `json:"curated_count"`
+		CuratedRunes    int `json:"curated_runes"`
+		OverBudgetRunes int `json:"over_budget_runes"`
+	} `json:"budget"`
+
+	// Capsules 恒常平面·胶囊（预算余量内；同 MemoryView.capsules 条目形状）
+	Capsules []struct {
+		Assumptions []string                           `json:"assumptions"`
+		ClosureId   string                             `json:"closure_id"`
+		ClosureType ContextPanoramaCapsulesClosureType `json:"closure_type"`
+		Conclusions []string                           `json:"conclusions"`
+		EditHistory []struct {
+			EditVersion int       `json:"edit_version"`
+			EditedBy    string    `json:"edited_by"`
+			EventId     string    `json:"event_id"`
+			Note        *string   `json:"note,omitempty"`
+			OccurredAt  time.Time `json:"occurred_at"`
+		} `json:"edit_history"`
+		Falsifiers   *[]string `json:"falsifiers,omitempty"`
+		NamedDissent []struct {
+			Basis         string `json:"basis"`
+			ParticipantId string `json:"participant_id"`
+		} `json:"named_dissent"`
+		ReopenTriggers *[]string `json:"reopen_triggers,omitempty"`
+		ThreadId       string    `json:"thread_id"`
+		Watermark      *int64    `json:"watermark,omitempty"`
+	} `json:"capsules"`
+
+	// CuratedMemory 恒常平面·策展条目（预算内注入集，最新在前）
+	CuratedMemory []struct {
+		Author     string    `json:"author"`
+		Content    string    `json:"content"`
+		CreatedAt  time.Time `json:"created_at"`
+		Edited     bool      `json:"edited"`
+		Id         string    `json:"id"`
+		SourceRefs []string  `json:"source_refs"`
+		UpdatedAt  time.Time `json:"updated_at"`
+	} `json:"curated_memory"`
+
+	// NearWindow 近窗原文（最新 10 条，最新在前）
+	NearWindow []struct {
+		Actor      string                             `json:"actor"`
+		ActorKind  ContextPanoramaNearWindowActorKind `json:"actor_kind"`
+		Body       string                             `json:"body"`
+		EventId    string                             `json:"event_id"`
+		OccurredAt time.Time                          `json:"occurred_at"`
+	} `json:"near_window"`
+
+	// RetrievalKeywords 召回所用关键词（自最新消息正文提取——确定性零模型）
+	RetrievalKeywords []string `json:"retrieval_keywords"`
+
+	// Retrieved 按需召回命中（近窗外旧消息，锚点关键词驱动；event_id 即 provenance）
+	Retrieved []struct {
+		Actor   string `json:"actor"`
+		Body    string `json:"body"`
+		EventId string `json:"event_id"`
+	} `json:"retrieved"`
+	RoomId string `json:"room_id"`
+
+	// Tasklist 承诺追踪（带责任人/波龄/逾期）
+	Tasklist []struct {
+		Overdue    bool   `json:"overdue"`
+		Owner      string `json:"owner"`
+		Requester  string `json:"requester"`
+		TaskId     string `json:"task_id"`
+		Text       string `json:"text"`
+		WavesSince int    `json:"waves_since"`
+	} `json:"tasklist"`
+
+	// Watermark 快照水位（最新事件 ID）
+	Watermark string `json:"watermark"`
+}
+
+// ContextPanoramaCapsulesClosureType defines model for ContextPanorama.Capsules.ClosureType.
+type ContextPanoramaCapsulesClosureType string
+
+// ContextPanoramaNearWindowActorKind defines model for ContextPanorama.NearWindow.ActorKind.
+type ContextPanoramaNearWindowActorKind string
+
 // DevNote defines model for DevNote.
 type DevNote struct {
 	EventId    string                 `json:"event_id"`
@@ -619,7 +744,7 @@ type ManualExecutableRequest struct {
 	Version *string `json:"version,omitempty"`
 }
 
-// MemoryView 记忆查看面（GET /v1/rooms/{id}/memory）：编辑后胶囊 + 容量水位。
+// MemoryView 记忆查看面（GET /v1/rooms/{id}/memory）：编辑后胶囊 + 策展条目 + 容量水位。
 type MemoryView struct {
 	// CapsuleBudget 恒常平面容量水位（Hermes 纪律：dropped_count > 0 即超预算——倒逼合并/编辑，不静默截断）
 	CapsuleBudget struct {
@@ -651,6 +776,34 @@ type MemoryView struct {
 		ThreadId       string    `json:"thread_id"`
 		Watermark      *int64    `json:"watermark,omitempty"`
 	} `json:"capsules"`
+
+	// Curated 策展条目（v1.70，agent 每波评审自助沉淀——最新在后；注入时倒序取新）
+	Curated []struct {
+		// Author 执行评审的 agent（署名可追溯）
+		Author    string    `json:"author"`
+		Content   string    `json:"content"`
+		CreatedAt time.Time `json:"created_at"`
+
+		// Edited 人工纠错过（memory.edited 链已应用）
+		Edited bool `json:"edited"`
+
+		// Id 稳定条目 ID（mem_*，编辑面锚点）
+		Id string `json:"id"`
+
+		// SourceRefs provenance——触发评审的 round_id
+		SourceRefs []string  `json:"source_refs"`
+		UpdatedAt  time.Time `json:"updated_at"`
+	} `json:"curated"`
+
+	// CuratedBudget 恒常平面合并水位（策展条目优先注入，余量给胶囊；over_budget_runes > 0 即倒逼合并）
+	CuratedBudget struct {
+		BudgetRunes     int `json:"budget_runes"`
+		CapsuleCount    int `json:"capsule_count"`
+		CapsuleRunes    int `json:"capsule_runes"`
+		CuratedCount    int `json:"curated_count"`
+		CuratedRunes    int `json:"curated_runes"`
+		OverBudgetRunes int `json:"over_budget_runes"`
+	} `json:"curated_budget"`
 	RoomId string `json:"room_id"`
 }
 
@@ -749,6 +902,21 @@ type ParticipantView struct {
 
 // ParticipantViewKind defines model for ParticipantView.Kind.
 type ParticipantViewKind string
+
+// ReceiptListView 上下文回执流水（GET /v1/rooms/{id}/receipts，v1.70 展示对齐——AR-16 正式面）。
+type ReceiptListView struct {
+	// Receipts 最新在前；task_id 语义后缀可辨运行类型（:eval/:gen0/:mrev）
+	Receipts []struct {
+		CreatedAt time.Time `json:"created_at"`
+
+		// LayerDigests 层摘要（sha256，按组装序——内容可复算验证）
+		LayerDigests []string `json:"layer_digests"`
+		ReceiptId    string   `json:"receipt_id"`
+		TaskId       string   `json:"task_id"`
+		Watermark    string   `json:"watermark"`
+	} `json:"receipts"`
+	RoomId string `json:"room_id"`
+}
 
 // RoomCommand 命令信封（RFC-0001）。payload 按 command_kind 严格校验（未知字段拒绝）：
 // create_room → CreateRoomPayload；post_message → PostMessagePayload；
@@ -1074,6 +1242,12 @@ type SubscribeRoomEventsParams struct {
 	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
+// GetRoomReceiptsParams defines parameters for GetRoomReceipts.
+type GetRoomReceiptsParams struct {
+	// Limit 返回条数（最新在前）
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // SearchRoomMessagesParams defines parameters for SearchRoomMessages.
 type SearchRoomMessagesParams struct {
 	// Q 检索词（子串语义）
@@ -1179,12 +1353,18 @@ type ServerInterface interface {
 	// SubmitRoomCommand 提交房间命令（post_message / pause_room / resume_room / rename_room 等）
 	// (POST /v1/rooms/{room_id}/commands)
 	SubmitRoomCommand(w http.ResponseWriter, r *http.Request, roomId RoomID)
+	// GetRoomContext 语境平面全景（模型看到的，开发者也能看到）
+	// (GET /v1/rooms/{room_id}/context)
+	GetRoomContext(w http.ResponseWriter, r *http.Request, roomId RoomID)
 	// SubscribeRoomEvents SSE 订阅房间事件流（opaque cursor 续传）
 	// (GET /v1/rooms/{room_id}/events)
 	SubscribeRoomEvents(w http.ResponseWriter, r *http.Request, roomId RoomID, params SubscribeRoomEventsParams)
-	// GetRoomMemory 房间记忆视图（胶囊 + 编辑历史 + 容量水位）
+	// GetRoomMemory 房间记忆视图（胶囊 + 策展条目 + 编辑历史 + 容量水位）
 	// (GET /v1/rooms/{room_id}/memory)
 	GetRoomMemory(w http.ResponseWriter, r *http.Request, roomId RoomID)
+	// GetRoomReceipts 上下文回执流水（每次运行实际交付了什么）
+	// (GET /v1/rooms/{room_id}/receipts)
+	GetRoomReceipts(w http.ResponseWriter, r *http.Request, roomId RoomID, params GetRoomReceiptsParams)
 	// SearchRoomMessages 房内消息全文检索（FTS5 trigram，按需平面）
 	// (GET /v1/rooms/{room_id}/search)
 	SearchRoomMessages(w http.ResponseWriter, r *http.Request, roomId RoomID, params SearchRoomMessagesParams)
@@ -1641,6 +1821,32 @@ func (siw *ServerInterfaceWrapper) SubmitRoomCommand(w http.ResponseWriter, r *h
 	handler.ServeHTTP(w, r)
 }
 
+// GetRoomContext operation middleware
+func (siw *ServerInterfaceWrapper) GetRoomContext(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "room_id" -------------
+	var roomId RoomID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "room_id", r.PathValue("room_id"), &roomId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "room_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetRoomContext(w, r, roomId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // SubscribeRoomEvents operation middleware
 func (siw *ServerInterfaceWrapper) SubscribeRoomEvents(w http.ResponseWriter, r *http.Request) {
 
@@ -1700,6 +1906,48 @@ func (siw *ServerInterfaceWrapper) GetRoomMemory(w http.ResponseWriter, r *http.
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetRoomMemory(w, r, roomId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetRoomReceipts operation middleware
+func (siw *ServerInterfaceWrapper) GetRoomReceipts(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "room_id" -------------
+	var roomId RoomID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "room_id", r.PathValue("room_id"), &roomId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "room_id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetRoomReceiptsParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetRoomReceipts(w, r, roomId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2014,6 +2262,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/events", wrapper.SubscribeRoomEvents)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/snapshot", wrapper.GetRoomSnapshot)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/memory", wrapper.GetRoomMemory)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/context", wrapper.GetRoomContext)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/receipts", wrapper.GetRoomReceipts)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/search", wrapper.SearchRoomMessages)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/agents", wrapper.ListAgents)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/rooms/{room_id}/attachments", wrapper.UploadRoomAttachment)

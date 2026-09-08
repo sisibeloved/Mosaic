@@ -24,6 +24,11 @@ const (
 	// KindReplyOrPass 单次 reply-or-pass（M4-3 限定路径）：一次调用产出"公开回应
 	// 或沉默"的结构化决定，替代该座位的评估+生成两阶段（仅资格命中且能力支持）。
 	KindReplyOrPass TaskKind = "reply_or_pass"
+	// KindReviewMemory 每波记忆评审（v1.70，Hermes 后台评审同构）：波结束后
+	// 评审座位回看本波转录 + 当前记忆清单，自助产出策展操作（add/replace/
+	// remove 或"无可沉淀"）。免审批（负责人裁定 2026-09-08）；安全/查重/容量
+	// 门在引擎侧逐 op 校验，拒绝留痕。
+	KindReviewMemory TaskKind = "memory_review"
 )
 
 // Grant 发言许可绑定（RFC-0003 floor.granted 的任务侧投影）。
@@ -110,6 +115,10 @@ type Capabilities struct {
 	// ReplyOrPass 单次 reply-or-pass 能力（M4-3）：结构化一次调用出 speak|pass。
 	// echo/slowrun 桩为 false——能力如实，不支持者回退两阶段流程。
 	ReplyOrPass bool `json:"reply_or_pass"`
+	// MemoryCuration 每波记忆评审能力（v1.70，Hermes 同构）：波结束后回看转录、
+	// 自助策展房间共享记忆。echo/slowrun 桩为 false——能力如实，不支持者引擎
+	// 跳过其评审资格（不静默假装有记忆维护）。
+	MemoryCuration bool `json:"memory_curation"`
 }
 
 // Adapter 适配器接口（M0 最小面；进程管理细节由各适配器自持）。

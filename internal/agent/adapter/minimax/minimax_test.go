@@ -390,6 +390,63 @@ func TestEvalRetryExhausted(t *testing.T) {
 	}
 }
 
+// v1.70：记忆评审任务（提示词/映射/能力）+ generate 位 history_query 两段式出口。
+func TestMemoryReviewAndHistoryQuery(t *testing.T) {
+	// memory_review：评审指令 + 清单入 Stimulus；产物映射 memory_ops（空批合法）
+	stream := agentMessageStream(t, `{"ops":[{"action":"add","content":"用户偏好简短回复"}],"public_rationale":"沉淀偏好"}`)
+	exec := &fakeExecer{outputs: []string{stream}}
+	adapter := newTestAdapter(exec)
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "minimax"})
+	defer sess.Close()
+	h, err := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindReviewMemory,
+		Context: agent.Context{Inline: map[string]any{"memory_inventory": []any{}}}})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	res, rerr := h.Result()
+	if rerr != nil {
+		t.Fatalf("result: %v", rerr)
+	}
+	if res.Block != agent.BlockMemoryOps {
+		t.Fatalf("block = %q", res.Block)
+	}
+	if err := agent.ValidateBlock(res.Block, res.Data); err != nil {
+		t.Fatalf("端口级结构校验: %v", err)
+	}
+	if !strings.Contains(exec.calls[0].stdin, "memory curator") {
+		t.Fatal("评审提示词应含策展指令")
+	}
+	if !adapter.Capabilities().MemoryCuration {
+		t.Fatal("能力声明应含 MemoryCuration")
+	}
+
+	// generate 位回 history_query（无 body）→ history_request 块（引擎两段式入口）
+	qstream := agentMessageStream(t, `{"history_query":"早期选型结论"}`)
+	exec2 := &fakeExecer{outputs: []string{qstream}}
+	sess2, _ := newTestAdapter(exec2).Boot(context.Background(), agent.Profile{ProfileID: "p2", Adapter: "minimax"})
+	defer sess2.Close()
+	h2, _ := sess2.Run(context.Background(), agent.Task{TaskID: "t2", Kind: agent.KindGenerate})
+	res2, err2 := h2.Result()
+	if err2 != nil {
+		t.Fatalf("history_query 不是错误: %v", err2)
+	}
+	if res2.Block != agent.BlockHistoryRequest || res2.Data["history_query"] != "早期选型结论" {
+		t.Fatalf("history_request 块不符: %+v", res2)
+	}
+}
+
+// TestGeneratePromptMentionsHistoryQuery：生成指令含两段式检索出口说明。
+func TestGeneratePromptMentionsHistoryQuery(t *testing.T) {
+	p, err := buildPrompt(agent.Task{TaskID: "t", Kind: agent.KindGenerate,
+		Context: agent.Context{Inline: map[string]any{"k": "v"}}})
+	if err != nil {
+		t.Fatalf("buildPrompt: %v", err)
+	}
+	if !strings.Contains(p, "history_query") {
+		t.Fatal("生成指令应说明 history_query 出口")
+	}
+}
+
 // TestPromptIsolatesArbitration：评估/生成指令必须隔离元任务与房间任务（措辞与
 // codex/kimi 同源——三适配器狗粮口径一致；conformance 桩路由标记同源于此）。
 func TestPromptIsolatesArbitration(t *testing.T) {

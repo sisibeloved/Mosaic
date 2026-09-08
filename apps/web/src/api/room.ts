@@ -191,7 +191,7 @@ export interface RoomHandle {
   runTask(assignee: string, instruction: string, taskID?: string): Promise<void>;
   cancelRun(runID: string, reason: string): Promise<void>;
   /** M3-3 记忆编辑（memory.edited：整组替换，生效于下次组装）。 */
-  editMemory(memoryID: string, edits: { conclusions?: string[]; assumptions?: string[] }, note: string): Promise<void>;
+  editMemory(memoryID: string, edits: { conclusions?: string[]; assumptions?: string[]; curatedContent?: string }, note: string): Promise<void>;
   /** 重取快照投影区（成员/记分卡/谱系/策略）——抽屉 Tab 打开时调用。 */
   refreshProjections(): Promise<void>;
 }
@@ -732,7 +732,7 @@ export function useRoom(roomID: string | null): RoomHandle {
     [runCommand],
   );
   const editMemory = useCallback(
-    (memoryID: string, edits: { conclusions?: string[]; assumptions?: string[] }, note: string) =>
+    (memoryID: string, edits: { conclusions?: string[]; assumptions?: string[]; curatedContent?: string }, note: string) =>
       runCommand((id, v) => api.editMemory(id, v, memoryID, edits, note)),
     [runCommand],
   );

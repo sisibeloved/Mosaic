@@ -314,3 +314,20 @@ Context Builder 沿 `reply_to`、显式 `relations` 与版本化 claim 谱系回
 5. **编辑面是 M3-3 验收项而非可选**：查看来源 / 人工编辑留 edit_history / 纠错生效于下次组装的最小闭环随 M3-3 交付（两家参考一致：无编辑面的记忆系统静默劣化）。
 
 **对既有条款的影响**：§3.1.8 已按裁定 2 修订；X-05 与 §3.2 检索行加个人版注记；§6 未解决问题 5（相似度阈值初值）随向量推迟挂起；§3.1.4 四层 Memory 与 Memory Item Schema 不变（恒常平面的分期接入面）；§5 现有技术增补两个参考实现对照行。
+
+## 7.5 Hermes 同构补编（v1.70，2026-09-08 负责人裁定）
+
+**背景**：负责人质询"为什么是讨论收束后才生成记忆"并指出三点——(a) 展示维度：模型看得到的开发者也要看得到，而记忆 Tab 长期空白（狗粮房 216 轮 0 收束 → 胶囊投影恒空）；(b) 记忆不局限于注入，检索也是记忆的作用；(c) 对 Hermes 的借鉴停在"形"（双平面/容量/编辑面/FTS5）丢了"神"。裁定三条：自助写入要做（参考 Hermes 源码、免审批）；语义检索本轮不上模型（保六目标纯 Go 交叉编译）；滚动摘要节奏也参考 Hermes。
+
+**源码精读结论**（NousResearch/hermes-agent，MIT）：Hermes 没有"滚动叙述摘要"——过程记忆是 background_review.py 的每轮后台 fork 评审（"should any memory be saved?"，写入直达存储、免审批默认关闭 write_approval、不碰在途对话的 prompt 快照）；memory_tool 的 add/replace/remove 以 old_text 子串定位；MemoryStore 容量硬门（超限拒绝附清单倒逼合并）、注入/外泄模式与不可见 Unicode 扫描、完全重复拒绝。**中段叙述延续由 CLI 会话自身承担（harness 职责）——与 §7.4 裁定 1 的责任边界同构。**
+
+**落地（对齐 Hermes 机制，多 Agent 群聊形态适配）**：
+
+1. **每波记忆评审**：有发布的波结束后入房间串行队列（与波/收束互斥——评审读清单写条目不与组装竞态）；**波内最后发布者执行**（其 CLI 会话已含本波语境）；quiescent 波无可沉淀跳过。评审任务（KindReviewMemory）语境 = 波转录（round 定位：round.opened 锚 + correlation=roundID 的 message.posted）+ 完整记忆清单 + 预算水位（容量倒逼合并的前提是模型看得见现状）；产物 = memory_ops 结构化块（ops 批次 ≤5 或空批 "Nothing to save"）。
+2. **自助写入免审批**（裁定）：引擎侧逐 op 校验后直接落账，操作留痕于 memory.curated 事件（applied/rejected + 原因）。校验门 Hermes 同构：容量超限拒绝**附现有清单与用量**；完全重复拒绝；不可见/控制字符与提示注入套语扫描；old_text 定位零命中/歧义拒绝（附清单）。条目单条上限 200 字（条目是"一句话可复用事实/偏好"，不是便签簿）。人工纠错走既有 memory.edited（curated_content 整条替换，同 edit_history 语义）——事后编辑替代事前审批。
+3. **恒常平面合并**：策展条目 + 胶囊共 CapsuleBudgetRunes 单预算；策展优先（小而高频），余量给胶囊；注入裁剪只在平面边界（条目从不截断），over_budget_runes 透出。组装层第十层 curated_memory（Receipt 含其摘要）。
+4. **检索面对 agent 开放**：generate 结构化输出可自报 history_query（BlockHistoryRequest）→ 引擎执行房内检索（线性语义基准，与 /search 端点同口径）→ 携 top5 原文重发一次生成（两段式；二段仍查询按生成失败终止——环护栏）。这是 Mosaic 任务模型下 session_search 的同构物（无头 CLI 无工具桥，自助查询经结构化回复两段达成）。按需召回同步升级：匹配强度降序（多关键词/bigram 命中优先于新近度弱关联），保持事件流纯函数（回放重建不变）。
+5. **展示对齐**：GET /v1/rooms/{id}/memory 扩展 curated + curated_budget；新增 /context（平面全景：近窗/召回命中含关键词/恒常平面/tasklist——零收束也有内容，与注入面同投影不双轨）与 /receipts（Context Receipt 自 -dev 调试面提为正式面——AR-16 "实际看到了什么"可查）；记忆 Tab 五区重构（策展/胶囊/模型视角/运行回执/检索）。
+6. **语义检索登记**：裁定本轮不上 embedding（cgo/ONNX 冲击六目标纯 Go 交叉编译）；FTS5 召回不足的狗粮实录已由本窗口确认（中段遗忘感 + 关键词被动召回精度），sqlite-vec 方案（含纯 Go 嵌入模型调研）单独立项。
+
+**与四层 Memory（§3.1.4）的对应**：策展条目落 Room/Participant Memory 层（author 署名即 Participant 面，房间共享注入即 Room 面）；Thread Memory 的中途写入源由此补齐（原唯一来源为收束胶囊）。

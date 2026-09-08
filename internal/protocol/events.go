@@ -54,6 +54,11 @@ const (
 	// 记忆编辑（RFC-0007 §7.4 裁定 5：记忆可纠错——人工编辑留 edit_history，
 	// 生效于下次组装；胶囊为一等 Memory 的最小编辑面）。
 	EventMemoryEdited = "memory.edited"
+	// 记忆策展（RFC-0007 Hermes 同构补编 / v1.70）：agent 每波记忆评审的自助
+	// 写入面——add/replace/remove 操作批次留痕（逐 op 状态：applied/rejected
+	// 及原因——容量超限/重复/安全扫描拒绝可审计），免人工审批（负责人裁定
+	// 2026-09-08；纠错走既有 memory.edited 事后编辑面）。
+	EventMemoryCurated = "memory.curated"
 )
 
 // Envelope 是 room_events 的权威/内部形态（RFC-0001 v0.4）。
@@ -218,6 +223,10 @@ func (e *Envelope) DecodePayload() any {
 		var p RunCanceledPayload
 		_ = json.Unmarshal(e.Payload, &p)
 		return p
+	case EventMemoryCurated:
+		var p MemoryCuratedPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
 	case EventRunUnknown:
 		var p RunUnknownPayload
 		_ = json.Unmarshal(e.Payload, &p)
@@ -353,13 +362,48 @@ type TaskResolvedPayload struct {
 
 // MemoryEditedPayload memory.edited：胶囊记忆人工编辑（conclusions/assumptions
 // 为编辑后全文、整组替换，至少一项提供；edit_version 自事件流递增）。
+// CuratedContent 指向策展条目（memory_id = mem_* 条目 ID）时生效——正文整条
+// 替换（v1.70 编辑面扩展到策展条目，与胶囊同一事件族、同 edit_history 语义）。
 type MemoryEditedPayload struct {
-	MemoryID    string   `json:"memory_id"` // = closure_id（胶囊为一等 Memory 最小版）
+	MemoryID    string   `json:"memory_id"` // = closure_id（胶囊）或 mem_*（策展条目）
 	Conclusions []string `json:"conclusions,omitempty"`
 	Assumptions []string `json:"assumptions,omitempty"`
 	Note        string   `json:"note,omitempty"`
 	EditVersion int      `json:"edit_version"`
 	EditedBy    string   `json:"edited_by"`
+
+	CuratedContent *string `json:"curated_content,omitempty"`
+}
+
+// MemoryCuratedPayload memory.curated：一次记忆评审的写入批次（v1.70）。操作
+// 逐条留痕含拒绝原因（Hermes 容量门同构：超限拒绝附清单倒逼 agent 下轮合并）；
+// Author 为执行评审的 agent（条目署名），Provenance 锚定触发评审的波。
+type MemoryCuratedPayload struct {
+	Author     string     `json:"author"`
+	RoundID    string     `json:"round_id"`
+	Note       string     `json:"note,omitempty"`
+	Ops        []MemoryOp `json:"ops"`
+	OccurredAt string     `json:"occurred_at"`
+}
+
+// MemoryOp 单条策展操作及执行结果（结构化输出原样留痕 + 引擎侧校验结论）。
+type MemoryOp struct {
+	Action  string `json:"action"` // add | replace | remove
+	Content string `json:"content,omitempty"`
+	OldText string `json:"old_text,omitempty"`
+	Status  string `json:"status"`            // applied | rejected
+	Reason  string `json:"reason,omitempty"`  // 拒绝原因（容量/重复/扫描/定位失败）
+	EntryID string `json:"entry_id,omitempty"` // applied 后的目标条目
+}
+
+// CuratedEntry 策展条目（折叠投影的稳定形态；ID 由折叠序确定性分配 mem_<n>）。
+type CuratedEntry struct {
+	ID         string   `json:"id"`
+	Author     string   `json:"author"`
+	Content    string   `json:"content"`
+	SourceRefs []string `json:"source_refs"` // provenance：触发评审的 round_id
+	CreatedAt  string   `json:"created_at"`
+	UpdatedAt  string   `json:"updated_at"`
 }
 
 // ---- 任务执行通道（M4-1，RFC-0002 执行生命周期补编）----

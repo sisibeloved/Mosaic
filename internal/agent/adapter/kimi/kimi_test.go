@@ -414,3 +414,41 @@ func TestPromptIsolatesArbitration(t *testing.T) {
 		t.Fatal("生成指令应排除决策 JSON")
 	}
 }
+
+// v1.70：记忆评审映射 + generate 位 history_query 两段式出口（与 codex/minimax 同口径）。
+func TestMemoryReviewAndHistoryQuery(t *testing.T) {
+	stream := `{"role":"meta","type":"system.version","version":"0.39.1"}` + "\n" +
+		`{"role":"assistant","content":"{\"ops\":[{\"action\":\"add\",\"content\":\"用户偏好简短回复\"}],\"public_rationale\":\"沉淀\"}"}` + "\n"
+	exec := &fakeExecer{outputs: []string{stream}}
+	adapter := newTestAdapter(exec)
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "kimi"})
+	defer sess.Close()
+	h, err := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindReviewMemory})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	res, rerr := h.Result()
+	if rerr != nil {
+		t.Fatalf("result: %v", rerr)
+	}
+	if res.Block != agent.BlockMemoryOps || agent.ValidateBlock(res.Block, res.Data) != nil {
+		t.Fatalf("memory_ops 映射不符: %+v", res)
+	}
+	if !adapter.Capabilities().MemoryCuration {
+		t.Fatal("能力声明应含 MemoryCuration")
+	}
+
+	qstream := `{"role":"meta","type":"system.version","version":"0.39.1"}` + "\n" +
+		`{"role":"assistant","content":"{\"history_query\":\"早期结论\"}"}` + "\n"
+	exec2 := &fakeExecer{outputs: []string{qstream}}
+	sess2, _ := newTestAdapter(exec2).Boot(context.Background(), agent.Profile{ProfileID: "p2", Adapter: "kimi"})
+	defer sess2.Close()
+	h2, _ := sess2.Run(context.Background(), agent.Task{TaskID: "t2", Kind: agent.KindGenerate})
+	res2, err2 := h2.Result()
+	if err2 != nil {
+		t.Fatalf("history_query 不是错误: %v", err2)
+	}
+	if res2.Block != agent.BlockHistoryRequest || res2.Data["history_query"] != "早期结论" {
+		t.Fatalf("history_request 块不符: %+v", res2)
+	}
+}

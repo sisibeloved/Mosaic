@@ -107,13 +107,62 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 房间记忆视图（胶囊 + 编辑历史 + 容量水位）
+         * 房间记忆视图（胶囊 + 策展条目 + 编辑历史 + 容量水位）
          * @description M3-3 记忆查看面（RFC-0007 §7.4 裁定 5）：已接受胶囊的编辑后视图
          *     （conclusions/assumptions 已应用 memory.edited 链，与语境注入同源不双轨）
          *     + edit_history（人工编辑留痕）+ capsule_budget（恒常平面容量水位——
          *     dropped_count > 0 即超预算倒逼合并的信号）。编辑走 edit_memory 命令。
+         *     v1.70 扩展：curated 策展条目（agent 每波评审自助沉淀，Hermes 同构——
+         *     add/replace/remove 操作留痕于 memory.curated 事件、人工纠错同走
+         *     memory.edited）+ curated_budget（策展面水位）。
          */
         get: operations["getRoomMemory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/rooms/{room_id}/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 语境平面全景（模型看到的，开发者也能看到）
+         * @description v1.70 展示对齐（负责人原则）：与引擎组装同源的纯函数快照——近窗原文
+         *     （最新 10 条）、按需召回命中（含检索关键词）、恒常平面（策展条目 +
+         *     胶囊 + 单预算容量水位）、tasklist。零收束也有内容；与注入面共用同一
+         *     投影（不双轨）。
+         */
+        get: operations["getRoomContext"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/rooms/{room_id}/receipts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 上下文回执流水（每次运行实际交付了什么）
+         * @description v1.70 展示对齐：Context Receipt（RFC-0007 §3.1.7 / AR-16）自 -dev
+         *     调试面提为正式面——每次评估/生成/评审运行的层摘要清单可查（给了什么
+         *     水位、哪些层、摘要为何），最新在前。任务号含语义后缀（:eval/:gen0/
+         *     :mrev 等）可辨运行类型。
+         */
+        get: operations["getRoomReceipts"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1003,14 +1052,16 @@ export interface components {
         };
         /** @description 胶囊记忆人工编辑（memory.edited 事件载荷）：conclusions/assumptions 为编辑后全文（整组替换），至少一项提供。 */
         EditMemoryPayload: {
-            /** @description 胶囊 closure_id */
+            /** @description 胶囊 closure_id（clo_*）或策展条目 ID（mem_*） */
             memory_id: string;
             conclusions?: string[];
             assumptions?: string[];
             /** @description 编辑理由（留痕） */
             note?: string;
+            /** @description 策展条目编辑后全文（memory_id=mem_* 时必填，整条替换） */
+            curated_content?: string;
         };
-        /** @description 记忆查看面（GET /v1/rooms/{id}/memory）：编辑后胶囊 + 容量水位。 */
+        /** @description 记忆查看面（GET /v1/rooms/{id}/memory）：编辑后胶囊 + 策展条目 + 容量水位。 */
         MemoryView: {
             room_id: string;
             capsules: {
@@ -1045,6 +1096,124 @@ export interface components {
                 injected_count: number;
                 dropped_count: number;
             };
+            /** @description 策展条目（v1.70，agent 每波评审自助沉淀——最新在后；注入时倒序取新） */
+            curated: {
+                /** @description 稳定条目 ID（mem_*，编辑面锚点） */
+                id: string;
+                /** @description 执行评审的 agent（署名可追溯） */
+                author: string;
+                content: string;
+                /** @description provenance——触发评审的 round_id */
+                source_refs: string[];
+                /** Format: date-time */
+                created_at: string;
+                /** Format: date-time */
+                updated_at: string;
+                /** @description 人工纠错过（memory.edited 链已应用） */
+                edited: boolean;
+            }[];
+            /** @description 恒常平面合并水位（策展条目优先注入，余量给胶囊；over_budget_runes > 0 即倒逼合并） */
+            curated_budget: {
+                budget_runes: number;
+                curated_runes: number;
+                curated_count: number;
+                capsule_runes: number;
+                capsule_count: number;
+                over_budget_runes: number;
+            };
+        };
+        /** @description 语境平面全景（GET /v1/rooms/{id}/context，v1.70 展示对齐）——与引擎组装同源的纯函数快照。 */
+        ContextPanorama: {
+            room_id: string;
+            /** @description 快照水位（最新事件 ID） */
+            watermark: string;
+            /** @description 近窗原文（最新 10 条，最新在前） */
+            near_window: {
+                event_id: string;
+                actor: string;
+                /** @enum {string} */
+                actor_kind: "human" | "agent" | "system";
+                body: string;
+                /** Format: date-time */
+                occurred_at: string;
+            }[];
+            /** @description 按需召回命中（近窗外旧消息，锚点关键词驱动；event_id 即 provenance） */
+            retrieved: {
+                event_id: string;
+                actor: string;
+                body: string;
+            }[];
+            /** @description 召回所用关键词（自最新消息正文提取——确定性零模型） */
+            retrieval_keywords: string[];
+            /** @description 恒常平面·策展条目（预算内注入集，最新在前） */
+            curated_memory: {
+                id: string;
+                author: string;
+                content: string;
+                source_refs: string[];
+                /** Format: date-time */
+                created_at: string;
+                /** Format: date-time */
+                updated_at: string;
+                edited: boolean;
+            }[];
+            /** @description 恒常平面·胶囊（预算余量内；同 MemoryView.capsules 条目形状） */
+            capsules: {
+                closure_id: string;
+                /** @enum {string} */
+                closure_type: "consensus" | "bounded_disagreement";
+                thread_id: string;
+                /** Format: int64 */
+                watermark?: number;
+                conclusions: string[];
+                assumptions: string[];
+                named_dissent: {
+                    participant_id: string;
+                    basis: string;
+                }[];
+                falsifiers?: string[];
+                reopen_triggers?: string[];
+                edit_history: {
+                    event_id: string;
+                    edit_version: number;
+                    note?: string;
+                    edited_by: string;
+                    /** Format: date-time */
+                    occurred_at: string;
+                }[];
+            }[];
+            /** @description 恒常平面合并水位（同 MemoryView.curated_budget 形状） */
+            budget: {
+                budget_runes: number;
+                curated_runes: number;
+                curated_count: number;
+                capsule_runes: number;
+                capsule_count: number;
+                over_budget_runes: number;
+            };
+            /** @description 承诺追踪（带责任人/波龄/逾期） */
+            tasklist: {
+                task_id: string;
+                owner: string;
+                requester: string;
+                text: string;
+                waves_since: number;
+                overdue: boolean;
+            }[];
+        };
+        /** @description 上下文回执流水（GET /v1/rooms/{id}/receipts，v1.70 展示对齐——AR-16 正式面）。 */
+        ReceiptListView: {
+            room_id: string;
+            /** @description 最新在前；task_id 语义后缀可辨运行类型（:eval/:gen0/:mrev） */
+            receipts: {
+                receipt_id: string;
+                task_id: string;
+                watermark: string;
+                /** @description 层摘要（sha256，按组装序——内容可复算验证） */
+                layer_digests: string[];
+                /** Format: date-time */
+                created_at: string;
+            }[];
         };
         /** @description 检索命中（对外视图：无 seq/tenant；position 供时间线跳转）。 */
         SearchHit: {
@@ -1338,6 +1507,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MemoryView"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["Internal"];
+        };
+    };
+    getRoomContext: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                room_id: components["parameters"]["RoomID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 语境平面全景 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContextPanorama"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["Internal"];
+        };
+    };
+    getRoomReceipts: {
+        parameters: {
+            query?: {
+                /** @description 返回条数（最新在前） */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                room_id: components["parameters"]["RoomID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 回执流水 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReceiptListView"];
                 };
             };
             404: components["responses"]["NotFound"];

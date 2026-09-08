@@ -14,12 +14,18 @@ export type TaskItem = Schemas["TaskItem"];
 export type SearchHit = Schemas["SearchHit"];
 export type RuntimeOptions = Schemas["RuntimeOptions"];
 export type MemoryCapsule = NonNullable<NonNullable<components["schemas"]["MemoryView"]>["capsules"]>[number];
+export type CuratedEntry = NonNullable<NonNullable<components["schemas"]["MemoryView"]>["curated"]>[number];
+export type CuratedBudget = NonNullable<NonNullable<components["schemas"]["MemoryView"]>["curated_budget"]>;
+export type ContextPanorama = Schemas["ContextPanorama"];
+export type ReceiptItem = NonNullable<NonNullable<Schemas["ReceiptListView"]>["receipts"]>[number];
 
 /** 记忆查看面（GET /v1/rooms/{id}/memory）。 */
 export interface MemoryView {
   room_id: string;
   capsules: MemoryCapsule[];
   capsule_budget: { budget_runes: number; injected_runes: number; injected_count: number; dropped_count: number };
+  curated: CuratedEntry[];
+  curated_budget: CuratedBudget;
 }
 
 export class ApiError extends Error {
@@ -294,19 +300,38 @@ export const api = {
       commandBody("resolve_task", version, { task_id: taskID, resolution, note: note ?? null }),
     );
   },
-  editMemory(roomID: string, version: number, memoryID: string, edits: { conclusions?: string[]; assumptions?: string[] }, note: string): Promise<CommandResponse> {
+  editMemory(roomID: string, version: number, memoryID: string, edits: { conclusions?: string[]; assumptions?: string[]; curatedContent?: string }, note: string): Promise<CommandResponse> {
     return post(
       `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
       commandBody("edit_memory", version, {
         memory_id: memoryID,
         conclusions: edits.conclusions ?? null,
         assumptions: edits.assumptions ?? null,
+        curated_content: edits.curatedContent ?? null,
+        note,
+      }),
+    );
+  },
+  editCuratedMemory(roomID: string, version: number, entryID: string, content: string, note: string): Promise<CommandResponse> {
+    return post(
+      `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
+      commandBody("edit_memory", version, {
+        memory_id: entryID,
+        conclusions: null,
+        assumptions: null,
+        curated_content: content,
         note,
       }),
     );
   },
   roomMemory(roomID: string): Promise<MemoryView> {
     return request<MemoryView>(`/v1/rooms/${encodeURIComponent(roomID)}/memory`);
+  },
+  roomContext(roomID: string): Promise<ContextPanorama> {
+    return request<ContextPanorama>(`/v1/rooms/${encodeURIComponent(roomID)}/context`);
+  },
+  roomReceipts(roomID: string, limit = 20): Promise<{ room_id: string; receipts: ReceiptItem[] }> {
+    return request(`/v1/rooms/${encodeURIComponent(roomID)}/receipts?limit=${limit}`);
   },
   searchMessages(roomID: string, q: string, actor?: string, limit = 20): Promise<{ hits: SearchHit[] }> {
     const params = new URLSearchParams({ q, limit: String(limit) });

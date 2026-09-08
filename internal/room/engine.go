@@ -37,6 +37,12 @@ type ReceiptStore interface {
 	InsertReceipt(ctx context.Context, receipt contextx.Receipt) error
 }
 
+// ReceiptLister 回执流水查询端口（v1.70 展示对齐：正式面可查"模型实际看到了
+// 什么"；nil 则 httpapi 回执端点 404——测试装配）。
+type ReceiptLister interface {
+	ReceiptsOf(ctx context.Context, roomID string, limit int) ([]contextx.Receipt, error)
+}
+
 // DraftSink 草稿流出口（安全子集：text_delta/stage；广播侧负责可见性，M1 仅 public）。
 type DraftSink func(roomID, participantID string, update agent.DraftUpdate)
 
@@ -138,11 +144,20 @@ type Engine struct {
 }
 
 // queueJob 房间串行队列作业：closureEventID 空 = 反应波；非空 = 收束评估
-// （M3-2：与波共用队列天然互斥——收束评估期间不开新波）。
+// （M2：与波共用队列天然互斥——收束评估期间不开新波）；memoryReview 非空 =
+// 记忆评审（v1.70：波后异步入队，与波/收束同队列串行——评审读清单、写条目
+// 与波组装不竞态）。
 type queueJob struct {
 	roomID         string
 	closureEventID string
 	proactive      bool
+	memoryReview   *reviewRef
+}
+
+// reviewRef 记忆评审作业参数（波内最后发布者执行——其 CLI 会话已含本波语境）。
+type reviewRef struct {
+	roundID  string
+	assignee string
 }
 
 // roomQueue 单房间串行队列：FIFO channel + 懒启动常驻 worker。
@@ -297,13 +312,17 @@ func (e *Engine) enqueue(job queueJob) {
 	}
 }
 
-// roomWorker 单房间常驻消费者：逐作业执行（天然串行；波与收束互斥）。
+// roomWorker 单房间常驻消费者：逐作业执行（天然串行；波/收束/记忆评审互斥）。
 func (e *Engine) roomWorker(q *roomQueue) {
 	for {
 		select {
 		case <-e.lifecycle.Done():
 			return
 		case job := <-q.ch:
+			if job.memoryReview != nil {
+				e.runMemoryReview(e.lifecycle, job.roomID, *job.memoryReview)
+				continue
+			}
 			if job.closureEventID != "" {
 				e.runClosure(e.lifecycle, job.roomID, job.closureEventID)
 				continue
@@ -664,6 +683,7 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 	// 先发者的消息与波中人类插话即时入窗，后发者对最新语境作答（"互相对答上一条"
 	// 滞后的治本位）；锚点仍取本波原锚（刺激语义与事件因果链不变）。进程内重组装
 	// 微秒级；Receipt 任务号带发言序（:gen0/:gen1…）保证溯源唯一。
+	lastPublisher := ""
 	for i, w := range willing {
 		genHistory, err := e.roomHistory(ctx, roomID)
 		if err != nil {
@@ -683,6 +703,7 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 		switch outcome {
 		case revealPublished:
 			published++
+			lastPublisher = w.intent.ParticipantID
 			// 每条发布即新消息 → 开新反应窗口（群聊链式语义）
 			e.scheduleReaction(roomID)
 		case revealRevoked:
@@ -711,6 +732,11 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 	if e.cfg.ProactiveSilence > 0 && len(e.roomSeats(history)) > 0 {
 		e.scheduleProactive(roomID) // OQ-A：静默期后 agent 可自起一波
 	}
+	// v1.70 记忆评审（Hermes 后台评审同构）：有发布的波结束后入队——波内最后
+	// 发布者执行（其 CLI 会话已含本波语境）；quiescent 波无可沉淀跳过。
+	if outcome == "published" && lastPublisher != "" {
+		e.enqueue(queueJob{roomID: roomID, memoryReview: &reviewRef{roundID: roundID, assignee: lastPublisher}})
+	}
 	e.debug(roomID, "波结束", "round", roundID, "outcome", outcome,
 		"published", published, "silent", silentCount,
 		"total_ms", timing.TotalMs, "eval_total_ms", timing.EvalTotalMs)
@@ -723,8 +749,9 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 // proactive 波额外注入 OQ-A 标记与承诺指令（适配器据此知道无新刺激、
 // 未交付承诺该交付或说明）。
 func (e *Engine) assembleChat(ctx context.Context, cfg contextx.Config, envs []protocol.Envelope, anchor protocol.Envelope, proactive bool) contextx.Assembled {
-	capsules, _ := capsuleMemoriesOf(envs)
-	cfg.Capsules = capsuleMemoriesProjection(capsules)
+	plane := ConstantPlaneOf(envs) // 恒常平面合并视图：策展条目 + 胶囊（v1.70 单预算）
+	cfg.Capsules = capsuleMemoriesProjection(plane.Capsules)
+	cfg.Curated = curatedProjection(plane)
 	cfg.Tasklist = taskBriefProjection(envs)
 	cfg.Retrieved = retrievedProjection(envs, anchor, cfg.RecentWindow)
 	asm := contextx.Assemble(cfg, envs, anchor)
@@ -760,6 +787,16 @@ func capsuleMemoriesProjection(capsules []protocol.ClosureCapsule) []contextx.Ca
 			mem.Dissent = append(mem.Dissent, d.ParticipantID+": "+d.Basis)
 		}
 		out = append(out, mem)
+	}
+	return out
+}
+
+// curatedProjection 策展条目 → 语境注入投影（最新在前——ConstantPlaneOf 已按
+// 预算裁剪；此处仅形状投影）。
+func curatedProjection(plane CuratedPlaneView) []contextx.CuratedItem {
+	out := make([]contextx.CuratedItem, 0, len(plane.Entries))
+	for _, e := range plane.Entries {
+		out = append(out, contextx.CuratedItem{ID: e.ID, Author: e.Author, Content: e.Content})
 	}
 	return out
 }
@@ -1102,6 +1139,9 @@ func (e *Engine) issueGrant(ctx context.Context, roomID, roundID string, sel att
 
 // runGenerate 生成：DraftUpdate 流经 OnDraft 透传；失败（非引擎关停）按
 // generation_failed 撤销该授并返回 false（其余继续 AR-008）。
+// v1.70 两段式历史查询（agent 侧 session_search 面）：模型自报需要更早语境
+//（BlockHistoryRequest）→ 引擎执行房内检索（线性语义基准，与 /search 端点
+// 同口径）→ 携结果重发一次生成；二段仍查询则按生成失败处理（环护栏）。
 func (e *Engine) runGenerate(ctx context.Context, roomID, roundID string, stimulus protocol.Envelope,
 	sel attention.Selection, grantEnv protocol.Envelope, grantID string,
 	taskContext agent.Context, policy chatGrantPolicy) (agent.Result, bool) {
@@ -1110,22 +1150,24 @@ func (e *Engine) runGenerate(ctx context.Context, roomID, roundID string, stimul
 	if stimulus.ThreadID != nil {
 		generateThread = *stimulus.ThreadID
 	}
-	draftResult, err := e.runTask(ctx, e.profileOf(sel.ParticipantID), sel.ParticipantID, agent.Task{
-		TaskID:        e.cfg.NewID("tsk"),
-		Kind:          agent.KindGenerate,
-		ParticipantID: sel.ParticipantID,
-		RoomID:        roomID,
-		ThreadID:      generateThread,
-		Epoch:         roundID,
-		Grant: &agent.Grant{
-			GrantID:    grantID,
-			Rank:       sel.Rank,
-			ViewCursor: "",
-			Epoch:      0,
-		},
-		Context: taskContext,
-	})
-	if err != nil {
+	mkTask := func(context agent.Context) agent.Task {
+		return agent.Task{
+			TaskID:        e.cfg.NewID("tsk"),
+			Kind:          agent.KindGenerate,
+			ParticipantID: sel.ParticipantID,
+			RoomID:        roomID,
+			ThreadID:      generateThread,
+			Epoch:         roundID,
+			Grant: &agent.Grant{
+				GrantID:    grantID,
+				Rank:       sel.Rank,
+				ViewCursor: "",
+				Epoch:      0,
+			},
+			Context: context,
+		}
+	}
+	fail := func(err error) (agent.Result, bool) {
 		if ctx.Err() != nil {
 			return agent.Result{}, false
 		}
@@ -1133,6 +1175,40 @@ func (e *Engine) runGenerate(ctx context.Context, roomID, roundID string, stimul
 		e.seatStatus(roomID, sel.ParticipantID, "generate_failed", err.Error())
 		e.revoke(ctx, roomID, grantEnv.EventID, grantID, roundID, stimulus, "generation_failed", nil)
 		return agent.Result{}, false
+	}
+	draftResult, err := e.runTask(ctx, e.profileOf(sel.ParticipantID), sel.ParticipantID, mkTask(taskContext))
+	if err != nil {
+		return fail(err)
+	}
+	if draftResult.Block == agent.BlockHistoryRequest {
+		query, _ := draftResult.Data["history_query"].(string)
+		history, hErr := e.roomHistory(ctx, roomID)
+		if hErr != nil {
+			return fail(fmt.Errorf("history_query 检索失败: %w", hErr))
+		}
+		hits := SearchMessages(history, query, "", "", 5)
+		enriched := taskContext
+		if enriched.Inline == nil {
+			enriched.Inline = map[string]any{}
+		}
+		items := make([]map[string]any, 0, len(hits))
+		for _, h := range hits {
+			items = append(items, map[string]any{"event_id": h.EventID, "actor": h.Actor, "body": h.Body})
+		}
+		enriched.Inline["history_query_results"] = map[string]any{
+			"query": query, "hits": items,
+			"note":  "检索结果（原文，非摘要）——基于这些结果撰写你的回复正文",
+		}
+		e.debug(roomID, "生成请求历史检索（两段式）", "round", roundID,
+			"participant", sel.ParticipantID, "query", query, "hits", len(items))
+		retry, rErr := e.runTask(ctx, e.profileOf(sel.ParticipantID), sel.ParticipantID, mkTask(enriched))
+		if rErr != nil {
+			return fail(rErr)
+		}
+		if retry.Block == agent.BlockHistoryRequest {
+			return fail(fmt.Errorf("history_query 两段后仍查询（环护栏终止）：%q", query))
+		}
+		return retry, true
 	}
 	return draftResult, true
 }

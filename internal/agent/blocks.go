@@ -1,6 +1,9 @@
 package agent
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // 结构化块名（RFC-0002 §3.1 端口级规范；Result.Block 的合法取值）。
 const (
@@ -9,6 +12,11 @@ const (
 	BlockPublicDraft         = "public_draft"
 	BlockGroundedSummary     = "grounded_summary"
 	BlockClosureIntent       = "closure_intent"
+	// BlockMemoryOps 记忆评审产物（v1.70）：策展操作批次（含空批 = 无可沉淀）。
+	BlockMemoryOps = "memory_ops"
+	// BlockHistoryRequest 生成位历史查询（v1.70）：模型自报"需要更早语境"——
+	// 引擎执行检索后携结果重发一次生成（两段式，agent 侧的 session_search 面）。
+	BlockHistoryRequest = "history_request"
 )
 
 // ValidateBlock 端口级结构化块校验（RFC-0002 §3.5.1"结构化输出必须过 Schema 校验"的
@@ -33,9 +41,69 @@ func ValidateBlock(block string, data map[string]any) error {
 		return validateGroundedSummary(data)
 	case BlockClosureIntent:
 		return validateClosureIntent(data)
+	case BlockMemoryOps:
+		return validateMemoryOps(data)
+	case BlockHistoryRequest:
+		return validateHistoryRequest(data)
 	default:
 		return fmt.Errorf("agent: 未知结构化块 %q", block)
 	}
+}
+
+// maxMemoryOpsPerReview 单次评审的操作上限（批次有界——评审是例行轻任务，
+// 不是批量重写入口；Hermes 单 turn 评审同量级）。
+const maxMemoryOpsPerReview = 5
+
+func validateMemoryOps(data map[string]any) error {
+	ops, ok := data["ops"].([]any)
+	if !ok {
+		return fmt.Errorf("agent: memory_ops.ops 必须为数组（空数组 = 无可沉淀）")
+	}
+	if len(ops) > maxMemoryOpsPerReview {
+		return fmt.Errorf("agent: memory_ops.ops 超单批上限 %d", maxMemoryOpsPerReview)
+	}
+	for i, raw := range ops {
+		op, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("agent: memory_ops.ops[%d] 非对象", i)
+		}
+		switch action, _ := op["action"].(string); action {
+		case "add":
+			if c, _ := op["content"].(string); strings.TrimSpace(c) == "" {
+				return fmt.Errorf("agent: memory_ops.ops[%d] add 缺 content", i)
+			}
+		case "replace":
+			if c, _ := op["content"].(string); strings.TrimSpace(c) == "" {
+				return fmt.Errorf("agent: memory_ops.ops[%d] replace 缺 content", i)
+			}
+			if o, _ := op["old_text"].(string); strings.TrimSpace(o) == "" {
+				return fmt.Errorf("agent: memory_ops.ops[%d] replace 缺 old_text（现有条目定位子串）", i)
+			}
+		case "remove":
+			if o, _ := op["old_text"].(string); strings.TrimSpace(o) == "" {
+				return fmt.Errorf("agent: memory_ops.ops[%d] remove 缺 old_text", i)
+			}
+		default:
+			return fmt.Errorf("agent: memory_ops.ops[%d].action 非法 %q", i, action)
+		}
+	}
+	if r, ok := data["public_rationale"]; ok {
+		if _, isStr := r.(string); !isStr {
+			return fmt.Errorf("agent: memory_ops.public_rationale 必须为字符串")
+		}
+	}
+	return nil
+}
+
+func validateHistoryRequest(data map[string]any) error {
+	q, _ := data["history_query"].(string)
+	if strings.TrimSpace(q) == "" {
+		return fmt.Errorf("agent: history_request.history_query 缺失或为空")
+	}
+	if len([]rune(q)) > 200 {
+		return fmt.Errorf("agent: history_request.history_query 超 200 字上限")
+	}
+	return nil
 }
 
 // turnIntentActions / turnIntentTypes 与 intent.recorded payload schema 枚举对齐。

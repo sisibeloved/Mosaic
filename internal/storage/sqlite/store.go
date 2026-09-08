@@ -589,6 +589,33 @@ func (s *Store) InsertReceipt(ctx context.Context, receipt contextx.Receipt) err
 	return nil
 }
 
+// ReceiptsOf 实现 room.ReceiptLister：回执流水（最新在前；v1.70 展示对齐——
+// "模型实际看到了什么"自正式面可查，不再只进 -dev 调试面）。
+func (s *Store) ReceiptsOf(ctx context.Context, roomID string, limit int) ([]contextx.Receipt, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT receipt_id, room_id, task_id, watermark, layer_digests, created_at
+		FROM context_receipts WHERE room_id = ? ORDER BY created_at DESC, receipt_id DESC LIMIT ?`,
+		roomID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: query receipts: %w", err)
+	}
+	defer rows.Close()
+	out := []contextx.Receipt{}
+	for rows.Next() {
+		var r contextx.Receipt
+		var digests string
+		if err := rows.Scan(&r.ReceiptID, &r.RoomID, &r.TaskID, &r.Watermark, &digests, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("sqlite: scan receipt: %w", err)
+		}
+		_ = json.Unmarshal([]byte(digests), &r.LayerDigests)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // DeleteRoom 删除级联（M3-6，RFC-0010）：事务内清事件/outbox/回执/声明，并落
 // 墓碑行——"曾存在"可审计、内容不可恢复。
 func (s *Store) DeleteRoom(ctx context.Context, roomID string) error {

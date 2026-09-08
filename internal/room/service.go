@@ -455,21 +455,65 @@ func (s *Service) editMemory(ctx context.Context, actor Actor, cmd Command) (*Co
 		return res, err
 	}
 	var payload struct {
-		MemoryID    string   `json:"memory_id"`
-		Conclusions []string `json:"conclusions"`
-		Assumptions []string `json:"assumptions"`
-		Note        string   `json:"note"`
+		MemoryID       string   `json:"memory_id"`
+		Conclusions    []string `json:"conclusions"`
+		Assumptions    []string `json:"assumptions"`
+		Note           string   `json:"note"`
+		CuratedContent *string  `json:"curated_content"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(cmd.Payload)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&payload); err != nil {
 		return nil, fmt.Errorf("%w: edit_memory payload: %v", ErrInvalidCommand, err)
 	}
-	if !closureIDPattern.MatchString(payload.MemoryID) {
-		return nil, fmt.Errorf("%w: memory_id 形如 clo_*（胶囊 closure_id）", ErrInvalidCommand)
-	}
 	if len([]rune(payload.Note)) > 280 {
 		return nil, fmt.Errorf("%w: note 超 280 字", ErrInvalidCommand)
+	}
+	// v1.70 策展条目编辑面：memory_id = mem_*，curated_content 整条替换（与胶囊
+	// 同一事件族/同 edit_history 语义——人工纠错生效于下次组装）。
+	if strings.HasPrefix(payload.MemoryID, "mem_") {
+		if payload.CuratedContent == nil || strings.TrimSpace(*payload.CuratedContent) == "" {
+			return nil, fmt.Errorf("%w: 策展条目编辑须提供 curated_content（编辑后全文）", ErrInvalidCommand)
+		}
+		if len([]rune(*payload.CuratedContent)) > CuratedEntryRunesMax {
+			return nil, fmt.Errorf("%w: curated_content 超 %d 字", ErrInvalidCommand, CuratedEntryRunesMax)
+		}
+		history, err := s.historyOf(ctx, cmd.RoomID)
+		if err != nil {
+			return nil, fmt.Errorf("room: history: %w", err)
+		}
+		known := false
+		for _, en := range CuratedEntriesOf(history) {
+			if en.ID == payload.MemoryID {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return nil, fmt.Errorf("%w: 策展条目 %s 不存在", ErrInvalidCommand, payload.MemoryID)
+		}
+		env := protocol.Envelope{
+			EventID:       s.cfg.NewID("evt"),
+			TenantID:      s.cfg.Tenant,
+			RoomID:        cmd.RoomID,
+			Type:          protocol.EventMemoryEdited,
+			SchemaVersion: 1,
+			OccurredAt:    s.cfg.Clock(),
+			Actor:         protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
+			Visibility:    protocol.Visibility{Kind: "public"},
+			Payload: mustJSON(protocol.MemoryEditedPayload{
+				MemoryID:       payload.MemoryID,
+				Note:           payload.Note,
+				CuratedContent: payload.CuratedContent,
+				EditVersion:    NextEditVersionOf(history, payload.MemoryID),
+				EditedBy:       actor.ParticipantID,
+			}),
+			Metadata: map[string]any{},
+		}
+		return s.commitWith(ctx, cmd, actor, env)
+	}
+	if !closureIDPattern.MatchString(payload.MemoryID) {
+		return nil, fmt.Errorf("%w: memory_id 形如 clo_*（胶囊）或 mem_*（策展条目）", ErrInvalidCommand)
 	}
 	if len(payload.Conclusions) == 0 && len(payload.Assumptions) == 0 {
 		return nil, fmt.Errorf("%w: conclusions/assumptions 至少一项（编辑后全文，整组替换）", ErrInvalidCommand)

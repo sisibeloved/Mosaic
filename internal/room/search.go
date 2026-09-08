@@ -141,10 +141,12 @@ func ExtractKeywords(body string) []string {
 }
 
 // RetrieveRelated 组装时检索（按需平面的记忆接入）：近期窗口之外的旧消息按
-// 关键词召回（最新在前，limit 条）。排除集含 recent 窗口 event_id 与刺激
-// 本身（重复注入无信息量）；命中即 provenance（event_id/actor/body 入上下文，
-// Receipt 层摘要可验证）。匹配语义：ASCII 词为子串；CJK 为 bigram 重叠 ≥1——
-// 整句关键词（无标点长 span）做子串会过特异，bigram 重叠保留主题关联召回。
+// 关键词召回（limit 条）。排除集含 recent 窗口 event_id 与刺激本身（重复注入
+// 无信息量）；命中即 provenance（event_id/actor/body 入上下文，Receipt 层摘要
+// 可验证）。匹配语义（v1.70 升级，对齐 FTS5 trigram 口径的纯函数实现——组装
+// 面保持事件流纯函数，回放重建不变）：ASCII 词子串命中；CJK bigram 重叠计数；
+// 按**匹配强度降序**排列（多关键词/bigram 命中者优先于仅靠新近度撞上的弱关联），
+// 同分按新近度——召回质量从"最新优先"升级为"最相关优先"，仍确定性零模型。
 func RetrieveRelated(envs []protocol.Envelope, keywords []string, exclude map[string]bool, limit int) []protocol.Envelope {
 	if len(keywords) == 0 || limit <= 0 {
 		return nil
@@ -161,8 +163,12 @@ func RetrieveRelated(envs []protocol.Envelope, keywords []string, exclude map[st
 			ascii = append(ascii, k)
 		}
 	}
-	var out []protocol.Envelope
-	for i := len(envs) - 1; i >= 0; i-- {
+	type scored struct {
+		env   protocol.Envelope
+		score int
+	}
+	var hits []scored
+	for i := len(envs) - 1; i >= 0; i-- { // 新近序入列（同分稳定 tiebreak）
 		env := envs[i]
 		if env.Type != protocol.EventMessagePosted || exclude[env.EventID] {
 			continue
@@ -173,37 +179,48 @@ func RetrieveRelated(envs []protocol.Envelope, keywords []string, exclude map[st
 		if json.Unmarshal(env.Payload, &p) != nil {
 			continue
 		}
-		if relatedBody(p.Body, kws, ascii) {
-			out = append(out, env)
+		if s := relatedScore(p.Body, kws, ascii); s > 0 {
+			hits = append(hits, scored{env: env, score: s})
 		}
+	}
+	// 稳定排序：分数降序（插入序即新近序——同分保新近优先）。
+	for i := 1; i < len(hits); i++ {
+		for j := i; j > 0 && hits[j].score > hits[j-1].score; j-- {
+			hits[j], hits[j-1] = hits[j-1], hits[j]
+		}
+	}
+	out := make([]protocol.Envelope, 0, limit)
+	for _, h := range hits {
 		if len(out) >= limit {
 			break
 		}
+		out = append(out, h.env)
 	}
 	return out
 }
 
-// relatedBody 正文与关键词的关联判定：ASCII 子串命中；CJK bigram 重叠 ≥1。
-func relatedBody(body string, cjkSpans, asciiWords []string) bool {
+// relatedScore 正文与关键词的匹配强度：ASCII 子串各计 1 分 ×词长权重；
+// CJK 每个 bigram 命中计 1 分。
+func relatedScore(body string, cjkSpans, asciiWords []string) int {
+	score := 0
 	lower := strings.ToLower(body)
 	for _, w := range asciiWords {
 		if strings.Contains(lower, w) {
-			return true
+			score += 1 + len(w)/8
 		}
 	}
 	if len(cjkSpans) == 0 {
-		return false
+		return score
 	}
-	// bigram 集（CJK 连续对）
 	bodyGrams := bigramsOf(body)
 	for _, span := range cjkSpans {
 		for g := range bigramsOf(span) {
 			if bodyGrams[g] {
-				return true
+				score++
 			}
 		}
 	}
-	return false
+	return score
 }
 
 func bigramsOf(s string) map[string]bool {
