@@ -7,6 +7,7 @@ package main_test
 
 import (
 	"encoding/json"
+	goruntime "runtime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -75,14 +76,19 @@ func TestMonitorScriptLifecycle_ST(t *testing.T) {
 	waitSlowrunSeat(t, base)
 	tok := ownerTokenST(t, base)
 
-	// 观察目标：脚本 cat 状态文件
+	// 观察目标：脚本 cat 状态文件（按平台生成可执行面——Windows 用 .bat）
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "state.txt")
 	script := filepath.Join(dir, "check.sh")
 	if err := os.WriteFile(stateFile, []byte("版本=v1\n"), 0o600); err != nil {
 		t.Fatalf("state: %v", err)
 	}
-	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat "+stateFile+"\n"), 0o755); err != nil {
+	if goruntime.GOOS == "windows" {
+		script = filepath.Join(dir, "check.bat")
+		if err := os.WriteFile(script, []byte("@type "+stateFile+"\r\n"), 0o755); err != nil {
+			t.Fatalf("script: %v", err)
+		}
+	} else if err := os.WriteFile(script, []byte("#!/bin/sh\ncat "+stateFile+"\n"), 0o755); err != nil {
 		t.Fatalf("script: %v", err)
 	}
 
