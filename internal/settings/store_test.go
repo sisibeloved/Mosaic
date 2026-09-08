@@ -3,6 +3,7 @@ package settings
 import (
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"testing"
 	"time"
 )
@@ -38,13 +39,16 @@ func TestStoreDefaultsAndRoundtrip(t *testing.T) {
 	if got := s2.Snapshot().RunTimeoutSeconds; got != 120 {
 		t.Fatalf("重开后 run_timeout = %d, want 120", got)
 	}
-	// 权限纪律：0600
-	fi, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if fi.Mode().Perm() != 0o600 {
-		t.Fatalf("设置文件权限 = %o, want 600", fi.Mode().Perm())
+	// 权限纪律：0600（POSIX 断言——Windows 的 Stat 权限位由只读属性合成，
+	// 可写文件恒显示 0666，Chmod 不改变该显示；Windows 面由数据目录 ACL 承担）
+	if goruntime.GOOS != "windows" {
+		fi, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat: %v", err)
+		}
+		if fi.Mode().Perm() != 0o600 {
+			t.Fatalf("设置文件权限 = %o, want 600", fi.Mode().Perm())
+		}
 	}
 }
 
