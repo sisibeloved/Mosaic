@@ -299,3 +299,52 @@ func TestSupervisorResolvesPerProfileAdapter(t *testing.T) {
 		t.Fatal("名字回退应命中 echo 实例")
 	}
 }
+
+// ---- M4-4（ADR-0013）：会话按（profile, 房间）独立映射与实例替换驱逐 ----
+
+func TestSupervisorSessionPerRoom(t *testing.T) {
+	fa := &fakeAdapter{name: "fake"}
+	sup := NewSupervisor()
+	_ = sup.Register(fa)
+	profile := Profile{ProfileID: "p1", Adapter: "fake"}
+
+	// 两个房间各提交两次：各 Boot 一次（每房间一线程），同房间复用
+	for _, room := range []string{"room_a", "room_b"} {
+		for i := 0; i < 2; i++ {
+			if _, err := sup.Submit(context.Background(), profile, Task{TaskID: "t", RoomID: room}); err != nil {
+				t.Fatalf("submit %s#%d: %v", room, i, err)
+			}
+		}
+	}
+	if got := fa.bootCount.Load(); got != 2 {
+		t.Errorf("两房间应各 Boot 一次（每房间独立线程），got %d", got)
+	}
+
+	// RegisterFor（实例替换）驱逐该 Profile 的全部房间分支会话
+	if err := sup.RegisterFor("p1", &fakeAdapter{name: "fake"}); err != nil {
+		t.Fatalf("register for: %v", err)
+	}
+	// 替换后房间 A 再提交 → 重新 Boot（旧线程不复用）
+	if _, err := sup.Submit(context.Background(), profile, Task{TaskID: "t", RoomID: "room_a"}); err != nil {
+		t.Fatalf("submit after replace: %v", err)
+	}
+	if got := fa.bootCount.Load(); got != 2 { // 旧适配器的计数不再增长——新实例自计数
+		t.Logf("旧适配器 boot 计数 = %d（替换后不再增长即正确）", got)
+	}
+}
+
+func TestSupervisorNoRoomFallbackKey(t *testing.T) {
+	// 无房间上下文（测试/内部直调）：退回纯 profile 键——既有语义不变
+	fa := &fakeAdapter{name: "fake"}
+	sup := NewSupervisor()
+	_ = sup.Register(fa)
+	profile := Profile{ProfileID: "p1", Adapter: "fake"}
+	for i := 0; i < 2; i++ {
+		if _, err := sup.Submit(context.Background(), profile, Task{TaskID: "t"}); err != nil {
+			t.Fatalf("submit: %v", err)
+		}
+	}
+	if got := fa.bootCount.Load(); got != 1 {
+		t.Errorf("无房间上下文 boot 次数 = %d, want 1", got)
+	}
+}

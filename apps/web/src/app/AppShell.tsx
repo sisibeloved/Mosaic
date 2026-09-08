@@ -25,7 +25,7 @@ export function AppShell() {
           <AppLogo size={26} />
           <span className="text-base font-semibold tracking-wide">Mosaic</span>
         </Link>
-        <div className="px-3 pb-2">
+        <div className="px-3 pb-1">
           <button
             type="button"
             onClick={() => navigate("/new")}
@@ -34,6 +34,17 @@ export function AppShell() {
             <IconPlus />
             新房间
           </button>
+          <NavLink
+            to="/contacts"
+            className={({ isActive }) =>
+              `mt-1 block rounded-lg px-3 py-1.5 text-sm transition-colors ${
+                isActive ? "bg-surface-3 text-text" : "text-dim hover:bg-surface-2 hover:text-text"
+              }`
+            }
+            title="联系人：按稳定身份回到与 Agent 的长期私聊"
+          >
+            联系人
+          </NavLink>
         </div>
         <nav className="flex-1 overflow-y-auto px-2 py-1" aria-label="房间列表">
           {rooms === null ? (

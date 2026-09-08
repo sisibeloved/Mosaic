@@ -3,10 +3,12 @@
 //                      房间是二级内容，从侧栏列表点入）
 //   /new             → 同上（侧栏"新房间"按钮的语义化别名）
 //   /rooms/:roomId   → 房间聊天页（局部层）
+//   /contacts        → 联系人（M4-4 固定私聊入口——全局层，按稳定身份回到长期会话）
 //   /settings        → 设置页（全局层：实例/开发者，不含任何房间态）
 //   /me              → 个人中心（全局层）
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppShell } from "./AppShell";
+import { ContactsPage } from "../pages/ContactsPage";
 import { MePage } from "../pages/MePage";
 import { NewRoomPage } from "../pages/NewRoomPage";
 import { RoomPage } from "../pages/RoomPage";
@@ -19,6 +21,7 @@ export const router = createBrowserRouter([
       { path: "/", element: <NewRoomPage /> },
       { path: "/new", element: <NewRoomPage /> },
       { path: "/rooms/:roomId", element: <RoomPage /> },
+      { path: "/contacts", element: <ContactsPage /> },
       { path: "/settings", element: <SettingsPage /> },
       { path: "/me", element: <MePage /> },
       { path: "*", element: <Navigate to="/" replace /> },

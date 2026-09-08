@@ -37,17 +37,20 @@ const (
 // 同一家族可多实例共存（多安装位置 / 桌面应用 bundled 面），实例间配置与会话独立，
 // 以 Channel 区分渠道、Priority 表达家族裁定优先级（负责人 2026-08-31）。
 type Executable struct {
-	ID           string `json:"id"`
-	Adapter      string `json:"adapter"` // codex | kimi | zcode
-	Runtime      string `json:"runtime"` // native | wsl
-	Distro       string `json:"distro,omitempty"`
-	Path         string `json:"path"`
-	Version      string `json:"version,omitempty"`
-	Digest       string `json:"digest,omitempty"` // 二进制摘要（RFC-0002 宿主层登记）
-	Login        string `json:"login_state"`      // logged_in | logged_out | unknown
-	Source       string `json:"source"`           // auto_scan | manual
-	Channel      string `json:"channel"`          // cli | app:codex-desktop | app:kimi-work（空值按 cli 处理）
-	Priority     int    `json:"priority"`         // PriorityFor 计算；数值小者优先
+	ID      string `json:"id"`
+	Adapter string `json:"adapter"` // codex | kimi | zcode
+	Runtime string `json:"runtime"` // native | wsl
+	Distro  string `json:"distro,omitempty"`
+	Path    string `json:"path"`
+	Version string `json:"version,omitempty"`
+	Digest  string `json:"digest,omitempty"` // 二进制摘要（RFC-0002 宿主层登记）
+	Login   string `json:"login_state"`      // logged_in | logged_out | unknown
+	Source  string `json:"source"`           // auto_scan | manual
+	Channel string `json:"channel"`          // cli | app:codex-desktop | app:kimi-work（空值按 cli 处理）
+	// BotID 稳定身份（ADR-0013，M4-4）：首次发现时赋值 = ID（路径派生，祖父化零迁移），
+	// 此后 durable——路径变化经消失重绑迁移本字段，座位/会话/事件归属不随路径消亡。
+	BotID        string `json:"bot_id,omitempty"`
+	Priority     int    `json:"priority"`
 	DiscoveredAt string `json:"discovered_at"`
 	Enabled      bool   `json:"enabled"`
 	// EvalModel 评估任务专用模型（手编维护，跨扫描保留；空 = 与生成同模型）。
@@ -57,10 +60,18 @@ type Executable struct {
 	// 在 CLI 侧的既有选择，Mosaic 只在显式覆盖时传参）。v1.48 实证：codex/kimi
 	// 为 -m、mcode 为 --model provider/model。
 	Model string `json:"model,omitempty"`
-	// ReasoningEffort 思考强度（手编维护，跨扫描保留；空 = CLI 默认）。
-	// v1.48 实证：仅 codex 有此面（-c model_reasoning_effort=五档）；
-	// kimi 思考内建于模型能力（capabilities.thinking，无用户档位）、mcode 无。
+	// ReasoningEffort 思考强度（手编维护，跨扫描保留；空 = CLI 默认）。v1.48
+	// 实证：仅 codex 有此面（-c model_reasoning_effort=五档）；kimi 思考内建于
+	// 模型能力（capabilities.thinking，无用户档位）、mcode 无。
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+}
+
+// BotIDOf 稳定身份读取（防御面：旧文件未及祖父化时回退 ID 派生）。
+func (e Executable) BotIDOf() string {
+	if e.BotID != "" {
+		return e.BotID
+	}
+	return e.ID
 }
 
 // Registry 域错误。
@@ -250,12 +261,27 @@ func trimSpace(s string) string {
 
 // Registry 持久化登记表（JSON 文件）。
 type Registry struct {
-	mu   sync.Mutex
-	path string
-	exes []Executable
+	mu    sync.Mutex
+	path  string
+	exes  []Executable
+	notes []string // 最近一次扫描的重绑/清理注记（DrainNotes 消费——装配层日志用）
 }
 
-// LoadOrCreate 从 path 装载（不存在则建空表）。
+// DrainNotes 取走并清空最近一次扫描的身份迁移注记。
+func (r *Registry) DrainNotes() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := r.notes
+	r.notes = nil
+	return out
+}
+
+func (r *Registry) noteLocked(format string, args ...any) {
+	r.notes = append(r.notes, fmt.Sprintf(format, args...))
+}
+
+// LoadOrCreate 从 path 装载（不存在则建空表）。装载即祖父化：缺 BotID 的存量
+// 条目补 `BotID = ID`（ADR-0013 零迁移——PID 派生式与旧路径派生逐字相等）。
 func LoadOrCreate(path string) (*Registry, error) {
 	reg := &Registry{path: path}
 	raw, err := osReadFile(path)
@@ -272,6 +298,18 @@ func LoadOrCreate(path string) (*Registry, error) {
 		return nil, fmt.Errorf("harness: parse registry: %w", err)
 	}
 	reg.exes = doc.Executables
+	changed := false
+	for i := range reg.exes {
+		if reg.exes[i].BotID == "" {
+			reg.exes[i].BotID = reg.exes[i].ID
+			changed = true
+		}
+	}
+	if changed {
+		if err := reg.saveLocked(); err != nil {
+			return nil, fmt.Errorf("harness: grandfather bot ids: %w", err)
+		}
+	}
 	return reg, nil
 }
 
@@ -325,6 +363,7 @@ func (r *Registry) upsertLocked(exe Executable) {
 		if r.exes[i].ID == exe.ID {
 			prev := r.exes[i]
 			exe.Enabled = prev.Enabled     // 启用状态跨扫描保留（登录门控在 SetEnabled 把关）
+			exe.BotID = prev.BotIDOf()     // 稳定身份跨扫描保留（ADR-0013）
 			exe.EvalModel = prev.EvalModel // 手编的评估降档跨扫描保留（扫描不产生该字段）
 			exe.Model = prev.Model         // 手编的模型覆盖跨扫描保留（同上）
 			exe.ReasoningEffort = prev.ReasoningEffort
@@ -339,6 +378,9 @@ func (r *Registry) upsertLocked(exe Executable) {
 			return
 		}
 	}
+	if exe.BotID == "" {
+		exe.BotID = exe.ID // 首次发现：身份 = 路径派生 ID（此后 durable）
+	}
 	exe.Priority = PriorityFor(exe.Adapter, exe.Channel)
 	r.exes = append(r.exes, exe)
 }
@@ -346,8 +388,10 @@ func (r *Registry) upsertLocked(exe Executable) {
 // Scan 自动扫描：native 全部探测规格 + （开启时）各 WSL 发行版。
 // 发现顺序：PATH 解析 → 已知安装位置 glob → 桌面应用 bundled 位置（native 面）；
 // 同规格枚举全部实例（多实例并存，配置/会话独立——负责人裁定 2026-08-31）。
-// 扫描失败的单项跳过（探测命令超时/缺失不是致命错误）。
+// 扫描失败的单项跳过（探测命令超时/缺失不是致命错误）。扫描后执行消失重绑
+// （ADR-0013：确认消亡的 auto 项在单候选时把稳定身份迁给同族新发现项）。
 func (r *Registry) Scan(ctx context.Context, runner Runner, probes []ProbeSpec, opts ScanOptions) error {
+	discovered := map[string]bool{}
 	scanRuntime := func(runtime Runtime, distro string) {
 		home := runner.Home(ctx, runtime, distro)
 		for _, spec := range probes {
@@ -356,6 +400,7 @@ func (r *Registry) Scan(ctx context.Context, runner Runner, probes []ProbeSpec, 
 				r.mu.Lock()
 				r.upsertLocked(exe)
 				r.mu.Unlock()
+				discovered[exe.ID] = true
 			}
 		}
 	}
@@ -369,7 +414,95 @@ func (r *Registry) Scan(ctx context.Context, runner Runner, probes []ProbeSpec, 
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.rebindVanishedLocked(ctx, runner, discovered)
 	return r.saveLocked()
+}
+
+// rebindVanishedLocked 消失重绑（ADR-0013）：本次未发现的 auto 项，
+// (1) 先确认消亡——路径不存在且（WSL 项的发行版当前可达；发行版整体下线 =
+//
+//	"暂时查不到"，保守不判死）；(2) 确认消亡的项被移除（路径回来时按确定性
+//	BotID=ID 自然复活同身份）；(3) 移除前若同 adapter 恰有一个本次新发现的
+//	auto 候选，迁移稳定身份与用户覆盖（Enabled 仅在新项已登录时迁移——登录
+//	硬门不因重绑破例）；多候选歧义不绑，由用户手动选择。手动登记项不参与。
+func (r *Registry) rebindVanishedLocked(ctx context.Context, runner Runner, discovered map[string]bool) {
+	type goneEntry struct {
+		idx int
+		exe Executable
+	}
+	var gone []goneEntry
+	for i := range r.exes {
+		e := r.exes[i]
+		if discovered[e.ID] || e.Source != SourceAuto {
+			continue
+		}
+		if !r.pathGoneLocked(ctx, runner, e) {
+			continue
+		}
+		gone = append(gone, goneEntry{idx: i, exe: e})
+	}
+	if len(gone) == 0 {
+		return
+	}
+	adopted := map[int]bool{}
+	for _, g := range gone {
+		cand := -1
+		for j := range r.exes {
+			if !discovered[r.exes[j].ID] || r.exes[j].Source != SourceAuto || adopted[j] {
+				continue
+			}
+			if r.exes[j].Adapter == g.exe.Adapter {
+				if cand >= 0 { // 多候选：歧义，不自动绑
+					cand = -1
+					break
+				}
+				cand = j
+			}
+		}
+		if cand >= 0 {
+			n := &r.exes[cand]
+			n.BotID = g.exe.BotIDOf()
+			n.Model, n.EvalModel, n.ReasoningEffort = g.exe.Model, g.exe.EvalModel, g.exe.ReasoningEffort
+			if g.exe.Enabled && n.Login == LoginLoggedIn {
+				n.Enabled = true
+			}
+			adopted[cand] = true
+			r.noteLocked("身份重绑 %s：%s → %s（BotID %s 延续）", g.exe.Adapter, g.exe.Path, n.Path, n.BotID)
+		} else {
+			r.noteLocked("消亡项移除 %s：%s（无歧义候选或歧义不绑；路径回归时按原身份复活）", g.exe.Adapter, g.exe.Path)
+		}
+	}
+	// 倒序移除消亡项（含已承接身份的旧壳）
+	removed := map[int]bool{}
+	for _, g := range gone {
+		removed[g.idx] = true
+	}
+	out := r.exes[:0]
+	for i, e := range r.exes {
+		if !removed[i] {
+			out = append(out, e)
+		}
+	}
+	r.exes = out
+}
+
+// pathGoneLocked 消亡确认：路径确实不存在。WSL 项在发行版整体不可达时返回
+// false（"暂时查不到"≠"确实没了"——重连不误判）。
+func (r *Registry) pathGoneLocked(ctx context.Context, runner Runner, e Executable) bool {
+	rt := Runtime(e.Runtime)
+	if rt == RuntimeWSL {
+		reachable := false
+		for _, d := range runner.WSLDistros(ctx) {
+			if d == e.Distro {
+				reachable = true
+				break
+			}
+		}
+		if !reachable {
+			return false
+		}
+	}
+	return !runner.Exists(ctx, rt, e.Distro, e.Path)
 }
 
 // discoverExecutables 单规格枚举全部实例：PATH + 已知目录 glob +（native 面）App 位置；

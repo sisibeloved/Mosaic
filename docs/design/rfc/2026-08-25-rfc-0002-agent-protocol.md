@@ -461,3 +461,11 @@ FloorGrant 绑定 `(room, thread, round, participant)` 与冻结水位随 genera
 **状态集**：requested（排队）| running（执行中）| completed | failed | canceled | unknown。等待用户/等待外部条件状态需要 CLI 侧交互通道（无头 exec 不存在），不虚构——待后续通道演进（ACP/MCP）再入状态机。
 
 **切片 B 补记（2026-09-07，v1.65）**：(1) RunTimeout 进 OQ-B 设置族（RFC-0012 开放问题）首员：`GET/PUT /v1/system/settings`（run_timeout_seconds，60..7200，缺省 600；数据目录 settings.json 原子持久化，损坏 fail safe 回缺省）+ 引擎活读面（每次 run 拉起时读取——变更无须重启，在途 run 不受影响，代次语义与取消一致）。(2) 迟到结果正文可达：run.completed{late:true} 的 body 是未发布结果的唯一留存，投影 RunView.result_body 带出（任务 Tab 展开查看/复制；活动 Tab 标注）——引擎不代发迟到结果（不作为当前有效结果发布的纪律不变），去向由人类决定。(3) 超时收口：到点 → run.failed 携"执行超时（上限 …）"，与适配器自身错误区分。(4) 受控执行桩 slowrun（-dev 门）：指令 `SLEEP <秒>` 控时、TaskRuns:true——ST 与本地验证的"可控长执行"承担面；生产装配不注册（能力面如实）。
+
+# 附录：路由与稳定身份（M4-4 补编，2026-09-07）
+
+**稳定身份**：agent 座位身份 = 注册表 BotID（ADR-0013；首次发现时赋值为路径派生 ID，此后 durable）。ParticipantID/ProfileID 从 BotID 派生——CLI 换路径/换运行面（nvm 升级、重装、native↔WSL）经**消失重绑**保持身份：同 adapter 单候选且旧路径确认消亡时迁移 BotID 与用户覆盖（Enabled 受登录硬门约束），歧义不自动绑。多实例并存（ADR-0012）、手动登记项不受重绑影响。展示名/会话标题不是身份（可随意改，不参与寻址）。
+
+**会话映射**：逻辑会话按（ProfileID, RoomID）独立——群聊与私聊、不同房间各持各的 CLI 线程（kimi `-S`/mcode `--session` 句柄互不串线）；实例替换（重绑/参数变更触发重注册）不复用旧会话；重启后按需 Boot 新会话，不误续旧线程。
+
+**显式路由**：执行寻址三元组 =（connection, bot/profile, executable 实例）。`run_task` 可携 `connection`（缺省 `local`；当前连接注册表仅此一项）。**不可达纪律**：目标连接未登记 → 显式拒绝（"连接不可达"），不得回落到当前可用或界面选中的连接——静默换执行者是最伤信任的失败模式。远端连接（跨机）为演进项：传输与注册细节定稿前，寻址字段先定形，产品面不展示未实现能力；契约验证以受控双连接 fake 在 UT 完成。

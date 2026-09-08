@@ -211,6 +211,9 @@ func TestRunTaskCommandValidation(t *testing.T) {
 		{"assignee": "par_capable", "instruction": strings.Repeat("字", 4001)},
 		{"assignee": "par_capable", "instruction": "x", "task_id": "bad"},
 		{"assignee": "par_uncapable", "instruction": "x"}, // 能力门（echo 等）
+		// M4-4 显式路由：未知连接显式拒（不回落到当前可用/选中的连接）
+		{"assignee": "par_capable", "instruction": "x", "connection": "remote-foo"},
+		{"assignee": "par_capable", "instruction": "x", "connection": "LOCAL"},
 	}
 	for i, p := range bad {
 		if _, err := svcRun.ExecuteCommand(ctx, actor, Command{RoomID: created.RoomID, CommandKind: "run_task",

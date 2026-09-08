@@ -221,6 +221,9 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		if err := harnessRegistry.Scan(scanCtx, harness.NewHostRunner(), harness.BuiltinProbes, scanOpts); err != nil {
 			logger.Warn("harness scan partial failure", "err", err)
 		}
+		for _, note := range harnessRegistry.DrainNotes() {
+			logger.Info("harness 身份迁移", "note", note)
+		}
 		for _, exe := range harnessRegistry.List() {
 			logger.Info("harness discovered",
 				"adapter", exe.Adapter, "runtime", exe.Runtime, "distro", exe.Distro,
@@ -349,6 +352,20 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			}
 			return dir, "", true
 		}
+		// 注册签名（ADR-0013/M4-4）：resync 每 10s 重算座位，但适配器只在签名变化时
+		// 重注册——RegisterFor 会驱逐该 Profile 的全部会话（实例替换语义），无条件
+		// 重注册等于每 10 秒清一次会话续接句柄（kimi -S / mcode --session）。
+		registered := map[string]string{}
+		registerAdapter := func(profileID, signature string, mk func() error) error {
+			if prev, ok := registered[profileID]; ok && prev == signature {
+				return nil // 配置未变：不驱逐会话
+			}
+			if err := mk(); err != nil {
+				return err
+			}
+			registered[profileID] = signature
+			return nil
+		}
 		syncSeats := func() []room.AgentSeat {
 			seats := []room.AgentSeat{{
 				ParticipantID: "par_echo",
@@ -361,8 +378,9 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 				})
 			}
 			for _, exe := range harnessRegistry.EnabledList() {
-				// 四轮复审 #3：身份基于注册表唯一 ID 派生；C 轨多实例并存不折叠。
-				exeKey := sanitizeProfileKey(exe.ID)
+				// 身份从稳定 BotID 派生（ADR-0013：路径变化经重绑保持身份；四轮复审 #3
+				// 的多实例不折叠语义不变）；工作目录随 BotID 稳定（重绑后目录沿用）。
+				exeKey := sanitizeProfileKey(exe.BotIDOf())
 				profileID := "prof_" + exe.Adapter + "_" + exeKey
 				// 渠道标签随座位进 Profile（快照参与者视图展示用）；注册表口径：空值按 cli 处理。
 				channel := exe.Channel
@@ -381,8 +399,10 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 						cfg.WSLDistro = exe.Distro
 						cfg.WSLHome = wslHome
 					}
-					// 四轮复审 #9：重登驱逐旧会话。
-					if err := supervisor.RegisterFor(profileID, codex.New(cfg)); err != nil {
+					// 四轮复审 #9：重登/换实例驱逐旧会话——经签名门控（同配置不驱逐）。
+					if err := registerAdapter(profileID,
+						strings.Join([]string{exe.Path, dir, exe.Distro, wslHome, exe.Model, exe.EvalModel, exe.ReasoningEffort}, "\x1f"),
+						func() error { return supervisor.RegisterFor(profileID, codex.New(cfg)) }); err != nil {
 						logger.Warn("codex adapter register failed", "profile", profileID, "err", err)
 						continue
 					}
@@ -398,7 +418,9 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 						cfg.WSLDistro = exe.Distro
 						cfg.WSLHome = wslHome
 					}
-					if err := supervisor.RegisterFor(profileID, kimi.New(cfg)); err != nil {
+					if err := registerAdapter(profileID,
+						strings.Join([]string{exe.Path, dir, exe.Distro, wslHome, exe.Model, exe.EvalModel}, "\x1f"),
+						func() error { return supervisor.RegisterFor(profileID, kimi.New(cfg)) }); err != nil {
 						logger.Warn("kimi adapter register failed", "profile", profileID, "err", err)
 						continue
 					}
@@ -415,7 +437,9 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 						cfg.WSLDistro = exe.Distro
 						cfg.WSLHome = wslHome
 					}
-					if err := supervisor.RegisterFor(profileID, minimax.New(cfg)); err != nil {
+					if err := registerAdapter(profileID,
+						strings.Join([]string{exe.Path, dir, exe.Distro, wslHome, exe.Model, exe.EvalModel}, "\x1f"),
+						func() error { return supervisor.RegisterFor(profileID, minimax.New(cfg)) }); err != nil {
 						logger.Warn("minimax adapter register failed", "profile", profileID, "err", err)
 						continue
 					}

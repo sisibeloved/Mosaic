@@ -134,6 +134,7 @@ func (s *Service) runTask(ctx context.Context, actor Actor, cmd Command) (*Comma
 		Assignee    string `json:"assignee"`
 		Instruction string `json:"instruction"`
 		TaskID      string `json:"task_id"`
+		Connection  string `json:"connection"`
 	}
 	if err := jsonUnmarshal(cmd.Payload, &payload); err != nil {
 		return nil, fmt.Errorf("%w: run_task payload: %v", ErrInvalidCommand, err)
@@ -146,6 +147,12 @@ func (s *Service) runTask(ctx context.Context, actor Actor, cmd Command) (*Comma
 	}
 	if payload.TaskID != "" && !taskIDPattern.MatchString(payload.TaskID) {
 		return nil, fmt.Errorf("%w: task_id 形如 tsk_*", ErrInvalidCommand)
+	}
+	// 显式路由（RFC-0002 M4-4 补编）：连接是寻址三元组之一；未知连接显式拒绝，
+	// 不回落到当前可用/选中的连接（静默换执行者是最伤信任的失败模式）。
+	// 当前连接注册表仅 local——远端连接随 RFC-0002 扩展落地，字段先行定形。
+	if payload.Connection != "" && payload.Connection != ConnectionLocal {
+		return nil, fmt.Errorf("%w: 连接不可达：%q（当前已登记连接：local；不回落到其他连接）", ErrInvalidCommand, payload.Connection)
 	}
 	// 能力门：assignee 的适配器须支持后台执行（echo 等测试桩不支持）
 	if s.cfg.RunCapable != nil && !s.cfg.RunCapable(payload.Assignee) {
@@ -576,6 +583,10 @@ var (
 	agentParticipantPattern = participantIDPattern
 	runIDPatternS           = regexp.MustCompile(`^run_[0-9A-Za-z_-]+$`)
 )
+
+// ConnectionLocal 当前唯一已登记连接（RFC-0002 M4-4 补编：寻址三元组的连接位；
+// 远端连接随扩展落地时升级为注册表——拒绝语义不回落不变）。
+const ConnectionLocal = "local"
 
 // appendCASRun 条件追加（appendCAS 的本文件面：单事件、返回追加与否）。
 func (e *Engine) appendCASRun(ctx context.Context, roomID string, env protocol.Envelope, expected int64) ([]protocol.Envelope, error) {
