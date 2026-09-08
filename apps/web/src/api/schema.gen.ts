@@ -307,6 +307,100 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/monitors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 监控源列表（含运行态水位）
+         * @description M4-5 监控面：显式监控源（脚本/URL）+ 三水位运行态（观察/处理/送达）。
+         *     未装配监控面（测试装配）返回 404。
+         */
+        get: operations["listMonitors"];
+        put?: never;
+        /**
+         * 登记监控源
+         * @description 写端点（三层门）。script = 绝对路径 + 参数（无 shell，同用户信任面）；
+         *     url = http(s) GET。变化经 run_task 交给 assignee，结果投回 room_id。
+         */
+        post: operations["createMonitor"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/monitors/{monitor_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** 删除监控源（运行态一并清理；已投递历史在房间事件流） */
+        delete: operations["deleteMonitor"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/monitors/{monitor_id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 启用（水位保留——恢复后从上次观察续） */
+        post: operations["enableMonitor"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/monitors/{monitor_id}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 停用（调度跳过） */
+        post: operations["disableMonitor"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/monitors/{monitor_id}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 手动触发一次检查（忽略间隔；停用源不调度） */
+        post: operations["checkMonitor"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/owner/bootstrap": {
         parameters: {
             query?: never;
@@ -705,10 +799,73 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
-        /** @description 设置族文档（OQ-B 首员，M4-1 切片 B）：全量替换语义；新成员迁入时向后兼容（缺字段 = 缺省）。 */
+        /** @description 设置族文档（OQ-B，M4-1 首员 + M4-3 第二员）：全量替换语义；新成员迁入时向后兼容（缺字段 = 缺省）。 */
         SettingsDoc: {
             /** @description 独立任务执行时长上限（秒；缺省 600；长于单轮 180s——"长任务"服务面） */
             run_timeout_seconds: number;
+            /**
+             * @description 单次 reply-or-pass 限定路径（M4-3）：auto（缺省）= 资格座位走单次路径；off = 回退两阶段（A/B 控制组）
+             * @enum {string}
+             */
+            reply_or_pass_mode?: "auto" | "off";
+        };
+        /** @description 监控运行态（M4-5）：三水位（观察/处理/送达）与失败分类分开——源失败不动水位、处理失败可重试、no-change 去重计数。 */
+        MonitorState: {
+            monitor_id?: string;
+            /** @description 观察水位（最近成功快照哈希） */
+            last_observed?: string;
+            /** @description 处理水位（最近交给 run 的哈希） */
+            last_processed?: string;
+            /** @description 送达水位（结果已回房的哈希） */
+            last_delivered?: string;
+            /** @description 在途 run（run.requested 事件引用） */
+            in_flight_run?: string;
+            /** @description 待处理水位（在途期间到达的新变化——完成后接力） */
+            pending_hash?: string;
+            /** @description 源失败（取快照失败；恢复即清） */
+            last_error?: string;
+            /** @description 处理/投递失败（重试路径） */
+            process_error?: string;
+            /**
+             * Format: int64
+             * @description 连续无变化次数（模型调用去重证据）
+             */
+            no_change_count?: number;
+            /** Format: date-time */
+            last_checked_at?: string;
+            /** Format: date-time */
+            last_delivered_at?: string;
+        };
+        /** @description 监控源 + 运行态合并视图（M4-5）。 */
+        MonitorView: {
+            monitor_id: string;
+            /** @enum {string} */
+            kind: "script" | "url";
+            /** @description 脚本绝对路径（无 shell）或 URL */
+            target: string;
+            args?: string[];
+            /** @description 结果投递房间 */
+            room_id: string;
+            /** @description 受指派 Agent（稳定身份 par_*） */
+            assignee: string;
+            interval_sec: number;
+            /** @description 指令模板（空 = 缺省；{{monitor}}/{{diff}} 占位） */
+            instruction?: string;
+            enabled: boolean;
+            /** Format: date-time */
+            created_at?: string;
+            state: components["schemas"]["MonitorState"];
+        };
+        MonitorCreate: {
+            /** @enum {string} */
+            kind: "script" | "url";
+            target: string;
+            args?: string[];
+            room_id: string;
+            assignee: string;
+            interval_sec: number;
+            instruction?: string;
+            enabled?: boolean;
         };
         BackupSummary: {
             /** @description bkp_<ts36>_<hex>（本包生成，白名单字符） */
@@ -1453,6 +1610,146 @@ export interface operations {
             };
             /** @description 载荷不合法或值越界 */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listMonitors: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 监控源 + 运行态 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        monitors: components["schemas"]["MonitorView"][];
+                    };
+                };
+            };
+        };
+    };
+    createMonitor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MonitorCreate"];
+            };
+        };
+        responses: {
+            /** @description 已登记（含初始运行态） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MonitorView"];
+                };
+            };
+            /** @description 登记项不合法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteMonitor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                monitor_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    enableMonitor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                monitor_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已启用 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    disableMonitor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                monitor_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已停用 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    checkMonitor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                monitor_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已检查（结果反映在运行态水位） */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

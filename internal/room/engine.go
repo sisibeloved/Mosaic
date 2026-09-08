@@ -81,11 +81,17 @@ type EngineConfig struct {
 	// 返回正值时优先于 RunTimeout——设置页变更无须重建引擎即时生效（每次
 	// executeRun 拉起时读取，在途 run 不受影响——代次语义与取消一致）。
 	RunTimeoutFunc func() time.Duration
-	Clock          func() string    // occurred_at（RFC3339）
-	Now            func() time.Time // 过期时刻计算
-	NewID          func(prefix string) string
-	Tenant         string
-	RoomID         string // 非空 = 只处理该房间；空 = 全部房间（M1 默认）
+	// ReplyOrPassEnabled 可选的 ROP 门（M4-3，设置族第二员 reply_or_pass_mode）：
+	// 缺省 nil = 启用；false = 资格座位回退两阶段（A/B 控制组，指标仍入账）。
+	ReplyOrPassEnabled func() bool
+	// OnPathMetric 可选的路径指标出口（M4-3 A/B 测量面）：ROP/两阶段的
+	// 场景、路径、结果与耗时（装配层落 JSONL）。
+	OnPathMetric func(roomID, seat, scenario, path, outcome string, ms int64)
+	Clock        func() string    // occurred_at（RFC3339）
+	Now          func() time.Time // 过期时刻计算
+	NewID        func(prefix string) string
+	Tenant       string
+	RoomID       string // 非空 = 只处理该房间；空 = 全部房间（M1 默认）
 }
 
 // chatGrantPolicy 群聊模型的引擎内固定策略（RFC-0012：无房间策略面——
@@ -626,18 +632,38 @@ func (e *Engine) runReaction(ctx context.Context, roomID string, proactive bool)
 		ReceiptRef: evalsAsm.Receipt.ReceiptID,
 	}
 
-	// 3-4) 全员评估（观察→判断，瘦身上下文）→ intent.recorded 全记录（R-01）→ 意愿清单
-	willing, silentCount, ok := e.evaluateWave(ctx, roomID, roundID, *anchor, history, seats, evalContext, contextx.RebuildBudget(envs), timing)
-	if !ok {
-		return
+	// M4-3：单次 reply-or-pass 限定路径（资格座位先行；仅非主动波）。资格判定
+	// 纯结构（点名单人/任务交付），命中且能力+设置双门通过 → 一次调用出
+	// speak|pass；其余座位照走两阶段。全部座位被 ROP 处理时跳过评估相。
+	ropPublished, ropSilent := 0, 0
+	if !proactive {
+		if elig := ROPEligibility(*anchor, seats, history); len(elig) > 0 {
+			seats, ropPublished, ropSilent = e.runReplyOrPass(ctx, roomID, roundID, *anchor, elig, seats, evalContext)
+		}
 	}
+
+	// 3-4) 全员评估（观察→判断，瘦身上下文）→ intent.recorded 全记录（R-01）→ 意愿清单
+	published := 0
+	silentCount := ropSilent
+	var willing []willingIntent
+	if len(seats) > 0 {
+		var ok bool
+		willing, silentCount, ok = e.evaluateWave(ctx, roomID, roundID, *anchor, history, seats, evalContext, contextx.RebuildBudget(envs), timing)
+		if !ok {
+			return
+		}
+		silentCount += ropSilent
+	} else if ropPublished > 0 {
+		// ROP 发布即新消息 → 开新反应窗口（与两阶段发布同语义）
+		e.scheduleReaction(roomID)
+	}
+	published = ropPublished
 
 	// 5) 意愿放行 + sequential 发布（记分卡分排序，@点名前置；CAS 迟到围栏）。
 	// 逐发言人生成时刷新（v1.40 负责人裁定）：每次生成前重读水位重组装——同波
 	// 先发者的消息与波中人类插话即时入窗，后发者对最新语境作答（"互相对答上一条"
 	// 滞后的治本位）；锚点仍取本波原锚（刺激语义与事件因果链不变）。进程内重组装
 	// 微秒级；Receipt 任务号带发言序（:gen0/:gen1…）保证溯源唯一。
-	published := 0
 	for i, w := range willing {
 		genHistory, err := e.roomHistory(ctx, roomID)
 		if err != nil {

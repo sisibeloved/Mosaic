@@ -20,6 +20,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/backup"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/harness"
+	"github.com/sisibeloved/Mosaic/internal/monitor"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
@@ -66,6 +67,8 @@ type Deps struct {
 	Attachments *attach.Store
 	// Settings 设置族（OQ-B 首员，M4-1 切片 B）：nil = 设置端点 404（测试装配）。
 	Settings *settings.Store
+	// Monitors 监控面（M4-5）：nil = 监控端点 404（测试装配）。
+	Monitors *monitor.Manager
 	// Diagnostics 自诊断 bundle 构造器（M4-0）：nil = 诊断端点 404。
 	// 内容纪律：不含凭据/环境变量（OQ-20）——版本/运行时/数据面统计/注册表状态/日志尾。
 	Diagnostics func() (map[string]any, error)

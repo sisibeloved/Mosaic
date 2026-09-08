@@ -204,6 +204,13 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		}
 	}
 
+	// M4-5 监控面：数据目录内 monitors.json；调度刻 10s（随主 ctx 终止）。
+	monitorMgr, err := startMonitor(ctx, opts.DataDir, svc, store, logger, newID)
+	if err != nil {
+		logger.Error("监控面装配失败（监控端点 404 继续）", "err", err)
+		monitorMgr = nil
+	}
+
 	hub := sse.NewHub()
 
 	// 宿主层：启动自动扫描（探测失败不阻塞启动，注册表持久化合并）。
@@ -261,6 +268,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Backups:          backupMgr,
 		Attachments:      attachStore,
 		Settings:         settingsStore,
+		Monitors:         monitorMgr,
 		Diagnostics: diagnosticsBundle(opts.DataDir,
 			func() (int, error) { return countRooms(store) },
 			func() int {
@@ -465,14 +473,17 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			AttachExcerpt:    attachExcerpt,
 			// OQ-B 设置族活读面：每次 run 拉起时读当前设置（变更无须重启引擎）
 			RunTimeoutFunc: settingsStore.RunTimeout,
-			OnDraft:        httpapi.DraftConsumer(hub),
-			OnWaveSkip:     httpapi.WaveSkipConsumer(hub),
-			OnSeatStatus:   httpapi.SeatStatusConsumer(hub),
-			Logger:         logger,
-			Clock:          clock,
-			Now:            time.Now,
-			NewID:          newID,
-			Tenant:         "ten_local",
+			// M4-3：ROP 门（reply_or_pass_mode）+ 路径指标（A/B 测量面，JSONL 落盘）
+			ReplyOrPassEnabled: settingsStore.ReplyOrPassEnabled,
+			OnPathMetric:       pathMetricSink(opts.DataDir),
+			OnDraft:            httpapi.DraftConsumer(hub),
+			OnWaveSkip:         httpapi.WaveSkipConsumer(hub),
+			OnSeatStatus:       httpapi.SeatStatusConsumer(hub),
+			Logger:             logger,
+			Clock:              clock,
+			Now:                time.Now,
+			NewID:              newID,
+			Tenant:             "ten_local",
 		})
 		enginePtr.Store(engine)
 		engine.RecoverClaims() // 崩溃窗口重驱动（二轮审校 #9）

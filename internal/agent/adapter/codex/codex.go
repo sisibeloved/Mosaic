@@ -72,6 +72,7 @@ func (a *Adapter) Capabilities() agent.Capabilities {
 		UsageReporting: true, // turn.completed.usage
 		Observe:        false,
 		TaskRuns:       true, // M4-1：exec 进程可由 Mosaic 托管为长任务（结果回传房间）
+		ReplyOrPass:    true, // M4-3：单次 reply-or-pass（限定路径）
 	}
 }
 
@@ -364,6 +365,14 @@ func taskIdentity(task agent.Task) string {
 
 const charterNote = "Charter: deterministic attention arbitration selects speakers; no hidden reasoning; keep replies within the granted floor."
 
+// ropInstruction 单次 reply-or-pass（M4-3 限定路径：仅点名单人/任务交付两场景）。
+const ropInstruction = `你是群聊中被明确点名或被追问任务交付的 Agent。基于 Stimulus 语境一次性决定：公开回应（speak）或保持沉默（pass）。
+只输出一个 JSON 对象，无其他文本：
+{"action": "speak", "body": "公开回复正文（不超过 300 字）", "public_rationale": "为何回应"}
+或
+{"action": "pass", "public_rationale": "为何沉默（公开可见）"}
+被点名且你能有效回答 → speak；问题与你无关或你无增值 → pass。不虚构、不引用语境之外的信息。`
+
 func buildPrompt(task agent.Task) (string, error) {
 	stimulus, _ := json.Marshal(task.Context.Inline)
 	ident := taskIdentity(task)
@@ -376,6 +385,8 @@ func buildPrompt(task agent.Task) (string, error) {
 		return summarizeInstruction + "\nTask identity: " + ident + "\n\nDiscussion: " + string(stimulus), nil
 	case agent.KindEvaluateClosure:
 		return closureInstruction + "\nTask identity: " + ident + "\n\nDiscussion: " + string(stimulus), nil
+	case agent.KindReplyOrPass:
+		return ropInstruction + "\nTask identity: " + ident + "\n\nStimulus: " + string(stimulus), nil
 	default:
 		return "", fmt.Errorf("codex: 未知任务类型 %q", task.Kind)
 	}
@@ -385,6 +396,22 @@ func buildPrompt(task agent.Task) (string, error) {
 func mapResult(kind agent.TaskKind, parsed Parsed) (agent.Result, error) {
 	text := parsed.Messages[len(parsed.Messages)-1]
 	switch kind {
+	case agent.KindReplyOrPass:
+		data, err := ExtractJSON(text)
+		if err != nil {
+			return agent.Result{}, err
+		}
+		action, _ := data["action"].(string)
+		if action != "speak" && action != "pass" {
+			return agent.Result{}, fmt.Errorf("codex: reply_or_pass 缺字段 action（speak|pass）")
+		}
+		if action == "speak" {
+			body, _ := data["body"].(string)
+			if strings.TrimSpace(body) == "" {
+				return agent.Result{}, fmt.Errorf("codex: reply_or_pass speak 缺正文")
+			}
+		}
+		return agent.Result{Block: "reply_or_pass_decision", Data: data, Usage: parsed.Usage}, nil
 	case agent.KindEvaluateIntent:
 		data, err := ExtractJSON(text)
 		if err != nil {

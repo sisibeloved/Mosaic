@@ -21,6 +21,9 @@ const (
 	KindGenerate        TaskKind = "generate"
 	KindSummarize       TaskKind = "summarize"
 	KindEvaluateClosure TaskKind = "evaluate_closure"
+	// KindReplyOrPass 单次 reply-or-pass（M4-3 限定路径）：一次调用产出"公开回应
+	// 或沉默"的结构化决定，替代该座位的评估+生成两阶段（仅资格命中且能力支持）。
+	KindReplyOrPass TaskKind = "reply_or_pass"
 )
 
 // Grant 发言许可绑定（RFC-0003 floor.granted 的任务侧投影）。
@@ -104,6 +107,9 @@ type Capabilities struct {
 	// 托管专用 exec 进程执行长任务、结果回传房间。echo 等测试桩为 false——
 	// 能力如实声明，不支持者命令面拒绝（不静默假装在跑）。
 	TaskRuns bool `json:"task_runs"`
+	// ReplyOrPass 单次 reply-or-pass 能力（M4-3）：结构化一次调用出 speak|pass。
+	// echo/slowrun 桩为 false——能力如实，不支持者回退两阶段流程。
+	ReplyOrPass bool `json:"reply_or_pass"`
 }
 
 // Adapter 适配器接口（M0 最小面；进程管理细节由各适配器自持）。

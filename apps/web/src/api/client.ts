@@ -146,6 +146,10 @@ export interface BackupSummary {
 /** OQ-B 设置族文档（M4-1 首员 run_timeout_seconds）。 */
 export type SettingsDoc = Schemas["SettingsDoc"];
 
+/** M4-5 监控源 + 运行态视图。 */
+export type MonitorView = Schemas["MonitorView"];
+export type MonitorCreate = Schemas["MonitorCreate"];
+
 export const api = {
   agents(): Promise<{ agents: AgentSeatInfo[]; disabled?: DisabledAgentInfo[] }> {
     return request<{ agents: AgentSeatInfo[]; disabled?: DisabledAgentInfo[] }>("/v1/agents");
@@ -168,6 +172,19 @@ export const api = {
   },
   updateSettings(doc: SettingsDoc): Promise<SettingsDoc> {
     return put("/v1/system/settings", doc);
+  },
+  /** M4-5 监控面。 */
+  monitors(): Promise<{ monitors: MonitorView[] }> {
+    return request<{ monitors: MonitorView[] }>("/v1/monitors");
+  },
+  createMonitor(src: MonitorCreate): Promise<MonitorView> {
+    return post<MonitorView>("/v1/monitors", src);
+  },
+  deleteMonitor(id: string): Promise<void> {
+    return request<void>(`/v1/monitors/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+  monitorAction(id: string, action: "enable" | "disable" | "check"): Promise<void> {
+    return request<void>(`/v1/monitors/${encodeURIComponent(id)}/${action}`, { method: "POST" });
   },
   listRooms(): Promise<{ rooms: RoomSummary[] }> {
     return request<{ rooms: RoomSummary[] }>("/v1/rooms");

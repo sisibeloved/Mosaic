@@ -122,15 +122,24 @@ func (s *server) UpdateSystemSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
 	var req struct {
-		RunTimeoutSeconds int `json:"run_timeout_seconds"`
+		RunTimeoutSeconds int    `json:"run_timeout_seconds"`
+		ReplyOrPassMode   string `json:"reply_or_pass_mode"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "载荷须为 {run_timeout_seconds}")
+		writeError(w, http.StatusBadRequest, "invalid_request", "载荷须为 {run_timeout_seconds, reply_or_pass_mode}")
 		return
 	}
 	if err := settings.ValidateRunTimeoutSeconds(req.RunTimeoutSeconds); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_value", err.Error())
+		return
+	}
+	mode := req.ReplyOrPassMode
+	if mode == "" {
+		mode = settings.ReplyOrPassAuto
+	}
+	if err := settings.ValidateReplyOrPassMode(mode); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_value", err.Error())
 		return
 	}
@@ -138,9 +147,13 @@ func (s *server) UpdateSystemSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "settings_write_failed", err.Error())
 		return
 	}
+	if err := s.deps.Settings.UpdateReplyOrPassMode(mode); err != nil {
+		writeError(w, http.StatusInternalServerError, "settings_write_failed", err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, settingsDocOf(s.deps.Settings.Snapshot()))
 }
 
 func settingsDocOf(doc settings.Document) map[string]any {
-	return map[string]any{"run_timeout_seconds": doc.RunTimeoutSeconds}
+	return map[string]any{"run_timeout_seconds": doc.RunTimeoutSeconds, "reply_or_pass_mode": doc.ReplyOrPassMode}
 }

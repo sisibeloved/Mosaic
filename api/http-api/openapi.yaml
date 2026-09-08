@@ -472,6 +472,94 @@ paths:
               schema: { $ref: "#/components/schemas/SettingsDoc" }
         "400":
           description: 载荷不合法或值越界
+  /v1/monitors:
+    get:
+      operationId: listMonitors
+      summary: 监控源列表（含运行态水位）
+      description: |
+        M4-5 监控面：显式监控源（脚本/URL）+ 三水位运行态（观察/处理/送达）。
+        未装配监控面（测试装配）返回 404。
+      responses:
+        "200":
+          description: 监控源 + 运行态
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [monitors]
+                properties:
+                  monitors:
+                    type: array
+                    items: { $ref: "#/components/schemas/MonitorView" }
+    post:
+      operationId: createMonitor
+      summary: 登记监控源
+      description: |
+        写端点（三层门）。script = 绝对路径 + 参数（无 shell，同用户信任面）；
+        url = http(s) GET。变化经 run_task 交给 assignee，结果投回 room_id。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MonitorCreate" }
+      responses:
+        "201":
+          description: 已登记（含初始运行态）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonitorView" }
+        "400":
+          description: 登记项不合法
+  /v1/monitors/{monitor_id}:
+    delete:
+      operationId: deleteMonitor
+      summary: 删除监控源（运行态一并清理；已投递历史在房间事件流）
+      parameters:
+        - name: monitor_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mon_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 已删除
+        "404":
+          description: 不存在
+  /v1/monitors/{monitor_id}/enable:
+    post:
+      operationId: enableMonitor
+      summary: 启用（水位保留——恢复后从上次观察续）
+      parameters:
+        - name: monitor_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mon_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 已启用
+  /v1/monitors/{monitor_id}/disable:
+    post:
+      operationId: disableMonitor
+      summary: 停用（调度跳过）
+      parameters:
+        - name: monitor_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mon_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 已停用
+  /v1/monitors/{monitor_id}/check:
+    post:
+      operationId: checkMonitor
+      summary: 手动触发一次检查（忽略间隔；停用源不调度）
+      parameters:
+        - name: monitor_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mon_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 已检查（结果反映在运行态水位）
   /v1/owner/bootstrap:
     get:
       operationId: getOwnerBootstrap
@@ -1091,13 +1179,61 @@ components:
       type: object
       required: [run_timeout_seconds]
       additionalProperties: false
-      description: "设置族文档（OQ-B 首员，M4-1 切片 B）：全量替换语义；新成员迁入时向后兼容（缺字段 = 缺省）。"
+      description: "设置族文档（OQ-B，M4-1 首员 + M4-3 第二员）：全量替换语义；新成员迁入时向后兼容（缺字段 = 缺省）。"
       properties:
         run_timeout_seconds:
           type: integer
           minimum: 60
           maximum: 7200
           description: 独立任务执行时长上限（秒；缺省 600；长于单轮 180s——"长任务"服务面）
+        reply_or_pass_mode:
+          type: string
+          enum: [auto, off]
+          description: "单次 reply-or-pass 限定路径（M4-3）：auto（缺省）= 资格座位走单次路径；off = 回退两阶段（A/B 控制组）"
+    MonitorState:
+      type: object
+      description: "监控运行态（M4-5）：三水位（观察/处理/送达）与失败分类分开——源失败不动水位、处理失败可重试、no-change 去重计数。"
+      properties:
+        monitor_id: { type: string }
+        last_observed: { type: string, description: 观察水位（最近成功快照哈希） }
+        last_processed: { type: string, description: 处理水位（最近交给 run 的哈希） }
+        last_delivered: { type: string, description: 送达水位（结果已回房的哈希） }
+        in_flight_run: { type: string, description: 在途 run（run.requested 事件引用） }
+        pending_hash: { type: string, description: 待处理水位（在途期间到达的新变化——完成后接力） }
+        last_error: { type: string, description: 源失败（取快照失败；恢复即清） }
+        process_error: { type: string, description: 处理/投递失败（重试路径） }
+        no_change_count: { type: integer, format: int64, description: 连续无变化次数（模型调用去重证据） }
+        last_checked_at: { type: string, format: date-time }
+        last_delivered_at: { type: string, format: date-time }
+    MonitorView:
+      type: object
+      required: [monitor_id, kind, target, room_id, assignee, interval_sec, enabled, state]
+      description: "监控源 + 运行态合并视图（M4-5）。"
+      properties:
+        monitor_id: { type: string, pattern: "^mon_[0-9A-Za-z_-]+$" }
+        kind: { type: string, enum: [script, url] }
+        target: { type: string, description: 脚本绝对路径（无 shell）或 URL }
+        args: { type: array, items: { type: string } }
+        room_id: { type: string, description: 结果投递房间 }
+        assignee: { type: string, description: 受指派 Agent（稳定身份 par_*） }
+        interval_sec: { type: integer, minimum: 10, maximum: 86400 }
+        instruction: { type: string, description: "指令模板（空 = 缺省；{{monitor}}/{{diff}} 占位）" }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+        state: { $ref: "#/components/schemas/MonitorState" }
+    MonitorCreate:
+      type: object
+      required: [kind, target, room_id, assignee, interval_sec]
+      additionalProperties: false
+      properties:
+        kind: { type: string, enum: [script, url] }
+        target: { type: string }
+        args: { type: array, items: { type: string } }
+        room_id: { type: string }
+        assignee: { type: string }
+        interval_sec: { type: integer, minimum: 10, maximum: 86400 }
+        instruction: { type: string }
+        enabled: { type: boolean }
     BackupSummary:
       type: object
       required: [backup_id, created_at, size_bytes]

@@ -93,6 +93,42 @@ func (e MemoryViewCapsulesClosureType) Valid() bool {
 	}
 }
 
+// Defines values for MonitorCreateKind.
+const (
+	MonitorCreateKindScript MonitorCreateKind = "script"
+	MonitorCreateKindUrl    MonitorCreateKind = "url"
+)
+
+// Valid indicates whether the value is a known member of the MonitorCreateKind enum.
+func (e MonitorCreateKind) Valid() bool {
+	switch e {
+	case MonitorCreateKindScript:
+		return true
+	case MonitorCreateKindUrl:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MonitorViewKind.
+const (
+	MonitorViewKindScript MonitorViewKind = "script"
+	MonitorViewKindUrl    MonitorViewKind = "url"
+)
+
+// Valid indicates whether the value is a known member of the MonitorViewKind enum.
+func (e MonitorViewKind) Valid() bool {
+	switch e {
+	case MonitorViewKindScript:
+		return true
+	case MonitorViewKindUrl:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ParticipantViewKind.
 const (
 	ParticipantViewKindAgent  ParticipantViewKind = "agent"
@@ -291,6 +327,24 @@ func (e SearchHitActorKind) Valid() bool {
 	case SearchHitActorKindHuman:
 		return true
 	case SearchHitActorKindSystem:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SettingsDocReplyOrPassMode.
+const (
+	Auto SettingsDocReplyOrPassMode = "auto"
+	Off  SettingsDocReplyOrPassMode = "off"
+)
+
+// Valid indicates whether the value is a known member of the SettingsDocReplyOrPassMode enum.
+func (e SettingsDocReplyOrPassMode) Valid() bool {
+	switch e {
+	case Auto:
+		return true
+	case Off:
 		return true
 	default:
 		return false
@@ -603,6 +657,79 @@ type MemoryView struct {
 // MemoryViewCapsulesClosureType defines model for MemoryView.Capsules.ClosureType.
 type MemoryViewCapsulesClosureType string
 
+// MonitorCreate defines model for MonitorCreate.
+type MonitorCreate struct {
+	Args        *[]string         `json:"args,omitempty"`
+	Assignee    string            `json:"assignee"`
+	Enabled     *bool             `json:"enabled,omitempty"`
+	Instruction *string           `json:"instruction,omitempty"`
+	IntervalSec int               `json:"interval_sec"`
+	Kind        MonitorCreateKind `json:"kind"`
+	RoomId      string            `json:"room_id"`
+	Target      string            `json:"target"`
+}
+
+// MonitorCreateKind defines model for MonitorCreate.Kind.
+type MonitorCreateKind string
+
+// MonitorState 监控运行态（M4-5）：三水位（观察/处理/送达）与失败分类分开——源失败不动水位、处理失败可重试、no-change 去重计数。
+type MonitorState struct {
+	// InFlightRun 在途 run（run.requested 事件引用）
+	InFlightRun   *string    `json:"in_flight_run,omitempty"`
+	LastCheckedAt *time.Time `json:"last_checked_at,omitempty"`
+
+	// LastDelivered 送达水位（结果已回房的哈希）
+	LastDelivered   *string    `json:"last_delivered,omitempty"`
+	LastDeliveredAt *time.Time `json:"last_delivered_at,omitempty"`
+
+	// LastError 源失败（取快照失败；恢复即清）
+	LastError *string `json:"last_error,omitempty"`
+
+	// LastObserved 观察水位（最近成功快照哈希）
+	LastObserved *string `json:"last_observed,omitempty"`
+
+	// LastProcessed 处理水位（最近交给 run 的哈希）
+	LastProcessed *string `json:"last_processed,omitempty"`
+	MonitorId     *string `json:"monitor_id,omitempty"`
+
+	// NoChangeCount 连续无变化次数（模型调用去重证据）
+	NoChangeCount *int64 `json:"no_change_count,omitempty"`
+
+	// PendingHash 待处理水位（在途期间到达的新变化——完成后接力）
+	PendingHash *string `json:"pending_hash,omitempty"`
+
+	// ProcessError 处理/投递失败（重试路径）
+	ProcessError *string `json:"process_error,omitempty"`
+}
+
+// MonitorView 监控源 + 运行态合并视图（M4-5）。
+type MonitorView struct {
+	Args *[]string `json:"args,omitempty"`
+
+	// Assignee 受指派 Agent（稳定身份 par_*）
+	Assignee  string     `json:"assignee"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+	Enabled   bool       `json:"enabled"`
+
+	// Instruction 指令模板（空 = 缺省；{{monitor}}/{{diff}} 占位）
+	Instruction *string         `json:"instruction,omitempty"`
+	IntervalSec int             `json:"interval_sec"`
+	Kind        MonitorViewKind `json:"kind"`
+	MonitorId   string          `json:"monitor_id"`
+
+	// RoomId 结果投递房间
+	RoomId string `json:"room_id"`
+
+	// State 监控运行态（M4-5）：三水位（观察/处理/送达）与失败分类分开——源失败不动水位、处理失败可重试、no-change 去重计数。
+	State MonitorState `json:"state"`
+
+	// Target 脚本绝对路径（无 shell）或 URL
+	Target string `json:"target"`
+}
+
+// MonitorViewKind defines model for MonitorView.Kind.
+type MonitorViewKind string
+
 // ParticipantView defines model for ParticipantView.
 type ParticipantView struct {
 	// Adapter agent 座位的适配器名（human 无此键）
@@ -752,11 +879,17 @@ type SearchHit struct {
 // SearchHitActorKind defines model for SearchHit.ActorKind.
 type SearchHitActorKind string
 
-// SettingsDoc 设置族文档（OQ-B 首员，M4-1 切片 B）：全量替换语义；新成员迁入时向后兼容（缺字段 = 缺省）。
+// SettingsDoc 设置族文档（OQ-B，M4-1 首员 + M4-3 第二员）：全量替换语义；新成员迁入时向后兼容（缺字段 = 缺省）。
 type SettingsDoc struct {
+	// ReplyOrPassMode 单次 reply-or-pass 限定路径（M4-3）：auto（缺省）= 资格座位走单次路径；off = 回退两阶段（A/B 控制组）
+	ReplyOrPassMode *SettingsDocReplyOrPassMode `json:"reply_or_pass_mode,omitempty"`
+
 	// RunTimeoutSeconds 独立任务执行时长上限（秒；缺省 600；长于单轮 180s——"长任务"服务面）
 	RunTimeoutSeconds int `json:"run_timeout_seconds"`
 }
+
+// SettingsDocReplyOrPassMode 单次 reply-or-pass 限定路径（M4-3）：auto（缺省）= 资格座位走单次路径；off = 回退两阶段（A/B 控制组）
+type SettingsDocReplyOrPassMode string
 
 // Snapshot defines model for Snapshot.
 type Snapshot struct {
@@ -966,6 +1099,9 @@ type AddHarnessExecutableJSONRequestBody = ManualExecutableRequest
 // UpdateHarnessExecutableJSONRequestBody defines body for UpdateHarnessExecutable for application/json ContentType.
 type UpdateHarnessExecutableJSONRequestBody = RuntimeUpdateRequest
 
+// CreateMonitorJSONRequestBody defines body for CreateMonitor for application/json ContentType.
+type CreateMonitorJSONRequestBody = MonitorCreate
+
 // CreateRoomJSONRequestBody defines body for CreateRoom for application/json ContentType.
 type CreateRoomJSONRequestBody = RoomCommand
 
@@ -1007,6 +1143,24 @@ type ServerInterface interface {
 	// GetHarnessExecutableModels 模型候选与思考强度档位（v1.48）
 	// (GET /v1/harness/executables/{id}/models)
 	GetHarnessExecutableModels(w http.ResponseWriter, r *http.Request, id ExecutableID)
+	// ListMonitors 监控源列表（含运行态水位）
+	// (GET /v1/monitors)
+	ListMonitors(w http.ResponseWriter, r *http.Request)
+	// CreateMonitor 登记监控源
+	// (POST /v1/monitors)
+	CreateMonitor(w http.ResponseWriter, r *http.Request)
+	// DeleteMonitor 删除监控源（运行态一并清理；已投递历史在房间事件流）
+	// (DELETE /v1/monitors/{monitor_id})
+	DeleteMonitor(w http.ResponseWriter, r *http.Request, monitorId string)
+	// CheckMonitor 手动触发一次检查（忽略间隔；停用源不调度）
+	// (POST /v1/monitors/{monitor_id}/check)
+	CheckMonitor(w http.ResponseWriter, r *http.Request, monitorId string)
+	// DisableMonitor 停用（调度跳过）
+	// (POST /v1/monitors/{monitor_id}/disable)
+	DisableMonitor(w http.ResponseWriter, r *http.Request, monitorId string)
+	// EnableMonitor 启用（水位保留——恢复后从上次观察续）
+	// (POST /v1/monitors/{monitor_id}/enable)
+	EnableMonitor(w http.ResponseWriter, r *http.Request, monitorId string)
 	// GetOwnerBootstrap 第一方客户端引导：返回 owner token（跨源门保护）
 	// (GET /v1/owner/bootstrap)
 	GetOwnerBootstrap(w http.ResponseWriter, r *http.Request)
@@ -1217,6 +1371,138 @@ func (siw *ServerInterfaceWrapper) GetHarnessExecutableModels(w http.ResponseWri
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetHarnessExecutableModels(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMonitors operation middleware
+func (siw *ServerInterfaceWrapper) ListMonitors(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMonitors(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateMonitor operation middleware
+func (siw *ServerInterfaceWrapper) CreateMonitor(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateMonitor(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteMonitor operation middleware
+func (siw *ServerInterfaceWrapper) DeleteMonitor(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "monitor_id" -------------
+	var monitorId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "monitor_id", r.PathValue("monitor_id"), &monitorId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "monitor_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteMonitor(w, r, monitorId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CheckMonitor operation middleware
+func (siw *ServerInterfaceWrapper) CheckMonitor(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "monitor_id" -------------
+	var monitorId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "monitor_id", r.PathValue("monitor_id"), &monitorId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "monitor_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CheckMonitor(w, r, monitorId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DisableMonitor operation middleware
+func (siw *ServerInterfaceWrapper) DisableMonitor(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "monitor_id" -------------
+	var monitorId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "monitor_id", r.PathValue("monitor_id"), &monitorId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "monitor_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DisableMonitor(w, r, monitorId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// EnableMonitor operation middleware
+func (siw *ServerInterfaceWrapper) EnableMonitor(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "monitor_id" -------------
+	var monitorId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "monitor_id", r.PathValue("monitor_id"), &monitorId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "monitor_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.EnableMonitor(w, r, monitorId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1738,6 +2024,12 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/system/diagnostics", wrapper.GetDiagnostics)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/system/settings", wrapper.GetSystemSettings)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/v1/system/settings", wrapper.UpdateSystemSettings)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/monitors", wrapper.ListMonitors)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/monitors", wrapper.CreateMonitor)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/monitors/{monitor_id}", wrapper.DeleteMonitor)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/monitors/{monitor_id}/enable", wrapper.EnableMonitor)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/monitors/{monitor_id}/disable", wrapper.DisableMonitor)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/monitors/{monitor_id}/check", wrapper.CheckMonitor)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/owner/bootstrap", wrapper.GetOwnerBootstrap)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)

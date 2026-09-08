@@ -3,7 +3,7 @@
 // 面板出现在各房间抽屉的"调试"Tab；调试端点仍由服务端 -dev 决定是否装配）。
 // 分层规矩：房间讨论策略在房间内调（抽屉"策略"Tab）；外观主题在个人中心。
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, type BackupSummary, type Executable, type SettingsDoc } from "../api/client";
+import { api, ApiError, type BackupSummary, type Executable, type MonitorView, type SettingsDoc } from "../api/client";
 import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
 import { useDevMode } from "../state/dev";
 import { adapterLabel, channelLabel } from "../lib/copy";
@@ -22,8 +22,58 @@ export function SettingsPage() {
   const [backupBusy, setBackupBusy] = useState(false);
   const [restoreConfirmID, setRestoreConfirmID] = useState<string | null>(null);
   const [restoreBusy, setRestoreBusy] = useState(false);
-  // M4-1 任务执行设置（OQ-B 设置族首员：分钟粒度输入，秒粒度存储）
+  // M4-5 监控面
+  const [monitors, setMonitors] = useState<MonitorView[] | null>(null);
+  const [monitorMsg, setMonitorMsg] = useState<string | null>(null);
+  const [monitorForm, setMonitorForm] = useState<{
+    kind: "script" | "url";
+    target: string;
+    args: string;
+    roomID: string;
+    assignee: string;
+    intervalMin: number;
+  }>({ kind: "script", target: "", args: "", roomID: "", assignee: "", intervalMin: 5 });
+  const [rooms, setRooms] = useState<{ room_id: string; display_name: string }[]>([]);
+  const [agentSeats, setAgentSeats] = useState<{ participant_id: string; display_name: string }[]>([]);
+
+  const refreshMonitors = useCallback(async () => {
+    try {
+      const { monitors: list } = await api.monitors();
+      setMonitors(list);
+    } catch {
+      setMonitors(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshMonitors();
+    void api.listRooms().then(({ rooms: rs }) => setRooms(rs)).catch(() => {});
+    void api.agents().then(({ agents }) => setAgentSeats(agents.filter((a) => a.participant_id !== "par_echo"))).catch(() => {});
+  }, [refreshMonitors]);
+
+  const onAddMonitor = async () => {
+    setMonitorMsg(null);
+    try {
+      await api.createMonitor({
+        kind: monitorForm.kind,
+        target: monitorForm.target.trim(),
+        ...(monitorForm.kind === "script" && monitorForm.args.trim() ? { args: monitorForm.args.trim().split(/\s+/) } : {}),
+        room_id: monitorForm.roomID,
+        assignee: monitorForm.assignee,
+        interval_sec: Math.max(10, Math.round(monitorForm.intervalMin * 60)),
+      });
+      setMonitorForm({ ...monitorForm, target: "", args: "" });
+      setMonitorMsg("已登记——首次检查即建立基线并触发分析");
+      await refreshMonitors();
+    } catch (e) {
+      setMonitorMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  // M4-1 任务执行设置（OQ-B 设置族首员：分钟粒度输入，秒粒度存储）+
+  // M4-3 回复路径开关（reply_or_pass_mode——A/B 控制组）
   const [runTimeoutMin, setRunTimeoutMin] = useState<number | null>(null);
+  const [ropMode, setRopMode] = useState<"auto" | "off" | null>(null);
   const [runTimeoutMsg, setRunTimeoutMsg] = useState<string | null>(null);
   const [runTimeoutBusy, setRunTimeoutBusy] = useState(false);
 
@@ -33,7 +83,10 @@ export function SettingsPage() {
     void api
       .settings()
       .then((doc: SettingsDoc) => {
-        if (alive) setRunTimeoutMin(Math.round(doc.run_timeout_seconds / 60));
+        if (alive) {
+          setRunTimeoutMin(Math.round(doc.run_timeout_seconds / 60));
+          setRopMode(doc.reply_or_pass_mode === "off" ? "off" : "auto");
+        }
       })
       .catch((e) => {
         if (alive && e instanceof ApiError && e.status === 404) {
@@ -50,8 +103,12 @@ export function SettingsPage() {
     setRunTimeoutBusy(true);
     setRunTimeoutMsg(null);
     try {
-      const doc = await api.updateSettings({ run_timeout_seconds: runTimeoutMin * 60 });
+      const doc = await api.updateSettings({
+        run_timeout_seconds: runTimeoutMin * 60,
+        reply_or_pass_mode: ropMode === "off" ? "off" : "auto",
+      });
       setRunTimeoutMin(Math.round(doc.run_timeout_seconds / 60));
+      setRopMode(doc.reply_or_pass_mode === "off" ? "off" : "auto");
       setRunTimeoutMsg("已保存——对新发起的任务执行即时生效（在途执行不受影响）");
     } catch (e) {
       setRunTimeoutMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
@@ -325,6 +382,150 @@ export function SettingsPage() {
         </section>
 
         <section>
+          <h2 className="mb-1 text-sm font-medium">监控</h2>
+          <p className="mb-2 text-xs text-faint">
+            登记脚本或 URL 作为监控源：周期取快照、哈希比对——无变化不调用模型；有变化把差异交给
+            指派 Agent 分析（独立任务通道），结果投回所选房间。水位（观察/处理/送达）与失败分类
+            分开记录，处理失败自动重试、源失败恢复后续跑。
+          </p>
+          {monitors === null ? (
+            <p className="text-xs text-faint">监控面未装配（旧装配或测试形态）。</p>
+          ) : (
+            <>
+              <ul className="divide-y divide-border rounded-xl border border-border">
+                {monitors.map((m) => (
+                  <li key={m.monitor_id} className="px-3 py-2.5 text-xs">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <ExeBadge>{m.kind}</ExeBadge>
+                      <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-dim" title={m.target}>
+                        {m.target}
+                      </span>
+                      <ExeBadge tone={m.enabled ? "ok" : "dim"}>{m.enabled ? "已启用" : "已停用"}</ExeBadge>
+                      <button
+                        type="button"
+                        onClick={() => void api.monitorAction(m.monitor_id, m.enabled ? "disable" : "enable").then(refreshMonitors).catch(() => {})}
+                        className="rounded-lg px-2 py-0.5 text-dim hover:text-text"
+                      >
+                        {m.enabled ? "停用" : "启用"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void api.monitorAction(m.monitor_id, "check").then(refreshMonitors).catch(() => {})}
+                        className="rounded-lg bg-surface-3 px-2 py-0.5 text-text hover:opacity-85"
+                      >
+                        立即检查
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void api.deleteMonitor(m.monitor_id).then(refreshMonitors).catch(() => {})}
+                        className="rounded-lg px-2 py-0.5 text-dim hover:text-danger"
+                      >
+                        删除
+                      </button>
+                    </div>
+                    <p className="mt-1 text-[11px] text-faint">
+                      {m.interval_sec >= 60 ? `${Math.round(m.interval_sec / 60)} 分钟` : `${m.interval_sec} 秒`} · 投递到 {m.room_id.slice(0, 14)}… ·
+                      无变化 {m.state?.no_change_count ?? 0} 次
+                      {m.state?.in_flight_run ? " · 分析中" : ""}
+                      {m.state?.pending_hash ? " · 有待处理变化" : ""}
+                      {m.state?.last_error ? ` · 源失败：${m.state.last_error.slice(0, 60)}` : ""}
+                      {m.state?.process_error ? ` · ${m.state.process_error.slice(0, 60)}` : ""}
+                      {m.state?.last_delivered_at ? ` · 上次送达 ${relativeTimeOf(m.state.last_delivered_at)}` : " · 尚未送达"}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+              <details className="mt-3 rounded-xl border border-border px-3 py-2">
+                <summary className="cursor-pointer text-xs text-dim">登记监控源</summary>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-faint">类型</span>
+                    <select
+                      value={monitorForm.kind}
+                      onChange={(e) => setMonitorForm({ ...monitorForm, kind: e.target.value === "url" ? "url" : "script" })}
+                      className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 outline-none focus:border-accent"
+                    >
+                      <option value="script">脚本（本机）</option>
+                      <option value="url">URL</option>
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-faint">检查间隔（分钟，≥1）</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={monitorForm.intervalMin}
+                      onChange={(e) => setMonitorForm({ ...monitorForm, intervalMin: Number(e.target.value) || 1 })}
+                      className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 outline-none focus:border-accent"
+                    />
+                  </label>
+                  <label className="col-span-2 flex flex-col gap-1">
+                    <span className="text-faint">{monitorForm.kind === "script" ? "脚本绝对路径（无 shell）" : "URL（http/https）"}</span>
+                    <input
+                      value={monitorForm.target}
+                      onChange={(e) => setMonitorForm({ ...monitorForm, target: e.target.value })}
+                      placeholder={monitorForm.kind === "script" ? "/usr/local/bin/check-feed.sh" : "https://example.com/status.json"}
+                      className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono outline-none focus:border-accent"
+                    />
+                  </label>
+                  {monitorForm.kind === "script" && (
+                    <label className="col-span-2 flex flex-col gap-1">
+                      <span className="text-faint">参数（空格分隔，可选）</span>
+                      <input
+                        value={monitorForm.args}
+                        onChange={(e) => setMonitorForm({ ...monitorForm, args: e.target.value })}
+                        className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono outline-none focus:border-accent"
+                      />
+                    </label>
+                  )}
+                  <label className="flex flex-col gap-1">
+                    <span className="text-faint">投递房间</span>
+                    <select
+                      value={monitorForm.roomID}
+                      onChange={(e) => setMonitorForm({ ...monitorForm, roomID: e.target.value })}
+                      className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 outline-none focus:border-accent"
+                    >
+                      <option value="">选择房间…</option>
+                      {rooms.map((r) => (
+                        <option key={r.room_id} value={r.room_id}>
+                          {r.display_name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-faint">指派 Agent</span>
+                    <select
+                      value={monitorForm.assignee}
+                      onChange={(e) => setMonitorForm({ ...monitorForm, assignee: e.target.value })}
+                      className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 outline-none focus:border-accent"
+                    >
+                      <option value="">选择 Agent…</option>
+                      {agentSeats.map((a) => (
+                        <option key={a.participant_id} value={a.participant_id}>
+                          {a.display_name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={!monitorForm.target.trim() || !monitorForm.roomID || !monitorForm.assignee}
+                    onClick={() => void onAddMonitor()}
+                    className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast transition-opacity hover:opacity-90 disabled:opacity-40"
+                  >
+                    登记
+                  </button>
+                  {monitorMsg && <span className="text-xs text-dim">{monitorMsg}</span>}
+                </div>
+              </details>
+            </>
+          )}
+        </section>
+
+        <section>
           <h2 className="mb-1 text-sm font-medium">任务执行</h2>
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <label className="flex items-center gap-2">
@@ -350,9 +551,31 @@ export function SettingsPage() {
             </button>
             {runTimeoutMsg && <span className="text-dim">{runTimeoutMsg}</span>}
           </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="text-faint">点名回复路径（reply-or-pass）</span>
+            {(["auto", "off"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                aria-pressed={ropMode === m}
+                disabled={ropMode === null}
+                onClick={() => {
+                  setRopMode(m);
+                }}
+                className={`rounded-lg border px-2.5 py-1 text-xs transition-colors ${
+                  ropMode === m
+                    ? "border-accent bg-accent-soft text-accent"
+                    : "border-border bg-surface-2 text-dim hover:text-text"
+                }`}
+              >
+                {m === "auto" ? "启用（点名单人/任务交付走单次路径）" : "关闭（A/B 对照：回退两阶段）"}
+              </button>
+            ))}
+          </div>
           <p className="mt-1.5 text-[11px] leading-4 text-faint">
             任务 Tab"执行"发起的独立任务在此时限内运行（缺省 10 分钟，可调 1..120）；到点未完成按
-            执行失败收口，错误信息明示超时。群聊单轮回复不受此设置影响。
+            执行失败收口，错误信息明示超时。群聊单轮回复不受此设置影响。点名回复路径仅在
+            明确点名单人或任务交付追问两类场景替换两阶段流程；关闭即回退（A/B 测量对照）。
           </p>
         </section>
 
@@ -472,4 +695,14 @@ function ExeBadge({
         ? "bg-[color-mix(in_srgb,var(--warn)_14%,transparent)] text-warn"
         : "bg-surface-3 text-dim";
   return <span className={`rounded px-1.5 py-px text-[10px] leading-4 ${cls}`}>{children}</span>;
+}
+
+function relativeTimeOf(iso: string): string {
+  const d = new Date(iso).getTime();
+  if (!Number.isFinite(d)) return iso;
+  const diff = Date.now() - d;
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  return `${Math.floor(diff / 86_400_000)} 天前`;
 }

@@ -202,8 +202,7 @@ export function TasksTab({
                     const linked = runs.filter((r) => r.task_id === t.task_id);
                     const latest = linked[linked.length - 1];
                     const active =
-                      !!latest && (latest.status === "running" || latest.status === "requested");
-                    return (
+                      !!latest && (latest.status === "running" || latest.status === "requested");                    return (
                       <>
                         {latest && <RunChip run={latest} onJumpToEvent={onJumpToEvent} />}
                         {active ? (
@@ -259,6 +258,64 @@ export function TasksTab({
                           </span>
                         )}
                       </>
+                    );
+                  })()}
+                  {(() => {
+                    // M4-2 收尾：执行记录——本任务全部 run 的折叠历史（可追溯定位：
+                    // 完成态跳结果消息；迟到/失败携原因）
+                    const linked = runs.filter((r) => r.task_id === t.task_id);
+                    if (linked.length <= 1) return null;
+                    return (
+                      <details className="w-full rounded-lg border border-border px-2 py-1">
+                        <summary className="cursor-pointer text-[11px] text-faint">
+                          执行记录（{linked.length} 次）
+                        </summary>
+                        <ul className="mt-1 flex flex-col gap-0.5">
+                          {[...linked].reverse().map((r) => (
+                            <li key={r.run_id} className="flex items-baseline gap-2 text-[11px]">
+                              <span className="text-faint">{relativeTime(r.updated_at)}</span>
+                              <span
+                                className={
+                                  r.status === "failed" || r.status === "unknown"
+                                    ? "text-danger"
+                                    : r.status === "running" || r.status === "requested"
+                                      ? "text-warn"
+                                      : "text-dim"
+                                }
+                              >
+                                {r.status === "requested"
+                                  ? "排队"
+                                  : r.status === "running"
+                                    ? "执行中"
+                                    : r.status === "completed"
+                                      ? r.late
+                                        ? "迟到结果"
+                                        : "完成"
+                                      : r.status === "canceled"
+                                        ? "已取消"
+                                        : r.status === "unknown"
+                                          ? "结果未知"
+                                          : "失败"}
+                              </span>
+                              {r.status === "completed" && !r.late && r.result_event_id ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onJumpToEvent(r.result_event_id ?? "")}
+                                  className="text-accent hover:underline"
+                                >
+                                  结果
+                                </button>
+                              ) : (
+                                (r.error || (r.late ? "迟到未发布" : "")) && (
+                                  <span className="min-w-0 truncate text-faint" title={r.error || undefined}>
+                                    {r.error ? truncateRun(r.error, 50) : "迟到未发布"}
+                                  </span>
+                                )
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
                     );
                   })()}
                   <button
@@ -358,4 +415,8 @@ export function TasksTab({
 /** 任务面板本地态：当前处理中的 task_id（按钮禁用与文案）。 */
 export function useTaskBusy() {
   return useState<string | null>(null);
+}
+
+function truncateRun(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + "…" : s;
 }

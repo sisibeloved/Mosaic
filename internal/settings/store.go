@@ -27,7 +27,8 @@ const (
 
 // Document 设置文档（全量小文档：读写都整份走，无局部补丁语义）。
 type Document struct {
-	RunTimeoutSeconds int `json:"run_timeout_seconds"`
+	RunTimeoutSeconds int    `json:"run_timeout_seconds"`
+	ReplyOrPassMode   string `json:"reply_or_pass_mode,omitempty"` // auto（缺省）| off（M4-3 A/B 控制组）
 }
 
 // WithDefaults 未设置字段（零值）回缺省。
@@ -35,7 +36,21 @@ func (d Document) WithDefaults() Document {
 	if d.RunTimeoutSeconds <= 0 {
 		d.RunTimeoutSeconds = DefaultRunTimeoutSeconds
 	}
+	if d.ReplyOrPassMode != ReplyOrPassOff {
+		d.ReplyOrPassMode = ReplyOrPassAuto
+	}
 	return d
+}
+
+// ReplyOrPassMode 取值。
+const (
+	ReplyOrPassAuto = "auto"
+	ReplyOrPassOff  = "off"
+)
+
+// ReplyOrPassEnabled ROP 门（引擎活读面；off = 资格座位回退两阶段）。
+func (s *Store) ReplyOrPassEnabled() bool {
+	return s.Snapshot().ReplyOrPassMode != ReplyOrPassOff
 }
 
 // ValidateRange 值域校验（写入前；读取路径不校验——损坏文件 fail safe 回缺省）。
@@ -99,6 +114,30 @@ func (s *Store) UpdateRunTimeoutSeconds(v int) error {
 	defer s.mu.Unlock()
 	doc := s.doc
 	doc.RunTimeoutSeconds = v
+	if err := writeAtomic(s.path, doc); err != nil {
+		return err
+	}
+	s.doc = doc
+	return nil
+}
+
+// ValidateReplyOrPassMode 值域校验。
+func ValidateReplyOrPassMode(v string) error {
+	if v != ReplyOrPassAuto && v != ReplyOrPassOff {
+		return fmt.Errorf("reply_or_pass_mode 须为 auto|off")
+	}
+	return nil
+}
+
+// UpdateReplyOrPassMode 校验并持久化。
+func (s *Store) UpdateReplyOrPassMode(v string) error {
+	if err := ValidateReplyOrPassMode(v); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	doc := s.doc
+	doc.ReplyOrPassMode = v
 	if err := writeAtomic(s.path, doc); err != nil {
 		return err
 	}
