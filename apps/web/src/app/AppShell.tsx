@@ -126,12 +126,17 @@ export function AppShell() {
   }, []);
 
   // 私聊判定：roster 恰为单员（与 findOrCreateDM 同语义）；组序 = 有会话按最近
-  // 活跃降序，无会话按显示名序排后（人是入口，会话是状态）。离席补全：单员房
-  // 的 Agent 已不在席（未启用）时也保留行（offSeat——只回看不发起），否则该
-  // 会话会从侧栏消失（v1.74 真机验证发现的缺口）。
+  // 活跃降序，无会话按显示名序排后（人是入口，会话是状态）。同 pid 多个单员房
+  // （删除重建过的 DM）取最新活跃——列表本就活跃降序，首个即最新，不覆盖。
+  // 离席补全：单员房的 Agent 已不在席（未启用）时也保留行（offSeat——只回看
+  // 不发起），否则该会话会从侧栏消失（v1.74 真机验证发现的缺口）；echo 测试桩
+  // 不出会话面（与席位过滤同标准——其遗留测试房从侧栏隐去，工作台仍有入口）。
   const dmByPid = new Map<string, RoomSummary>();
   for (const r of rooms ?? []) {
-    if ((r.agents?.length ?? 0) === 1) dmByPid.set(r.agents![0], r);
+    if ((r.agents?.length ?? 0) !== 1) continue;
+    const pid = r.agents![0];
+    if (pid === "par_echo" || dmByPid.has(pid)) continue;
+    dmByPid.set(pid, r);
   }
   const seatRows = (seats ?? []).map((agent) => ({
     agent,
