@@ -8,6 +8,7 @@ import type { ParticipantView } from "../../api/client";
 import { adapterLabel, channelLabel, kindLabel } from "../../lib/copy";
 import { absoluteTime, displayNameOf, participantOf, relativeTime, truncate } from "../../lib/ui";
 import { copyText } from "../../lib/clipboard";
+import { useContextMenu, type ContextMenuItem } from "../ContextMenu";
 import { Avatar } from "./Avatar";
 import { MarkdownBody } from "./MarkdownBody";
 
@@ -198,6 +199,7 @@ export function MessageList({
   participants,
   roomID,
   onQuote,
+  onQuoteMention,
   onJumpToEvent,
 }: {
   entries: TimelineEntry[];
@@ -205,11 +207,14 @@ export function MessageList({
   roomID: string | null;
   /** 点"引用"：把该消息带入输入框上方的引用卡片（RoomPage 持状态）。 */
   onQuote: (entry: TimelineEntry) => void;
+  /** 右键"引用并点名"：引用卡片 + @ 该作者（人类消息不出此项）。 */
+  onQuoteMention: (entry: TimelineEntry) => void;
   /** 引用条 / 跳转：滚到对应事件（RoomPage 的 onJumpToEvent——data-event-id 锚定）。 */
   onJumpToEvent: (eventID: string) => void;
 }) {
   const boxRef = useRef<HTMLDivElement | null>(null);
   const pinnedRef = useRef(true); // 贴底时才跟随新消息滚动
+  const menu = useContextMenu();
 
   useEffect(() => {
     const el = boxRef.current;
@@ -220,6 +225,37 @@ export function MessageList({
     const el = boxRef.current;
     if (!el) return;
     pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
+
+  // 右键菜单（v1.73）：消息对象——复制（优先选区）/引用/引用并点名/事件 ID。
+  // 选区在 contextmenu 触发时读取（右键不清除选区）；anchorNode 落在本气泡内
+  // 才提供"复制选中文字"，否则跨气泡选区退回"复制原文"。
+  const openMessageMenu = (e: React.MouseEvent, entry: TimelineEntry) => {
+    const sel = window.getSelection();
+    const selText = sel?.toString() ?? "";
+    const selInside =
+      selText.length > 0 && !!sel?.anchorNode && e.currentTarget.contains(sel.anchorNode);
+    const copyTarget = selInside ? selText : entry.body ?? "";
+    const items: ContextMenuItem[] = [
+      {
+        label: selInside ? `复制选中文字（${selText.length} 字）` : "复制原文",
+        onSelect: () => void copyText(copyTarget),
+        hint: selInside ? undefined : "含申报块",
+      },
+      { label: "引用回复", onSelect: () => onQuote(entry) },
+    ];
+    if (entry.actorKind === "agent") {
+      items.push({
+        label: "引用并 @ 作者",
+        onSelect: () => onQuoteMention(entry),
+        hint: "点名优先",
+      });
+    }
+    items.push(
+      { kind: "separator", label: "" },
+      { label: "复制事件 ID", hint: entry.key.slice(-8), onSelect: () => void copyText(entry.key) },
+    );
+    menu.open(e, items);
   };
 
   // 引用解析索引（event_id → 条目）：快照全量载入下被引消息总在；缺则渲染降级文案。
@@ -247,7 +283,12 @@ export function MessageList({
           e.kind === "system" ? (
             <SystemBar key={e.key} text={e.detail ?? ""} time={absoluteTime(e.occurredAt)} />
           ) : e.actorKind === "human" ? (
-            <div key={e.key} data-event-id={e.key} className="group rounded-xl">
+            <div
+              key={e.key}
+              data-event-id={e.key}
+              className="group rounded-xl"
+              onContextMenu={(ev) => openMessageMenu(ev, e)}
+            >
               <HumanBubble
                 entry={e}
                 participants={participants}
@@ -258,7 +299,12 @@ export function MessageList({
               />
             </div>
           ) : (
-            <div key={e.key} data-event-id={e.key} className="group rounded-xl">
+            <div
+              key={e.key}
+              data-event-id={e.key}
+              className="group rounded-xl"
+              onContextMenu={(ev) => openMessageMenu(ev, e)}
+            >
               <AgentBubble
                 entry={e}
                 participants={participants}
@@ -271,6 +317,7 @@ export function MessageList({
           ),
         )}
       </div>
+      {menu.element}
     </div>
   );
 }

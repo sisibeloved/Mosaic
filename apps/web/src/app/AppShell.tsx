@@ -4,19 +4,31 @@
 // （个人中心并入设置，v1.72 裁定）。主区 <Outlet/>。
 // 分组依据 = RoomSummary.agents（roster 投影摘要）：单员即私聊房（对齐联系人页
 // find-or-create 的 roster===1 语义）；null = 旧版全席房，归群聊组。
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
+import { api } from "../api/client";
 import { AppLogo } from "../components/AppLogo";
 import { Avatar } from "../components/chat/Avatar";
+import { useContextMenu, type ContextMenuItem } from "../components/ContextMenu";
+import { copyText } from "../lib/clipboard";
 import { relativeTime } from "../lib/ui";
-import { refreshRooms, useRooms } from "../state/rooms";
+import { execRoomCommand, refreshRooms, useRooms } from "../state/rooms";
 import { toggleTheme, useTheme } from "../state/theme";
 
 /** 会话条目（两组共用）：私聊带头像（Agent 身体），群聊带群聊图标。 */
-function RoomEntry({ room, dm }: { room: import("../api/client").RoomSummary; dm: boolean }) {
+function RoomEntry({
+  room,
+  dm,
+  onContextMenu,
+}: {
+  room: import("../api/client").RoomSummary;
+  dm: boolean;
+  onContextMenu: (e: React.MouseEvent, room: import("../api/client").RoomSummary) => void;
+}) {
   return (
     <NavLink
       to={`/rooms/${room.room_id}`}
+      onContextMenu={(e) => onContextMenu(e, room)}
       className={({ isActive }) =>
         `block rounded-lg px-2.5 py-2 transition-colors ${isActive ? "bg-surface-3" : "hover:bg-surface-2"}`
       }
@@ -47,6 +59,15 @@ export function AppShell() {
   const { rooms, error } = useRooms();
   const navigate = useNavigate();
   const [theme, setTheme] = useTheme();
+  const menu = useContextMenu();
+  // v1.73 侧栏右键操作弹层：重命名 / 删除（危险，理由必填留痕——与房间页 ⋯ 菜单同契约）。
+  const [renaming, setRenaming] = useState<{ roomID: string; name: string } | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<{ roomID: string; name: string } | null>(null);
+  const [deleteReason, setDeleteReason] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     void refreshRooms();
@@ -54,6 +75,72 @@ export function AppShell() {
 
   const dms = (rooms ?? []).filter((r) => (r.agents?.length ?? 0) === 1);
   const groups = (rooms ?? []).filter((r) => (r.agents?.length ?? 0) !== 1);
+
+  const openRoomMenu = (e: React.MouseEvent, room: import("../api/client").RoomSummary) => {
+    const items: ContextMenuItem[] = [
+      { label: "打开房间", onSelect: () => navigate(`/rooms/${room.room_id}`) },
+      {
+        label: "重命名…",
+        onSelect: () => {
+          setRenameError(null);
+          setRenaming({ roomID: room.room_id, name: room.display_name });
+        },
+      },
+      {
+        label: room.paused ? "恢复讨论" : "暂停讨论",
+        onSelect: () =>
+          void execRoomCommand(room.room_id, (v) =>
+            room.paused ? api.resumeRoom(room.room_id, v) : api.pauseRoom(room.room_id, v, "侧栏操作"),
+          ).catch(() => {}),
+      },
+      { kind: "separator", label: "" },
+      { label: "复制房间 ID", hint: room.room_id.slice(-8), onSelect: () => void copyText(room.room_id) },
+      {
+        label: "删除房间…",
+        danger: true,
+        onSelect: () => {
+          setDeleteError(null);
+          setDeleteReason("");
+          setDeleting({ roomID: room.room_id, name: room.display_name });
+        },
+      },
+    ];
+    menu.open(e, items);
+  };
+
+  const submitRename = async () => {
+    if (!renaming || renameBusy) return;
+    const name = renaming.name.trim();
+    if (!name) return;
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      await execRoomCommand(renaming.roomID, (v) => api.renameRoom(renaming.roomID, v, name));
+      setRenaming(null);
+    } catch (e) {
+      setRenameError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
+  const submitDelete = async () => {
+    if (!deleting || deleteBusy) return;
+    const reason = deleteReason.trim();
+    if (!reason) return;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await execRoomCommand(deleting.roomID, (v) => api.deleteRoom(deleting.roomID, v, reason));
+      setDeleting(null);
+      // 删除的是当前房间时回到工作台（旧路由若仍停留会拿到 room_not_found）
+      if (window.location.pathname.includes(deleting.roomID)) navigate("/");
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
 
   return (
     <div className="flex h-full">
@@ -95,7 +182,7 @@ export function AppShell() {
                 <section aria-label="私聊">
                   <h3 className="px-2.5 pb-1 pt-2 text-[11px] font-medium text-faint">私聊</h3>
                   {dms.map((r) => (
-                    <RoomEntry key={r.room_id} room={r} dm />
+                    <RoomEntry key={r.room_id} room={r} dm onContextMenu={openRoomMenu} />
                   ))}
                 </section>
               )}
@@ -103,7 +190,7 @@ export function AppShell() {
                 <section aria-label="群聊">
                   <h3 className="px-2.5 pb-1 pt-2 text-[11px] font-medium text-faint">群聊</h3>
                   {groups.map((r) => (
-                    <RoomEntry key={r.room_id} room={r} dm={false} />
+                    <RoomEntry key={r.room_id} room={r} dm={false} onContextMenu={openRoomMenu} />
                   ))}
                 </section>
               )}
@@ -143,6 +230,112 @@ export function AppShell() {
       <main className="min-w-0 flex-1">
         <Outlet />
       </main>
+
+      {menu.element}
+
+      {renaming && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          role="dialog"
+          aria-modal="true"
+          aria-label="重命名房间"
+          onClick={() => !renameBusy && setRenaming(null)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && !renameBusy) setRenaming(null);
+          }}
+        >
+          <div
+            className="mx-4 w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-sm font-semibold text-text">重命名房间</h2>
+            <input
+              autoFocus
+              value={renaming.name}
+              onChange={(e) => setRenaming({ ...renaming, name: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void submitRename();
+              }}
+              maxLength={120}
+              disabled={renameBusy}
+              aria-label="房间名"
+              className="mt-3 w-full rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-sm outline-none focus:border-accent"
+            />
+            {renameError && <p className="mt-2 text-xs text-danger">{renameError}</p>}
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={renameBusy}
+                onClick={() => setRenaming(null)}
+                className="rounded-lg px-3 py-1.5 text-xs text-dim transition-colors hover:bg-surface-2 hover:text-text disabled:opacity-40"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={renameBusy || !renaming.name.trim()}
+                onClick={() => void submitRename()}
+                className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast transition-opacity hover:opacity-90 disabled:opacity-40"
+              >
+                {renameBusy ? "保存中…" : "保存"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleting && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          role="dialog"
+          aria-modal="true"
+          aria-label="删除房间确认"
+          onClick={() => !deleteBusy && setDeleting(null)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && !deleteBusy) setDeleting(null);
+          }}
+        >
+          <div
+            className="mx-4 w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-sm font-semibold text-text">删除房间「{deleting.name}」</h2>
+            <p className="mt-2 text-xs leading-5 text-dim">
+              删除不可逆：本房间的全部消息、任务与记忆记录将被清除（事件日志级联删除，仅保留墓碑与删除理由）。
+            </p>
+            <textarea
+              autoFocus
+              value={deleteReason}
+              onChange={(e) => setDeleteReason(e.target.value)}
+              maxLength={280}
+              rows={2}
+              disabled={deleteBusy}
+              placeholder="删除理由（必填，1–280 字，留痕审计）"
+              aria-label="删除理由"
+              className="mt-3 w-full resize-none rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-sm outline-none placeholder:text-faint focus:border-danger"
+            />
+            {deleteError && <p className="mt-2 text-xs text-danger">{deleteError}</p>}
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={deleteBusy}
+                onClick={() => setDeleting(null)}
+                className="rounded-lg px-3 py-1.5 text-xs text-dim transition-colors hover:bg-surface-2 hover:text-text disabled:opacity-40"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={deleteBusy || !deleteReason.trim()}
+                onClick={() => void submitDelete()}
+                className="rounded-lg bg-danger px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+              >
+                {deleteBusy ? "删除中…" : "确认删除"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

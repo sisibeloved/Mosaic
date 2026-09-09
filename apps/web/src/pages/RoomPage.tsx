@@ -40,6 +40,9 @@ export function RoomPage() {
   const [nameDraft, setNameDraft] = useState("");
   // M4-0 引用回复：被引消息（发送成功后清除）；删除房间：确认弹层 + 留痕理由。
   const [quoted, setQuoted] = useState<QuotedMessage | null>(null);
+  // v1.73 右键点名注入：{pid, nonce}——nonce 使同目标可重复触发；Composer 消费后清零。
+  const [mentionRequest, setMentionRequest] = useState<{ pid: string; nonce: number } | null>(null);
+  const mentionNonce = useRef(0);
   // RFC-0013 附件：已上传待发送的令牌集（上传即时、发送定稿）。
   const [pendingAttachments, setPendingAttachments] = useState<{ token: string; name: string; sizeBytes: number }[]>([]);
   const [deleting, setDeleting] = useState(false);
@@ -129,6 +132,27 @@ export function RoomPage() {
     },
     [room.entries, room.participants],
   );
+
+  // v1.73 右键"引用并 @ 作者"：引用卡片 + 点名注入（agent 消息专用）。
+  const onQuoteMention = useCallback(
+    (entry: { key: string; actorID: string; body?: string | null; kind: string }) => {
+      if (entry.kind !== "message") return;
+      setQuoted({
+        eventID: entry.key,
+        author: displayNameOf(room.participants, entry.actorID),
+        excerpt: truncate((entry.body ?? "").replace(/\s+/g, " ").trim(), 64),
+      });
+      mentionNonce.current += 1;
+      setMentionRequest({ pid: entry.actorID, nonce: mentionNonce.current });
+    },
+    [room.participants],
+  );
+
+  // v1.73 成员行右键 @：仅点名注入（不携带引用）。
+  const onMention = useCallback((pid: string) => {
+    mentionNonce.current += 1;
+    setMentionRequest({ pid, nonce: mentionNonce.current });
+  }, []);
 
   // M4-0 删除房间：M3-6 命令（reason 必填 1..280 字）→ 级联清库 → 回列表。
   const onDeleteConfirm = useCallback(async () => {
@@ -323,6 +347,7 @@ export function RoomPage() {
             participants={room.participants}
             roomID={roomId}
             onQuote={(e) => onQuote(e.key)}
+            onQuoteMention={onQuoteMention}
             onJumpToEvent={onJumpToEvent}
           />
           <TypingBar typing={room.typing} participants={room.participants} failures={room.seatFailures} />
@@ -335,6 +360,8 @@ export function RoomPage() {
             attachments={pendingAttachments}
             onAddAttachment={onAddAttachment}
             onRemoveAttachment={(token) => setPendingAttachments((prev) => prev.filter((a) => a.token !== token))}
+            mentionRequest={mentionRequest}
+            onMentionConsumed={() => setMentionRequest(null)}
             onSend={(body, addressedTo, replyTo, attachments) => {
               void room
                 .send(body, addressedTo, replyTo, attachments)
@@ -372,6 +399,7 @@ export function RoomPage() {
             onEditMemory={onEditMemory}
             memoryBusy={memoryBusy}
             onJumpToEvent={onJumpToEvent}
+            onMention={onMention}
             onTabActive={onTabActive}
             onClose={() => setPanelOpen(false)}
             describeEvent={describeEvent}

@@ -1,7 +1,7 @@
 // 房间列表 store（零依赖：useSyncExternalStore + 模块级状态）。
 // 刷新时机：进入壳、建房/改名后、房间内新事件（RoomPage 防抖触发）；不轮询。
 import { useSyncExternalStore } from "react";
-import { api, type RoomSummary } from "../api/client";
+import { api, ApiError, type RoomSummary } from "../api/client";
 
 export interface RoomsState {
   rooms: RoomSummary[] | null; // null = 尚未加载
@@ -51,4 +51,29 @@ export async function createRoom(displayName = "新房间", agents: string[] = [
   const created = await api.createRoom(displayName, agents);
   await refreshRooms();
   return created.room_id;
+}
+
+/**
+ * 房间命令的独立执行入口（v1.73 侧栏右键动作用——无 useRoom 上下文）：
+ * 先拉快照校准版本，409 时重拉重试一次（与 room.ts withVersion 同策略）。
+ * 成功后刷新房间列表（侧栏是发起方，列表是它的事实源）。
+ */
+export async function execRoomCommand<T>(
+  roomID: string,
+  run: (version: number) => Promise<T>,
+): Promise<T> {
+  let snap = await api.snapshot(roomID);
+  try {
+    const out = await run(snap.room_version);
+    await refreshRooms();
+    return out;
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 409) {
+      snap = await api.snapshot(roomID);
+      const out = await run(snap.room_version);
+      await refreshRooms();
+      return out;
+    }
+    throw e;
+  }
 }

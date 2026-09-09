@@ -19,8 +19,10 @@ import type {
   TaskItem,
   ThreadItem,
 } from "../../api/room";
+import { copyText } from "../../lib/clipboard";
 import { useDevMode } from "../../state/dev";
 import { DevPanel } from "../DevPanel";
+import { useContextMenu, type ContextMenuItem } from "../ContextMenu";
 import {
   adapterLabel,
   channelLabel,
@@ -88,6 +90,7 @@ export function RoomPanel({
   onEditMemory,
   memoryBusy,
   onJumpToEvent,
+  onMention,
   onTabActive,
   onClose,
   describeEvent,
@@ -131,6 +134,8 @@ export function RoomPanel({
   memoryBusy: string | null;
   /** event_id → 时间线定位（任务申报消息跳转）。 */
   onJumpToEvent: (eventID: string) => void;
+  /** v1.73 成员行右键 @：点名注入输入框 chips。 */
+  onMention: (participantID: string) => void;
   /** 分段打开/切换时回调（触发投影刷新）。 */
   onTabActive: (tab: Segment) => void;
   onClose: () => void;
@@ -223,6 +228,7 @@ export function RoomPanel({
               failures={seatFailures}
               inviteBusy={inviteBusy}
               onInvite={onInvite}
+              onMention={onMention}
             />
           )}
           {segment === "tasks" && (
@@ -324,6 +330,7 @@ function MembersSegment({
   failures,
   inviteBusy,
   onInvite,
+  onMention,
 }: {
   participants: ParticipantView[];
   roster: string[] | null;
@@ -331,8 +338,10 @@ function MembersSegment({
   failures: SeatFailure[];
   inviteBusy: string | null;
   onInvite: (participantID: string) => void;
+  onMention: (participantID: string) => void;
 }) {
   const [inviting, setInviting] = useState(false);
+  const menu = useContextMenu();
   // 快照 participants 是全局座位视图（含未入房 Agent）；房间成员 = 人类 + roster
   // 名单内的 Agent（roster null = 全席模式，所有在席 Agent 均在房内）。
   const members = participants.filter(
@@ -342,6 +351,18 @@ function MembersSegment({
   const byPid = new Map(seats.map((s) => [s.pid, s]));
   const failed = new Map<string, SeatFailure>();
   for (const f of failures) if (!failed.has(f.participantID)) failed.set(f.participantID, f);
+
+  // 右键菜单（v1.73）：agent 成员行——@ 点名 / 复制参与者 ID（人类行无菜单语义，
+  // 保留原生）。名字即点名目标提示。
+  const openMemberMenu = (e: React.MouseEvent, p: ParticipantView) => {
+    if (p.kind !== "agent") return;
+    const items: ContextMenuItem[] = [
+      { label: `@ ${p.display_name}（点名）`, onSelect: () => onMention(p.participant_id) },
+      { kind: "separator", label: "" },
+      { label: "复制参与者 ID", hint: p.participant_id.slice(-8), onSelect: () => void copyText(p.participant_id) },
+    ];
+    menu.open(e, items);
+  };
 
   return (
     <div className="py-1">
@@ -368,7 +389,11 @@ function MembersSegment({
             const seat = byPid.get(p.participant_id);
             const fail = failed.get(p.participant_id);
             return (
-              <li key={p.participant_id} className="flex items-start gap-2.5 px-3 py-2">
+              <li
+                key={p.participant_id}
+                className="flex items-start gap-2.5 px-3 py-2"
+                onContextMenu={(ev) => openMemberMenu(ev, p)}
+              >
                 <Avatar participantID={p.participant_id} displayName={p.display_name} size={28} />
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-1.5 text-sm">
@@ -415,6 +440,7 @@ function MembersSegment({
           })}
         </ul>
       )}
+      {menu.element}
     </div>
   );
 }

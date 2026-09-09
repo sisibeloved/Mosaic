@@ -51,6 +51,13 @@ function detectMention(value: string, caret: number): Mention | null {
   return { query: m[1], start: caret - m[1].length - 1, end: caret };
 }
 
+/** 外部点名注入（v1.73 右键"引用并 @ 作者"/成员行 @）：nonce 递增保证同目标
+ * 重复注入也能触发 effect；消费后由 onMentionConsumed 清零。 */
+export interface MentionRequest {
+  pid: string;
+  nonce: number;
+}
+
 export function Composer({
   disabled,
   paused,
@@ -60,6 +67,8 @@ export function Composer({
   attachments,
   onAddAttachment,
   onRemoveAttachment,
+  mentionRequest,
+  onMentionConsumed,
   onSend,
 }: {
   disabled: boolean;
@@ -72,6 +81,8 @@ export function Composer({
   attachments: { token: string; name: string; sizeBytes: number }[];
   onAddAttachment: (file: File) => void;
   onRemoveAttachment: (token: string) => void;
+  mentionRequest: MentionRequest | null;
+  onMentionConsumed: () => void;
   onSend: (body: string, addressedTo: string[], replyTo: string | null, attachments: string[]) => void;
 }) {
   const [body, setBody] = useState("");
@@ -81,6 +92,22 @@ export function Composer({
   const areaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const blocked = disabled || paused;
+
+  // 外部点名注入：右键/成员行 → chips（去重 + 上限 3，与 @ 补全同门）。
+  useEffect(() => {
+    if (!mentionRequest) return;
+    const target = agents.find((a) => a.participant_id === mentionRequest.pid);
+    if (target) {
+      setChips((prev) =>
+        prev.some((c) => c.participant_id === target.participant_id) || prev.length >= MAX_TARGETS
+          ? prev
+          : [...prev, target],
+      );
+      areaRef.current?.focus();
+    }
+    onMentionConsumed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 注入按 nonce 触发一次性副作用
+  }, [mentionRequest]);
 
   // 自动增高（上限 180px）
   useEffect(() => {
