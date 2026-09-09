@@ -9,6 +9,7 @@ import { api, ApiError, type BackupSummary, type Executable, type MonitorView, t
 import { AppLogo } from "../components/AppLogo";
 import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
 import { useDevMode } from "../state/dev";
+import { refreshAgentSeats } from "../state/rooms";
 import { useTheme } from "../state/theme";
 import { adapterLabel, channelLabel } from "../lib/copy";
 import { absoluteTime, truncate } from "../lib/ui";
@@ -217,6 +218,7 @@ export function SettingsPage() {
     try {
       await api.setEnabled(exe.id, !exe.enabled);
       await refreshExecutables();
+      await refreshAgentSeats(); // 侧栏私聊组随启停即时增减（v1.74 联系人收敛）
     } catch (e) {
       setError(
         e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e),
@@ -247,6 +249,7 @@ export function SettingsPage() {
       setForm({ adapter: "", runtime: "native", distro: "", path: "", version: "", channel: "" });
       setFormMsg("已登记");
       await refreshExecutables();
+      await refreshAgentSeats();
     } catch (e) {
       setFormMsg(
         e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e),
@@ -336,7 +339,7 @@ export function SettingsPage() {
               <div className="mt-3">
                 <button
                   type="button"
-                  onClick={() => void refreshExecutables()}
+                  onClick={() => void refreshExecutables().then(refreshAgentSeats)}
                   className="rounded-lg bg-surface-3 px-2.5 py-1 text-xs text-text transition-opacity hover:opacity-85"
                 >
                   重新扫描
