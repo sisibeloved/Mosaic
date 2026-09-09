@@ -51,27 +51,36 @@ function RoomEntry({
 }
 
 /** 私聊条目（v1.74 = 联系人）：Agent 头像锚定身份；有会话显活跃摘要，无会话
- * 弱化为发起入口（find-or-create——删除后重建即新会话，身份不复活旧记忆）。 */
+ * 弱化为发起入口（find-or-create——删除后重建即新会话，身份不复活旧记忆）。
+ * offSeat = 会话在而 Agent 已离席（未启用）：保留入口可回看，不可再发起。 */
 function SeatEntry({
   agent,
   dm,
+  offSeat = false,
   opening,
   onOpen,
   onContextMenu,
 }: {
   agent: AgentSeatInfo;
   dm: RoomSummary | null;
+  offSeat?: boolean;
   opening: boolean;
-  onOpen: (agent: AgentSeatInfo) => void;
+  onOpen: (agent: AgentSeatInfo, dm: RoomSummary | null) => void;
   onContextMenu: (e: React.MouseEvent, agent: AgentSeatInfo, dm: RoomSummary | null) => void;
 }) {
   const active = dm ? window.location.pathname === `/rooms/${dm.room_id}` : false;
   return (
     <button
       type="button"
-      onClick={() => onOpen(agent)}
+      onClick={() => onOpen(agent, dm)}
       onContextMenu={(e) => onContextMenu(e, agent, dm)}
-      title={dm ? `回到与 ${agent.display_name} 的私聊` : `与 ${agent.display_name} 发起私聊`}
+      title={
+        offSeat
+          ? `与 ${agent.display_name} 的私聊（该 Agent 当前未启用——回看历史；启用后自动恢复对话）`
+          : dm
+            ? `回到与 ${agent.display_name} 的私聊`
+            : `与 ${agent.display_name} 发起私聊`
+      }
       className={`block w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
         active ? "bg-surface-3" : "hover:bg-surface-2"
       }`}
@@ -79,9 +88,9 @@ function SeatEntry({
       <span className="flex items-center gap-2">
         <Avatar participantID={agent.participant_id} displayName={agent.display_name} size={20} />
         <span className="min-w-0 flex-1 truncate text-sm text-text">{agent.display_name}</span>
-        {dm?.paused && (
-          <span className="shrink-0 text-[10px] text-warn" title="已暂停">
-            ⏸
+        {(offSeat || dm?.paused) && (
+          <span className="shrink-0 text-[10px] text-warn" title={offSeat ? "Agent 未启用" : "已暂停"}>
+            {offSeat ? "离席" : "⏸"}
           </span>
         )}
       </span>
@@ -117,13 +126,28 @@ export function AppShell() {
   }, []);
 
   // 私聊判定：roster 恰为单员（与 findOrCreateDM 同语义）；组序 = 有会话按最近
-  // 活跃降序，无会话按显示名序排后（人是入口，会话是状态）。
+  // 活跃降序，无会话按显示名序排后（人是入口，会话是状态）。离席补全：单员房
+  // 的 Agent 已不在席（未启用）时也保留行（offSeat——只回看不发起），否则该
+  // 会话会从侧栏消失（v1.74 真机验证发现的缺口）。
   const dmByPid = new Map<string, RoomSummary>();
   for (const r of rooms ?? []) {
     if ((r.agents?.length ?? 0) === 1) dmByPid.set(r.agents![0], r);
   }
-  const seatRows = (seats ?? []).map((agent) => ({ agent, dm: dmByPid.get(agent.participant_id) ?? null }));
-  seatRows.sort((a, b) => {
+  const seatRows = (seats ?? []).map((agent) => ({
+    agent,
+    dm: dmByPid.get(agent.participant_id) ?? null,
+    offSeat: false,
+  }));
+  const seatPids = new Set((seats ?? []).map((a) => a.participant_id));
+  const orphanRows = [...dmByPid.entries()]
+    .filter(([pid]) => !seatPids.has(pid))
+    .map(([pid, dm]) => ({
+      agent: { participant_id: pid, display_name: dm.display_name, adapter: "" } as AgentSeatInfo,
+      dm,
+      offSeat: true,
+    }));
+  const rows = [...seatRows, ...orphanRows];
+  rows.sort((a, b) => {
     if (a.dm && b.dm) return a.dm.last_event_at < b.dm.last_event_at ? 1 : -1;
     if (a.dm) return -1;
     if (b.dm) return 1;
@@ -131,7 +155,11 @@ export function AppShell() {
   });
   const groups = (rooms ?? []).filter((r) => (r.agents?.length ?? 0) !== 1);
 
-  const openDM = (agent: AgentSeatInfo) => {
+  const openDM = (agent: AgentSeatInfo, dm: RoomSummary | null) => {
+    if (dm) {
+      navigate(`/rooms/${dm.room_id}`); // 会话已在（含离席回看）：直达不重建
+      return;
+    }
     if (openingPID) return;
     setOpeningPID(agent.participant_id);
     void findOrCreateDM(agent)
@@ -179,7 +207,7 @@ export function AppShell() {
       {
         label: dm ? "复制参与者 ID" : `发起私聊（${agent.display_name}）`,
         hint: dm ? agent.participant_id.slice(-8) : undefined,
-        onSelect: () => (dm ? void copyText(agent.participant_id) : openDM(agent)),
+        onSelect: () => (dm ? void copyText(agent.participant_id) : openDM(agent, null)),
       },
     ];
     if (dm) {
@@ -247,11 +275,12 @@ export function AppShell() {
             <>
               <section aria-label="私聊">
                 <h3 className="px-2.5 pb-1 pt-2 text-[11px] font-medium text-faint">私聊</h3>
-                {seatRows.map(({ agent, dm }) => (
+                {rows.map(({ agent, dm, offSeat }) => (
                   <SeatEntry
                     key={agent.participant_id}
                     agent={agent}
                     dm={dm}
+                    offSeat={offSeat}
                     opening={openingPID === agent.participant_id}
                     onOpen={openDM}
                     onContextMenu={openSeatMenu}
@@ -280,7 +309,7 @@ export function AppShell() {
                   ))}
                 </section>
               )}
-              {rooms.length === 0 && seatRows.length === 0 && (
+              {rooms.length === 0 && rows.length === 0 && (
                 <p className="px-2 py-3 text-xs text-faint">
                   还没有会话——点上方 + 开始第一场讨论。
                 </p>
