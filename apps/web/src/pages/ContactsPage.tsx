@@ -5,7 +5,7 @@
 //（ADR-0013 会话按 (profile, room) 独立映射，服务端语义）。
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, ApiError, type AgentSeatInfo } from "../api/client";
+import { api, ApiError, type AgentSeatInfo, type DisabledAgentInfo } from "../api/client";
 import { refreshRooms } from "../state/rooms";
 import { adapterLabel } from "../lib/copy";
 import { Avatar } from "../components/chat/Avatar";
@@ -37,6 +37,7 @@ async function findOrCreateDM(bot: AgentSeatInfo): Promise<string> {
 export function ContactsPage() {
   const navigate = useNavigate();
   const [agents, setAgents] = useState<AgentSeatInfo[] | null>(null);
+  const [disabled, setDisabled] = useState<DisabledAgentInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
 
@@ -44,8 +45,10 @@ export function ContactsPage() {
     let alive = true;
     void api
       .agents()
-      .then(({ agents: seats }) => {
-        if (alive) setAgents(seats.filter((a) => a.participant_id !== "par_echo"));
+      .then(({ agents: seats, disabled: off }) => {
+        if (!alive) return;
+        setAgents(seats.filter((a) => a.participant_id !== "par_echo"));
+        setDisabled(off ?? []);
       })
       .catch((e) => {
         if (alive) setError(e instanceof Error ? e.message : String(e));
@@ -113,6 +116,25 @@ export function ContactsPage() {
           私聊房间与普通群聊同一套协议（反应波/任务/记忆按房间独立）；任务执行通道的
           指派与结果归属按稳定身份记录，CLI 换安装位置不中断。
         </p>
+        {disabled.length > 0 && (
+          <div>
+            <p className="mb-1.5 text-xs text-faint">已发现但未启用：</p>
+            <div className="flex flex-wrap gap-2">
+              {disabled.map((d) => (
+                <span
+                  key={`${d.adapter}:${d.channel}`}
+                  title="未启用——设置 → Agent 里开启后自动入座"
+                  className="cursor-not-allowed rounded-full border border-border bg-surface px-3.5 py-1.5 text-xs text-faint"
+                >
+                  {adapterLabel(d.adapter)}
+                  <span className="ml-1.5 text-[11px] opacity-60">
+                    {d.channel === "cli" ? "CLI" : d.channel} · 未启用
+                  </span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

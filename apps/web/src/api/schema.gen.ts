@@ -625,6 +625,8 @@ export interface components {
              * @description message.posted 类事件数
              */
             message_count: number;
+            /** @description roster 投影摘要（room.created.agents 物化快照 + participant.admitted 链；旧房间历史推导；缺省 = 旧版全席房间）——侧栏私聊/群聊分型依据（单元素即私聊房） */
+            agents?: string[];
         };
         /** @description 字段集与 events/message.posted.schema.json 对齐（M2 定稿）；relations 项不收 provenance（系统固化 explicit）。 */
         PostMessagePayload: {

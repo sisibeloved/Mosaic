@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/sisibeloved/Mosaic/internal/contextx"
@@ -387,8 +388,39 @@ func (s *Store) RoomExists(ctx context.Context, roomID string) (bool, error) {
 // display_name 取序内最新 room.created/room.renamed 载荷；paused = 最新生命周期事件为
 // room.paused；message_count 计 message.posted。按 last_event_at 倒序（同刻 room_id
 // 升序兜底，排序确定性——与 MemStore 实现同规则）。
+// v1.72：agents 聚合与 room.RosterOf 同语义分层（侧栏私聊/群聊分型依据）——
+// explicit = room.created.payload.agents（建房间时物化快照）+ participant.admitted
+// 载荷；无 explicit 的旧房间 → 历史推导（agent actor 参与者 + intent.recorded/
+// floor.granted 载荷目标）；两者皆无 → NULL = 全席（首轮兼容；引擎写库数据均为
+// par_* 形态，SQL 不重复 participantIDPattern 校验）。
 func (s *Store) ListRooms(ctx context.Context) ([]room.RoomSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
+		WITH roster_rows AS (
+			SELECT e.room_id AS room_id, je.value AS pid, 1 AS is_explicit
+				FROM room_events e, json_each(COALESCE(json_extract(e.envelope, '$.payload.agents'), '[]')) je
+				WHERE e.type = 'room.created'
+			UNION
+			SELECT e.room_id, json_extract(e.envelope, '$.payload.participant_id'), 1
+				FROM room_events e
+				WHERE e.type = 'participant.admitted'
+			UNION
+			SELECT e.room_id, json_extract(e.envelope, '$.actor.participant_id'), 0
+				FROM room_events e
+				WHERE json_extract(e.envelope, '$.actor.kind') = 'agent'
+			UNION
+			SELECT e.room_id, json_extract(e.envelope, '$.payload.participant_id'), 0
+				FROM room_events e
+				WHERE e.type IN ('intent.recorded', 'floor.granted')
+		),
+		roster AS (
+			SELECT room_id,
+				CASE WHEN SUM(is_explicit) > 0
+					THEN GROUP_CONCAT(CASE WHEN is_explicit = 1 THEN pid END)
+					ELSE GROUP_CONCAT(pid)
+				END AS agents
+			FROM roster_rows
+			GROUP BY room_id
+		)
 		SELECT
 			r.room_id,
 			COALESCE((SELECT json_extract(e.envelope, '$.payload.display_name') FROM room_events e
@@ -404,8 +436,10 @@ func (s *Store) ListRooms(ctx context.Context) ([]room.RoomSummary, error) {
 				WHERE e.room_id = r.room_id AND e.type IN ('room.paused', 'room.started')
 				ORDER BY e.seq DESC LIMIT 1), 0) AS paused,
 			(SELECT COUNT(*) FROM room_events e
-				WHERE e.room_id = r.room_id AND e.type = 'message.posted') AS message_count
+				WHERE e.room_id = r.room_id AND e.type = 'message.posted') AS message_count,
+			ro.agents
 		FROM (SELECT DISTINCT room_id FROM room_events WHERE type = 'room.created') r
+		LEFT JOIN roster ro ON ro.room_id = r.room_id
 		ORDER BY last_event_at DESC, r.room_id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list rooms: %w", err)
@@ -414,9 +448,16 @@ func (s *Store) ListRooms(ctx context.Context) ([]room.RoomSummary, error) {
 	out := []room.RoomSummary{}
 	for rows.Next() {
 		var sum room.RoomSummary
+		var agents sql.NullString
 		if err := rows.Scan(&sum.RoomID, &sum.DisplayName, &sum.CreatedAt, &sum.LastEventAt,
-			&sum.Paused, &sum.MessageCount); err != nil {
+			&sum.Paused, &sum.MessageCount, &agents); err != nil {
 			return nil, fmt.Errorf("sqlite: scan room summary: %w", err)
+		}
+		if agents.Valid && agents.String != "" {
+			// GROUP_CONCAT 无序：拆分后排序保输出确定性（与 MemStore 投影一致）。
+			list := strings.Split(agents.String, ",")
+			sort.Strings(list)
+			sum.Agents = list
 		}
 		out = append(out, sum)
 	}

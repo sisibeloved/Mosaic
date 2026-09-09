@@ -1,4 +1,5 @@
-// 首页（/ 与 /new）：引导建房页——选择入房 Agent（拉人进群语义——dogfood 反馈 #1）后建房跳转。
+// 建房页（/new；零房间时也是工作台的空态引导）：话题名（可选——消灭"新房间"
+// 堆积）+ 选择入房 Agent（拉人进群语义——dogfood 反馈 #1）后建房跳转。
 // 不选 = 拉入当前全部在席 Agent（建房时点快照——之后新启用的 Agent 不自动入房，
 // 走房间内邀请）；未启用的已发现项以灰芯片如实展示，指路设置。
 import { useEffect, useState } from "react";
@@ -10,6 +11,7 @@ import { createRoom } from "../state/rooms";
 
 export function NewRoomPage() {
   const navigate = useNavigate();
+  const [topic, setTopic] = useState("");
   const [agents, setAgents] = useState<AgentSeatInfo[] | null>(null);
   const [disabled, setDisabled] = useState<DisabledAgentInfo[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -61,7 +63,7 @@ export function NewRoomPage() {
     setCreating(true);
     setError(null);
     try {
-      const roomID = await createRoom("新房间", [...selected]);
+      const roomID = await createRoom(topic.trim() || "新房间", [...selected]);
       navigate(`/rooms/${roomID}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -80,6 +82,15 @@ export function NewRoomPage() {
         选择要拉进房间的 Agent（不选 = 当前全部在席；入房名单在创建时确定，之后新启用的
         Agent 经房间内邀请加入）；它们会自主评估发言权，你也可以随时 @ 点名。
       </p>
+
+      <input
+        value={topic}
+        onChange={(e) => setTopic(e.target.value)}
+        maxLength={120}
+        placeholder="话题名（可选，如：存储选型评审）"
+        aria-label="话题名"
+        className="w-full max-w-lg rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm outline-none placeholder:text-faint focus:border-accent"
+      />
 
       <div className="flex max-w-lg flex-wrap justify-center gap-2" role="group" aria-label="选择入房 Agent">
         {agents === null ? (

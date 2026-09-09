@@ -946,6 +946,8 @@ type RoomList struct {
 
 // RoomSummary defines model for RoomSummary.
 type RoomSummary struct {
+	// Agents roster 投影摘要（room.created.agents 物化快照 + participant.admitted 链；旧房间历史推导；缺省 = 旧版全席房间）——侧栏私聊/群聊分型依据（单元素即私聊房）
+	Agents    *[]string `json:"agents,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 
 	// DisplayName 最新 room.created/room.renamed 投影

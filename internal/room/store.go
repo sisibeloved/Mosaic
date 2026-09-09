@@ -69,13 +69,17 @@ type StoredEvent struct {
 // RoomSummary 房间列表项（GET /v1/rooms 读路径 DTO；存储层聚合产出）。
 // LastEventAt 取该房间最新事件时间（无事件则等于 CreatedAt——房间由 room.created 开启，
 // 故任何在列房间必有 CreatedAt）；MessageCount 计 message.posted 类事件数。
+// Agents 是 roster 投影摘要（RosterOf 同语义：room.created.agents 物化快照 +
+// participant.admitted 链；旧房间历史推导；无 agent 历史回退 nil = 全席）——
+// v1.72 侧栏私聊/群聊分型依据（len==1 即私聊房；nil 旧全席房归群聊组）。
 type RoomSummary struct {
-	RoomID       string `json:"room_id"`
-	DisplayName  string `json:"display_name"`
-	CreatedAt    string `json:"created_at"`
-	LastEventAt  string `json:"last_event_at"`
-	Paused       bool   `json:"paused"`
-	MessageCount int64  `json:"message_count"`
+	RoomID       string   `json:"room_id"`
+	DisplayName  string   `json:"display_name"`
+	CreatedAt    string   `json:"created_at"`
+	LastEventAt  string   `json:"last_event_at"`
+	Paused       bool     `json:"paused"`
+	MessageCount int64    `json:"message_count"`
+	Agents       []string `json:"agents,omitempty"`
 }
 
 // RoomLister 房间列表读端口（MemStore/SQLite 双实现；UI 重设计切片 1）。

@@ -222,6 +222,16 @@ func (m *MemStore) ListRooms(_ context.Context) ([]RoomSummary, error) {
 		if !created {
 			continue
 		}
+		// v1.72：roster 投影摘要（RosterOf 同源——显式名单/旧房历史推导/无历史 nil
+		// = 全席）；键排序保 JSON 输出确定性。
+		if roster := RosterOf(events); roster != nil {
+			agents := make([]string, 0, len(roster))
+			for pid := range roster {
+				agents = append(agents, pid)
+			}
+			sort.Strings(agents)
+			sum.Agents = agents
+		}
 		out = append(out, sum)
 	}
 	sort.Slice(out, func(i, j int) bool {

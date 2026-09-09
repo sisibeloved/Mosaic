@@ -916,6 +916,10 @@ components:
           description: 该房间最新事件时间（无事件则等于 created_at）；列表按此倒序
         paused: { type: boolean, description: 最新生命周期事件为 room.paused }
         message_count: { type: integer, format: int64, minimum: 0, description: message.posted 类事件数 }
+        agents:
+          type: array
+          items: { type: string }
+          description: roster 投影摘要（room.created.agents 物化快照 + participant.admitted 链；旧房间历史推导；缺省 = 旧版全席房间）——侧栏私聊/群聊分型依据（单元素即私聊房）
     PostMessagePayload:
       type: object
       required: [body]
