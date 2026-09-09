@@ -13,15 +13,15 @@ import (
 
 // ContextPanorama 全景快照（GET /v1/rooms/{id}/context 响应体）。
 type ContextPanorama struct {
-	RoomID     string               `json:"room_id"`
-	Watermark  string               `json:"watermark"`
-	NearWindow []PanoramaMessage    `json:"near_window"`
+	RoomID     string                   `json:"room_id"`
+	Watermark  string                   `json:"watermark"`
+	NearWindow []PanoramaMessage        `json:"near_window"`
 	Retrieved  []contextx.RetrievedItem `json:"retrieved"`
-	Keywords   []string             `json:"retrieval_keywords"`
-	Curated    []CuratedEntry       `json:"curated_memory"`
-	Capsules   []MemoryCapsuleView  `json:"capsules"`
-	Budget     CuratedBudgetStat    `json:"budget"`
-	Tasklist   []TaskBriefView      `json:"tasklist"`
+	Keywords   []string                 `json:"retrieval_keywords"`
+	Curated    []CuratedEntry           `json:"curated_memory"`
+	Capsules   []MemoryCapsuleView      `json:"capsules"`
+	Budget     CuratedBudgetStat        `json:"budget"`
+	Tasklist   []TaskBriefView          `json:"tasklist"`
 }
 
 // PanoramaMessage 近窗消息（原文；actor/kind/时间供人类阅读）。

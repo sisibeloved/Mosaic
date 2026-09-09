@@ -6,6 +6,7 @@
 //   - 安全扫描：不可见 Unicode / 控制字符 / 提示注入套语拒绝（_scan_memory_content 同构）；
 //   - 完全重复拒绝（hoarding 防线）；
 //   - 人工纠错走既有 memory.edited 事后编辑面（生效于下次组装）。
+//
 // 事件溯源：memory.curated 逐 op 留痕（含拒绝原因）；条目 ID 按折叠序确定性分配。
 package room
 
@@ -36,12 +37,12 @@ type CuratedEntry struct {
 
 // CuratedBudgetStat 策展面容量水位（与胶囊共单预算——恒常平面一个池）。
 type CuratedBudgetStat struct {
-	BudgetRunes     int `json:"budget_runes"`
-	CuratedRunes    int `json:"curated_runes"`
-	CuratedCount    int `json:"curated_count"`
-	CapsuleRunes    int `json:"capsule_runes"`
-	CapsuleCount    int `json:"capsule_count"`
-	OverBudget      int `json:"over_budget_runes"` // 策展+胶囊超出预算的部分（注入裁剪依据）
+	BudgetRunes  int `json:"budget_runes"`
+	CuratedRunes int `json:"curated_runes"`
+	CuratedCount int `json:"curated_count"`
+	CapsuleRunes int `json:"capsule_runes"`
+	CapsuleCount int `json:"capsule_count"`
+	OverBudget   int `json:"over_budget_runes"` // 策展+胶囊超出预算的部分（注入裁剪依据）
 }
 
 // CuratedEntriesOf 事件流折叠 → 策展条目清单（时间序）。applied 操作依序应用；

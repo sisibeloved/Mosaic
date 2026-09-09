@@ -2,7 +2,7 @@
 // 转录 + 当前记忆清单，自助产出策展操作。机制对照 Hermes background_review.py：
 // "After every turn … ask 'should any memory be saved or updated?'"——写入直达
 // 存储（免审批）、不触碰在途波（与波共用房间串行队列天然互斥）、失败只记日志
-//（评审是例行情报任务，不是座位能力面——失败不构成 seat status）。
+// （评审是例行情报任务，不是座位能力面——失败不构成 seat status）。
 package room
 
 import (

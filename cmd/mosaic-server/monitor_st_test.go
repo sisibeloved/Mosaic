@@ -7,10 +7,10 @@ package main_test
 
 import (
 	"encoding/json"
-	goruntime "runtime"
 	"net/http"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"testing"
 	"time"
 )

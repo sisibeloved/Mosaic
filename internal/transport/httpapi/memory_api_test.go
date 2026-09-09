@@ -64,10 +64,10 @@ func TestMemoryEndpointsPanoramaAndReceipts(t *testing.T) {
 		},
 		Tenant: "ten_local"})
 	ts := httptest.NewServer(New(Deps{
-		SVC:           svc,
-		Reader:        store,
-		Hub:           sse.NewHub(),
-		Actor:         room.Actor{ParticipantID: "par_owner", Kind: "human"},
+		SVC:    svc,
+		Reader: store,
+		Hub:    sse.NewHub(),
+		Actor:  room.Actor{ParticipantID: "par_owner", Kind: "human"},
 		ReceiptLister: fakeReceiptLister{receipts: []contextx.Receipt{{
 			ReceiptID: "rcpt_test1", RoomID: "room_x", TaskID: "rnd_t:eval", Watermark: 7, LayerDigests: []string{"d1", "d2"}, CreatedAt: "2026-09-08T00:00:00.000Z",
 		}}},

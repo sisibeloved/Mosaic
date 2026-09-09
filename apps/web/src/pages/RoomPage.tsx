@@ -1,13 +1,18 @@
-// 房间页：顶栏（房名双击/编辑图标改名、连接态、暂停/恢复/删除、抽屉开关）
-// + 消息流 + 正在输入区 + 输入框 + 右侧可折叠抽屉（成员/发言评估/话题线）。
-// M4-0：消息复制/引用回复接线（引用状态在此持有）；删除房间确认（reason 必填留痕）。
-import { useCallback, useEffect, useState } from "react";
+// 房间页（v1.71 顶栏重排——功能与交互逻辑先行）：
+//   顶栏左侧：房名（双击改名）+ 连接态 + 暂停徽标（信息，只读）
+//   顶栏右侧：搜索（房间级检索浮层）、暂停/恢复（中频操作）、⋯ 菜单（改名/删除
+//   ——危险低频操作收进菜单）、信息面板开关（高频）
+//   主区：消息流 + 正在输入/失败条 + 输入框（结构健康，不动）
+//   右侧：RoomPanel 常驻信息面板（五分段，默认展开）
+// M4-0：消息复制/引用回复接线；删除房间确认（reason 必填留痕）；RFC-0013 附件。
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useRoom, type Connection } from "../api/room";
 import { Composer, type QuotedMessage } from "../components/chat/Composer";
-import { MemberPanel } from "../components/chat/MemberPanel";
 import { MessageList } from "../components/chat/MessageList";
+import { RoomPanel } from "../components/chat/RoomPanel";
+import { RoomSearch } from "../components/chat/RoomSearch";
 import { TypingBar } from "../components/chat/TypingBar";
 import { displayNameOf, truncate } from "../lib/ui";
 import { refreshRooms } from "../state/rooms";
@@ -24,7 +29,9 @@ export function RoomPage() {
   const { roomId = null } = useParams();
   const room = useRoom(roomId);
   const navigate = useNavigate();
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  // v1.71：右侧信息面板默认展开（信息常驻；高频开关收顶栏图标）。
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [endorseBusy, setEndorseBusy] = useState<string | null>(null);
   const [inviteBusy, setInviteBusy] = useState<string | null>(null);
   const [taskBusy, setTaskBusy] = useState<string | null>(null);
@@ -88,7 +95,6 @@ export function RoomPage() {
     [room],
   );
 
-
   // refreshProjections 在 useRoom 内为稳定引用（useCallback 空依赖），首帧捕获即可。
   const onTabActive = useCallback(() => {
     void room.refreshProjections();
@@ -140,7 +146,7 @@ export function RoomPage() {
   }, [deleteReason, deleteBusy, room, navigate]);
 
   // M3-3 任务裁定 / 记忆编辑：SSE 事件驱动快照重投影；SSE 未达时兜底手刷一次。
-  // M4-1：任务 Tab"执行"按钮 → run_task（负责人 + 任务文本 + task_id 关联）。
+  // M4-1：任务段"执行"按钮 → run_task（负责人 + 任务文本 + task_id 关联）。
   const onRunTask = useCallback(
     (taskID: string, assignee: string, instruction: string) => {
       setTaskBusy(taskID);
@@ -224,7 +230,7 @@ export function RoomPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-2 border-b border-border px-4 py-2.5">
+      <header className="relative z-20 flex items-center gap-2 border-b border-border px-4 py-2.5">
         {editing ? (
           <input
             autoFocus
@@ -240,24 +246,9 @@ export function RoomPage() {
             className="w-64 rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm outline-none focus:border-accent"
           />
         ) : (
-          <>
-            <h1
-              className="cursor-text truncate text-sm font-medium tracking-tight"
-              title="双击改名"
-              onDoubleClick={startRename}
-            >
-              {room.displayName || "加载中…"}
-            </h1>
-            <button
-              type="button"
-              onClick={startRename}
-              aria-label="改名"
-              title="改名"
-              className="rounded-lg p-1 text-faint transition-colors hover:bg-surface-2 hover:text-text"
-            >
-              <IconPencil />
-            </button>
-          </>
+          <h1 className="cursor-text truncate text-sm font-medium tracking-tight" title="双击改名" onDoubleClick={startRename}>
+            {room.displayName || "加载中…"}
+          </h1>
         )}
         <span className="flex items-center gap-1.5 text-[11px] text-faint" title={`连接状态：${CONNECTION_TEXT[room.connection]}`}>
           <span
@@ -279,32 +270,46 @@ export function RoomPage() {
         <div className="flex-1" />
         <button
           type="button"
+          onClick={() => setSearchOpen((v) => !v)}
+          aria-pressed={searchOpen}
+          title="搜索房内消息"
+          aria-label="搜索房内消息"
+          className={`rounded-lg p-2 transition-colors ${
+            searchOpen ? "bg-surface-3 text-text" : "text-dim hover:bg-surface-2 hover:text-text"
+          }`}
+        >
+          <IconSearch />
+        </button>
+        <button
+          type="button"
           onClick={() => void (room.paused ? room.resume() : room.pause()).catch(() => {})}
-          className="rounded-lg px-2.5 py-1 text-xs text-dim transition-colors hover:bg-surface-2 hover:text-text"
+          title={room.paused ? "恢复讨论（Agent 重新开始评估发言）" : "暂停讨论（Agent 停止自主评估）"}
+          className="rounded-lg px-2.5 py-1.5 text-xs text-dim transition-colors hover:bg-surface-2 hover:text-text"
         >
           {room.paused ? "恢复讨论" : "暂停"}
         </button>
-        <button
-          type="button"
-          onClick={() => {
+        <RoomMenu
+          onRename={startRename}
+          onDelete={() => {
             setDeleteReason("");
             setDeleting(true);
           }}
-          title="删除房间（不可逆，事件与任务记录一并清除）"
-          className="rounded-lg px-2.5 py-1 text-xs text-dim transition-colors hover:bg-[color-mix(in_srgb,var(--danger)_12%,transparent)] hover:text-danger"
-        >
-          删除
-        </button>
+        />
         <button
           type="button"
-          onClick={() => setDrawerOpen((v) => !v)}
-          aria-pressed={drawerOpen}
-          className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
-            drawerOpen ? "bg-surface-3 text-text" : "text-dim hover:bg-surface-2 hover:text-text"
+          onClick={() => setPanelOpen((v) => !v)}
+          aria-pressed={panelOpen}
+          title={panelOpen ? "收起信息面板" : "展开信息面板（成员/任务/记忆/讨论）"}
+          aria-label="信息面板开关"
+          className={`rounded-lg p-2 transition-colors ${
+            panelOpen ? "bg-surface-3 text-text" : "text-dim hover:bg-surface-2 hover:text-text"
           }`}
         >
-          成员
+          <IconPanel />
         </button>
+        {searchOpen && roomId && (
+          <RoomSearch roomID={roomId} onJumpToEvent={onJumpToEvent} onClose={() => setSearchOpen(false)} />
+        )}
       </header>
       {room.error && (
         <p className="border-b border-border bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] px-4 py-1.5 text-xs text-danger">
@@ -341,8 +346,8 @@ export function RoomPage() {
             }}
           />
         </div>
-        {drawerOpen && (
-          <MemberPanel
+        {panelOpen && (
+          <RoomPanel
             roomID={roomId}
             participants={room.participants}
             roster={room.roster}
@@ -368,7 +373,7 @@ export function RoomPage() {
             memoryBusy={memoryBusy}
             onJumpToEvent={onJumpToEvent}
             onTabActive={onTabActive}
-            onClose={() => setDrawerOpen(false)}
+            onClose={() => setPanelOpen(false)}
             describeEvent={describeEvent}
           />
         )}
@@ -428,10 +433,92 @@ export function RoomPage() {
   );
 }
 
-function IconPencil() {
+/** ⋯ 菜单：改名 / 删除房间（危险低频操作收进菜单，不占顶栏常驻位）。 */
+function RoomMenu({ onRename, onDelete }: { onRename: () => void; onDelete: () => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
   return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z" />
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        title="更多操作"
+        aria-label="更多操作"
+        className={`rounded-lg p-2 transition-colors ${
+          open ? "bg-surface-3 text-text" : "text-dim hover:bg-surface-2 hover:text-text"
+        }`}
+      >
+        <IconMore />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="animate-fade-in absolute right-0 top-full z-40 mt-1 w-44 overflow-hidden rounded-xl border border-border bg-surface py-1 shadow-xl"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onRename();
+            }}
+            className="block w-full px-3 py-1.5 text-left text-xs text-dim transition-colors hover:bg-surface-2 hover:text-text"
+          >
+            重命名房间
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onDelete();
+            }}
+            className="block w-full px-3 py-1.5 text-left text-xs text-dim transition-colors hover:bg-[color-mix(in_srgb,var(--danger)_12%,transparent)] hover:text-danger"
+          >
+            删除房间…
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IconSearch() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+      <circle cx="11" cy="11" r="7" />
+      <path d="M21 21l-4.35-4.35" />
+    </svg>
+  );
+}
+
+function IconMore() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+      <circle cx="5" cy="12" r="1.6" />
+      <circle cx="12" cy="12" r="1.6" />
+      <circle cx="19" cy="12" r="1.6" />
+    </svg>
+  );
+}
+
+function IconPanel() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M15 4v16" />
     </svg>
   );
 }

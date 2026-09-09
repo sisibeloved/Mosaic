@@ -16,14 +16,32 @@ export function NewRoomPage() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 宿主扫描需要数秒（dogfood：首拉拿到空列表后永不重试，按钮卡"座位就绪中…"）——
+  // 空座位期间 2s 轮询直至入座；入座后停轮询，靠本页语义（建房前快照）不再刷新。
   useEffect(() => {
-    api
-      .agents()
-      .then(({ agents, disabled }) => {
-        setAgents(agents);
-        setDisabled(disabled ?? []);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = () => {
+      api
+        .agents()
+        .then(({ agents, disabled }) => {
+          if (stopped) return;
+          setAgents(agents);
+          setDisabled(disabled ?? []);
+          setError(null);
+          if (agents.length === 0) timer = setTimeout(load, 2000);
+        })
+        .catch((e) => {
+          if (stopped) return;
+          setError(e instanceof Error ? e.message : String(e));
+          timer = setTimeout(load, 2000);
+        });
+    };
+    load();
+    return () => {
+      stopped = true;
+      if (timer !== undefined) clearTimeout(timer);
+    };
   }, []);
 
   const toggle = (id: string) => {

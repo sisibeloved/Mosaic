@@ -391,8 +391,8 @@ type MemoryOp struct {
 	Action  string `json:"action"` // add | replace | remove
 	Content string `json:"content,omitempty"`
 	OldText string `json:"old_text,omitempty"`
-	Status  string `json:"status"`            // applied | rejected
-	Reason  string `json:"reason,omitempty"`  // 拒绝原因（容量/重复/扫描/定位失败）
+	Status  string `json:"status"`             // applied | rejected
+	Reason  string `json:"reason,omitempty"`   // 拒绝原因（容量/重复/扫描/定位失败）
 	EntryID string `json:"entry_id,omitempty"` // applied 后的目标条目
 }
 

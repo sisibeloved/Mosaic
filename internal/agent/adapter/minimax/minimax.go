@@ -74,16 +74,16 @@ func (a *Adapter) Name() string { return "minimax" }
 // Capabilities 能力声明（RFC-0002 §3.1.2）。
 func (a *Adapter) Capabilities() agent.Capabilities {
 	return agent.Capabilities{
-	Streaming:      false, // stream-json 是转录事件流而非增量草稿（同 codex/kimi 面）
-	CancelMode:     "interrupt",
-	HistoryChannel: "structured_request",
-	Continuity:     true, // --session <id>
-	UsageReporting: true, // turn.completed.usage（含 cache/reasoning 细分）
-	Observe:        false,
-	TaskRuns:       true,  // M4-1：exec 进程可由 Mosaic 托管为长任务（结果回传房间）
-	ReplyOrPass:    true,  // M4-3：单次 reply-or-pass（限定路径）
-	MemoryCuration: true,  // v1.70：每波记忆评审（Hermes 同构自助策展）
-}
+		Streaming:      false, // stream-json 是转录事件流而非增量草稿（同 codex/kimi 面）
+		CancelMode:     "interrupt",
+		HistoryChannel: "structured_request",
+		Continuity:     true, // --session <id>
+		UsageReporting: true, // turn.completed.usage（含 cache/reasoning 细分）
+		Observe:        false,
+		TaskRuns:       true, // M4-1：exec 进程可由 Mosaic 托管为长任务（结果回传房间）
+		ReplyOrPass:    true, // M4-3：单次 reply-or-pass（限定路径）
+		MemoryCuration: true, // v1.70：每波记忆评审（Hermes 同构自助策展）
+	}
 }
 
 // Boot 建立逻辑会话（无进程：mcode exec 按任务拉起，会话身份 = sessionId）。

@@ -1140,7 +1140,7 @@ func (e *Engine) issueGrant(ctx context.Context, roomID, roundID string, sel att
 // runGenerate 生成：DraftUpdate 流经 OnDraft 透传；失败（非引擎关停）按
 // generation_failed 撤销该授并返回 false（其余继续 AR-008）。
 // v1.70 两段式历史查询（agent 侧 session_search 面）：模型自报需要更早语境
-//（BlockHistoryRequest）→ 引擎执行房内检索（线性语义基准，与 /search 端点
+// （BlockHistoryRequest）→ 引擎执行房内检索（线性语义基准，与 /search 端点
 // 同口径）→ 携结果重发一次生成；二段仍查询则按生成失败处理（环护栏）。
 func (e *Engine) runGenerate(ctx context.Context, roomID, roundID string, stimulus protocol.Envelope,
 	sel attention.Selection, grantEnv protocol.Envelope, grantID string,
@@ -1197,7 +1197,7 @@ func (e *Engine) runGenerate(ctx context.Context, roomID, roundID string, stimul
 		}
 		enriched.Inline["history_query_results"] = map[string]any{
 			"query": query, "hits": items,
-			"note":  "检索结果（原文，非摘要）——基于这些结果撰写你的回复正文",
+			"note": "检索结果（原文，非摘要）——基于这些结果撰写你的回复正文",
 		}
 		e.debug(roomID, "生成请求历史检索（两段式）", "round", roundID,
 			"participant", sel.ParticipantID, "query", query, "hits", len(items))

@@ -1,6 +1,6 @@
 // v1.70 策展记忆测试：Hermes 同构校验门（容量拒绝附清单/重复/安全扫描/定位
 // 歧义）、事件流折叠 + 人工编辑覆盖、恒常平面单预算合并、引擎每波评审全链
-//（发布波 → 评审 → memory.curated 留痕 → 下波注入）、全景投影。
+// （发布波 → 评审 → memory.curated 留痕 → 下波注入）、全景投影。
 package room
 
 import (
@@ -116,8 +116,10 @@ type memAdapter struct {
 	genN      int
 }
 
-func (a *memAdapter) Name() string                     { return "mem_ad" }
-func (a *memAdapter) Capabilities() agent.Capabilities { return agent.Capabilities{MemoryCuration: true} }
+func (a *memAdapter) Name() string { return "mem_ad" }
+func (a *memAdapter) Capabilities() agent.Capabilities {
+	return agent.Capabilities{MemoryCuration: true}
+}
 func (a *memAdapter) Boot(context.Context, agent.Profile) (agent.Session, error) {
 	return memSession{adapter: a}, nil
 }
@@ -148,7 +150,7 @@ func (s memSession) Run(_ context.Context, task agent.Task) (agent.Handle, error
 		s.adapter.reviewIn = task.Context.Inline
 		s.adapter.mu.Unlock()
 		return memHandle{result: agent.Result{Block: agent.BlockMemoryOps, Data: map[string]any{
-			"ops": []any{map[string]any{"action": "add", "content": "用户偏好被验证过的结论"}},
+			"ops":              []any{map[string]any{"action": "add", "content": "用户偏好被验证过的结论"}},
 			"public_rationale": "沉淀偏好",
 		}}}, nil
 	}
@@ -164,7 +166,7 @@ func (h memHandle) Updates() <-chan agent.DraftUpdate {
 	close(ch)
 	return ch
 }
-func (h memHandle) Cancel() {}
+func (h memHandle) Cancel()                       {}
 func (h memHandle) Result() (agent.Result, error) { return h.result, nil }
 
 func memTestEngine(t *testing.T, store *MemStore, ad *memAdapter) *Engine {

@@ -4,7 +4,7 @@
 // 记忆不复活——房间记忆 room-scoped）；群聊与私聊各持各的 CLI 线程
 //（ADR-0013 会话按 (profile, room) 独立映射，服务端语义）。
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError, type AgentSeatInfo } from "../api/client";
 import { refreshRooms } from "../state/rooms";
 import { adapterLabel } from "../lib/copy";
@@ -84,7 +84,7 @@ export function ContactsPage() {
           <p className="text-xs text-faint">加载中…</p>
         ) : agents.length === 0 ? (
           <p className="text-xs text-faint">
-            还没有在席 Agent——到 <a className="text-accent" href="/settings">设置</a> 启用已安装的 CLI（Codex / Kimi / MiniMax）。
+            还没有在席 Agent——到 <Link className="text-accent" to="/settings">设置</Link> 启用已安装的 CLI（Codex / Kimi / MiniMax）。
           </p>
         ) : (
           <ul className="divide-y divide-border rounded-xl border border-border">
