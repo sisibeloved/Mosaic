@@ -1,0 +1,26 @@
+{
+  "event_id": "evt_01H8TESTMESSAGEREFS0000000000",
+  "tenant_id": "ten_local",
+  "room_id": "room_01H8TESTROOM00000000000000",
+  "thread_id": "thr_01H8TESTTHREAD00000000000",
+  "discussion_epoch_id": null,
+  "seq": 162,
+  "type": "message.posted",
+  "schema_version": 1,
+  "occurred_at": "2026-09-16T10:30:00.000Z",
+  "actor": { "participant_id": "par_01H8TESTAGENT0000000000", "kind": "agent" },
+  "causation_id": null,
+  "correlation_id": null,
+  "visibility": { "kind": "public" },
+  "payload": {
+    "body": "fixture: 分享文档到房间（doc_ref 卡片）",
+    "reply_to": null,
+    "addressed_to": [],
+    "relations": [],
+    "refs": [
+      { "kind": "doc", "doc_id": "doc_0123456789ab" },
+      { "kind": "doc", "doc_id": "doc_fedcba987654", "anchor_block_id": "blk_02" }
+    ]
+  },
+  "metadata": {}
+}

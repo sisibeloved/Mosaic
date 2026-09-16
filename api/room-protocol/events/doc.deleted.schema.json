@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/doc.deleted.schema.json",
+  "title": "DocDeletedPayload",
+  "description": "删除墓碑留痕事件（RFC-0014 §3/§4，room.deleted 先例平移）：级联清理前落库——曾存在可审计、内容（含 FTS 索引项）不可恢复；墓碑事件不含正文。",
+  "type": "object",
+  "required": ["doc_id"],
+  "additionalProperties": false,
+  "properties": {
+    "doc_id": { "type": "string", "pattern": "^doc_[0-9a-f]{12}$" },
+    "reason": { "type": "string", "maxLength": 280 }
+  }
+}

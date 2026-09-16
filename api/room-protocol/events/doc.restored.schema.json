@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/doc.restored.schema.json",
+  "title": "DocRestoredPayload",
+  "description": "文档恢复（RFC-0014 §2.8 生命周期：archived → active）。",
+  "type": "object",
+  "required": ["doc_id"],
+  "additionalProperties": false,
+  "properties": {
+    "doc_id": { "type": "string", "pattern": "^doc_[0-9a-f]{12}$" }
+  }
+}

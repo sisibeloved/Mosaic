@@ -1,0 +1,20 @@
+{
+  "event_id": "evt_01H8BADDOCCREATEDFORMAT000000",
+  "tenant_id": "ten_local",
+  "doc_id": "doc_0123456789ab",
+  "version": 1,
+  "type": "doc.created",
+  "schema_version": 1,
+  "occurred_at": "2026-09-16T10:00:00.000Z",
+  "actor": { "participant_id": "par_01H8TESTOWNER00000000000", "kind": "human" },
+  "causation_id": null,
+  "correlation_id": null,
+  "payload": {
+    "doc_id": "doc_0123456789ab",
+    "title": "非法格式",
+    "format": "html",
+    "created_by": "par_01H8TESTOWNER00000000000",
+    "anchor_message_id": null
+  },
+  "metadata": {}
+}

@@ -44,6 +44,12 @@
       "items": { "$ref": "#/$defs/attachmentDescriptor" },
       "maxItems": 4,
       "description": "消息附件描述子（RFC-0013，M4-0 文件上传）：人类路径经上传令牌定稿；agent 路径不产生附件。缺省 = 无附件。"
+    },
+    "refs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/docRef" },
+      "maxItems": 8,
+      "description": "文档引用（RFC-0014 §2.4）：分享文档到房间 = 发一条带 doc_ref 的消息（人类或 agent 均可）；卡片为文档投影、原地刷新，消息本体不被修改。缺省 = 无引用。"
     }
   },
   "additionalProperties": false,
@@ -77,6 +83,17 @@
         "size_bytes": { "type": "integer", "minimum": 0 },
         "storage_path": { "type": "string" },
         "sha256": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "docRef": {
+      "type": "object",
+      "required": ["kind", "doc_id"],
+      "description": "文档引用描述子（RFC-0014 §2.4 封闭字段集；anchor_block_id 锚定块级位置，卡片/编辑器据此定位）",
+      "properties": {
+        "kind": { "const": "doc" },
+        "doc_id": { "type": "string", "pattern": "^doc_[0-9a-f]{12}$" },
+        "anchor_block_id": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     }

@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/sisibeloved/Mosaic/internal/contextx"
+	"github.com/sisibeloved/Mosaic/internal/doc"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
@@ -88,7 +89,52 @@ CREATE TABLE IF NOT EXISTS migrations (
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (3, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (4, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox(id) WHERE dispatched_at IS NULL;
+
+-- v4（RFC-0014 / ADR-0014）：per-doc 事件流（同一 SQLite 库、不同表）——
+-- version per-doc 单调递增，兼任文档级 CAS 序号与 doc:{id} 频道 SSE cursor。
+-- outbox/receipts/tombstones 独立成表：房间表面 room_id NOT NULL 且假设房间信封，不可复用。
+CREATE TABLE IF NOT EXISTS doc_events (
+	event_id       TEXT NOT NULL UNIQUE,
+	tenant_id      TEXT NOT NULL,
+	doc_id         TEXT NOT NULL,
+	version        INTEGER NOT NULL,
+	type           TEXT NOT NULL,
+	schema_version INTEGER NOT NULL,
+	occurred_at    TEXT NOT NULL,
+	envelope       TEXT NOT NULL,
+	UNIQUE (doc_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_doc_events_doc ON doc_events(doc_id, version);
+
+CREATE TABLE IF NOT EXISTS doc_outbox (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	doc_id       TEXT NOT NULL,
+	version      INTEGER NOT NULL,
+	event_id     TEXT NOT NULL UNIQUE,
+	envelope     TEXT NOT NULL,
+	dispatched_at TEXT,
+	created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_doc_outbox_pending ON doc_outbox(id) WHERE dispatched_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS doc_command_receipts (
+	tenant_id           TEXT NOT NULL,
+	idempotency_key     TEXT NOT NULL,
+	command_kind        TEXT NOT NULL,
+	doc_id              TEXT NOT NULL,
+	request_fingerprint TEXT NOT NULL,
+	event_id            TEXT NOT NULL,
+	doc_version         INTEGER NOT NULL,
+	executed_at         TEXT NOT NULL,
+	PRIMARY KEY (tenant_id, idempotency_key, command_kind)
+);
+CREATE TABLE IF NOT EXISTS doc_tombstones (
+  doc_id TEXT PRIMARY KEY,
+  reason TEXT NOT NULL,
+  deleted_at TEXT NOT NULL
+);
 `
 
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
@@ -106,6 +152,23 @@ CREATE VIRTUAL TABLE IF NOT EXISTS room_fts USING fts5(
 	occurred_at UNINDEXED,
 	seq UNINDEXED,
 	global_pos UNINDEXED,
+	body,
+	tokenize='trigram'
+);
+`
+
+// docFTSDDL v4（RFC-0014 §2.8 文档全文搜索）：FTS5 trigram 派生索引（标题+正文；
+// 与 room_fts 同 tokenizer 裁定——trigram 对 CJK 子串 ≥3 字与英文均正确命中，
+// <3 字查询由 SearchDocs 回退 LIKE 子串）。doc.created 索标题；doc.revision_committed
+// 索本批 ops 文本（增量派生，索引缺行由 SearchDocs 的自愈校验兜底重建）。
+const docFTSDDL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS doc_fts USING fts5(
+	doc_id UNINDEXED,
+	event_id UNINDEXED,
+	version UNINDEXED,
+	actor UNINDEXED,
+	occurred_at UNINDEXED,
+	title,
 	body,
 	tokenize='trigram'
 );
@@ -149,6 +212,11 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(roomFTSDDL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: migration v3 (room_fts): %w", err)
+	}
+	// v4 迁移（RFC-0014 / ADR-0014）：doc_fts 全文索引（doc 事件表在 schemaDDL 内幂等）
+	if _, err := db.Exec(docFTSDDL); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("sqlite: migration v4 (doc_fts): %w", err)
 	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -829,6 +897,404 @@ func (s *Store) ensureFTS(ctx context.Context, roomID string) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sqlite: fts rebuild commit: %w", err)
+	}
+	return nil
+}
+
+// ---- DocStore：per-doc 事件流（RFC-0014 / ADR-0014，appendTx 先例平移）----
+
+// AppendDocEvents 实现 doc.DocStore：version 由存储按文档分配（调用方不指定）；
+// 任一 event_id 重复则整批回滚。返回落库后的信封（含分配的 version），顺序与入参一致。
+func (s *Store) AppendDocEvents(ctx context.Context, envelopes []protocol.DocEnvelope) ([]protocol.DocEnvelope, error) {
+	return s.appendDocTx(ctx, envelopes, nil, nil)
+}
+
+// AppendDocEventsWithReceipt 实现 doc.DocStore：事件 + 幂等回执同事务原子落库；
+// 事件 ID 或回执键冲突（并发同命令竞态的后到者）返回 doc.ErrDuplicateReceipt，整批回滚。
+func (s *Store) AppendDocEventsWithReceipt(ctx context.Context, envelopes []protocol.DocEnvelope, receipt doc.CommandReceipt) ([]protocol.DocEnvelope, error) {
+	return s.appendDocTx(ctx, envelopes, &receipt, nil)
+}
+
+// AppendDocEventsIf 实现 doc.DocCASStore：当前文档版本 != expected 即
+// doc.ErrVersionConflict（BEGIN IMMEDIATE 临界区内判定），整批回滚。
+func (s *Store) AppendDocEventsIf(ctx context.Context, envelopes []protocol.DocEnvelope, expectedDocVersion int64) ([]protocol.DocEnvelope, error) {
+	return s.appendDocTx(ctx, envelopes, nil, &expectedDocVersion)
+}
+
+// appendDocTx 共享事务体：BEGIN IMMEDIATE → 分配 version → 写 doc_events +
+// doc_outbox（+ doc.created/doc.revision_committed 文本入 doc_fts；+ 可选回执）→ COMMIT。
+func (s *Store) appendDocTx(ctx context.Context, envelopes []protocol.DocEnvelope, receipt *doc.CommandReceipt, expectedVersion *int64) ([]protocol.DocEnvelope, error) {
+	if len(envelopes) == 0 && receipt == nil {
+		return nil, nil
+	}
+	docID := ""
+	if len(envelopes) > 0 {
+		docID = envelopes[0].DocID
+		for i := range envelopes {
+			if envelopes[i].DocID != docID {
+				return nil, fmt.Errorf("sqlite: 一批事件必须同 doc（%s vs %s）", docID, envelopes[i].DocID)
+			}
+		}
+	}
+
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: conn: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return nil, fmt.Errorf("sqlite: begin immediate: %w", err)
+	}
+	commit := false
+	defer func() {
+		if !commit {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	var maxVersion int64
+	if docID != "" {
+		if err := conn.QueryRowContext(ctx,
+			"SELECT COALESCE(MAX(version), 0) FROM doc_events WHERE doc_id = ?", docID,
+		).Scan(&maxVersion); err != nil {
+			return nil, fmt.Errorf("sqlite: read max version: %w", err)
+		}
+	}
+
+	// CAS 期望版本（base_version）：与回执的乐观并发同在 BEGIN IMMEDIATE 临界区内判定
+	if expectedVersion != nil && docID != "" && *expectedVersion != maxVersion {
+		return nil, fmt.Errorf("%w: expected=%d current=%d",
+			doc.ErrVersionConflict, *expectedVersion, maxVersion)
+	}
+
+	if receipt != nil && docID != "" {
+		// 回执键先查（先于版本校验）：预检与提交之间的竞态重放优先于版本冲突
+		var receiptExists bool
+		if err := conn.QueryRowContext(ctx, `
+			SELECT EXISTS(SELECT 1 FROM doc_command_receipts
+			WHERE tenant_id = ? AND idempotency_key = ? AND command_kind = ?)`,
+			receipt.TenantID, receipt.IdempotencyKey, receipt.CommandKind,
+		).Scan(&receiptExists); err != nil {
+			return nil, fmt.Errorf("sqlite: check receipt: %w", err)
+		}
+		if receiptExists {
+			return nil, fmt.Errorf("%w: %s", doc.ErrDuplicateReceipt, receipt.IdempotencyKey)
+		}
+		// 乐观并发在 BEGIN IMMEDIATE 临界区内强制（P-03：冲突判定在提交事务内）
+		if receipt.ExpectedDocVersion != maxVersion {
+			return nil, fmt.Errorf("%w: expected=%d current=%d",
+				doc.ErrVersionConflict, receipt.ExpectedDocVersion, maxVersion)
+		}
+	}
+
+	appended := make([]protocol.DocEnvelope, len(envelopes))
+	for i := range envelopes {
+		env := envelopes[i]
+		maxVersion++
+		env.Version = maxVersion
+		raw, err := json.Marshal(env)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: marshal doc envelope %s: %w", env.EventID, err)
+		}
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO doc_events (event_id, tenant_id, doc_id, version, type, schema_version, occurred_at, envelope)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			env.EventID, env.TenantID, env.DocID, env.Version, env.Type, env.SchemaVersion, env.OccurredAt, string(raw),
+		); err != nil {
+			if isUniqueViolation(err) {
+				if receipt != nil {
+					// 回执式追加中事件撞车 = 并发同命令竞态后到者
+					return nil, fmt.Errorf("%w: %s", doc.ErrDuplicateReceipt, env.EventID)
+				}
+				return nil, fmt.Errorf("%w: %s", doc.ErrDuplicateEvent, env.EventID)
+			}
+			return nil, fmt.Errorf("sqlite: insert doc event: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO doc_outbox (doc_id, version, event_id, envelope) VALUES (?, ?, ?, ?)`,
+			env.DocID, env.Version, env.EventID, string(raw),
+		); err != nil {
+			return nil, fmt.Errorf("sqlite: insert doc outbox: %w", err)
+		}
+		// 全文索引（RFC-0014 §2.8：标题+正文派生）：doc.created 索标题、
+		// doc.revision_committed 索本批 ops 文本，与事件账本同事务——
+		// 索引缺行由 SearchDocs 的自愈校验兜底重建。
+		if env.Type == protocol.EventDocCreated || env.Type == protocol.EventDocRevisionCommitted {
+			if title, body, ok := docFTSFieldsOf(env); ok {
+				if _, err := conn.ExecContext(ctx, `
+					INSERT INTO doc_fts (doc_id, event_id, version, actor, occurred_at, title, body)
+					VALUES (?, ?, ?, ?, ?, ?, ?)`,
+					env.DocID, env.EventID, env.Version, env.Actor.ParticipantID, env.OccurredAt, title, body,
+				); err != nil {
+					return nil, fmt.Errorf("sqlite: insert doc fts: %w", err)
+				}
+			}
+		}
+		appended[i] = env
+	}
+
+	if receipt != nil {
+		// DocVersion 权威回填：追加后的最新 version（调用方传入值不信任）
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO doc_command_receipts
+			(tenant_id, idempotency_key, command_kind, doc_id, request_fingerprint, event_id, doc_version, executed_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			receipt.TenantID, receipt.IdempotencyKey, receipt.CommandKind, receipt.DocID,
+			receipt.RequestFingerprint, receipt.EventID, maxVersion, receipt.ExecutedAt,
+		); err != nil {
+			if isUniqueViolation(err) {
+				return nil, fmt.Errorf("%w: %s", doc.ErrDuplicateReceipt, receipt.IdempotencyKey)
+			}
+			return nil, fmt.Errorf("sqlite: insert doc receipt: %w", err)
+		}
+	}
+
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return nil, fmt.Errorf("sqlite: commit: %w", err)
+	}
+	commit = true
+	return appended, nil
+}
+
+// LookupDocReceipt 实现 doc.DocStore：未命中返回 (nil, nil)。
+func (s *Store) LookupDocReceipt(ctx context.Context, tenantID, idempotencyKey, commandKind string) (*doc.CommandReceipt, error) {
+	rc := &doc.CommandReceipt{}
+	err := s.db.QueryRowContext(ctx, `
+		SELECT doc_id, request_fingerprint, event_id, doc_version, executed_at
+		FROM doc_command_receipts
+		WHERE tenant_id = ? AND idempotency_key = ? AND command_kind = ?`,
+		tenantID, idempotencyKey, commandKind,
+	).Scan(&rc.DocID, &rc.RequestFingerprint, &rc.EventID, &rc.DocVersion, &rc.ExecutedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: lookup doc receipt: %w", err)
+	}
+	rc.TenantID, rc.IdempotencyKey, rc.CommandKind = tenantID, idempotencyKey, commandKind
+	return rc, nil
+}
+
+// DocVersion 实现 doc.DocStore：文档当前版本（最新 version；未见事件为 0）。
+func (s *Store) DocVersion(ctx context.Context, docID string) (int64, error) {
+	var v int64
+	err := s.db.QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(version), 0) FROM doc_events WHERE doc_id = ?", docID).Scan(&v)
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: doc version: %w", err)
+	}
+	return v, nil
+}
+
+// DocEventsAfter 实现 doc.DocEventReader：从 cursor 之后按 version 续读某文档的事件
+// （doc:{id} 频道续传与历史读共用——version 即 SSE cursor，ADR-0014）。
+// limit ≤0 时取 100。返回下一游标；无更多事件时 next 为空串。
+func (s *Store) DocEventsAfter(ctx context.Context, docID, cursor string, limit int) (events []doc.StoredDocEvent, next string, err error) {
+	pos, err := protocol.DecodeCursor(cursor)
+	if err != nil {
+		return nil, "", err
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT version, envelope FROM doc_events
+		WHERE doc_id = ? AND version > ?
+		ORDER BY version LIMIT ?`, docID, pos, limit)
+	if err != nil {
+		return nil, "", fmt.Errorf("sqlite: query doc events: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var version int64
+		var raw string
+		if err := rows.Scan(&version, &raw); err != nil {
+			return nil, "", fmt.Errorf("sqlite: scan doc event: %w", err)
+		}
+		var env protocol.DocEnvelope
+		if err := json.Unmarshal([]byte(raw), &env); err != nil {
+			return nil, "", fmt.Errorf("sqlite: unmarshal doc envelope %d: %w", version, err)
+		}
+		events = append(events, doc.StoredDocEvent{Envelope: env, Cursor: protocol.EncodeCursor(version)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", fmt.Errorf("sqlite: rows: %w", err)
+	}
+	if len(events) == limit {
+		next = events[len(events)-1].Cursor
+	}
+	return events, next, nil
+}
+
+// DeleteDoc 实现 doc.DocStore 删除级联（DeleteRoom 先例平移）：事务内清
+// 事件/outbox/回执/FTS 索引，并落墓碑行——曾存在可审计、内容不可恢复。
+func (s *Store) DeleteDoc(ctx context.Context, docID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var reason string
+	_ = tx.QueryRowContext(ctx,
+		"SELECT json_extract(envelope, '$.payload.reason') FROM doc_events WHERE doc_id=? AND type='doc.deleted' LIMIT 1",
+		docID).Scan(&reason)
+	if _, err := tx.ExecContext(ctx,
+		"INSERT OR REPLACE INTO doc_tombstones(doc_id, reason, deleted_at) VALUES(?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+		docID, reason); err != nil {
+		return err
+	}
+	for _, table := range []string{"doc_events", "doc_outbox", "doc_command_receipts", "doc_fts"} {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE doc_id=?", docID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// docFTSFieldsOf 文档信封 → 索引字段（标题 / 本批 ops 文本）。
+func docFTSFieldsOf(env protocol.DocEnvelope) (title, body string, ok bool) {
+	switch env.Type {
+	case protocol.EventDocCreated:
+		var p protocol.DocCreatedPayload
+		if json.Unmarshal(env.Payload, &p) != nil {
+			return "", "", false
+		}
+		return p.Title, "", true
+	case protocol.EventDocRevisionCommitted:
+		var p protocol.DocRevisionCommittedPayload
+		if json.Unmarshal(env.Payload, &p) != nil {
+			return "", "", false
+		}
+		var sb strings.Builder
+		for _, op := range p.Ops {
+			if op.Block != nil && op.Block.Text != "" {
+				sb.WriteString(op.Block.Text)
+				sb.WriteString("\n")
+			}
+			if op.Text != "" {
+				sb.WriteString(op.Text)
+				sb.WriteString("\n")
+			}
+		}
+		return "", sb.String(), true
+	}
+	return "", "", false
+}
+
+// SearchDocs 实现 doc.DocSearcher（RFC-0014 §2.8 文档全文搜索）：FTS5 trigram
+// 生产路径，语义与 SearchMessages 同规——子串、大小写不敏感、limit 1..100 默认 20；
+// ≥3 字查询走 MATCH（phrase 引号包裹防语法注入），<3 字回退 LIKE 子串（标题或正文）。
+// 每文档只取最新命中版本（同一文档的多条索引行归并，文档主页语义）。
+// 自愈：索引行数与可索引事件数不符（旧库升级/历史缺行）即全量重建索引。
+func (s *Store) SearchDocs(ctx context.Context, query string, limit int) ([]doc.DocSearchHit, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []doc.DocSearchHit{}, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if err := s.ensureDocFTS(ctx); err != nil {
+		return nil, err
+	}
+	var where string
+	var args []any
+	// trigram tokenizer 要求查询 ≥3 字符（CJK 与 ASCII 同规）；短查询回退 LIKE 子串。
+	if len([]rune(query)) >= 3 {
+		phrase := `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
+		where = "doc_fts MATCH ?"
+		args = append(args, phrase)
+	} else {
+		where = "(title LIKE ? COLLATE NOCASE OR body LIKE ? COLLATE NOCASE)"
+		args = append(args, "%"+query+"%", "%"+query+"%")
+	}
+	args = append(args, limit)
+	// SQLite 的 MAX() 聚合语义：裸列取自最大 version 行（每文档归并为最新命中）。
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT doc_id, event_id, MAX(version) AS version, actor, occurred_at, title, body
+		FROM doc_fts WHERE `+where+`
+		GROUP BY doc_id ORDER BY version DESC, doc_id ASC LIMIT ?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: search docs: %w", err)
+	}
+	defer rows.Close()
+	hits := []doc.DocSearchHit{}
+	for rows.Next() {
+		var h doc.DocSearchHit
+		if err := rows.Scan(&h.DocID, &h.EventID, &h.Version, &h.Actor, &h.OccurredAt, &h.Title, &h.Body); err != nil {
+			return nil, fmt.Errorf("sqlite: scan doc search: %w", err)
+		}
+		hits = append(hits, h)
+	}
+	return hits, rows.Err()
+}
+
+// ensureDocFTS 索引自愈校验：FTS 行数 != 可索引事件数（v4 前旧库/异常缺口）即
+// 全量重建索引（个人版文档规模毫秒级；重建后增量路径恢复）。
+func (s *Store) ensureDocFTS(ctx context.Context) error {
+	var ftsCount, evtCount int64
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM doc_fts").Scan(&ftsCount); err != nil {
+		return fmt.Errorf("sqlite: doc fts count: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM doc_events WHERE type IN (?, ?)",
+		protocol.EventDocCreated, protocol.EventDocRevisionCommitted,
+	).Scan(&evtCount); err != nil {
+		return fmt.Errorf("sqlite: doc event count: %w", err)
+	}
+	if ftsCount == evtCount {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: doc fts rebuild begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM doc_fts"); err != nil {
+		return fmt.Errorf("sqlite: doc fts rebuild clear: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT envelope FROM doc_events
+		WHERE type IN (?, ?) ORDER BY doc_id, version`,
+		protocol.EventDocCreated, protocol.EventDocRevisionCommitted)
+	if err != nil {
+		return fmt.Errorf("sqlite: doc fts rebuild scan: %w", err)
+	}
+	var batch []string
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			rows.Close()
+			return fmt.Errorf("sqlite: doc fts rebuild row: %w", err)
+		}
+		batch = append(batch, raw)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("sqlite: doc fts rebuild rows: %w", err)
+	}
+	for _, raw := range batch {
+		var env protocol.DocEnvelope
+		if json.Unmarshal([]byte(raw), &env) != nil {
+			continue
+		}
+		title, body, ok := docFTSFieldsOf(env)
+		if !ok {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO doc_fts (doc_id, event_id, version, actor, occurred_at, title, body)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			env.DocID, env.EventID, env.Version, env.Actor.ParticipantID, env.OccurredAt, title, body); err != nil {
+			return fmt.Errorf("sqlite: doc fts rebuild insert: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: doc fts rebuild commit: %w", err)
 	}
 	return nil
 }

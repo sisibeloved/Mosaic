@@ -9,7 +9,7 @@ cd api/room-protocol
 JSTT_VERSION="15.0.3"
 command -v npx >/dev/null 2>&1 || { echo "错误：需要 node/npx（用于 json-schema-to-typescript）" >&2; exit 1; }
 mkdir -p gen/ts
-for f in events/*.schema.json envelope.schema.json command.schema.json; do
+for f in events/*.schema.json envelope.schema.json doc-envelope.schema.json command.schema.json; do
   base="$(basename "$f" .schema.json)"
   npx --yes "json-schema-to-typescript@${JSTT_VERSION}" "$f" -o "gen/ts/${base}.d.ts"
   echo "生成 gen/ts/${base}.d.ts"

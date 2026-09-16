@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/doc.revision_committed.schema.json",
+  "title": "DocRevisionCommittedPayload",
+  "description": "文档修订批（RFC-0014 §2.3）：ops 为一批块操作（防抖聚合，事件频率与聊天消息同量级）；base_version 为文档级乐观并发期望，不符即拒绝并在新态上重放本地 ops（不引入 OT/CRDT）；version 单调递增兼任 SSE cursor。",
+  "type": "object",
+  "required": ["doc_id", "base_version", "version", "ops", "actor", "source"],
+  "additionalProperties": false,
+  "properties": {
+    "doc_id": { "type": "string", "pattern": "^doc_[0-9a-f]{12}$" },
+    "base_version": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "修订基于的版本（CAS 期望；首修订为 0）"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "本批落库后的文档版本（= base_version + 1）"
+    },
+    "ops": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/docOp" },
+      "description": "块操作批（护栏 ≤64 ops / 128 KiB，RFC-0014 §2.9）"
+    },
+    "actor": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" },
+    "source": {
+      "enum": ["human_editor", "agent"],
+      "description": "落笔来源（agent 经 doc_ops 引擎代写，actor 记为该 bot）"
+    },
+    "note": { "type": "string", "maxLength": 280 }
+  },
+  "$defs": {
+    "docOp": {
+      "type": "object",
+      "required": ["op", "block_id"],
+      "additionalProperties": false,
+      "description": "单条块操作：insert_after（block_id 锚点，null=插入文首，携带 block）/ append（追加文末，携带 block，block_id 恒 null）/ replace（block_id + text 替换正文）/ delete（block_id）。",
+      "properties": {
+        "op": { "enum": ["insert_after", "replace", "delete", "append"] },
+        "block_id": { "type": ["string", "null"], "minLength": 1 },
+        "block": { "$ref": "#/$defs/docBlock" },
+        "text": { "type": "string" }
+      }
+    },
+    "docBlock": {
+      "type": "object",
+      "required": ["block_id", "type", "text"],
+      "additionalProperties": false,
+      "description": "块模型（RFC-0014 §2.2：稳定 block_id 是锚定操作、冲突重放与卡片摘要的共同基础；text 为 markdown 行内语法）。",
+      "properties": {
+        "block_id": { "type": "string", "minLength": 1 },
+        "type": { "enum": ["heading", "paragraph", "list", "code", "quote", "hr"] },
+        "text": { "type": "string" }
+      }
+    }
+  }
+}

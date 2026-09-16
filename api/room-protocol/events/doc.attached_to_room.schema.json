@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/doc.attached_to_room.schema.json",
+  "title": "DocAttachedToRoomPayload",
+  "description": "群文档附着（RFC-0014 §2.4）：房间日志内的关联事实（非文档内容）——附着不复制、不锁定，同一文档可附着多个房间；驱动房间右面板“文档”段。",
+  "type": "object",
+  "required": ["doc_id", "attached_by"],
+  "additionalProperties": false,
+  "properties": {
+    "doc_id": { "type": "string", "pattern": "^doc_[0-9a-f]{12}$" },
+    "attached_by": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" }
+  }
+}

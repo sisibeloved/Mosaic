@@ -59,6 +59,17 @@ const (
 	// 及原因——容量超限/重复/安全扫描拒绝可审计），免人工审批（负责人裁定
 	// 2026-09-08；纠错走既有 memory.edited 事后编辑面）。
 	EventMemoryCurated = "memory.curated"
+	// 协作文档（RFC-0014 / ADR-0014）：文档为 workspace 级全局资产，per-doc 事件流
+	// 与房间日志并列为权威事实源。doc.created … doc.deleted 落 doc 流（DocEnvelope）；
+	// doc.attached_to_room / doc.detached_from_room 是房间日志内的关联事实（Envelope）。
+	EventDocCreated           = "doc.created"
+	EventDocRenamed           = "doc.renamed"
+	EventDocRevisionCommitted = "doc.revision_committed"
+	EventDocArchived          = "doc.archived"
+	EventDocRestored          = "doc.restored"
+	EventDocDeleted           = "doc.deleted"
+	EventDocAttachedToRoom    = "doc.attached_to_room"
+	EventDocDetachedFromRoom  = "doc.detached_from_room"
 )
 
 // Envelope 是 room_events 的权威/内部形态（RFC-0001 v0.4）。
@@ -163,6 +174,137 @@ type RoundClosedPayload struct {
 	SilentCount   int    `json:"silent_count"`
 }
 
+// DocEnvelope 是 doc_events 的权威/内部形态（RFC-0014 / ADR-0014）。
+// 与 Envelope 同构，以 doc_id + version 替代 room_id + seq——version per-doc
+// 单调递增，兼任文档级 CAS 序号与 doc:{id} 频道 SSE cursor；文档为全局资产，
+// 无房间维度的 thread/epoch/visibility 字段。
+type DocEnvelope struct {
+	EventID       string          `json:"event_id"`
+	TenantID      string          `json:"tenant_id"`
+	DocID         string          `json:"doc_id"`
+	Version       int64           `json:"version"`
+	Type          string          `json:"type"`
+	SchemaVersion int             `json:"schema_version"`
+	OccurredAt    string          `json:"occurred_at"`
+	Actor         Actor           `json:"actor"`
+	CausationID   *string         `json:"causation_id"`
+	CorrelationID *string         `json:"correlation_id"`
+	Payload       json.RawMessage `json:"payload"`
+	Metadata      map[string]any  `json:"metadata"`
+}
+
+// DocBlock 文档块（RFC-0014 §2.2：稳定 block_id 是锚定操作、冲突重放与卡片
+// 摘要的共同基础；Text 为 markdown 行内语法）。
+type DocBlock struct {
+	BlockID string `json:"block_id"`
+	Type    string `json:"type"` // heading | paragraph | list | code | quote | hr
+	Text    string `json:"text"`
+}
+
+// DocOp 单条块操作（修订批 ops 元素；block_id 恒显式——null 或锚点，
+// block/text 按 op 种类出现：insert_after/append 携带 block，replace 携带 text）。
+type DocOp struct {
+	Op      string    `json:"op"` // insert_after | replace | delete | append
+	BlockID *string   `json:"block_id"`
+	Block   *DocBlock `json:"block,omitempty"`
+	Text    string    `json:"text,omitempty"`
+}
+
+// DocCreatedPayload doc.created：文档创建（doc 流首事件）。
+type DocCreatedPayload struct {
+	DocID           string  `json:"doc_id"`
+	Title           string  `json:"title"`
+	Format          string  `json:"format"` // markdown（首版封闭枚举）
+	CreatedBy       string  `json:"created_by"`
+	AnchorMessageID *string `json:"anchor_message_id"`
+}
+
+// DocRenamedPayload doc.renamed：标题为派生态，最新 created/renamed 载荷生效。
+type DocRenamedPayload struct {
+	DocID string `json:"doc_id"`
+	Title string `json:"title"`
+}
+
+// DocRevisionCommittedPayload doc.revision_committed：一批块操作（防抖聚合）；
+// BaseVersion 为文档级乐观并发期望，Version 落库后单调递增兼任 SSE cursor。
+type DocRevisionCommittedPayload struct {
+	DocID       string  `json:"doc_id"`
+	BaseVersion int64   `json:"base_version"`
+	Version     int64   `json:"version"`
+	Ops         []DocOp `json:"ops"`
+	Actor       string  `json:"actor"`
+	Source      string  `json:"source"` // human_editor | agent
+	Note        string  `json:"note,omitempty"`
+}
+
+// DocArchivedPayload doc.archived / DocRestoredPayload doc.restored：生命周期
+// （active ↔ archived；归档不删内容）。
+type DocArchivedPayload struct {
+	DocID string `json:"doc_id"`
+}
+
+type DocRestoredPayload struct {
+	DocID string `json:"doc_id"`
+}
+
+// DocDeletedPayload doc.deleted：删除墓碑留痕（级联清理前落库，不含正文）。
+type DocDeletedPayload struct {
+	DocID  string `json:"doc_id"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// DocAttachedToRoomPayload doc.attached_to_room / DocDetachedFromRoomPayload
+// doc.detached_from_room：房间日志内的关联事实（非文档内容；附着不复制、不锁定）。
+type DocAttachedToRoomPayload struct {
+	DocID      string `json:"doc_id"`
+	AttachedBy string `json:"attached_by"`
+}
+
+type DocDetachedFromRoomPayload struct {
+	DocID      string `json:"doc_id"`
+	DetachedBy string `json:"detached_by"`
+}
+
+// DocRef 消息文档引用（RFC-0014 §2.4：message.posted.refs 元素；
+// 卡片为文档投影、原地刷新，消息本体不被修改）。
+type DocRef struct {
+	Kind          string `json:"kind"` // doc（封闭枚举，首版仅文档）
+	DocID         string `json:"doc_id"`
+	AnchorBlockID string `json:"anchor_block_id,omitempty"`
+}
+
+// DecodeDocPayload 按事件类型把 DocEnvelope.Payload 解码为对应边界结构。
+func (e *DocEnvelope) DecodeDocPayload() any {
+	switch e.Type {
+	case EventDocCreated:
+		var p DocCreatedPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
+	case EventDocRenamed:
+		var p DocRenamedPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
+	case EventDocRevisionCommitted:
+		var p DocRevisionCommittedPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
+	case EventDocArchived:
+		var p DocArchivedPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
+	case EventDocRestored:
+		var p DocRestoredPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
+	case EventDocDeleted:
+		var p DocDeletedPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
+	default:
+		return nil
+	}
+}
+
 // DecodePayload 按事件类型把 Envelope.Payload 解码为对应边界结构。
 // 未纳入事件族的类型（如 message.posted）返回 nil——payload Schema 尚未定稿，属 M1。
 func (e *Envelope) DecodePayload() any {
@@ -229,6 +371,14 @@ func (e *Envelope) DecodePayload() any {
 		return p
 	case EventRunUnknown:
 		var p RunUnknownPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
+	case EventDocAttachedToRoom:
+		var p DocAttachedToRoomPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
+	case EventDocDetachedFromRoom:
+		var p DocDetachedFromRoomPayload
 		_ = json.Unmarshal(e.Payload, &p)
 		return p
 	default:

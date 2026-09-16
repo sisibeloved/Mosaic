@@ -1,0 +1,22 @@
+{
+  "event_id": "evt_01H8BADMESSAGEREFKIND00000000",
+  "tenant_id": "ten_local",
+  "room_id": "room_01H8TESTROOM00000000000000",
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "seq": 163,
+  "type": "message.posted",
+  "schema_version": 1,
+  "occurred_at": "2026-09-16T10:40:00.000Z",
+  "actor": { "participant_id": "par_01H8TESTOWNER00000000000", "kind": "human" },
+  "causation_id": null,
+  "correlation_id": null,
+  "visibility": { "kind": "public" },
+  "payload": {
+    "body": "fixture: refs 的 kind 非 doc（封闭枚举拒绝）",
+    "refs": [
+      { "kind": "file", "doc_id": "doc_0123456789ab" }
+    ]
+  },
+  "metadata": {}
+}

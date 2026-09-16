@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/doc.renamed.schema.json",
+  "title": "DocRenamedPayload",
+  "description": "文档重命名（RFC-0014 §2.3：标题为派生态，权威为事件流——最新 created/renamed 载荷生效）。",
+  "type": "object",
+  "required": ["doc_id", "title"],
+  "additionalProperties": false,
+  "properties": {
+    "doc_id": { "type": "string", "pattern": "^doc_[0-9a-f]{12}$" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 200 }
+  }
+}

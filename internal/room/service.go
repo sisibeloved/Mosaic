@@ -344,6 +344,8 @@ func (s *Service) postMessage(ctx context.Context, actor Actor, cmd Command) (*C
 // postMessagePayload 消息命令载荷（严格字段集：多余字段拒绝；
 // 字段集与 events/message.posted.schema.json 对齐，M2 定稿；attachments 为
 // RFC-0013 上传令牌数组——落库前由服务定稿为描述子，令牌不进事件）。
+// refs（RFC-0014 文档引用）Phase 0 仅协议面：命令可解码、不落事件——
+// 经服务进事件载荷与投影走线属 Phase 3。
 type postMessagePayload struct {
 	Body        string                 `json:"body"`
 	ReplyTo     *string                `json:"reply_to"`
@@ -351,6 +353,7 @@ type postMessagePayload struct {
 	Relations   []typedRelation        `json:"relations"`
 	ThreadID    *string                `json:"thread_id"` // 可选：发往指定线程（根线程随 room.created 载荷）
 	Attachments []string               `json:"attachments"`
+	Refs        []protocol.DocRef      `json:"refs"`
 	Resolved    []AttachmentDescriptor `json:"-"` // 定稿产物（不参与命令解码——DisallowUnknownFields 之外的内部字段）
 }
 

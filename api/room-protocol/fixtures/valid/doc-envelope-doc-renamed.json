@@ -1,0 +1,17 @@
+{
+  "event_id": "evt_01H8TESTDOCRENAMED000000000",
+  "tenant_id": "ten_local",
+  "doc_id": "doc_0123456789ab",
+  "version": 3,
+  "type": "doc.renamed",
+  "schema_version": 1,
+  "occurred_at": "2026-09-16T10:05:00.000Z",
+  "actor": { "participant_id": "par_01H8TESTOWNER00000000000", "kind": "human" },
+  "causation_id": null,
+  "correlation_id": null,
+  "payload": {
+    "doc_id": "doc_0123456789ab",
+    "title": "发布清单 v2"
+  },
+  "metadata": {}
+}

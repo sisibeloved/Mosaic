@@ -57,6 +57,21 @@ export interface MessagePostedPayload {
     | [AttachmentDescriptor, AttachmentDescriptor]
     | [AttachmentDescriptor, AttachmentDescriptor, AttachmentDescriptor]
     | [AttachmentDescriptor, AttachmentDescriptor, AttachmentDescriptor, AttachmentDescriptor];
+  /**
+   * 文档引用（RFC-0014 §2.4）：分享文档到房间 = 发一条带 doc_ref 的消息（人类或 agent 均可）；卡片为文档投影、原地刷新，消息本体不被修改。缺省 = 无引用。
+   *
+   * @maxItems 8
+   */
+  refs?:
+    | []
+    | [DocRef]
+    | [DocRef, DocRef]
+    | [DocRef, DocRef, DocRef]
+    | [DocRef, DocRef, DocRef, DocRef]
+    | [DocRef, DocRef, DocRef, DocRef, DocRef]
+    | [DocRef, DocRef, DocRef, DocRef, DocRef, DocRef]
+    | [DocRef, DocRef, DocRef, DocRef, DocRef, DocRef, DocRef]
+    | [DocRef, DocRef, DocRef, DocRef, DocRef, DocRef, DocRef, DocRef];
 }
 export interface TypedRelation {
   target_event_id: string;
@@ -76,4 +91,12 @@ export interface AttachmentDescriptor {
   size_bytes: number;
   storage_path: string;
   sha256: string;
+}
+/**
+ * 文档引用描述子（RFC-0014 §2.4 封闭字段集；anchor_block_id 锚定块级位置，卡片/编辑器据此定位）
+ */
+export interface DocRef {
+  kind: "doc";
+  doc_id: string;
+  anchor_block_id?: string;
 }

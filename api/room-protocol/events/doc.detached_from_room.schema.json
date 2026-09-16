@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/doc.detached_from_room.schema.json",
+  "title": "DocDetachedFromRoomPayload",
+  "description": "群文档解除附着（RFC-0014 §2.4/§4：房间删除不级联删文档，仅解除附着；消息内 ref 渲染降级）。",
+  "type": "object",
+  "required": ["doc_id", "detached_by"],
+  "additionalProperties": false,
+  "properties": {
+    "doc_id": { "type": "string", "pattern": "^doc_[0-9a-f]{12}$" },
+    "detached_by": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" }
+  }
+}

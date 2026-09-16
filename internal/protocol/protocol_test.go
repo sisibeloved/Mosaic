@@ -18,6 +18,10 @@ var (
 		"event_id", "tenant_id", "room_id", "seq", "type", "schema_version",
 		"occurred_at", "actor", "visibility", "payload",
 	}
+	docEnvelopeRequired = []string{
+		"event_id", "tenant_id", "doc_id", "version", "type", "schema_version",
+		"occurred_at", "actor", "payload",
+	}
 	commandRequired = []string{
 		"command_kind", "expected_room_version", "idempotency_key", "issued_at", "payload",
 	}
@@ -44,6 +48,14 @@ func TestValidFixtures(t *testing.T) {
 			continue
 		}
 		switch {
+		case len(name) >= 12 && name[:12] == "doc-envelope":
+			checkRequired(t, name, doc, docEnvelopeRequired)
+			if s, ok := doc["type"].(string); !ok || !eventTypePattern.MatchString(s) {
+				t.Errorf("%s: type %q 不符合多段点分 lower_snake_case", name, doc["type"])
+			}
+			if v, ok := doc["version"].(float64); !ok || v < 1 {
+				t.Errorf("%s: version 必须为 ≥1 的整数", name)
+			}
 		case len(name) >= 8 && name[:8] == "envelope":
 			checkRequired(t, name, doc, envelopeRequired)
 			if s, ok := doc["type"].(string); !ok || !eventTypePattern.MatchString(s) {
@@ -58,14 +70,14 @@ func TestValidFixtures(t *testing.T) {
 				t.Errorf("%s: idempotency_key %q 不是 UUIDv7", name, doc["idempotency_key"])
 			}
 		default:
-			t.Errorf("%s: fixture 命名必须以 envelope 或 command 开头", name)
+			t.Errorf("%s: fixture 命名必须以 envelope、doc-envelope 或 command 开头", name)
 		}
 	}
 }
 
 func TestSchemasAreValidJSON(t *testing.T) {
 	dir := filepath.Join("..", "..", "api", "room-protocol")
-	for _, name := range []string{"envelope.schema.json", "command.schema.json"} {
+	for _, name := range []string{"envelope.schema.json", "doc-envelope.schema.json", "command.schema.json"} {
 		raw, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)

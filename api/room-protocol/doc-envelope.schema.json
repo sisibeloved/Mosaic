@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/doc-envelope.schema.json",
+  "title": "DocEventEnvelope",
+  "description": "文档事件流信封（ADR-0014：per-doc stream 与房间日志并列为权威事实源，同一 SQLite 库不同表）。version per-doc 单调递增，兼任文档级 CAS 序号与 doc:{id} 频道 SSE cursor；文档为全局资产，无房间维度的 thread/visibility 字段。与 envelope.schema.json 同例：信封面不加 additionalProperties:false（前向兼容，严格写在 payload Schema）。",
+  "type": "object",
+  "required": [
+    "event_id", "tenant_id", "doc_id", "version", "type", "schema_version",
+    "occurred_at", "actor", "payload"
+  ],
+  "properties": {
+    "event_id": { "type": "string", "pattern": "^evt_[0-9A-Za-z_-]+$" },
+    "tenant_id": { "type": "string", "minLength": 1 },
+    "doc_id": { "type": "string", "pattern": "^doc_[0-9a-f]{12}$" },
+    "version": { "type": "integer", "minimum": 1 },
+    "type": { "type": "string", "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)+$" },
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "actor": {
+      "type": "object",
+      "required": ["participant_id", "kind"],
+      "properties": {
+        "participant_id": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["human", "agent", "system"] }
+      }
+    },
+    "causation_id": { "type": ["string", "null"] },
+    "correlation_id": { "type": ["string", "null"] },
+    "payload": { "type": "object" },
+    "metadata": { "type": "object" }
+  }
+}

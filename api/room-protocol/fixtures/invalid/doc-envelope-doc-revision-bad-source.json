@@ -1,0 +1,23 @@
+{
+  "event_id": "evt_01H8BADDOCREVISIONSOURCE00000",
+  "tenant_id": "ten_local",
+  "doc_id": "doc_0123456789ab",
+  "version": 2,
+  "type": "doc.revision_committed",
+  "schema_version": 1,
+  "occurred_at": "2026-09-16T10:02:00.000Z",
+  "actor": { "participant_id": "par_01H8TESTAGENT0000000000", "kind": "agent" },
+  "causation_id": null,
+  "correlation_id": null,
+  "payload": {
+    "doc_id": "doc_0123456789ab",
+    "base_version": 1,
+    "version": 2,
+    "ops": [
+      { "op": "delete", "block_id": "blk_01" }
+    ],
+    "actor": "par_01H8TESTAGENT0000000000",
+    "source": "robot"
+  },
+  "metadata": {}
+}

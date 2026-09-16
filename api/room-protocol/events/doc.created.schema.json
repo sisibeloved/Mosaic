@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/doc.created.schema.json",
+  "title": "DocCreatedPayload",
+  "description": "文档创建（RFC-0014 §2.2/§2.3：workspace 级全局资产，per-doc 事件流首事件；anchor_message_id 记创建起源消息，可空）。",
+  "type": "object",
+  "required": ["doc_id", "title", "format", "created_by"],
+  "additionalProperties": false,
+  "properties": {
+    "doc_id": { "type": "string", "pattern": "^doc_[0-9a-f]{12}$" },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "标题（≤200 runes，RFC-0014 §2.2）"
+    },
+    "format": {
+      "enum": ["markdown"],
+      "description": "正文格式（首版封闭枚举，表格随专项立项另行裁定）"
+    },
+    "created_by": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" },
+    "anchor_message_id": {
+      "type": ["string", "null"],
+      "pattern": "^evt_[0-9A-Za-z_-]+$",
+      "description": "创建起源消息（讨论中沉淀为文档时锚定；缺省 null）"
+    }
+  }
+}

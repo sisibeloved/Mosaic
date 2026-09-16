@@ -17,9 +17,10 @@ import (
 var protoRoot = filepath.Join("..", "..", "api", "room-protocol")
 
 type schemaSet struct {
-	envelope *jsonschema.Schema
-	command  *jsonschema.Schema
-	events   map[string]*jsonschema.Schema // 事件 type → payload Schema
+	envelope    *jsonschema.Schema
+	docEnvelope *jsonschema.Schema
+	command     *jsonschema.Schema
+	events      map[string]*jsonschema.Schema // 事件 type → payload Schema
 }
 
 func compileSchemas(t *testing.T) schemaSet {
@@ -30,6 +31,9 @@ func compileSchemas(t *testing.T) schemaSet {
 	var err error
 	if set.envelope, err = c.Compile(filepath.Join(protoRoot, "envelope.schema.json")); err != nil {
 		t.Fatalf("compile envelope schema: %v", err)
+	}
+	if set.docEnvelope, err = c.Compile(filepath.Join(protoRoot, "doc-envelope.schema.json")); err != nil {
+		t.Fatalf("compile doc-envelope schema: %v", err)
 	}
 	if set.command, err = c.Compile(filepath.Join(protoRoot, "command.schema.json")); err != nil {
 		t.Fatalf("compile command schema: %v", err)
@@ -71,6 +75,17 @@ func loadFixture(t *testing.T, path string) map[string]any {
 // validateDoc 校验单个文档；返回 nil/错误。envelope 命中事件族时叠加 payload 校验。
 func validateDoc(set schemaSet, name string, doc map[string]any) error {
 	switch {
+	case strings.HasPrefix(name, "doc-envelope"):
+		if err := set.docEnvelope.Validate(doc); err != nil {
+			return fmt.Errorf("doc-envelope: %w", err)
+		}
+		eventType, _ := doc["type"].(string)
+		if sch, ok := set.events[eventType]; ok {
+			if err := sch.Validate(doc["payload"]); err != nil {
+				return fmt.Errorf("payload(%s): %w", eventType, err)
+			}
+		}
+		return nil
 	case strings.HasPrefix(name, "envelope"):
 		if err := set.envelope.Validate(doc); err != nil {
 			return fmt.Errorf("envelope: %w", err)
@@ -85,7 +100,7 @@ func validateDoc(set schemaSet, name string, doc map[string]any) error {
 	case strings.HasPrefix(name, "command"):
 		return set.command.Validate(doc)
 	default:
-		return fmt.Errorf("fixture 命名必须以 envelope 或 command 开头")
+		return fmt.Errorf("fixture 命名必须以 envelope、doc-envelope 或 command 开头")
 	}
 }
 
@@ -107,6 +122,12 @@ func TestStrictSchemaValidationGate(t *testing.T) {
 		"envelope-evidence-request-bad-id.json",      // payload pattern（evidence_request.claimed.request_id，M3-5）
 		"command-bad-idempotency-key.json",           // 幂等键 UUIDv7 pattern
 		"command-missing-payload.json",               // 命令必填字段
+		"doc-envelope-version-zero.json",             // doc 信封 version ≥ 1（RFC-0014 §2.3）
+		"doc-envelope-bad-doc-id.json",               // doc 信封 doc_id pattern（doc_<12hex>）
+		"doc-envelope-doc-created-bad-format.json",   // payload 枚举（doc.created.format）
+		"doc-envelope-doc-revision-bad-source.json",  // payload 枚举（doc.revision_committed.source）
+		"doc-envelope-doc-revision-bad-op.json",      // payload 枚举（docOp.op 四枚举）
+		"envelope-message-bad-ref-kind.json",         // payload 枚举（message.posted refs.kind 恒 doc）
 	}
 
 	validDir := filepath.Join(protoRoot, "fixtures", "valid")
