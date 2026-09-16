@@ -34,6 +34,7 @@
 | v0.7 | 2026-08-25 | Mosaic 项目组 / ZCode | 对齐修订：协议契约移交 RFC 系列、实现选型移交 ADR；Web 基线改为 React/Vite SPA（ADR-0002）；实时传输改为 SSE 下行 + HTTP 命令（ADR-0001）；IF-AGENT-PROTOCOL 形态定为本地 agent 进程 + 逐家适配器（ACP 可选，首批 Codex/ZCode/Kimi Code，见 RFC-0002 与 Harness 调研报告）；SSRF/egress 约束限定于远端演进形态；OQ-03/08/09 挂接 RFC 裁决建议 |
 | v0.8 | 2026-08-25 | Mosaic 项目组 / ZCode | RFC 系列全量草案（0001–0011）登记；OQ-04/05/06/07/10/11/12/13/14/15 挂接对应 RFC 裁决建议；技术类开放问题自此全部由 RFC 系列承接，仅余 OQ-01/02 项目治理项 |
 | v0.9 | 2026-08-25 | Mosaic 项目组 / ZCode | RFC-0001/0002 首轮审校对齐：消息事件统一为 message.posted（actor.kind 区分）；对外续传/快照改 opaque 视图游标（全局 seq 仅内部，随 RFC-0001 v0.4，落地细节回填待 RFC Approved）；Agent 接入改分级晋级表述（RFC-0002 v0.5）；ADR-0006/0007 状态随 RFC 评审改为 Proposed |
+| v1.0 | 2026-09-16 | Mosaic 项目组 / Kimi Code | RFC-0014 / ADR-0014：协作文档落地——文档作为全局资产（飞书形态）成为第二权威事实源，per-doc 事件流与房间日志并存（同一 SQLite 库），"Room Event Log 唯一权威"表述相应修订；RFC-0009 Artifact 治理的首个落地子集（仅文档，表格后置） |
 
 ### 0.4 Keywords 关键词
 

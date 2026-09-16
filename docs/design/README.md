@@ -14,6 +14,9 @@
 | 2026-08-25 | [RFC-0009 工具与 Artifact 治理](rfc/2026-08-25-rfc-0009-tool-artifact.md) | Draft |
 | 2026-08-25 | [RFC-0010 数据生命周期](rfc/2026-08-25-rfc-0010-data-lifecycle.md) | Draft |
 | 2026-08-25 | [RFC-0011 评测框架与反 Goodhart 治理](rfc/2026-08-25-rfc-0011-evaluation.md) | Draft |
+| 2026-09-01 | [RFC-0012 群聊交互模型（取代 RFC-0003 轮次驱动模型）](rfc/2026-09-01-rfc-0012-chat-model.md) | Accepted |
+| 2026-09-04 | [RFC-0013 聊天附件（文件上传）](rfc/2026-09-04-rfc-0013-attachments.md) | Accepted |
+| 2026-09-16 | [RFC-0014 协作文档（全局资产、消息卡片与文档管理）](rfc/2026-09-16-rfc-0014-documents.md) | Accepted |
 | 2026-08-25 | [Harness 调研报告](research/2026-08-25-harness-survey.md) | Done |
 
 RFC 系列存放于 `rfc/` 目录，状态取 Draft / Reviewing / Approved / Rejected / Superseded；每份 RFC 吸收架构说明书 11.5 中的对应开放问题，Accepted 后回填架构文档与 `api/room-protocol` 工程。
