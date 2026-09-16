@@ -59,6 +59,14 @@ func TestDocAppendAndReadBack_IT(t *testing.T) {
 		t.Fatalf("version = %d, %d（期望 1, 2）", appended[0].Version, appended[1].Version)
 	}
 
+	// DocExists：已见 doc.created 为真，未见/其他事件为假
+	if exists, err := store.DocExists(ctx, "doc_aaaaaaaaaaaa"); err != nil || !exists {
+		t.Fatalf("DocExists = %v, %v（期望 true）", exists, err)
+	}
+	if exists, err := store.DocExists(ctx, "doc_999999999999"); err != nil || exists {
+		t.Fatalf("DocExists（未见） = %v, %v（期望 false）", exists, err)
+	}
+
 	// 另一文档 version 独立计数
 	other, err := store.AppendDocEvents(ctx, []protocol.DocEnvelope{
 		docEnvelope("evt_e1", "doc_bbbbbbbbbbbb", protocol.EventDocCreated,

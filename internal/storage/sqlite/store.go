@@ -1087,6 +1087,18 @@ func (s *Store) DocVersion(ctx context.Context, docID string) (int64, error) {
 	return v, nil
 }
 
+// DocExists 实现 doc.DocStore：是否已见 doc.created。
+func (s *Store) DocExists(ctx context.Context, docID string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRowContext(ctx,
+		"SELECT EXISTS(SELECT 1 FROM doc_events WHERE doc_id = ? AND type = ?)",
+		docID, protocol.EventDocCreated).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("sqlite: doc exists: %w", err)
+	}
+	return exists, nil
+}
+
 // DocEventsAfter 实现 doc.DocEventReader：从 cursor 之后按 version 续读某文档的事件
 // （doc:{id} 频道续传与历史读共用——version 即 SSE cursor，ADR-0014）。
 // limit ≤0 时取 100。返回下一游标；无更多事件时 next 为空串。

@@ -1,7 +1,7 @@
-// Package doc 是文档聚合的存储端口与域错误（RFC-0014 / ADR-0014：文档为
-// workspace 级全局资产，per-doc 事件流与房间日志并列为权威事实源）。
-// Phase 0 仅落地端口/哨兵/DTO——领域服务（命令校验、投影折叠）随 Phase 1。
-// 存储以端口注入（架构 §8.4 依赖方向）：IT/ST 用 SQLite 实现。
+// Package doc 是文档聚合域：命令校验、幂等 receipt、乐观并发、投影折叠
+// （RFC-0014 / ADR-0014：文档为 workspace 级全局资产，per-doc 事件流与房间日志
+// 并列为权威事实源）。存储以端口注入（架构 §8.4 依赖方向）：UT 用内存 fake，
+// IT/ST 用 SQLite 实现。
 package doc
 
 import (
@@ -13,11 +13,19 @@ import (
 
 // 域错误：调用方以 errors.Is 判别，不依赖错误文本。
 var (
+	// ErrInvalidCommand 命令校验失败（payload 越界、未知命令、非法幂等键、
+	// ops 校验失败、生命周期状态不允许等）。
+	ErrInvalidCommand = errors.New("doc: invalid command")
 	// ErrVersionConflict base_version 与当前文档版本不符（乐观并发拒绝：
 	// 客户端在新态上重放本地未提交 ops，RFC-0014 §2.3）。
 	ErrVersionConflict = errors.New("doc: version conflict")
-	// ErrDocNotFound 目标文档不存在（未见 doc.created）。
+	// ErrIdempotencyConflict 同幂等键但请求指纹不同（禁止静默改写语义）。
+	ErrIdempotencyConflict = errors.New("doc: idempotency conflict")
+	// ErrDocNotFound 目标文档不存在（未见 doc.created，或已删除级联清除）。
 	ErrDocNotFound = errors.New("doc: doc not found")
+	// ErrDocArchived 文档已归档：归档为只读态（RFC-0014 §2.8），
+	// rename/revision/archive 拒绝；duplicate/export 允许。
+	ErrDocArchived = errors.New("doc: doc archived")
 	// ErrDuplicateEvent 事件 ID 冲突（存储层哨兵，透传给上游判定）。
 	ErrDuplicateEvent = errors.New("doc: duplicate event id")
 	// ErrDuplicateReceipt 幂等键冲突（存储层哨兵：并发竞态时后到者收到）。
@@ -57,6 +65,8 @@ type DocStore interface {
 	LookupDocReceipt(ctx context.Context, tenantID, idempotencyKey, commandKind string) (*CommandReceipt, error)
 	// DocVersion 文档当前版本（最新 version；未见事件为 0）。
 	DocVersion(ctx context.Context, docID string) (int64, error)
+	// DocExists 是否已见 doc.created。
+	DocExists(ctx context.Context, docID string) (bool, error)
 }
 
 // DocCASStore 乐观并发追加（可选能力；base_version 与当前 version 在
