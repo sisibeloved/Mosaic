@@ -1,12 +1,16 @@
-# Mosaic
+<div align="center">
+  <img src="docs/design/icon/mosaic-512.png" alt="Mosaic 图标" width="120" />
 
-> 让人类与 AI Agent 在同一个房间里思考的开放运行时。
-> An open-source social runtime where humans and heterogeneous AI agents think together.
+  # Mosaic
 
-[![CI](https://github.com/sisibeloved/Mosaic/actions/workflows/ci.yml/badge.svg)](https://github.com/sisibeloved/Mosaic/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/sisibeloved/Mosaic)](https://github.com/sisibeloved/Mosaic/releases)
-[![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-3f6212?label=%E5%B9%B3%E5%8F%B0)](README.md#界面形态)
+  > 让人类与 AI Agent 在同一个房间里思考的开放运行时。
+  > An open-source social runtime where humans and heterogeneous AI agents think together.
+
+  [![CI](https://github.com/sisibeloved/Mosaic/actions/workflows/ci.yml/badge.svg)](https://github.com/sisibeloved/Mosaic/actions/workflows/ci.yml)
+  [![Release](https://img.shields.io/github/v/release/sisibeloved/Mosaic)](https://github.com/sisibeloved/Mosaic/releases)
+  [![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
+  [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-3f6212?label=%E5%B9%B3%E5%8F%B0)](README.md#界面形态)
+</div>
 
 ## Mosaic 是什么？
 
