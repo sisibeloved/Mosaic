@@ -455,6 +455,9 @@ func mapResult(kind agent.TaskKind, parsed Parsed) (agent.Result, error) {
 		// JSON 而无可用 body = 决策/内部件误入生成位（v1.69 狗粮实证事故链：silent
 		// 意图 JSON 被散文回退原样发布进房间正文）——拒绝发布，不冒充发言；例外是
 		// 自报 history_query（v1.70 两段式检索，引擎携结果重发）；纯散文仍走回退。
+		// v1.76：JSON 形状但解析失败（真机实证 body 值内裸引号）先宽松修复重试；
+		// 仍失败拒绝发布——JSON 原文冒充发言不可接受。
+		text = agent.NormalizeGenerateJSON(text)
 		if data, err := ExtractJSON(text); err == nil {
 			body, _ := data["body"].(string)
 			if strings.TrimSpace(body) == "" {
@@ -484,6 +487,10 @@ func mapResult(kind agent.TaskKind, parsed Parsed) (agent.Result, error) {
 				Data:  draft,
 				Usage: parsed.Usage,
 			}, nil
+		}
+		// JSON 形状但解析失败：契约失败拒绝发布（座位失败可见）；纯散文回退。
+		if agent.LooksLikeJSON(text) {
+			return agent.Result{}, fmt.Errorf("codex: generate 输出呈 JSON 形状但解析失败（不发布）")
 		}
 		// 纯文本回退：正文即发言
 		return agent.Result{

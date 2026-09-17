@@ -40,3 +40,63 @@ func stripFence(text string) string {
 	}
 	return strings.Join(body, "\n")
 }
+
+// LooksLikeJSON 文本呈 JSON 对象形状（TrimSpace 后首 { 尾 }）——生成位区分
+// "散文回退"与"JSON 契约失败拒绝发布"的判定输入。
+func LooksLikeJSON(text string) bool {
+	t := strings.TrimSpace(text)
+	return strings.HasPrefix(t, "{") && strings.HasSuffix(t, "}")
+}
+
+// RepairLooseQuotes 修复字符串值内未转义的英文双引号（模型偶发畸形；2026-09-17
+// 真机实证：kimi 生成位 body 值内 "想摸鱼" 未转义 → 整体解析失败 → 散文回退把
+// JSON 原文冒充发言发布）。结构引号判定：引号后（跳过空白）为 , } ] : 之一即
+// 字符串边界，否则视为内嵌引号转义。已转义序列原样保留；修复后仍非法由调用方
+// 按契约失败拒绝发布（不冒充），安全兜底。
+func RepairLooseQuotes(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	inStr, esc := false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if esc {
+			b.WriteByte(c)
+			esc = false
+			continue
+		}
+		if inStr && c == '\\' {
+			b.WriteByte(c)
+			esc = true
+			continue
+		}
+		if c == '"' {
+			if !inStr {
+				b.WriteByte(c)
+				inStr = true
+				continue
+			}
+			j := i + 1
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\n' || s[j] == '\r') {
+				j++
+			}
+			if j >= len(s) || s[j] == ',' || s[j] == '}' || s[j] == ']' || s[j] == ':' {
+				b.WriteByte('"')
+				inStr = false
+			} else {
+				b.WriteString(`\"`)
+			}
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// NormalizeGenerateJSON 生成位预处理：JSON 形状则尝试宽松引号修复（合法输入
+// 幂等无伤），非 JSON 形状原样返回（散文回退路径不受影响）。
+func NormalizeGenerateJSON(text string) string {
+	if !LooksLikeJSON(text) {
+		return text
+	}
+	return RepairLooseQuotes(strings.TrimSpace(text))
+}
