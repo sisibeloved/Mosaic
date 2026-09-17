@@ -26,10 +26,10 @@ func ev(typ string, seq int64, actorKind, body string, md map[string]any) protoc
 
 func stored(events ...protocol.Envelope) []protocol.Envelope { return events }
 
-// 十一层（M3-3 v1.46：+capsule_memory 恒常平面 / +retrieved_memory 按需平面 /
-// +tasklist 承诺追踪；v1.70：+curated_memory 恒常平面策展条目）：章程/参与者/
-// 刺激/近期窗口/关系/预算水位/任务指令/胶囊记忆/策展记忆/检索召回/任务清单
-// ——全部出现且有序。
+// 十二层（M3-3 v1.46：+capsule_memory 恒常平面 / +retrieved_memory 按需平面 /
+// +tasklist 承诺追踪；v1.70：+curated_memory 恒常平面策展条目；RFC-0014：
+// +referenced_docs 文档摘录）：章程/参与者/刺激/近期窗口/关系/预算水位/任务
+// 指令/胶囊记忆/策展记忆/检索召回/任务清单/被引用文档——全部出现且有序。
 func TestAssembleSevenLayers(t *testing.T) {
 	history := stored(
 		ev(protocol.EventRoomCreated, 1, "human", "room", nil),
@@ -42,7 +42,7 @@ func TestAssembleSevenLayers(t *testing.T) {
 	}
 	assembled := Assemble(cfg, history, history[1])
 	names := layerNames(assembled.Layers)
-	want := []string{"charter", "participants", "stimulus", "recent_messages", "relations", "budget_watermark", "task_directive", "capsule_memory", "curated_memory", "retrieved_memory", "tasklist"}
+	want := []string{"charter", "participants", "stimulus", "recent_messages", "relations", "budget_watermark", "task_directive", "capsule_memory", "curated_memory", "retrieved_memory", "tasklist", "referenced_docs"}
 	if len(names) != len(want) {
 		t.Fatalf("层数 = %d（%v）", len(names), names)
 	}
@@ -199,5 +199,63 @@ func TestAssembleAttachmentExcerptInjection(t *testing.T) {
 	recent2 := assembled2.Inline["recent"].([]map[string]any)
 	if _, exists := recent2[0]["attachments"]; exists {
 		t.Fatal("nil 渲染器不应注入 attachments 键")
+	}
+}
+
+// RFC-0014 §2.7 读面① 文档摘录层：近窗/刺激 refs 指向的文档渲染进
+// referenced_docs（被引用优先、时序去重），房间附着文档补足；总量 ≤
+// MaxReferencedDocsPerAssembly；渲染器 nil = 空层（纯测试装配零注入）。
+func TestAssembleReferencedDocsLayer(t *testing.T) {
+	refMsg := ev(protocol.EventMessagePosted, 2, "human", "见这份文档", nil)
+	refMsg.Payload = []byte(`{"body":"见这份文档","refs":[{"kind":"doc","doc_id":"doc_aaaaaaaaaaaa"},{"kind":"doc","doc_id":"doc_bbbbbbbbbbbb"},{"kind":"url","doc_id":"doc_ignored0url"}]}`)
+	stim := ev(protocol.EventMessagePosted, 3, "human", "再看这个", nil)
+	stim.Payload = []byte(`{"body":"再看这个","refs":[{"kind":"doc","doc_id":"doc_bbbbbbbbbbbb"},{"kind":"doc","doc_id":"doc_cccccccccccc"}]}`)
+	history := stored(
+		ev(protocol.EventRoomCreated, 1, "human", "room", nil),
+		refMsg, stim,
+	)
+	cfg := Config{RoomID: "room_c", TaskID: "tsk_1", Mode: "chat",
+		RecentWindow: 10, Budget: BudgetState{},
+		RoomDocs:    []string{"doc_cccccccccccc", "doc_dddddddddddd"},
+		DocExcerpt: func(docID string) string { return "[EXCERPT " + docID + "]" },
+	}
+	assembled := Assemble(cfg, history, stim)
+	docs, ok := assembled.Inline["referenced_docs"].([]map[string]any)
+	if !ok || len(docs) != 4 {
+		t.Fatalf("referenced_docs 应为 4 项（3 被引用去重 + 1 附着补足）: %v", assembled.Inline["referenced_docs"])
+	}
+	// 序：被引用时序（aa → bb → cc）→ 附着补足（dd；cc 已引不重复）
+	wantIDs := []string{"doc_aaaaaaaaaaaa", "doc_bbbbbbbbbbbb", "doc_cccccccccccc", "doc_dddddddddddd"}
+	for i, d := range docs {
+		if d["doc_id"] != wantIDs[i] {
+			t.Fatalf("referenced_docs[%d] = %v（期望 %s）", i, d["doc_id"], wantIDs[i])
+		}
+		if d["excerpt"] != "[EXCERPT "+wantIDs[i]+"]" {
+			t.Fatalf("referenced_docs[%d] 摘录未渲染: %v", i, d["excerpt"])
+		}
+	}
+
+	// 总量护栏：5+ 候选只注入上限数
+	manyRefs := `{"body":"多引用","refs":[`
+	for i, id := range []string{"doc_000000000001", "doc_000000000002", "doc_000000000003", "doc_000000000004", "doc_000000000005"} {
+		if i > 0 {
+			manyRefs += ","
+		}
+		manyRefs += `{"kind":"doc","doc_id":"` + id + `"}`
+	}
+	manyRefs += `]}`
+	many := ev(protocol.EventMessagePosted, 4, "human", "多引用", nil)
+	many.Payload = []byte(manyRefs)
+	capped := Assemble(Config{RoomID: "room_c", TaskID: "tsk_2", Mode: "chat",
+		RecentWindow: 10, RoomDocs: []string{"doc_000000000006"},
+		DocExcerpt: func(docID string) string { return "x" }}, append(history, many), many)
+	if got := len(capped.Inline["referenced_docs"].([]map[string]any)); got != MaxReferencedDocsPerAssembly {
+		t.Fatalf("referenced_docs 应有界 = %d，got %d", MaxReferencedDocsPerAssembly, got)
+	}
+
+	// nil 渲染器：空层不注入
+	bare := Assemble(Config{RoomID: "room_c", TaskID: "tsk_3", Mode: "chat", RecentWindow: 10}, history, stim)
+	if got := bare.Inline["referenced_docs"].([]map[string]any); len(got) != 0 {
+		t.Fatalf("nil 渲染器 referenced_docs 应为空: %v", got)
 	}
 }

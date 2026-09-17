@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sisibeloved/Mosaic/internal/agent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 )
 
@@ -210,5 +211,47 @@ func TestRenderMarkdown(t *testing.T) {
 	// 空正文：仅标题
 	if got := RenderMarkdown(DocState{Title: "空"}); got != "# 空\n" {
 		t.Fatalf("空文档渲染 = %q", got)
+	}
+}
+
+// TestRenderExcerpt 语境摘录渲染（RFC-0014 §2.7 读面①）：[block_id] 锚点前缀
+// （agent 的 insert_after/小节定位据此解析）、8k runes 截断如实标注、DLP 秘密
+// 形状剔除（附件摘录同纪律——文档同样可能含密钥）。
+func TestRenderExcerpt(t *testing.T) {
+	st := DocState{
+		DocID: "doc_0123456789ab", Title: "设计稿", Version: 3, Status: StatusActive,
+		Blocks: []protocol.DocBlock{
+			blk("blk_00000001", "heading", "目标"),
+			blk("blk_00000002", "paragraph", "做一个文档系统"),
+			blk("blk_00000003", "hr", ""),
+		},
+	}
+	out := RenderExcerpt(st, ExcerptRunes, nil)
+	for _, want := range []string{"《设计稿》(doc_0123456789ab v3 active)", "[blk_00000001] 目标", "[blk_00000002] 做一个文档系统", "[blk_00000003] ---"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("摘录缺 %q：\n%s", want, out)
+		}
+	}
+
+	// 截断：超 maxRunes 截断并标注（截断后总长 ≈ maxRunes + 标注）
+	long := DocState{DocID: "doc_0123456789ab", Title: "长", Version: 1, Status: StatusActive,
+		Blocks: []protocol.DocBlock{blk("b1", "paragraph", strings.Repeat("文", ExcerptRunes+100))}}
+	truncated := RenderExcerpt(long, ExcerptRunes, nil)
+	if !strings.Contains(truncated, "摘录已截断") {
+		t.Fatal("超限应标注截断")
+	}
+	if n := len([]rune(truncated)); n > ExcerptRunes+20 {
+		t.Fatalf("截断后应 ≈ %d runes，got %d", ExcerptRunes, n)
+	}
+
+	// DLP：秘密形状整段替换（与生产装配同一组合：agent.RedactSecrets 注入）
+	secret := DocState{DocID: "doc_0123456789ab", Title: "密钥", Version: 1, Status: StatusActive,
+		Blocks: []protocol.DocBlock{blk("b1", "paragraph", "token 是 sk-abcdefghijklmnop1234 请保密")}}
+	scrubbed := RenderExcerpt(secret, ExcerptRunes, agent.RedactSecrets)
+	if strings.Contains(scrubbed, "sk-abcdefghijklmnop1234") {
+		t.Fatalf("秘密形状未剔除：\n%s", scrubbed)
+	}
+	if !strings.Contains(scrubbed, "[REDACTED]") {
+		t.Fatalf("应替换为 [REDACTED]：\n%s", scrubbed)
 	}
 }

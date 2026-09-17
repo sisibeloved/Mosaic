@@ -1,4 +1,4 @@
-// 结构化输出 fixture 门禁（RFC-0002 §3.5.1 三件套之三：五类块正反用例）——
+// 结构化输出 fixture 门禁（RFC-0002 §3.5.1 三件套之三：各结构化块正反用例）——
 // valid 全过 / invalid 全拒；fixture 与 ValidateBlock 同演进，新增块类型先补 fixture。
 package conformance
 
@@ -45,7 +45,7 @@ func TestBlockFixturesGate(t *testing.T) {
 	}
 	for _, block := range []string{
 		agent.BlockTurnIntent, agent.BlockAttentionAssessment, agent.BlockPublicDraft,
-		agent.BlockGroundedSummary, agent.BlockClosureIntent,
+		agent.BlockGroundedSummary, agent.BlockClosureIntent, agent.BlockDocOps,
 	} {
 		if !seenBlocks[block] {
 			t.Errorf("valid fixtures 缺块类型 %q 的覆盖", block)

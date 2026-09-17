@@ -61,7 +61,18 @@ type Config struct {
 	// 注入串（文本类头部摘录/图像二进制元数据降级）。nil = 不注入（纯测试
 	// 装配）；生产由 app 注入（读数据目录附件 + RedactSecrets）。
 	AttachExcerpt func(descriptor AttachmentInfo) string
+	// DocExcerpt 文档摘录渲染器（RFC-0014 §2.7 读面①）：输入 doc_id 返回
+	// 有界摘录（生产：8k runes + DLP 剔除 + [block_id] 锚点前缀）。nil = 不
+	// 注入（纯测试装配）。
+	DocExcerpt func(docID string) string
+	// RoomDocs 房间附着文档 ID 集（§2.4 附着面投影序；由引擎从房间投影供给）
+	// ——近窗 refs 之外的全局资产可见性：附着即"本房相关工作台"。
+	RoomDocs []string
 }
+
+// MaxReferencedDocsPerAssembly 单次组装的文档摘录注入上限（§2.7 有界纪律：
+// 按引用注入优先（近窗时序），房间附着补足——总量护栏防摘录挤爆语境）。
+const MaxReferencedDocsPerAssembly = 4
 
 // AttachmentInfo 近窗消息携带的附件最小投影（描述子字段集，供渲染器消费）。
 type AttachmentInfo struct {
@@ -153,16 +164,18 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 	}
 	// 近期窗口（含刺激，按序）
 	var recent []map[string]any
+	var referencedDocIDs []string // RFC-0014 摘录层候选（近窗 refs，时序）
 	start := len(messages) - cfg.RecentWindow
 	if start < 0 {
 		start = 0
 	}
 	for _, m := range messages[start:] {
 		var body struct {
-			Body        string           `json:"body"`
-			AddressedTo []string         `json:"addressed_to"`
-			ReplyTo     *string          `json:"reply_to"`
-			Attachments []AttachmentInfo `json:"attachments"`
+			Body        string            `json:"body"`
+			AddressedTo []string          `json:"addressed_to"`
+			ReplyTo     *string           `json:"reply_to"`
+			Attachments []AttachmentInfo  `json:"attachments"`
+			Refs        []protocol.DocRef `json:"refs"`
 		}
 		_ = json.Unmarshal(m.Payload, &body)
 		item := map[string]any{
@@ -177,6 +190,12 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 			}
 			item["attachments"] = rendered
 		}
+		// RFC-0014：被引用文档汇入摘录层候选（近窗时序，去重在收集段完成）。
+		for _, r := range body.Refs {
+			if r.Kind == "doc" && r.DocID != "" {
+				referencedDocIDs = append(referencedDocIDs, r.DocID)
+			}
+		}
 		recent = append(recent, item)
 	}
 	participants := make([]string, 0, len(cfg.Seats))
@@ -188,8 +207,9 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 	var stimulusAttachments []string
 	{
 		var p struct {
-			Body        string           `json:"body"`
-			Attachments []AttachmentInfo `json:"attachments"`
+			Body        string            `json:"body"`
+			Attachments []AttachmentInfo  `json:"attachments"`
+			Refs        []protocol.DocRef `json:"refs"`
 		}
 		_ = json.Unmarshal(stimulus.Payload, &p)
 		stimulusBody = p.Body
@@ -199,9 +219,34 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 				stimulusAttachments = append(stimulusAttachments, cfg.AttachExcerpt(a))
 			}
 		}
+		for _, r := range p.Refs {
+			if r.Kind == "doc" && r.DocID != "" {
+				referencedDocIDs = append(referencedDocIDs, r.DocID)
+			}
+		}
 	}
 
 	relations := map[string]any{"reply_edges": countReplies(messages), "addressed_edges": countAddressed(messages)}
+	// RFC-0014 §2.7 读面① 摘录层：被引用集合（近窗+刺激 refs，时序）优先，
+	// 房间附着文档补足，去重后总量 ≤ MaxReferencedDocsPerAssembly；渲染器
+	// nil = 纯测试装配不注入（同附件摘录纪律）。
+	referencedDocs := []map[string]any{}
+	if cfg.DocExcerpt != nil {
+		seen := map[string]bool{}
+		candidates := append(append([]string(nil), referencedDocIDs...), cfg.RoomDocs...)
+		for _, id := range candidates {
+			if len(referencedDocs) >= MaxReferencedDocsPerAssembly {
+				break
+			}
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			referencedDocs = append(referencedDocs, map[string]any{
+				"doc_id": id, "excerpt": cfg.DocExcerpt(id),
+			})
+		}
+	}
 	capsuleBrief := make([]map[string]any, 0, len(cfg.Capsules))
 	for _, c := range cfg.Capsules {
 		dissent := append([]string(nil), c.Dissent...)
@@ -224,6 +269,7 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 		"tasklist":                tasklist,
 		"tasklist_protocol":       TasklistProtocol,
 		"retrieved":               retrieved,
+		"referenced_docs":         referencedDocs,
 		"mode":                    cfg.Mode,
 		"participants":            participants,
 		"stimulus_body":           stimulusBody,
@@ -246,10 +292,11 @@ func Assemble(cfg Config, history []protocol.Envelope, stimulus protocol.Envelop
 		{"relations", relations},
 		{"budget_watermark", map[string]any{"watermark": watermark, "budget": cfg.Budget}},
 		{"task_directive", taskDirectiveOf(cfg)},
-		{"capsule_memory", capsuleBrief}, // 恒常平面·胶囊（M3-3：编辑后胶囊，容量纪律）
-		{"curated_memory", curated},      // 恒常平面·策展条目（v1.70：agent 自助沉淀，与胶囊共预算）
-		{"retrieved_memory", retrieved},  // 按需平面（M3-3：关键词召回，FTS5 同语义）
-		{"tasklist", tasklist},           // 承诺追踪（RFC-0012 OQ-A：带责任人）
+		{"capsule_memory", capsuleBrief},    // 恒常平面·胶囊（M3-3：编辑后胶囊，容量纪律）
+		{"curated_memory", curated},         // 恒常平面·策展条目（v1.70：agent 自助沉淀，与胶囊共预算）
+		{"retrieved_memory", retrieved},     // 按需平面（M3-3：关键词召回，FTS5 同语义）
+		{"tasklist", tasklist},              // 承诺追踪（RFC-0012 OQ-A：带责任人）
+		{"referenced_docs", referencedDocs}, // 文档摘录（RFC-0014 §2.7：被引用/附着，有界按引用注入）
 	}
 	layers := make([]Layer, 0, len(layerDefs))
 	digests := make([]string, 0, len(layerDefs))

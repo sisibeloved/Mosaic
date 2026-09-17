@@ -344,6 +344,65 @@ func (s *Service) CommitRevision(ctx context.Context, actor Actor, docID string,
 	return &CommandResult{DocID: docID, EventID: appended[0].EventID, DocVersion: appended[0].Version}, nil
 }
 
+// CreateDoc 引擎代写创建路径（RFC-0014 §2.7：doc_ops create——agent 经引擎
+// 校验代写，actor 记为该 bot）：与命令路径 createDoc 同校验纪律（标题字长、
+// markdown 封闭枚举、initial blocks 上限与服务端块 ID 分配），不走幂等回执
+// （引擎波内串行；创建 CAS 期望版本 0 在事务内强制）。携带 blocks 时同事务
+// 追加首条 revision（created + revision 两事件一批）。
+func (s *Service) CreateDoc(ctx context.Context, actor Actor, title string, blocks []protocol.DocBlock, source, note string) (*CommandResult, error) {
+	if actor.ParticipantID == "" {
+		return nil, fmt.Errorf("%w: actor 必须具名", ErrInvalidCommand)
+	}
+	if !revisionSources[source] {
+		return nil, fmt.Errorf("%w: source 取值 human_editor | agent", ErrInvalidCommand)
+	}
+	if n := len([]rune(title)); n < 1 || n > MaxTitleRunes {
+		return nil, fmt.Errorf("%w: title 必填 1..%d 字", ErrInvalidCommand, MaxTitleRunes)
+	}
+	if len([]rune(note)) > 280 {
+		return nil, fmt.Errorf("%w: note 超 280 字", ErrInvalidCommand)
+	}
+	if len(blocks) > MaxOpsPerBatch {
+		return nil, fmt.Errorf("%w: initial blocks ≤ %d", ErrInvalidCommand, MaxOpsPerBatch)
+	}
+	docID := s.cfg.NewDocID()
+	if !docIDPattern.MatchString(docID) {
+		return nil, fmt.Errorf("doc: NewDocID 产物 %q 不符合 doc_<12hex>", docID)
+	}
+	envs := []protocol.DocEnvelope{s.newEnvelope(actor, docID, protocol.EventDocCreated,
+		mustJSON(protocol.DocCreatedPayload{
+			DocID: docID, Title: title, Format: "markdown", CreatedBy: actor.ParticipantID,
+		}))}
+	if len(blocks) > 0 {
+		ops := make([]protocol.DocOp, 0, len(blocks))
+		for _, b := range blocks {
+			block := b
+			ops = append(ops, protocol.DocOp{Op: "append", Block: &block})
+		}
+		normalized, err := s.normalizeOps(nil, ops)
+		if err != nil {
+			return nil, err
+		}
+		if _, statuses := ApplyDocOps(nil, normalized, nil); firstRejected(statuses) != "" {
+			return nil, fmt.Errorf("%w: initial blocks 校验失败: %s", ErrInvalidCommand, firstRejected(statuses))
+		}
+		envs = append(envs, s.newEnvelope(actor, docID, protocol.EventDocRevisionCommitted,
+			mustJSON(protocol.DocRevisionCommittedPayload{
+				DocID: docID, BaseVersion: 1, Version: 2, Ops: normalized,
+				Actor: actor.ParticipantID, Source: source, Note: note,
+			})))
+	}
+	cas, ok := s.cfg.Store.(DocCASStore)
+	if !ok {
+		return nil, fmt.Errorf("doc: 存储不支持 CAS 追加")
+	}
+	appended, err := cas.AppendDocEventsIf(ctx, envs, 0)
+	if err != nil {
+		return nil, fmt.Errorf("doc: append: %w", err)
+	}
+	return &CommandResult{DocID: docID, EventID: appended[len(appended)-1].EventID, DocVersion: appended[len(appended)-1].Version}, nil
+}
+
 // archiveDoc 归档（active → archived；归档为只读态）。
 func (s *Service) archiveDoc(ctx context.Context, actor Actor, cmd Command) (*CommandResult, error) {
 	return s.lifecycleDoc(ctx, actor, cmd, protocol.EventDocArchived)

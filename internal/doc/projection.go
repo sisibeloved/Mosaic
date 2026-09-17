@@ -5,6 +5,7 @@ package doc
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/sisibeloved/Mosaic/internal/protocol"
@@ -237,4 +238,46 @@ func RenderMarkdown(st DocState) string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+// ExcerptRunes 语境注入摘录上限（RFC-0014 §2.9：每文档 8k runes——与附件摘录
+// 同型护栏）。
+const ExcerptRunes = 8000
+
+// RenderExcerpt 语境注入摘录渲染（RFC-0014 §2.7 读面①：按引用注入的有界摘录）。
+// 每块带 [block_id] 前缀——agent 的 insert_after 锚点与小节定位据此解析；
+// 超 maxRunes 截断并如实标注（不全量灌入）。redact 为 DLP 剔除函数（秘密形状
+// 整段替换；附件摘录同纪律——文档同样可能含密钥），nil = 不剔除。
+func RenderExcerpt(st DocState, maxRunes int, redact func(string) string) string {
+	var sb strings.Builder
+	sb.WriteString("《")
+	sb.WriteString(st.Title)
+	sb.WriteString("》(")
+	sb.WriteString(st.DocID)
+	sb.WriteString(" v")
+	sb.WriteString(strconv.FormatInt(st.Version, 10))
+	sb.WriteString(" ")
+	sb.WriteString(st.Status)
+	sb.WriteString(")\n")
+	for _, b := range st.Blocks {
+		sb.WriteString("[")
+		sb.WriteString(b.BlockID)
+		sb.WriteString("] ")
+		text := b.Text
+		if b.Type == "hr" && strings.TrimSpace(text) == "" {
+			text = "---"
+		}
+		sb.WriteString(text)
+		sb.WriteString("\n")
+	}
+	out := sb.String()
+	if redact != nil {
+		out = redact(out)
+	}
+	if maxRunes > 0 {
+		if rs := []rune(out); len(rs) > maxRunes {
+			out = string(rs[:maxRunes]) + "\n…（摘录已截断，全文见文档）"
+		}
+	}
+	return out
 }

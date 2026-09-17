@@ -81,6 +81,12 @@ type EngineConfig struct {
 	// AttachExcerpt 可选：附件语境摘录渲染器（RFC-0013）——nil = 不注入附件
 	// 内容（纯测试装配）；生产由 app 注入（读数据目录 + RedactSecrets）。
 	AttachExcerpt func(contextx.AttachmentInfo) string
+	// Docs 可选：doc_ops 代写面（RFC-0014 §2.7）——nil = 无文档面（doc_ops
+	// 到达一律降级为空 refs；纯测试装配）。生产注入 *doc.Service。
+	Docs DocProxy
+	// DocExcerpt 可选：文档语境摘录渲染器（§2.7 读面①）——nil = 不注入文档
+	// 摘录；生产由 app 注入（doc.GetDoc + RenderExcerpt 8k runes + RedactSecrets）。
+	DocExcerpt func(docID string) string
 	// RunTimeout 独立任务执行时长上限（M4-1；0 = 缺省 10min——长于单轮 180s）。
 	RunTimeout time.Duration
 	// RunTimeoutFunc 可选的活读面（OQ-B 设置族首员，M4-1 切片 B）：非 nil 且
@@ -754,6 +760,20 @@ func (e *Engine) assembleChat(ctx context.Context, cfg contextx.Config, envs []p
 	cfg.Curated = curatedProjection(plane)
 	cfg.Tasklist = taskBriefProjection(envs)
 	cfg.Retrieved = retrievedProjection(envs, anchor, cfg.RecentWindow)
+	// RFC-0014 §2.7 读面①：文档摘录层——渲染器与房间附着集随组装供给
+	//（被引用集合由 contextx 自近窗/刺激 refs 解析；附着集取投影序）。
+	cfg.DocExcerpt = e.cfg.DocExcerpt
+	if e.cfg.DocExcerpt != nil {
+		stored := make([]StoredEvent, len(envs))
+		for i := range envs {
+			stored[i] = StoredEvent{Envelope: envs[i]}
+		}
+		attached := attachedDocsOf(stored)
+		cfg.RoomDocs = make([]string, 0, len(attached))
+		for _, d := range attached {
+			cfg.RoomDocs = append(cfg.RoomDocs, d.DocID)
+		}
+	}
 	asm := contextx.Assemble(cfg, envs, anchor)
 	if proactive {
 		asm.Inline["proactive"] = true
@@ -1224,6 +1244,17 @@ func (e *Engine) publishMessage(ctx context.Context, roomID, roundID string, sti
 	if e.fenceViolated(fresh, roundID, roundOpenedSeq(fresh, roundID), epoch) {
 		e.revoke(ctx, roomID, grantEnv.EventID, grantID, roundID, stimulus, "room_paused", draft.Usage)
 		return revealRevoked
+	}
+	// RFC-0014 §2.7 透明纪律：doc_ops 与公开说明消息同波——文档事件先于正文
+	// 落库（refs 卡片渲染时可解析），写面指令本身不进消息载荷（载荷是描述子
+	// 封闭投影）。op 失败降级为跳过（不翻波）；围栏已过才代写——围栏违例不产
+	// 生孤儿文档事件（CAS 重试期仍有迟到撤销窗口：文档事件已落而正文迟到——
+	// 可接受的弱一致降级，反向（正文先文档后）会破坏 refs 解析序，不可取）。
+	if raw, ok := draft.Data["doc_ops"]; ok {
+		if refs := e.applyWaveDocOps(ctx, roomID, roundID, sel.ParticipantID, raw); len(refs) > 0 {
+			draft.Data["refs"] = refs
+		}
+		delete(draft.Data, "doc_ops")
 	}
 	msg := e.newEnv(roomID, protocol.EventMessagePosted,
 		protocol.Actor{ParticipantID: sel.ParticipantID, Kind: "agent"}, grantEnv.EventID, roundID, draft.Data)

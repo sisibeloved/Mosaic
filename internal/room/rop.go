@@ -187,9 +187,15 @@ func (e *Engine) runReplyOrPass(ctx context.Context, roomID, roundID string, anc
 				silent++
 				continue
 			}
+			payload := map[string]any{"body": clean, "addressed_to": []string{}, "relations": []any{}}
+			// RFC-0014 §2.7：ROP 面不接受 doc_ops（v1），但模型自报的既有文档
+			// 引用不剥除（白名单化透传——引用卡片是叙事的一部分）。
+			if refs := sanitizeDocRefs(res.Data["refs"]); len(refs) > 0 {
+				payload["refs"] = refs
+			}
 			env := e.newEnv(roomID, protocol.EventMessagePosted,
 				protocol.Actor{ParticipantID: s.ParticipantID, Kind: "agent"}, anchor.EventID, roundID,
-				map[string]any{"body": clean, "addressed_to": []string{}, "relations": []any{}})
+				payload)
 			env.Metadata = map[string]any{"path": "reply_or_pass", "scenario": scenario}
 			if _, err := e.append(ctx, env); err != nil {
 				e.warn(roomID, "reply_or_pass 发布落库失败", "seat", s.ParticipantID, "err", err)

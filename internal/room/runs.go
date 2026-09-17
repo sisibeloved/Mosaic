@@ -424,12 +424,18 @@ func (e *Engine) completeRun(ctx context.Context, roomID string, req protocol.Ru
 		if err != nil {
 			break
 		}
+		msgPayload := map[string]any{"body": body, "addressed_to": []string{}, "relations": []any{}}
+		// RFC-0014 §2.7：run 通道不接受 doc_ops（v1），模型自报的既有文档引用
+		// 不剥除（白名单化透传）。
+		if refs := sanitizeDocRefs(res.Data["refs"]); len(refs) > 0 {
+			msgPayload["refs"] = refs
+		}
 		msgEnv := protocol.Envelope{
 			EventID: e.cfg.NewID("evt"), TenantID: e.cfg.Tenant, RoomID: roomID,
 			Type: protocol.EventMessagePosted, SchemaVersion: 1, OccurredAt: e.cfg.Clock(),
 			Actor:      protocol.Actor{ParticipantID: req.Assignee, Kind: "agent"},
 			Visibility: protocol.Visibility{Kind: "public"},
-			Payload:    mustJSON(map[string]any{"body": body, "addressed_to": []string{}, "relations": []any{}}),
+			Payload:    mustJSON(msgPayload),
 			Metadata:   map[string]any{"run_id": req.RunID, "task_id": req.TaskID},
 		}
 		appended, err := e.appendCASRun(ctx, roomID, msgEnv, version)

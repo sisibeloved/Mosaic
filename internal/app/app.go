@@ -504,6 +504,15 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			// v1.36 曾漏配此处，主动波从未排上（dogfood 实证），勿再省略。
 			ProactiveSilence: 5 * time.Minute,
 			AttachExcerpt:    attachExcerpt,
+			Docs:             docSvc, // RFC-0014 §2.7：doc_ops 引擎代写面（actor 记为该 bot）
+			// §2.7 读面①：文档摘录注入（8k runes 有界 + DLP 秘密形状剔除——附件摘录同纪律）。
+			DocExcerpt: func(docID string) string {
+				state, err := docSvc.GetDoc(ctx, docID)
+				if err != nil {
+					return "（文档 " + docID + " 不存在或已删除）"
+				}
+				return doc.RenderExcerpt(state, doc.ExcerptRunes, agent.RedactSecrets)
+			},
 			// OQ-B 设置族活读面：每次 run 拉起时读当前设置（变更无须重启引擎）
 			RunTimeoutFunc: settingsStore.RunTimeout,
 			// M4-3：ROP 门（reply_or_pass_mode）+ 路径指标（A/B 测量面，JSONL 落盘）
