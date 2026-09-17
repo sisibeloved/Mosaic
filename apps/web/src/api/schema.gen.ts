@@ -714,10 +714,13 @@ export interface components {
          *     invite_agent → {participant_id}（RFC-0001 Membership：participant.admitted 拉人）；
          *     fork/pause/resume/close/reopen/merge_thread → ThreadLifecyclePayload（RFC-0004 线程生命周期，
          *     状态机转移校验；merge 在个人版单 owner 形态下为直接命令=确认权）。
+         *     attach_doc_to_room / detach_doc_from_room → {doc_id}（RFC-0014 §2.4 房间文档附着：
+         *     关联事实进房间日志，附着不复制不锁定；attach 校验文档存在 + 上限 32，detach 免存在性
+         *     ——文档已删也可解除；重复 attach / detach 未附着 = 幂等空操作，成功返回且不追加事件）。
          */
         RoomCommand: {
             /** @enum {string} */
-            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "rename_room" | "endorse_intent" | "invite_agent" | "fork_thread" | "pause_thread" | "resume_thread" | "close_thread" | "reopen_thread" | "merge_thread" | "propose_closure" | "accept_closure" | "create_evidence_request" | "claim_evidence_request" | "resolve_evidence_request" | "resolve_task" | "edit_memory" | "delete_room" | "run_task" | "cancel_run";
+            command_kind: "create_room" | "post_message" | "pause_room" | "resume_room" | "rename_room" | "endorse_intent" | "invite_agent" | "fork_thread" | "pause_thread" | "resume_thread" | "close_thread" | "reopen_thread" | "merge_thread" | "propose_closure" | "accept_closure" | "create_evidence_request" | "claim_evidence_request" | "resolve_evidence_request" | "resolve_task" | "edit_memory" | "delete_room" | "run_task" | "cancel_run" | "attach_doc_to_room" | "detach_doc_from_room";
             expected_room_version: number;
             /** @description UUIDv7（服务端按 tenant+key+kind 去重；同键异指纹 409） */
             idempotency_key: string;
@@ -766,12 +769,21 @@ export interface components {
             relations?: components["schemas"]["TypedRelationInput"][];
             /** @description RFC-0013 上传令牌（POST /v1/rooms/{id}/attachments 第一步产物）；服务端定稿为描述子嵌入事件——令牌不进事件载荷。 */
             attachments?: string[];
+            /** @description 文档引用（RFC-0014 §2.4）：分享文档到房间 = 发一条带 doc_ref 的消息（人类或 agent 均可）；服务端校验存在性（引用不存在/已删文档即拒）。缺省 = 无引用。 */
+            refs?: components["schemas"]["DocRef"][];
             thread_id?: null | string;
         };
         TypedRelationInput: {
             target_event_id: string;
             /** @enum {string} */
             kind: "supports" | "challenges" | "extends" | "questions" | "evidence_for" | "supersedes" | "analogy" | "relates";
+        };
+        /** @description 文档引用描述子（RFC-0014 §2.4 封闭字段集，与 room-protocol message.posted docRef 同形；anchor_block_id 锚定块级位置，卡片/编辑器据此定位）。 */
+        DocRef: {
+            /** @enum {string} */
+            kind: "doc";
+            doc_id: string;
+            anchor_block_id?: string;
         };
         PauseRoomPayload: {
             reason?: string;
@@ -1004,6 +1016,8 @@ export interface components {
             tasks?: components["schemas"]["TaskItem"][];
             /** @description 任务执行通道（M4-1，RFC-0002 执行生命周期补编）：独立于群聊波的长任务执行与结果回传。 */
             runs?: components["schemas"]["RunView"][];
+            /** @description 房间附着文档段（RFC-0014 §2.4：doc.attached_to_room/doc.detached_from_room 折叠——房间右面板"文档"段数据源；投影产物，随事件全量重建；附着不复制、不锁定，同一文档可附着多个房间）。 */
+            docs: components["schemas"]["AttachedDoc"][];
             /** @description 证据需求单（M3-5：open/resolved/dismissed）。 */
             evidence_requests?: components["schemas"]["EvidenceRequestView"][];
             /** @description 开发者模式回放条目（M3-1 持久化补全：事件支撑的 [dev] 内联信息，重启还原）。 */
@@ -1100,6 +1114,14 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /** @description 房间附着文档投影项（RFC-0014 §2.4；重复附着以最新事实覆盖 attached_by/attached_at，detach 出集）。 */
+        AttachedDoc: {
+            doc_id: string;
+            /** @description 附着操作者（participant ID） */
+            attached_by: string;
+            /** Format: date-time */
+            attached_at: string;
+        };
         /** @description 设置族文档（OQ-B，M4-1 首员 + M4-3 第二员）：全量替换语义；新成员迁入时向后兼容（缺字段 = 缺省）。 */
         SettingsDoc: {
             /** @description 独立任务执行时长上限（秒；缺省 600；长于单轮 180s——"长任务"服务面） */
@@ -1193,6 +1215,8 @@ export interface components {
             reply_to?: null | string;
             /** @description 消息附件描述子（RFC-0013；缺省 = 无附件）。 */
             attachments?: components["schemas"]["AttachmentDescriptor"][];
+            /** @description 文档引用（RFC-0014 §2.4；缺省 = 无引用；快照/SSE 两路同形——同 attachments 纪律）。 */
+            refs?: components["schemas"]["DocRef"][];
             thread_id?: null | string;
             /** Format: date-time */
             occurred_at: string;

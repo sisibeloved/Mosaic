@@ -336,3 +336,96 @@ func TestWaveTimingRecorded(t *testing.T) {
 	}
 	t.Fatal("未找到 round.closed")
 }
+
+// ---- refs 透传桩：生成恒带文档引用（RFC-0014 Phase 3 引擎透传验证）----
+
+type refDraftAdapter struct{}
+
+func (refDraftAdapter) Name() string                     { return "ref_draft_stub" }
+func (refDraftAdapter) Capabilities() agent.Capabilities { return agent.Capabilities{} }
+func (refDraftAdapter) Boot(context.Context, agent.Profile) (agent.Session, error) {
+	return refDraftSession{}, nil
+}
+
+type refDraftSession struct{}
+
+func (refDraftSession) Run(_ context.Context, task agent.Task) (agent.Handle, error) {
+	return refDraftHandle{task: task}, nil
+}
+func (refDraftSession) Cancel(string) {}
+func (refDraftSession) Close()        {}
+
+type refDraftHandle struct{ task agent.Task }
+
+func (refDraftHandle) Updates() <-chan agent.DraftUpdate { return nil }
+func (refDraftHandle) Cancel()                           {}
+
+func (h refDraftHandle) Result() (agent.Result, error) {
+	switch h.task.Kind {
+	case agent.KindEvaluateIntent:
+		action := "speak"
+		recent, _ := h.task.Context.Inline["recent"].([]map[string]any)
+		if len(recent) > 0 {
+			if kind, _ := recent[len(recent)-1]["kind"].(string); kind != "human" {
+				action = "silent" // 锚=agent 消息自决静默，链收敛
+			}
+		}
+		return agent.Result{Block: "turn_intent", Data: map[string]any{
+			"action": action, "type": "extend", "public_rationale": "ref stub",
+			"scores": map[string]any{"relevance": 0.5, "novelty": 0.5, "urgency": 0.5, "confidence": 0.5},
+		}}, nil
+	case agent.KindGenerate:
+		return agent.Result{Block: "public_draft", Data: map[string]any{
+			"body": "见这份文档",
+			"refs": []map[string]any{{"kind": "doc", "doc_id": "doc_0123456789ab", "anchor_block_id": "blk_1"}},
+		}}, nil
+	}
+	return agent.Result{Block: "unsupported"}, nil
+}
+
+// RFC-0014 Phase 3 透传断言：agent 草稿 Data 的 refs 原样进 message.posted
+// 事件载荷（publishMessage 把 draft.Data 整图 marshal 入载荷——内部写入不经
+// 命令面校验，refs 形状由适配器自律；本测试锁定该结构保证不漂移）。
+func TestChatAgentRefsPassthrough(t *testing.T) {
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(refDraftAdapter{})
+	defer sup.Shutdown()
+	eng := NewEngine(EngineConfig{
+		Store: store, Reader: store, Agents: sup,
+		Seats: []AgentSeat{
+			{ParticipantID: "par_ref", Profile: agent.Profile{ProfileID: "pr", Adapter: "ref_draft_stub"}},
+		},
+		Budget:         contextx.Limits{},
+		ReactionWindow: 5 * time.Millisecond,
+		Clock:          testClock, Now: time.Now,
+		NewID: counterNewID(), Tenant: "ten_local",
+	})
+	defer eng.Close()
+
+	seedRoomCreatedFor(t, store, "room_refs")
+	deliverHuman(t, store, eng, "room_refs")
+	waitRoundsClosed(t, store, "room_refs", 2) // 波1 published → 波2 自决静默收束
+	time.Sleep(100 * time.Millisecond)
+
+	found := false
+	for _, ev := range store.RoomEvents("room_refs") {
+		if ev.Type != protocol.EventMessagePosted || ev.Actor.Kind != "agent" {
+			continue
+		}
+		found = true
+		var p struct {
+			Refs []protocol.DocRef `json:"refs"`
+		}
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			t.Fatalf("unmarshal refs: %v", err)
+		}
+		if len(p.Refs) != 1 || p.Refs[0].Kind != "doc" ||
+			p.Refs[0].DocID != "doc_0123456789ab" || p.Refs[0].AnchorBlockID != "blk_1" {
+			t.Fatalf("refs 未原样透传进 agent 消息载荷：%s", ev.Payload)
+		}
+	}
+	if !found {
+		t.Fatal("波1应有 ref 座发言")
+	}
+}

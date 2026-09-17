@@ -182,6 +182,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			return nil
 		},
 		Attachments: attachStore, // 令牌定稿（描述子入事件载荷）+ 删除级联
+		Docs:        store,      // RFC-0014 §2.4：message.posted refs 与 attach_doc_to_room 的文档存在性校验
 		// M4-1 能力门：assignee 的适配器须声明 TaskRuns（echo 等测试桩拒绝）。
 		RunCapable: func(assignee string) bool {
 			if engine := enginePtr.Load(); engine != nil {

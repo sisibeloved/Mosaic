@@ -63,6 +63,16 @@ type Config struct {
 	// RunCapable 可选（M4-1）：assignee 座位的适配器是否支持独立任务执行
 	// （echo 等测试桩不支持——如实拒绝）。nil = 不做能力门（测试装配）。
 	RunCapable func(assignee string) bool
+	// Docs 可选（RFC-0014 §2.4）：message.posted refs 与 attach_doc_to_room 的
+	// 文档存在性校验端口（sqlite 装配注入；nil = 跳过存在性校验——形态校验
+	// 恒在，测试装配解耦，同 Seats/RunCapable 先例）。
+	Docs DocExistenceChecker
+}
+
+// DocExistenceChecker 文档存在性校验端口（窄端口：doc.DocStore 的 DocExists
+// 方法集——sqlite.Store / doc.MemStore 结构满足，room 不 import doc 域）。
+type DocExistenceChecker interface {
+	DocExists(ctx context.Context, docID string) (bool, error)
 }
 
 // AttachmentDescriptor 事件载荷中的附件描述子（attach.Descriptor 类型别名——
@@ -135,6 +145,10 @@ func (s *Service) ExecuteCommand(ctx context.Context, actor Actor, cmd Command) 
 		return s.editMemory(ctx, actor, cmd)
 	case "delete_room":
 		return s.deleteRoom(ctx, actor, cmd)
+	case "attach_doc_to_room":
+		return s.attachDoc(ctx, actor, cmd)
+	case "detach_doc_from_room":
+		return s.detachDoc(ctx, actor, cmd)
 	case "run_task":
 		return s.runTask(ctx, actor, cmd)
 	case "cancel_run":
@@ -303,8 +317,31 @@ func (s *Service) postMessage(ctx context.Context, actor Actor, cmd Command) (*C
 		}
 		attachments = resolved
 	}
+	// RFC-0014 §2.4 文档引用：≤8（Schema maxItems 对齐）、封闭字段（kind 首版仅
+	// doc）、doc_id 形态 + 存在性校验（引用不存在/已删除文档即拒——卡片降级渲染
+	// 只面向"引用后被删"，不为笔误开闸；Docs 端口 nil 时跳过存在性）。
+	if len(payload.Refs) > 8 {
+		return nil, fmt.Errorf("%w: refs ≤ 8", ErrInvalidCommand)
+	}
+	for i, ref := range payload.Refs {
+		if ref.Kind != "doc" {
+			return nil, fmt.Errorf("%w: refs[%d].kind 首版封闭枚举仅 doc", ErrInvalidCommand, i)
+		}
+		if !docIDPattern.MatchString(ref.DocID) {
+			return nil, fmt.Errorf("%w: refs[%d].doc_id 形如 doc_<12hex>", ErrInvalidCommand, i)
+		}
+		if s.cfg.Docs != nil {
+			ok, err := s.cfg.Docs.DocExists(ctx, ref.DocID)
+			if err != nil {
+				return nil, fmt.Errorf("room: doc exists: %w", err)
+			}
+			if !ok {
+				return nil, fmt.Errorf("%w: refs[%d] 引用不存在或已删除的文档 %s", ErrInvalidCommand, i, ref.DocID)
+			}
+		}
+	}
 
-	// 事件载荷：描述子形态（attachments 缺省 = 无附件；与 Schema 对齐）。
+	// 事件载荷：描述子形态（attachments/refs 缺省 = 无附件/无引用；与 Schema 对齐）。
 	eventPayload := struct {
 		Body        string                 `json:"body"`
 		ReplyTo     *string                `json:"reply_to"`
@@ -312,8 +349,10 @@ func (s *Service) postMessage(ctx context.Context, actor Actor, cmd Command) (*C
 		Relations   []typedRelation        `json:"relations"`
 		ThreadID    *string                `json:"thread_id"`
 		Attachments []AttachmentDescriptor `json:"attachments,omitempty"`
+		Refs        []protocol.DocRef      `json:"refs,omitempty"`
 	}{Body: payload.Body, ReplyTo: payload.ReplyTo, AddressedTo: payload.AddressedTo,
-		Relations: payload.Relations, ThreadID: payload.ThreadID, Attachments: attachments}
+		Relations: payload.Relations, ThreadID: payload.ThreadID, Attachments: attachments,
+		Refs: payload.Refs}
 
 	env := protocol.Envelope{
 		EventID:       s.cfg.NewID("evt"),
@@ -344,8 +383,7 @@ func (s *Service) postMessage(ctx context.Context, actor Actor, cmd Command) (*C
 // postMessagePayload 消息命令载荷（严格字段集：多余字段拒绝；
 // 字段集与 events/message.posted.schema.json 对齐，M2 定稿；attachments 为
 // RFC-0013 上传令牌数组——落库前由服务定稿为描述子，令牌不进事件）。
-// refs（RFC-0014 文档引用）Phase 0 仅协议面：命令可解码、不落事件——
-// 经服务进事件载荷与投影走线属 Phase 3。
+// refs（RFC-0014 文档引用，Phase 3 走线）：校验后原样进事件载荷与投影。
 type postMessagePayload struct {
 	Body        string                 `json:"body"`
 	ReplyTo     *string                `json:"reply_to"`
@@ -379,7 +417,113 @@ var (
 	taskIDPattern        = regexp.MustCompile(`^tsk_[0-9A-Za-z_-]+$`)
 	closureIDPattern     = regexp.MustCompile(`^clo_[0-9A-Za-z_-]+$`)
 	uploadTokenPattern   = regexp.MustCompile(`^upl_[0-9a-z_]+$`) // RFC-0013 上传令牌
+	docIDPattern         = regexp.MustCompile(`^doc_[0-9a-f]{12}$`)
 )
+
+// maxAttachedDocsPerRoom 房间附着文档上限（RFC-0014 §2.9：右面板与语境摘要的实用上界）。
+const maxAttachedDocsPerRoom = 32
+
+// attachDoc / detachDoc 群文档附着（RFC-0014 §2.4）：房间日志内的关联事实
+// （非文档内容）——附着不复制、不锁定，同一文档可附着多个房间；房间删除不
+// 级联删文档（ADR-0014：文档为全局资产，deleteRoom 不触碰 doc 面）。
+// attach 校验文档存在（Docs 端口 nil 时跳过存在性，形态校验恒在）+ 附着上限
+// 32（§2.9）；detach 不校验存在——文档已删也可解除（关联清理由房间日志自治，
+// 不因 doc 侧删除而锁死）。
+// 重复 attach / detach 未附着文档 = 幂等空操作：成功返回且不追加重复事件
+// （日志保持干净；结果 EventID 为空串——如实表达"无新事件"，RoomVersion 不变）。
+func (s *Service) attachDoc(ctx context.Context, actor Actor, cmd Command) (*CommandResult, error) {
+	return s.docAttachment(ctx, actor, cmd, true)
+}
+
+func (s *Service) detachDoc(ctx context.Context, actor Actor, cmd Command) (*CommandResult, error) {
+	return s.docAttachment(ctx, actor, cmd, false)
+}
+
+func (s *Service) docAttachment(ctx context.Context, actor Actor, cmd Command, attach bool) (*CommandResult, error) {
+	kindName := "detach_doc_from_room"
+	if attach {
+		kindName = "attach_doc_to_room"
+	}
+	if res, err := s.replayIfReceived(ctx, cmd, actor); res != nil || err != nil {
+		return res, err
+	}
+	exists, err := s.cfg.Store.RoomExists(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room exists: %w", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrRoomNotFound, cmd.RoomID)
+	}
+	version, err := s.cfg.Store.RoomVersion(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("room: room version: %w", err)
+	}
+	if cmd.ExpectedRoomVersion != version {
+		// 复审 #22：同 post_message——并发同键竞态先重查回放再判冲突
+		if res, rerr := s.replayIfReceived(ctx, cmd, actor); res != nil || rerr != nil {
+			return res, rerr
+		}
+		return nil, fmt.Errorf("%w: expected=%d current=%d", ErrVersionConflict, cmd.ExpectedRoomVersion, version)
+	}
+	var payload struct {
+		DocID string `json:"doc_id"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(cmd.Payload)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("%w: %s payload: %v", ErrInvalidCommand, kindName, err)
+	}
+	if !docIDPattern.MatchString(payload.DocID) {
+		return nil, fmt.Errorf("%w: %s payload.doc_id 形如 doc_<12hex>", ErrInvalidCommand, kindName)
+	}
+	if attach && s.cfg.Docs != nil {
+		ok, err := s.cfg.Docs.DocExists(ctx, payload.DocID)
+		if err != nil {
+			return nil, fmt.Errorf("room: doc exists: %w", err)
+		}
+		if !ok {
+			return nil, fmt.Errorf("%w: 附着目标文档不存在或已删除 %s", ErrInvalidCommand, payload.DocID)
+		}
+	}
+	// 当前附着集：与快照 docs 段同一折叠（attachedDocsOf——不双轨）
+	history, err := s.historyOf(ctx, cmd.RoomID)
+	if err != nil {
+		return nil, err
+	}
+	attached := attachedDocsOf(history)
+	already := false
+	for _, d := range attached {
+		if d.DocID == payload.DocID {
+			already = true
+			break
+		}
+	}
+	if attach == already {
+		return &CommandResult{RoomID: cmd.RoomID, RoomVersion: version}, nil // 幂等空操作
+	}
+	if attach && len(attached) >= maxAttachedDocsPerRoom {
+		return nil, fmt.Errorf("%w: 房间附着文档 ≤ %d（RFC-0014 §2.9）", ErrInvalidCommand, maxAttachedDocsPerRoom)
+	}
+	eventType := protocol.EventDocDetachedFromRoom
+	eventPayload := mustJSON(protocol.DocDetachedFromRoomPayload{DocID: payload.DocID, DetachedBy: actor.ParticipantID})
+	if attach {
+		eventType = protocol.EventDocAttachedToRoom
+		eventPayload = mustJSON(protocol.DocAttachedToRoomPayload{DocID: payload.DocID, AttachedBy: actor.ParticipantID})
+	}
+	env := protocol.Envelope{
+		EventID:       s.cfg.NewID("evt"),
+		TenantID:      s.cfg.Tenant,
+		RoomID:        cmd.RoomID,
+		Type:          eventType,
+		SchemaVersion: 1,
+		OccurredAt:    s.cfg.Clock(),
+		Actor:         protocol.Actor{ParticipantID: actor.ParticipantID, Kind: actor.Kind},
+		Visibility:    protocol.Visibility{Kind: "public"},
+		Payload:       eventPayload,
+		Metadata:      map[string]any{},
+	}
+	return s.commitWith(ctx, cmd, actor, env)
+}
 
 // resolveTask 人类裁定派生任务（tasklist 人工门控——delivered/dismissed 由人
 // 定，自动判定交付会伪装闭环）。校验：任务存在且 pending。

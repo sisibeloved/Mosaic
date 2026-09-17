@@ -18,7 +18,8 @@ const (
 // TimelineItem Timeline 视图项（对外形态：无 seq/tenant；RFC-0012：消息族 +
 // 暂停/恢复系统提醒——round.* 已内部化不入列表）。AddressedTo/ReplyTo 为
 // message.posted 载荷字段（M4-0：快照路与 SSE 路此前不对称——刷新后 @点名
-// 与引用回复丢失，投影补齐两路同形）；Attachments 为 RFC-0013 附件描述子。
+// 与引用回复丢失，投影补齐两路同形）；Attachments 为 RFC-0013 附件描述子；
+// Refs 为 RFC-0014 文档引用（§2.4 消息卡片的数据源——快照/SSE 两路同形纪律同附件）。
 type TimelineItem struct {
 	Position    string                 `json:"position"`
 	EventID     string                 `json:"event_id"`
@@ -29,6 +30,7 @@ type TimelineItem struct {
 	AddressedTo []string               `json:"addressed_to,omitempty"`
 	ReplyTo     *string                `json:"reply_to,omitempty"`
 	Attachments []AttachmentDescriptor `json:"attachments,omitempty"`
+	Refs        []protocol.DocRef      `json:"refs,omitempty"`
 	ThreadID    *string                `json:"thread_id,omitempty"`
 	OccurredAt  string                 `json:"occurred_at"`
 }
@@ -54,6 +56,16 @@ type Snapshot struct {
 	Participants      []ParticipantView     `json:"participants"`
 	Tasks             []TaskItem            `json:"tasks"`
 	Runs              []RunView             `json:"runs"`
+	// Docs 附着文档段（RFC-0014 §2.4：doc.attached_to_room/doc.detached_from_room
+	// 折叠——房间右面板"文档"段数据源；投影产物，随事件全量重建）。
+	Docs []AttachedDoc `json:"docs"`
+}
+
+// AttachedDoc 房间附着文档投影项（附着不复制、不锁定，同一文档可附着多个房间）。
+type AttachedDoc struct {
+	DocID      string `json:"doc_id"`
+	AttachedBy string `json:"attached_by"`
+	AttachedAt string `json:"attached_at"`
 }
 
 // ParticipantView 快照参与者视图项（装配层注入：本地 owner + 引擎座位）。
@@ -99,6 +111,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 		Participants:      []ParticipantView{}, // 装配层注入位：投影恒空（ADR-0011 注记）
 		Tasks:             []TaskItem{},
 		Runs:              []RunView{},
+		Docs:              []AttachedDoc{},
 	}
 	endorsedSet := map[string]bool{} // intent.endorsed 合并键
 	for _, ev := range events {
@@ -193,6 +206,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 			AddressedTo []string               `json:"addressed_to"`
 			ReplyTo     *string                `json:"reply_to"`
 			Attachments []AttachmentDescriptor `json:"attachments"`
+			Refs        []protocol.DocRef      `json:"refs"`
 		}
 		_ = json.Unmarshal(ev.Envelope.Payload, &body)
 		snap.Timeline = append(snap.Timeline, TimelineItem{
@@ -205,6 +219,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 			AddressedTo: body.AddressedTo,
 			ReplyTo:     body.ReplyTo,
 			Attachments: body.Attachments,
+			Refs:        body.Refs,
 			ThreadID:    ev.Envelope.ThreadID,
 			OccurredAt:  ev.Envelope.OccurredAt,
 		})
@@ -214,7 +229,45 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 	snap.DevNotes = DevNotesOf(events)
 	snap.Tasks = TasksOf(events)
 	snap.Runs = RunsOf(events)
+	snap.Docs = attachedDocsOf(events)
 	return snap
+}
+
+// attachedDocsOf 房间附着文档集折叠（RFC-0014 §2.4）：attach 入集（重复附着以
+// 最新事实覆盖 attached_by/at），detach 出集；序内后者胜。服务层 attach/detach
+// 命令的当前态判定与本投影共用（不双轨）。
+func attachedDocsOf(events []StoredEvent) []AttachedDoc {
+	out := []AttachedDoc{}
+	index := map[string]int{}
+	for _, ev := range events {
+		switch ev.Envelope.Type {
+		case protocol.EventDocAttachedToRoom:
+			var p protocol.DocAttachedToRoomPayload
+			if json.Unmarshal(ev.Envelope.Payload, &p) != nil || p.DocID == "" {
+				continue
+			}
+			entry := AttachedDoc{DocID: p.DocID, AttachedBy: p.AttachedBy, AttachedAt: ev.Envelope.OccurredAt}
+			if i, ok := index[p.DocID]; ok {
+				out[i] = entry
+			} else {
+				index[p.DocID] = len(out)
+				out = append(out, entry)
+			}
+		case protocol.EventDocDetachedFromRoom:
+			var p protocol.DocDetachedFromRoomPayload
+			if json.Unmarshal(ev.Envelope.Payload, &p) != nil {
+				continue
+			}
+			if i, ok := index[p.DocID]; ok {
+				out = append(out[:i], out[i+1:]...)
+				delete(index, p.DocID)
+				for j := i; j < len(out); j++ { // 删除位后的索引重排
+					index[out[j].DocID] = j
+				}
+			}
+		}
+	}
+	return out
 }
 
 // ClosureSummary 快照收束视图：待决（可接受）与已定（接受/中止）各一条摘要。

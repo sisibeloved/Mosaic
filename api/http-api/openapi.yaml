@@ -1072,10 +1072,13 @@ components:
         invite_agent → {participant_id}（RFC-0001 Membership：participant.admitted 拉人）；
         fork/pause/resume/close/reopen/merge_thread → ThreadLifecyclePayload（RFC-0004 线程生命周期，
         状态机转移校验；merge 在个人版单 owner 形态下为直接命令=确认权）。
+        attach_doc_to_room / detach_doc_from_room → {doc_id}（RFC-0014 §2.4 房间文档附着：
+        关联事实进房间日志，附着不复制不锁定；attach 校验文档存在 + 上限 32，detach 免存在性
+        ——文档已删也可解除；重复 attach / detach 未附着 = 幂等空操作，成功返回且不追加事件）。
       properties:
         command_kind:
           type: string
-          enum: [create_room, post_message, pause_room, resume_room, rename_room, endorse_intent, invite_agent, fork_thread, pause_thread, resume_thread, close_thread, reopen_thread, merge_thread, propose_closure, accept_closure, create_evidence_request, claim_evidence_request, resolve_evidence_request, resolve_task, edit_memory, delete_room, run_task, cancel_run]
+          enum: [create_room, post_message, pause_room, resume_room, rename_room, endorse_intent, invite_agent, fork_thread, pause_thread, resume_thread, close_thread, reopen_thread, merge_thread, propose_closure, accept_closure, create_evidence_request, claim_evidence_request, resolve_evidence_request, resolve_task, edit_memory, delete_room, run_task, cancel_run, attach_doc_to_room, detach_doc_from_room]
         expected_room_version:
           type: integer
           minimum: 0
@@ -1163,6 +1166,12 @@ components:
           maxItems: 4
           description: "RFC-0013 上传令牌（POST /v1/rooms/{id}/attachments 第一步产物）；服务端定稿为描述子嵌入事件——令牌不进事件载荷。"
           items: { type: string, pattern: "^upl_[0-9a-z_]+$" }
+        refs:
+          type: array
+          maxItems: 8
+          description: 文档引用（RFC-0014 §2.4）：分享文档到房间 = 发一条带 doc_ref 的消息（人类或 agent 均可）；服务端校验存在性（引用不存在/已删文档即拒）。缺省 = 无引用。
+          items:
+            $ref: "#/components/schemas/DocRef"
         thread_id:
           oneOf:
             - type: "null"
@@ -1179,6 +1188,21 @@ components:
         kind:
           type: string
           enum: [supports, challenges, extends, questions, evidence_for, supersedes, analogy, relates]
+    DocRef:
+      type: object
+      required: [kind, doc_id]
+      additionalProperties: false
+      description: 文档引用描述子（RFC-0014 §2.4 封闭字段集，与 room-protocol message.posted docRef 同形；anchor_block_id 锚定块级位置，卡片/编辑器据此定位）。
+      properties:
+        kind:
+          type: string
+          enum: [doc]
+        doc_id:
+          type: string
+          pattern: "^doc_[0-9a-f]{12}$"
+        anchor_block_id:
+          type: string
+          minLength: 1
     PauseRoomPayload:
       type: object
       additionalProperties: false
@@ -1416,7 +1440,7 @@ components:
           description: opaque cursor（续传位点）
     Snapshot:
       type: object
-      required: [room_id, room_version, watermark, projection_version, algorithm_version, display_name, timeline, scorecard, threads, graph, participants]
+      required: [room_id, room_version, watermark, projection_version, algorithm_version, display_name, timeline, scorecard, threads, graph, participants, docs]
       properties:
         room_id: { type: string }
         room_version: { type: integer, format: int64 }
@@ -1494,6 +1518,11 @@ components:
           description: 任务执行通道（M4-1，RFC-0002 执行生命周期补编）：独立于群聊波的长任务执行与结果回传。
           items:
             $ref: "#/components/schemas/RunView"
+        docs:
+          type: array
+          description: 房间附着文档段（RFC-0014 §2.4：doc.attached_to_room/doc.detached_from_room 折叠——房间右面板"文档"段数据源；投影产物，随事件全量重建；附着不复制、不锁定，同一文档可附着多个房间）。
+          items:
+            $ref: "#/components/schemas/AttachedDoc"
         evidence_requests:
           type: array
           description: 证据需求单（M3-5：open/resolved/dismissed）。
@@ -1586,6 +1615,14 @@ components:
         result_body: { type: string, description: 迟到审计保留的执行结果正文（late 时唯一留存——未发布，供人类查看/复制救济） }
         requested_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    AttachedDoc:
+      type: object
+      required: [doc_id, attached_by, attached_at]
+      description: 房间附着文档投影项（RFC-0014 §2.4；重复附着以最新事实覆盖 attached_by/attached_at，detach 出集）。
+      properties:
+        doc_id: { type: string, pattern: "^doc_[0-9a-f]{12}$" }
+        attached_by: { type: string, description: 附着操作者（participant ID） }
+        attached_at: { type: string, format: date-time }
     SettingsDoc:
       type: object
       required: [run_timeout_seconds]
@@ -1679,6 +1716,10 @@ components:
           type: array
           description: 消息附件描述子（RFC-0013；缺省 = 无附件）。
           items: { $ref: "#/components/schemas/AttachmentDescriptor" }
+        refs:
+          type: array
+          description: 文档引用（RFC-0014 §2.4；缺省 = 无引用；快照/SSE 两路同形——同 attachments 纪律）。
+          items: { $ref: "#/components/schemas/DocRef" }
         thread_id:
           oneOf:
             - type: "null"

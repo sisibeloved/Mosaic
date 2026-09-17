@@ -156,6 +156,21 @@ func (e DocCommandCommandKind) Valid() bool {
 	}
 }
 
+// Defines values for DocRefKind.
+const (
+	Doc DocRefKind = "doc"
+)
+
+// Valid indicates whether the value is a known member of the DocRefKind enum.
+func (e DocRefKind) Valid() bool {
+	switch e {
+	case Doc:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DocStateFormat.
 const (
 	Markdown DocStateFormat = "markdown"
@@ -327,12 +342,14 @@ func (e ParticipantViewKind) Valid() bool {
 // Defines values for RoomCommandCommandKind.
 const (
 	AcceptClosure          RoomCommandCommandKind = "accept_closure"
+	AttachDocToRoom        RoomCommandCommandKind = "attach_doc_to_room"
 	CancelRun              RoomCommandCommandKind = "cancel_run"
 	ClaimEvidenceRequest   RoomCommandCommandKind = "claim_evidence_request"
 	CloseThread            RoomCommandCommandKind = "close_thread"
 	CreateEvidenceRequest  RoomCommandCommandKind = "create_evidence_request"
 	CreateRoom             RoomCommandCommandKind = "create_room"
 	DeleteRoom             RoomCommandCommandKind = "delete_room"
+	DetachDocFromRoom      RoomCommandCommandKind = "detach_doc_from_room"
 	EditMemory             RoomCommandCommandKind = "edit_memory"
 	EndorseIntent          RoomCommandCommandKind = "endorse_intent"
 	ForkThread             RoomCommandCommandKind = "fork_thread"
@@ -356,6 +373,8 @@ func (e RoomCommandCommandKind) Valid() bool {
 	switch e {
 	case AcceptClosure:
 		return true
+	case AttachDocToRoom:
+		return true
 	case CancelRun:
 		return true
 	case ClaimEvidenceRequest:
@@ -367,6 +386,8 @@ func (e RoomCommandCommandKind) Valid() bool {
 	case CreateRoom:
 		return true
 	case DeleteRoom:
+		return true
+	case DetachDocFromRoom:
 		return true
 	case EditMemory:
 		return true
@@ -663,6 +684,15 @@ func (e RequestRestoreJSONBodyConfirm) Valid() bool {
 	}
 }
 
+// AttachedDoc 房间附着文档投影项（RFC-0014 §2.4；重复附着以最新事实覆盖 attached_by/attached_at，detach 出集）。
+type AttachedDoc struct {
+	AttachedAt time.Time `json:"attached_at"`
+
+	// AttachedBy 附着操作者（participant ID）
+	AttachedBy string `json:"attached_by"`
+	DocId      string `json:"doc_id"`
+}
+
 // AttachmentDescriptor message.posted 载荷与快照 Timeline 中的附件描述子（RFC-0013 §2.1 封闭字段集）。
 type AttachmentDescriptor struct {
 	AttachmentId string `json:"attachment_id"`
@@ -868,6 +898,16 @@ type DocCommandResponse struct {
 type DocList struct {
 	Docs []DocSummary `json:"docs"`
 }
+
+// DocRef 文档引用描述子（RFC-0014 §2.4 封闭字段集，与 room-protocol message.posted docRef 同形；anchor_block_id 锚定块级位置，卡片/编辑器据此定位）。
+type DocRef struct {
+	AnchorBlockId *string    `json:"anchor_block_id,omitempty"`
+	DocId         string     `json:"doc_id"`
+	Kind          DocRefKind `json:"kind"`
+}
+
+// DocRefKind defines model for DocRef.Kind.
+type DocRefKind string
 
 // DocSearchHit 文档检索命中（每文档取最新命中版本；version 供编辑器/卡片跳转定位）。
 type DocSearchHit struct {
@@ -1198,6 +1238,9 @@ type ReceiptListView struct {
 // invite_agent → {participant_id}（RFC-0001 Membership：participant.admitted 拉人）；
 // fork/pause/resume/close/reopen/merge_thread → ThreadLifecyclePayload（RFC-0004 线程生命周期，
 // 状态机转移校验；merge 在个人版单 owner 形态下为直接命令=确认权）。
+// attach_doc_to_room / detach_doc_from_room → {doc_id}（RFC-0014 §2.4 房间文档附着：
+// 关联事实进房间日志，附着不复制不锁定；attach 校验文档存在 + 上限 32，detach 免存在性
+// ——文档已删也可解除；重复 attach / detach 未附着 = 幂等空操作，成功返回且不追加事件）。
 type RoomCommand struct {
 	CommandKind         RoomCommandCommandKind `json:"command_kind"`
 	ExpectedRoomVersion int                    `json:"expected_room_version"`
@@ -1346,6 +1389,9 @@ type Snapshot struct {
 	// DisplayName 房间名（room.created/room.renamed 投影产物）
 	DisplayName string `json:"display_name"`
 
+	// Docs 房间附着文档段（RFC-0014 §2.4：doc.attached_to_room/doc.detached_from_room 折叠——房间右面板"文档"段数据源；投影产物，随事件全量重建；附着不复制、不锁定，同一文档可附着多个房间）。
+	Docs []AttachedDoc `json:"docs"`
+
 	// EvidenceRequests 证据需求单（M3-5：open/resolved/dismissed）。
 	EvidenceRequests *[]EvidenceRequestView `json:"evidence_requests,omitempty"`
 
@@ -1453,6 +1499,9 @@ type TimelineItem struct {
 	EventId     string                  `json:"event_id"`
 	OccurredAt  time.Time               `json:"occurred_at"`
 	Position    string                  `json:"position"`
+
+	// Refs 文档引用（RFC-0014 §2.4；缺省 = 无引用；快照/SSE 两路同形——同 attachments 纪律）。
+	Refs *[]DocRef `json:"refs,omitempty"`
 
 	// ReplyTo 引用回复的目标事件（M4-0 聊天交互补齐）。
 	ReplyTo  *string `json:"reply_to,omitempty"`
