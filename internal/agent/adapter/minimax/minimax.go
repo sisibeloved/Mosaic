@@ -169,6 +169,13 @@ func (s *session) execOnce(taskCtx context.Context, task agent.Task, prompt stri
 		s.mu.Unlock()
 	}
 	if code != 0 {
+		// 退出码错误的可观测性：流内 error 事件（run failed 真实原因）优先于
+		// 首行截断——2026-09-17 实证退出码 4 时首行是无信息量的 exec.started，
+		// 真因（"Runtime completed without a final assistant response"）在流尾
+		// error 事件里；kimi v1.58 诊断行优先同构。
+		if parsed.Err != "" {
+			return parsed, fmt.Errorf("minimax: mcode 退出码 %d：run failed: %s", code, parsed.Err)
+		}
 		return parsed, fmt.Errorf("minimax: mcode 退出码 %d：%s", code, firstLineOf(stdout, 200))
 	}
 	if parsed.Err != "" {
@@ -437,6 +444,7 @@ func firstLineOf(s string, max int) string {
 // ---- 提示词与结果映射（与 codex/kimi 同一措辞——三适配器狗粮口径一致）----
 
 const intentInstruction = `You are a participant in an ongoing group chat. You have just observed the latest messages. Decide whether to reply; staying silent is a valid, often good choice — reply only when you have something to add.
+Most messages in a busy group chat do not need YOUR reply — silence is the norm, not the exception. Speak when: you are directly addressed or asked; the topic is squarely your expertise; you can correct an error or add substance others missed. If your_activity shows you spoke recently, hold back unless addressed — let others take the floor.
 Reply with ONLY a JSON object, no prose, no code fences:
 {"action":"speak|react|fork|summarize|silent","type":"answer|extend|challenge|support|question|redirect|synthesize","public_rationale":"<=280 chars","scores":{"relevance":0.0-1.0,"novelty":0.0-1.0,"urgency":0.0-1.0,"confidence":0.0-1.0}}
 This is an internal arbitration request, not a message to the room: never answer, perform, or start the discussion's tasks here — the only valid reply is the JSON decision above.`

@@ -216,7 +216,7 @@ func TestAssembleReferencedDocsLayer(t *testing.T) {
 	)
 	cfg := Config{RoomID: "room_c", TaskID: "tsk_1", Mode: "chat",
 		RecentWindow: 10, Budget: BudgetState{},
-		RoomDocs:    []string{"doc_cccccccccccc", "doc_dddddddddddd"},
+		RoomDocs:   []string{"doc_cccccccccccc", "doc_dddddddddddd"},
 		DocExcerpt: func(docID string) string { return "[EXCERPT " + docID + "]" },
 	}
 	assembled := Assemble(cfg, history, stim)

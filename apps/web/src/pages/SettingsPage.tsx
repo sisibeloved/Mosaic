@@ -88,9 +88,13 @@ export function SettingsPage() {
   };
 
   // M4-1 任务执行设置（OQ-B 设置族首员：分钟粒度输入，秒粒度存储）+
-  // M4-3 回复路径开关（reply_or_pass_mode——A/B 控制组）
+  // M4-3 回复路径开关（reply_or_pass_mode——A/B 控制组）+
+  // 附录 K 发言资格闸（阈值/冷却强度，"必回"病理的确定性兜底）
   const [runTimeoutMin, setRunTimeoutMin] = useState<number | null>(null);
   const [ropMode, setRopMode] = useState<"auto" | "off" | null>(null);
+  const [gateOff, setGateOff] = useState<boolean | null>(null);
+  const [gateThreshold, setGateThreshold] = useState<number | null>(null);
+  const [gateCooldown, setGateCooldown] = useState<number | null>(null);
   const [runTimeoutMsg, setRunTimeoutMsg] = useState<string | null>(null);
   const [runTimeoutBusy, setRunTimeoutBusy] = useState(false);
 
@@ -103,6 +107,9 @@ export function SettingsPage() {
         if (alive) {
           setRunTimeoutMin(Math.round(doc.run_timeout_seconds / 60));
           setRopMode(doc.reply_or_pass_mode === "off" ? "off" : "auto");
+          setGateOff(doc.speak_gate_off === true);
+          setGateThreshold(doc.speak_gate_threshold ?? 0.3);
+          setGateCooldown(doc.speak_gate_cooldown_penalty ?? 0.2);
         }
       })
       .catch((e) => {
@@ -123,10 +130,16 @@ export function SettingsPage() {
       const doc = await api.updateSettings({
         run_timeout_seconds: runTimeoutMin * 60,
         reply_or_pass_mode: ropMode === "off" ? "off" : "auto",
+        speak_gate_off: gateOff === true,
+        speak_gate_threshold: gateThreshold ?? 0.3,
+        speak_gate_cooldown_penalty: gateCooldown ?? 0.2,
       });
       setRunTimeoutMin(Math.round(doc.run_timeout_seconds / 60));
       setRopMode(doc.reply_or_pass_mode === "off" ? "off" : "auto");
-      setRunTimeoutMsg("已保存——对新发起的任务执行即时生效（在途执行不受影响）");
+      setGateOff(doc.speak_gate_off === true);
+      setGateThreshold(doc.speak_gate_threshold ?? 0.3);
+      setGateCooldown(doc.speak_gate_cooldown_penalty ?? 0.2);
+      setRunTimeoutMsg("已保存——任务时限对下次执行生效；发言闸门对下一波生效");
     } catch (e) {
       setRunTimeoutMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
     } finally {
@@ -566,7 +579,7 @@ export function SettingsPage() {
               </section>
 
               <section>
-                <h2 className="mb-1 text-sm font-medium">任务执行</h2>
+                <h2 className="mb-1 text-sm font-medium">任务执行与发言</h2>
                 <div className="flex flex-wrap items-center gap-2 text-xs">
                   <label className="flex items-center gap-2">
                     <span className="text-faint">独立任务执行时长上限</span>
@@ -581,15 +594,6 @@ export function SettingsPage() {
                     />
                     <span className="text-faint">分钟</span>
                   </label>
-                  <button
-                    type="button"
-                    disabled={runTimeoutBusy || runTimeoutMin == null || runTimeoutMin < 1 || runTimeoutMin > 120}
-                    onClick={() => void onSaveRunTimeout()}
-                    className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast transition-opacity hover:opacity-90 disabled:opacity-40"
-                  >
-                    {runTimeoutBusy ? "保存中…" : "保存"}
-                  </button>
-                  {runTimeoutMsg && <span className="text-dim">{runTimeoutMsg}</span>}
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <span className="text-faint">点名回复路径（reply-or-pass）</span>
@@ -612,10 +616,80 @@ export function SettingsPage() {
                     </button>
                   ))}
                 </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className="text-faint">发言资格闸</span>
+                  {([false, true] as const).map((off) => (
+                    <button
+                      key={String(off)}
+                      type="button"
+                      aria-pressed={gateOff === off}
+                      disabled={gateOff === null}
+                      onClick={() => {
+                        setGateOff(off);
+                      }}
+                      className={`rounded-lg border px-2.5 py-1 text-xs transition-colors ${
+                        gateOff === off
+                          ? "border-accent bg-accent-soft text-accent"
+                          : "border-border bg-surface-2 text-dim hover:text-text"
+                      }`}
+                    >
+                      {off ? "关闭（有意愿即发言）" : "启用（低相关被闸，@点名豁免）"}
+                    </button>
+                  ))}
+                  <label className="flex items-center gap-1.5">
+                    <span className="text-faint">阈值</span>
+                    <input
+                      type="number"
+                      step={0.05}
+                      min={0.05}
+                      max={0.95}
+                      value={gateThreshold ?? ""}
+                      disabled={gateThreshold == null}
+                      onChange={(e) => setGateThreshold(e.target.value ? Number(e.target.value) : null)}
+                      className="w-16 rounded-lg border border-border bg-surface-2 px-2 py-1 outline-none focus:border-accent"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1.5">
+                    <span className="text-faint">连续发言冷却</span>
+                    <input
+                      type="number"
+                      step={0.05}
+                      min={0}
+                      max={0.9}
+                      value={gateCooldown ?? ""}
+                      disabled={gateCooldown == null}
+                      onChange={(e) => setGateCooldown(e.target.value ? Number(e.target.value) : null)}
+                      className="w-16 rounded-lg border border-border bg-surface-2 px-2 py-1 outline-none focus:border-accent"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    disabled={
+                      runTimeoutBusy ||
+                      runTimeoutMin == null ||
+                      runTimeoutMin < 1 ||
+                      runTimeoutMin > 120 ||
+                      gateThreshold == null ||
+                      gateThreshold < 0.05 ||
+                      gateThreshold > 0.95 ||
+                      gateCooldown == null ||
+                      gateCooldown < 0 ||
+                      gateCooldown > 0.9
+                    }
+                    onClick={() => void onSaveRunTimeout()}
+                    className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast transition-opacity hover:opacity-90 disabled:opacity-40"
+                  >
+                    {runTimeoutBusy ? "保存中…" : "保存"}
+                  </button>
+                  {runTimeoutMsg && <span className="text-dim">{runTimeoutMsg}</span>}
+                </div>
                 <p className="mt-1.5 text-[11px] leading-4 text-faint">
                   任务面板"执行"发起的独立任务在此时限内运行（缺省 10 分钟，可调 1..120）；到点未完成按
                   执行失败收口，错误信息明示超时。群聊单轮回复不受此设置影响。点名回复路径仅在
                   明确点名单人或任务交付追问两类场景替换两阶段流程；关闭即回退（A/B 测量对照）。
+                  发言资格闸（缺省启用）：Agent 意图自报的相关性/紧急度加权分低于阈值（缺省 0.30）
+                  时不发言——被闸意图在讨论区留痕、可保送翻转；@点名/定向直通不受限；上一波发过言的
+                  座位额外扣冷却分（缺省 0.20），避免刷屏。
                 </p>
               </section>
             </>

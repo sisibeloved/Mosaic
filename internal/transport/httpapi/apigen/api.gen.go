@@ -1364,13 +1364,22 @@ type SearchHit struct {
 // SearchHitActorKind defines model for SearchHit.ActorKind.
 type SearchHitActorKind string
 
-// SettingsDoc 设置族文档（OQ-B，M4-1 首员 + M4-3 第二员）：全量替换语义；新成员迁入时向后兼容（缺字段 = 缺省）。
+// SettingsDoc 设置族文档（OQ-B，M4-1 首员 + M4-3 第二员 + 附录 K 发言资格闸）：全量替换语义；新成员迁入时向后兼容（缺字段 = 缺省）。
 type SettingsDoc struct {
 	// ReplyOrPassMode 单次 reply-or-pass 限定路径（M4-3）：auto（缺省）= 资格座位走单次路径；off = 回退两阶段（A/B 控制组）
 	ReplyOrPassMode *SettingsDocReplyOrPassMode `json:"reply_or_pass_mode,omitempty"`
 
 	// RunTimeoutSeconds 独立任务执行时长上限（秒；缺省 600；长于单轮 180s——"长任务"服务面）
 	RunTimeoutSeconds int `json:"run_timeout_seconds"`
+
+	// SpeakGateCooldownPenalty 上波发言者的资格分扣减（缺省 0.20——软冷却；@点名豁免不受限）
+	SpeakGateCooldownPenalty *float32 `json:"speak_gate_cooldown_penalty,omitempty"`
+
+	// SpeakGateOff 发言资格闸关闭开关（RFC-0012 附录 K）：false（缺省）= 闸开（speak 意图须过资格分阈值，@点名/定向豁免）；true = 关闸（意愿即放行）
+	SpeakGateOff *bool `json:"speak_gate_off,omitempty"`
+
+	// SpeakGateThreshold 发言资格分阈值（缺省 0.30；资格分 = relevance×0.6 + urgency×0.4，低于阈值被闸并留痕）
+	SpeakGateThreshold *float32 `json:"speak_gate_threshold,omitempty"`
 }
 
 // SettingsDocReplyOrPassMode 单次 reply-or-pass 限定路径（M4-3）：auto（缺省）= 资格座位走单次路径；off = 回退两阶段（A/B 控制组）

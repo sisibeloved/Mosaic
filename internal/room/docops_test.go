@@ -71,7 +71,7 @@ func seedDocWithBlocks(t *testing.T, docs *doc.MemStore, docID string, blocks ..
 	envs := []protocol.DocEnvelope{{
 		EventID: "evt_seedc_" + docID, TenantID: "ten_local", DocID: docID,
 		Type: protocol.EventDocCreated, SchemaVersion: 1, OccurredAt: testClock(),
-		Actor:   protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Actor: protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
 		Payload: mustJSON(protocol.DocCreatedPayload{
 			DocID: docID, Title: "seeded " + docID, Format: "markdown", CreatedBy: "par_owner"}),
 		Metadata: map[string]any{},
@@ -85,7 +85,7 @@ func seedDocWithBlocks(t *testing.T, docs *doc.MemStore, docID string, blocks ..
 		envs = append(envs, protocol.DocEnvelope{
 			EventID: "evt_seedr_" + docID, TenantID: "ten_local", DocID: docID,
 			Type: protocol.EventDocRevisionCommitted, SchemaVersion: 1, OccurredAt: testClock(),
-			Actor:   protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+			Actor: protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
 			Payload: mustJSON(protocol.DocRevisionCommittedPayload{
 				DocID: docID, BaseVersion: 1, Version: 2, Ops: ops, Actor: "par_owner", Source: "human_editor"}),
 			Metadata: map[string]any{},

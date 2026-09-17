@@ -93,6 +93,9 @@ type EngineConfig struct {
 	// 返回正值时优先于 RunTimeout——设置页变更无须重建引擎即时生效（每次
 	// executeRun 拉起时读取，在途 run 不受影响——代次语义与取消一致）。
 	RunTimeoutFunc func() time.Duration
+	// SpeakGateFunc 发言资格闸活读面（RFC-0012 附录 K，设置族 speak_gate_*）：
+	// nil = 缺省束（闸开，阈值 0.30 / 冷却 0.20）。变更无须重启，对下一波生效。
+	SpeakGateFunc func() SpeakGateSettings
 	// ReplyOrPassEnabled 可选的 ROP 门（M4-3，设置族第二员 reply_or_pass_mode）：
 	// 缺省 nil = 启用；false = 资格座位回退两阶段（A/B 控制组，指标仍入账）。
 	ReplyOrPassEnabled func() bool
@@ -104,6 +107,14 @@ type EngineConfig struct {
 	NewID        func(prefix string) string
 	Tenant       string
 	RoomID       string // 非空 = 只处理该房间；空 = 全部房间（M1 默认）
+}
+
+// speakGate 发言资格闸活读（附录 K）：未注入 = 缺省束。
+func (e *Engine) speakGate() SpeakGateSettings {
+	if e.cfg.SpeakGateFunc != nil {
+		return e.cfg.SpeakGateFunc()
+	}
+	return DefaultSpeakGate()
 }
 
 // chatGrantPolicy 群聊模型的引擎内固定策略（RFC-0012：无房间策略面——
@@ -920,6 +931,11 @@ func (e *Engine) evaluateWave(ctx context.Context, roomID, roundID string, ancho
 ) (willing []willingIntent, silentCount int, ok bool) {
 	weights := attention.DefaultWeights
 	histEnvs := envelopesOfStored(history) // M3-4：结构特征输入（推断边/重复风险/多样性）
+	// 附录 K：per-seat 发言活动投影（闸门冷却修正 + 评估语境 your_activity 注入）。
+	activities := make(map[string]SeatActivity, len(seats))
+	for _, s := range seats {
+		activities[s.ParticipantID] = seatActivityOf(histEnvs, s.ParticipantID)
+	}
 	evalUsage := map[string]*agent.Usage{}
 	anchorThread := ""
 	if anchor.ThreadID != nil {
@@ -948,6 +964,18 @@ func (e *Engine) evaluateWave(ctx context.Context, roomID, roundID string, ancho
 				e.cfg.OnDraft(roomID, seat.ParticipantID, agent.DraftUpdate{Kind: "stage", Stage: "evaluating"})
 			}
 			tEval := time.Now()
+			// 附录 K：逐座位注入 your_activity（浅拷贝共享 Inline + 本座活动状态——
+			// "你上波已发言/距上次发言隔几条"是模型自决沉默的事实锚点）。activities
+			// 预计算后只读，并行安全。
+			seatCtx := taskContext
+			if act, ok := activities[seat.ParticipantID]; ok {
+				inline := make(map[string]any, len(taskContext.Inline)+1)
+				for k, v := range taskContext.Inline {
+					inline[k] = v
+				}
+				inline["your_activity"] = act
+				seatCtx = agent.Context{Inline: inline, ReceiptRef: taskContext.ReceiptRef}
+			}
 			intentResult, err := e.runTask(ctx, seat.Profile, seat.ParticipantID, agent.Task{
 				TaskID:        e.cfg.NewID("tsk"),
 				Kind:          agent.KindEvaluateIntent,
@@ -955,7 +983,7 @@ func (e *Engine) evaluateWave(ctx context.Context, roomID, roundID string, ancho
 				RoomID:        roomID,
 				ThreadID:      anchorThread,
 				Epoch:         roundID,
-				Context:       taskContext,
+				Context:       seatCtx,
 			})
 			if err != nil {
 				if ctx.Err() == nil { // 取消路径静默——gather 后统一判定整波中止
@@ -1029,7 +1057,16 @@ func (e *Engine) evaluateWave(ctx context.Context, roomID, roundID string, ancho
 			}
 			score = attention.Score(cand, weights)
 			band = attention.Band(score)
-		} else {
+			// 附录 K 发言资格闸：speak 意愿之上叠确定性门槛（"必回"病理的兜底——
+			// 豁免 = 点名/定向直通；上波发言者扣冷却分）。被闸 ≠ 否决意图：R-01
+			// 全记录（selected=false + reason 分类），记分卡可见，人类 endorse 可翻转。
+			if v := speakGatePass(e.speakGate(), intent.Scores, activities[ev.seat.ParticipantID],
+				directAddress(anchor, ev.seat.ParticipantID) > 0); !v.Pass {
+				selected = false
+				reason = v.Reason
+			}
+		}
+		if !selected {
 			silentCount++
 		}
 		recorded := e.newEnv(roomID, protocol.EventIntentRecorded,

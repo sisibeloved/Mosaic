@@ -29,6 +29,11 @@ const (
 type Document struct {
 	RunTimeoutSeconds int    `json:"run_timeout_seconds"`
 	ReplyOrPassMode   string `json:"reply_or_pass_mode,omitempty"` // auto（缺省）| off（M4-3 A/B 控制组）
+	// 发言资格闸（RFC-0012 附录 K）。off 用反转布尔承载"默认开"：零值
+	// false = 闸开（旧文件迁移无歧义）；threshold/cooldown 零值回缺省束。
+	SpeakGateOff      bool    `json:"speak_gate_off,omitempty"`
+	SpeakGateThresh   float64 `json:"speak_gate_threshold,omitempty"`
+	SpeakGateCooldown float64 `json:"speak_gate_cooldown_penalty,omitempty"`
 }
 
 // WithDefaults 未设置字段（零值）回缺省。
@@ -39,8 +44,23 @@ func (d Document) WithDefaults() Document {
 	if d.ReplyOrPassMode != ReplyOrPassOff {
 		d.ReplyOrPassMode = ReplyOrPassAuto
 	}
+	if d.SpeakGateThresh <= 0 {
+		d.SpeakGateThresh = DefaultSpeakGateThreshold
+	}
+	if d.SpeakGateCooldown < 0 {
+		d.SpeakGateCooldown = DefaultSpeakGateCooldown
+	}
 	return d
 }
+
+// 发言资格闸缺省与界限（附录 K：默认保守中位，真机沉默率数据校准前不动）。
+const (
+	DefaultSpeakGateThreshold = 0.30
+	DefaultSpeakGateCooldown  = 0.20
+	MinSpeakGateThreshold     = 0.05
+	MaxSpeakGateThreshold     = 0.95
+	MaxSpeakGateCooldown      = 0.90
+)
 
 // ReplyOrPassMode 取值。
 const (
@@ -126,6 +146,35 @@ func ValidateReplyOrPassMode(v string) error {
 	if v != ReplyOrPassAuto && v != ReplyOrPassOff {
 		return fmt.Errorf("reply_or_pass_mode 须为 auto|off")
 	}
+	return nil
+}
+
+// ValidateSpeakGate 发言资格闸值域校验（写入前）。
+func ValidateSpeakGate(threshold, cooldown float64) error {
+	if threshold < MinSpeakGateThreshold || threshold > MaxSpeakGateThreshold {
+		return fmt.Errorf("speak_gate_threshold 须在 %.2f..%.2f", MinSpeakGateThreshold, MaxSpeakGateThreshold)
+	}
+	if cooldown < 0 || cooldown > MaxSpeakGateCooldown {
+		return fmt.Errorf("speak_gate_cooldown_penalty 须在 0..%.2f", MaxSpeakGateCooldown)
+	}
+	return nil
+}
+
+// UpdateSpeakGate 校验并持久化（附录 K 三字段同批写）。
+func (s *Store) UpdateSpeakGate(off bool, threshold, cooldown float64) error {
+	if err := ValidateSpeakGate(threshold, cooldown); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	doc := s.doc
+	doc.SpeakGateOff = off
+	doc.SpeakGateThresh = threshold
+	doc.SpeakGateCooldown = cooldown
+	if err := writeAtomic(s.path, doc); err != nil {
+		return err
+	}
+	s.doc = doc
 	return nil
 }
 

@@ -182,7 +182,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			return nil
 		},
 		Attachments: attachStore, // 令牌定稿（描述子入事件载荷）+ 删除级联
-		Docs:        store,      // RFC-0014 §2.4：message.posted refs 与 attach_doc_to_room 的文档存在性校验
+		Docs:        store,       // RFC-0014 §2.4：message.posted refs 与 attach_doc_to_room 的文档存在性校验
 		// M4-1 能力门：assignee 的适配器须声明 TaskRuns（echo 等测试桩拒绝）。
 		RunCapable: func(assignee string) bool {
 			if engine := enginePtr.Load(); engine != nil {
@@ -515,6 +515,15 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			},
 			// OQ-B 设置族活读面：每次 run 拉起时读当前设置（变更无须重启引擎）
 			RunTimeoutFunc: settingsStore.RunTimeout,
+			// 附录 K：发言资格闸活读（settings → 引擎配置映射；变更对下一波生效）
+			SpeakGateFunc: func() room.SpeakGateSettings {
+				doc := settingsStore.Snapshot()
+				return room.SpeakGateSettings{
+					Enabled:         !doc.SpeakGateOff,
+					Threshold:       doc.SpeakGateThresh,
+					CooldownPenalty: doc.SpeakGateCooldown,
+				}
+			},
 			// M4-3：ROP 门（reply_or_pass_mode）+ 路径指标（A/B 测量面，JSONL 落盘）
 			ReplyOrPassEnabled: settingsStore.ReplyOrPassEnabled,
 			OnPathMetric:       pathMetricSink(opts.DataDir),

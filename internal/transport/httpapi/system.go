@@ -122,13 +122,16 @@ func (s *server) UpdateSystemSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
 	var req struct {
-		RunTimeoutSeconds int    `json:"run_timeout_seconds"`
-		ReplyOrPassMode   string `json:"reply_or_pass_mode"`
+		RunTimeoutSeconds int     `json:"run_timeout_seconds"`
+		ReplyOrPassMode   string  `json:"reply_or_pass_mode"`
+		SpeakGateOff      *bool   `json:"speak_gate_off"`              // 可选：缺省 false（闸开）
+		SpeakGateThresh   float64 `json:"speak_gate_threshold"`        // 可选：缺省 0.30
+		SpeakGateCooldown float64 `json:"speak_gate_cooldown_penalty"` // 可选：缺省 0.20
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "载荷须为 {run_timeout_seconds, reply_or_pass_mode}")
+		writeError(w, http.StatusBadRequest, "invalid_request", "载荷须为 {run_timeout_seconds, reply_or_pass_mode, speak_gate_off?, speak_gate_threshold?, speak_gate_cooldown_penalty?}")
 		return
 	}
 	if err := settings.ValidateRunTimeoutSeconds(req.RunTimeoutSeconds); err != nil {
@@ -143,6 +146,19 @@ func (s *server) UpdateSystemSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_value", err.Error())
 		return
 	}
+	// 附录 K：speak gate 三字段可选（零值/缺省 = 缺省束，全量替换语义下省略即
+	// 重置回缺省——与既有两字段同批原子写）。
+	off := false
+	if req.SpeakGateOff != nil {
+		off = *req.SpeakGateOff
+	}
+	threshold, cooldown := req.SpeakGateThresh, req.SpeakGateCooldown
+	if threshold <= 0 {
+		threshold = settings.DefaultSpeakGateThreshold
+	}
+	if cooldown < 0 {
+		cooldown = settings.DefaultSpeakGateCooldown
+	}
 	if err := s.deps.Settings.UpdateRunTimeoutSeconds(req.RunTimeoutSeconds); err != nil {
 		writeError(w, http.StatusInternalServerError, "settings_write_failed", err.Error())
 		return
@@ -151,9 +167,19 @@ func (s *server) UpdateSystemSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "settings_write_failed", err.Error())
 		return
 	}
+	if err := s.deps.Settings.UpdateSpeakGate(off, threshold, cooldown); err != nil {
+		writeError(w, http.StatusInternalServerError, "settings_write_failed", err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, settingsDocOf(s.deps.Settings.Snapshot()))
 }
 
 func settingsDocOf(doc settings.Document) map[string]any {
-	return map[string]any{"run_timeout_seconds": doc.RunTimeoutSeconds, "reply_or_pass_mode": doc.ReplyOrPassMode}
+	return map[string]any{
+		"run_timeout_seconds":         doc.RunTimeoutSeconds,
+		"reply_or_pass_mode":          doc.ReplyOrPassMode,
+		"speak_gate_off":              doc.SpeakGateOff,
+		"speak_gate_threshold":        doc.SpeakGateThresh,
+		"speak_gate_cooldown_penalty": doc.SpeakGateCooldown,
+	}
 }

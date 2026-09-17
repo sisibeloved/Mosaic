@@ -25,6 +25,11 @@ import (
 // newer version of Codex. Please upgrade to the latest app or CLI and try
 // again."——ambient CLI 配置指向的模型被上游按 CLI 版本拒收，环境态非代码缺陷，
 // 同裁定降级跳过。
+// 模型运行时无最终回复（2026-09-17 实证）：mcode "Runtime completed without
+// a final assistant response."（流内 error 事件携 retryable:true）——MiniMax-M3
+// thinking 变体在意图评估类提示下跑了 token 却不产出最终 assistant 消息；
+// 新旧提示词对照实验排除适配器/提示词侧代码态（generate 任务同日正常），
+// CLI 侧安装损坏（chunks 缺模块）同日另证并已重装修复。
 var providerUnavailableMarkers = []string{
 	"usage limit",
 	"rate limit",
@@ -37,6 +42,7 @@ var providerUnavailableMarkers = []string{
 	"connection failed",
 	"error sending request",
 	"requires a newer version",
+	"runtime completed without a final assistant response",
 }
 
 // ProviderUnavailable 报告 err 是否为供应商侧不可用（nil 恒 false）。

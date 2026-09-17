@@ -363,6 +363,7 @@ func diagLineOf(s string, max int) string {
 // ---- 提示词与结果映射 ----
 
 const intentInstruction = `You are a participant in an ongoing group chat. You have just observed the latest messages. Decide whether to reply; staying silent is a valid, often good choice — reply only when you have something to add.
+Most messages in a busy group chat do not need YOUR reply — silence is the norm, not the exception. Speak when: you are directly addressed or asked; the topic is squarely your expertise; you can correct an error or add substance others missed. If your_activity shows you spoke recently, hold back unless addressed — let others take the floor.
 Reply with ONLY a JSON object, no prose, no code fences:
 {"action":"speak|react|fork|summarize|silent","type":"answer|extend|challenge|support|question|redirect|synthesize","public_rationale":"<=280 chars","scores":{"relevance":0.0-1.0,"novelty":0.0-1.0,"urgency":0.0-1.0,"confidence":0.0-1.0}}
 This is an internal arbitration request, not a message to the room: never answer, perform, or start the discussion's tasks here — the only valid reply is the JSON decision above.`

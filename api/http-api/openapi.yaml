@@ -1627,7 +1627,7 @@ components:
       type: object
       required: [run_timeout_seconds]
       additionalProperties: false
-      description: "设置族文档（OQ-B，M4-1 首员 + M4-3 第二员）：全量替换语义；新成员迁入时向后兼容（缺字段 = 缺省）。"
+      description: "设置族文档（OQ-B，M4-1 首员 + M4-3 第二员 + 附录 K 发言资格闸）：全量替换语义；新成员迁入时向后兼容（缺字段 = 缺省）。"
       properties:
         run_timeout_seconds:
           type: integer
@@ -1638,6 +1638,19 @@ components:
           type: string
           enum: [auto, off]
           description: "单次 reply-or-pass 限定路径（M4-3）：auto（缺省）= 资格座位走单次路径；off = 回退两阶段（A/B 控制组）"
+        speak_gate_off:
+          type: boolean
+          description: "发言资格闸关闭开关（RFC-0012 附录 K）：false（缺省）= 闸开（speak 意图须过资格分阈值，@点名/定向豁免）；true = 关闸（意愿即放行）"
+        speak_gate_threshold:
+          type: number
+          minimum: 0.05
+          maximum: 0.95
+          description: "发言资格分阈值（缺省 0.30；资格分 = relevance×0.6 + urgency×0.4，低于阈值被闸并留痕）"
+        speak_gate_cooldown_penalty:
+          type: number
+          minimum: 0
+          maximum: 0.9
+          description: "上波发言者的资格分扣减（缺省 0.20——软冷却；@点名豁免不受限）"
     MonitorState:
       type: object
       description: "监控运行态（M4-5）：三水位（观察/处理/送达）与失败分类分开——源失败不动水位、处理失败可重试、no-change 去重计数。"

@@ -1122,7 +1122,7 @@ export interface components {
             /** Format: date-time */
             attached_at: string;
         };
-        /** @description 设置族文档（OQ-B，M4-1 首员 + M4-3 第二员）：全量替换语义；新成员迁入时向后兼容（缺字段 = 缺省）。 */
+        /** @description 设置族文档（OQ-B，M4-1 首员 + M4-3 第二员 + 附录 K 发言资格闸）：全量替换语义；新成员迁入时向后兼容（缺字段 = 缺省）。 */
         SettingsDoc: {
             /** @description 独立任务执行时长上限（秒；缺省 600；长于单轮 180s——"长任务"服务面） */
             run_timeout_seconds: number;
@@ -1131,6 +1131,12 @@ export interface components {
              * @enum {string}
              */
             reply_or_pass_mode?: "auto" | "off";
+            /** @description 发言资格闸关闭开关（RFC-0012 附录 K）：false（缺省）= 闸开（speak 意图须过资格分阈值，@点名/定向豁免）；true = 关闸（意愿即放行） */
+            speak_gate_off?: boolean;
+            /** @description 发言资格分阈值（缺省 0.30；资格分 = relevance×0.6 + urgency×0.4，低于阈值被闸并留痕） */
+            speak_gate_threshold?: number;
+            /** @description 上波发言者的资格分扣减（缺省 0.20——软冷却；@点名豁免不受限） */
+            speak_gate_cooldown_penalty?: number;
         };
         /** @description 监控运行态（M4-5）：三水位（观察/处理/送达）与失败分类分开——源失败不动水位、处理失败可重试、no-change 去重计数。 */
         MonitorState: {

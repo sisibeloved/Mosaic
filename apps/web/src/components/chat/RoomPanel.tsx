@@ -625,7 +625,16 @@ function DiscussSegment({
                 <div className="mt-0.5 text-dim">
                   意向：{it.action === "silent" ? "本轮不发言" : it.type ? intentTypeLabel(it.type) : it.action ? intentActionLabel(it.action) : "—"}
                 </div>
-                {it.unselected_reason && <div className="text-faint">未获发言权：{it.unselected_reason}</div>}
+                {it.unselected_reason && (
+                  <div className="text-faint">
+                    未获发言权：
+                    {it.unselected_reason === "below_threshold"
+                      ? "分数未过发言闸（可保送）"
+                      : it.unselected_reason === "recent_speaker"
+                        ? "刚说过话，冷却中被闸（可保送）"
+                        : it.unselected_reason}
+                  </div>
+                )}
                 {it.public_rationale && (
                   <div className="truncate text-faint" title={it.public_rationale}>
                     {truncate(it.public_rationale, 60)}
