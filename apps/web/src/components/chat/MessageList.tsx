@@ -2,12 +2,16 @@
 // agent 左侧带头像/显示名/类别徽标；system 事件居中细灰条。用户上翻时暂停自动滚底。
 // M4-0 聊天交互补齐：气泡 hover 动作条（复制原文 / 引用回复）；带 reply_to 的消息
 // 气泡顶部渲染引用条（作者 + 摘要，点击跳原消息）。
+// RFC-0014 §2.5：消息 payload.refs 渲染为 DocRefCard（标题/摘录/版本/更新者，
+// doc:{id} SSE 驱动原地刷新 + "有更新"徽标；已删文档降级灰卡）。
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import type { TimelineEntry } from "../../api/room";
-import type { ParticipantView } from "../../api/client";
+import type { DocRef, ParticipantView } from "../../api/client";
 import { adapterLabel, channelLabel, kindLabel } from "../../lib/copy";
 import { absoluteTime, displayNameOf, participantOf, relativeTime, truncate } from "../../lib/ui";
 import { copyText } from "../../lib/clipboard";
+import { useDocMeta } from "../../state/docs";
 import { useContextMenu, type ContextMenuItem } from "../ContextMenu";
 import { Avatar } from "./Avatar";
 import { MarkdownBody } from "./MarkdownBody";
@@ -194,6 +198,136 @@ function AttachmentCards({ roomID, attachments }: { roomID: string | null; attac
   );
 }
 
+/** 文档引用卡片列表（RFC-0014 §2.5）：每个 refs 项一张卡——标题/前三块纯文本
+ * 摘录/版本/更新者；doc:{id} SSE 驱动同文档全部卡片原地刷新；版本越过首渲染
+ * 水位显示"有更新"徽标；不存在/已删除降级灰卡。"历史"属 M2 不渲染。 */
+function DocRefCards({
+  refs,
+  participants,
+  onCiteDoc,
+}: {
+  refs?: DocRef[];
+  participants: ParticipantView[];
+  onCiteDoc: (ref: DocRef, title: string) => void;
+}) {
+  if (!refs || refs.length === 0) return null;
+  return (
+    <div className="mt-1.5 flex flex-col gap-1">
+      {refs.map((r, i) => (
+        <DocRefCard key={`${r.doc_id}:${i}`} docRef={r} participants={participants} onCiteDoc={onCiteDoc} />
+      ))}
+    </div>
+  );
+}
+
+function DocRefCard({
+  docRef,
+  participants,
+  onCiteDoc,
+}: {
+  docRef: DocRef;
+  participants: ParticipantView[];
+  onCiteDoc: (ref: DocRef, title: string) => void;
+}) {
+  const navigate = useNavigate();
+  const { doc, missing } = useDocMeta(docRef.doc_id, true); // 卡片级实时面（§2.5 原地刷新）
+  /** 首渲染版本水位：之后 SSE 推进版本 → "有更新"徽标（未聚焦提示的最简形态）。 */
+  const firstVersionRef = useRef<number | null>(null);
+  if (doc && firstVersionRef.current === null) firstVersionRef.current = doc.version;
+  const hasUpdate = doc !== null && firstVersionRef.current !== null && doc.version > firstVersionRef.current;
+
+  if (missing) {
+    return (
+      <div className="flex w-fit items-center gap-1.5 rounded-lg border border-border bg-surface-3/40 px-2.5 py-1.5 text-[11px] text-faint">
+        <IconDoc />
+        文档已删除或不存在
+        <span className="font-mono text-[10px]">{docRef.doc_id.slice(-6)}</span>
+      </div>
+    );
+  }
+  if (!doc) {
+    return (
+      <div className="flex w-fit items-center gap-1.5 rounded-lg border border-border bg-surface-3/50 px-2.5 py-1.5 text-[11px] text-faint">
+        <IconDoc />
+        文档加载中…
+      </div>
+    );
+  }
+  // 摘录：前三块非空文本（纯文本、去标记噪声从简——卡片是线索不是正文）
+  const excerpt = doc.blocks
+    .filter((b) => b.type !== "hr" && b.text.trim() !== "")
+    .slice(0, 3)
+    .map((b) => truncate(b.text.replace(/\s+/g, " ").trim(), 60));
+  const updater = doc.updated_by === "par_owner" ? "我" : displayNameOf(participants, doc.updated_by);
+  return (
+    <div className="w-fit max-w-full rounded-lg border border-border bg-surface-3/50 px-2.5 py-1.5 text-[11px] leading-5">
+      <div className="flex items-center gap-1.5">
+        <span className="shrink-0 text-dim">
+          <IconDoc />
+        </span>
+        <button
+          type="button"
+          onClick={() => navigate(`/docs/${encodeURIComponent(doc.doc_id)}`)}
+          title="打开文档"
+          className="min-w-0 truncate font-medium text-text hover:text-accent hover:underline"
+        >
+          {doc.title}
+        </button>
+        {doc.status === "archived" && (
+          <span className="shrink-0 rounded bg-surface-3 px-1 text-[10px] text-faint">已归档</span>
+        )}
+        {hasUpdate && (
+          <span className="shrink-0 rounded bg-accent-soft px-1 text-[10px] text-accent" title="文档在卡片展示后有新版本">
+            有更新
+          </span>
+        )}
+      </div>
+      {excerpt.length > 0 && (
+        <div className="mt-0.5 text-dim">
+          {excerpt.map((line, i) => (
+            <div key={i} className="truncate">
+              {line}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="mt-0.5 flex items-center gap-1.5 text-faint">
+        <span>v{doc.version}</span>
+        <span>·</span>
+        <span>
+          {updater} 更新于 {relativeTime(doc.updated_at)}
+        </span>
+        <span className="ml-1 flex gap-1">
+          <button
+            type="button"
+            onClick={() => navigate(`/docs/${encodeURIComponent(doc.doc_id)}`)}
+            className="rounded px-1 text-dim transition-colors hover:bg-surface-3 hover:text-text"
+          >
+            打开
+          </button>
+          <button
+            type="button"
+            onClick={() => onCiteDoc({ kind: "doc", doc_id: doc.doc_id }, doc.title)}
+            title="把该文档带入输入框（随下一条消息引用发出）"
+            className="rounded px-1 text-dim transition-colors hover:bg-surface-3 hover:text-text"
+          >
+            引用
+          </button>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function IconDoc() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
+    </svg>
+  );
+}
+
 export function MessageList({
   entries,
   participants,
@@ -201,6 +335,7 @@ export function MessageList({
   onQuote,
   onQuoteMention,
   onJumpToEvent,
+  onCiteDoc,
 }: {
   entries: TimelineEntry[];
   participants: ParticipantView[];
@@ -211,6 +346,8 @@ export function MessageList({
   onQuoteMention: (entry: TimelineEntry) => void;
   /** 引用条 / 跳转：滚到对应事件（RoomPage 的 onJumpToEvent——data-event-id 锚定）。 */
   onJumpToEvent: (eventID: string) => void;
+  /** 文档卡片"引用"：把 doc-ref 带入输入框待发区（RoomPage pendingDocRefs）。 */
+  onCiteDoc: (ref: DocRef, title: string) => void;
 }) {
   const boxRef = useRef<HTMLDivElement | null>(null);
   const pinnedRef = useRef(true); // 贴底时才跟随新消息滚动
@@ -296,6 +433,7 @@ export function MessageList({
                 quoteTarget={e.replyTo ? (entryIndex.get(e.replyTo) ?? null) : null}
                 onJump={onJumpToEvent}
                 onQuote={onQuote}
+                onCiteDoc={onCiteDoc}
               />
             </div>
           ) : (
@@ -312,6 +450,7 @@ export function MessageList({
                 quoteTarget={e.replyTo ? (entryIndex.get(e.replyTo) ?? null) : null}
                 onJump={onJumpToEvent}
                 onQuote={onQuote}
+                onCiteDoc={onCiteDoc}
               />
             </div>
           ),
@@ -355,6 +494,7 @@ function HumanBubble({
   quoteTarget,
   onJump,
   onQuote,
+  onCiteDoc,
 }: {
   entry: TimelineEntry;
   participants: ParticipantView[];
@@ -362,6 +502,7 @@ function HumanBubble({
   quoteTarget: TimelineEntry | null;
   onJump: (eventID: string) => void;
   onQuote: (entry: TimelineEntry) => void;
+  onCiteDoc: (ref: DocRef, title: string) => void;
 }) {
   // 头像在最右（外侧），气泡在头像左侧（内侧）；名字行省略——自己知道自己。
   return (
@@ -373,6 +514,7 @@ function HumanBubble({
           )}
           <MarkdownBody text={entry.body ?? ""} />
           <AttachmentCards roomID={roomID} attachments={entry.attachments} />
+          <DocRefCards refs={entry.refs} participants={participants} onCiteDoc={onCiteDoc} />
         </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-faint">
           <AddressedLine entry={entry} participants={participants} />
@@ -392,6 +534,7 @@ function AgentBubble({
   quoteTarget,
   onJump,
   onQuote,
+  onCiteDoc,
 }: {
   entry: TimelineEntry;
   participants: ParticipantView[];
@@ -399,6 +542,7 @@ function AgentBubble({
   quoteTarget: TimelineEntry | null;
   onJump: (eventID: string) => void;
   onQuote: (entry: TimelineEntry) => void;
+  onCiteDoc: (ref: DocRef, title: string) => void;
 }) {
   const p = participantOf(participants, entry.actorID);
   const name = p?.display_name ?? displayNameOf(participants, entry.actorID);
@@ -428,6 +572,7 @@ function AgentBubble({
           <AddressedLine entry={entry} participants={participants} />
           <MarkdownBody text={clean} />
           <AttachmentCards roomID={roomID} attachments={entry.attachments} />
+          <DocRefCards refs={entry.refs} participants={participants} onCiteDoc={onCiteDoc} />
           {todos && <TodoChip items={todos} />}
         </div>
       </div>

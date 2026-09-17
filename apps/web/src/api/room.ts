@@ -8,7 +8,7 @@
 // - 系统事件（轮次/暂停）随快照 Timeline 持久化（v1.25）——切房间/刷新不丢；
 //   开发者模式下意向/授予/撤销等基建事件内联进时间线（[dev] 前缀，瞬态）。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, type EventView, type ParticipantView, type Snapshot } from "./client";
+import { api, ApiError, type AttachedDoc, type DocRef, type EventView, type ParticipantView, type Snapshot } from "./client";
 import { useDevMode } from "../state/dev";
 
 export type Connection = "idle" | "connecting" | "live" | "reconnecting" | "resync";
@@ -29,6 +29,8 @@ export interface TimelineEntry {
   replyTo?: string;
   /** 消息附件描述子（RFC-0013；下载 URL = /v1/rooms/{id}/attachments/{att}）。 */
   attachments?: { attachment_id: string; name: string; mime?: string; size_bytes: number }[];
+  /** 文档引用（RFC-0014 §2.4；快照/SSE 两路同形——DocRefCard 渲染面）。 */
+  refs?: DocRef[];
   detail?: string;
 }
 
@@ -88,6 +90,8 @@ const SUBSCRIBED_EVENTS = [
   "run.failed",
   "run.canceled",
   "run.unknown",
+  "doc.attached_to_room",
+  "doc.detached_from_room",
 ] as const;
 
 
@@ -141,6 +145,8 @@ interface RoomModelState {
   tasks: TaskItem[];
   /** M4-1 任务执行通道（独立于波的长任务执行）。 */
   runs: RunItem[];
+  /** RFC-0014 §2.4 房间附着文档段（快照 docs 视图——面板"文档"段数据源）。 */
+  attachedDocs: AttachedDoc[];
   roundOpen: boolean;
   paused: boolean;
   /** M4-2：座位级失败（瞬态；新一轮清空——波间保留供"上轮为何没人说话"回看）。 */
@@ -163,6 +169,8 @@ export interface RoomHandle {
   tasks: TaskItem[];
   /** M4-1 任务执行通道。 */
   runs: RunItem[];
+  /** RFC-0014 §2.4 房间附着文档（快照 docs 投影）。 */
+  attachedDocs: AttachedDoc[];
   roundOpen: boolean;
   /** M4-2：座位级失败（瞬态；活动 Tab 与正在输入区消费）。 */
   seatFailures: SeatFailure[];
@@ -170,7 +178,7 @@ export interface RoomHandle {
   roster: string[] | null;
   connection: Connection;
   error: string | null;
-  send(body: string, addressedTo?: string[], replyTo?: string | null, attachments?: string[]): Promise<void>;
+  send(body: string, addressedTo?: string[], replyTo?: string | null, attachments?: string[], refs?: DocRef[]): Promise<void>;
   pause(): Promise<void>;
   resume(): Promise<void>;
   rename(displayName: string): Promise<void>;
@@ -192,6 +200,9 @@ export interface RoomHandle {
   cancelRun(runID: string, reason: string): Promise<void>;
   /** M3-3 记忆编辑（memory.edited：整组替换，生效于下次组装）。 */
   editMemory(memoryID: string, edits: { conclusions?: string[]; assumptions?: string[]; curatedContent?: string }, note: string): Promise<void>;
+  /** RFC-0014 §2.4 房间文档附着/解除（attach/detach_doc_to_room 命令链）。 */
+  attachDoc(docID: string): Promise<void>;
+  detachDoc(docID: string): Promise<void>;
   /** 重取快照投影区（成员/记分卡/谱系/策略）——抽屉 Tab 打开时调用。 */
   refreshProjections(): Promise<void>;
 }
@@ -207,6 +218,7 @@ function projections(snap: Snapshot) {
     closures: snap.closures ?? [],
     tasks: snap.tasks ?? [],
     runs: snap.runs ?? [],
+    attachedDocs: snap.docs ?? [],
     roster: snap.roster ?? null,
   };
 }
@@ -333,7 +345,7 @@ export function useRoom(roomID: string | null): RoomHandle {
         switch (type) {
           case "message.posted": {
             const payload = view.payload as
-              | { body?: string; addressed_to?: string[] | null; reply_to?: string | null; attachments?: { attachment_id: string; name: string; mime?: string; size_bytes: number }[] | null }
+              | { body?: string; addressed_to?: string[] | null; reply_to?: string | null; attachments?: { attachment_id: string; name: string; mime?: string; size_bytes: number }[] | null; refs?: DocRef[] | null }
               | null;
             append({
               key: view.event_id,
@@ -345,6 +357,7 @@ export function useRoom(roomID: string | null): RoomHandle {
               addressedTo: payload?.addressed_to ?? undefined,
               replyTo: payload?.reply_to ?? undefined,
               attachments: payload?.attachments ?? undefined,
+              refs: payload?.refs ?? undefined,
             });
             if (view.actor.kind === "agent") {
               delete next.typing[view.actor.participant_id];
@@ -430,6 +443,12 @@ export function useRoom(roomID: string | null): RoomHandle {
           scheduleRefresh();
           break;
         case "memory.edited": // M3-3：记忆编辑 → 胶囊视图重取
+          scheduleRefresh();
+          break;
+        case "doc.attached_to_room": // RFC-0014 §2.4：房间文档附着段重投影
+          scheduleRefresh();
+          break;
+        case "doc.detached_from_room":
           scheduleRefresh();
           break;
         case "intent.endorsed":
@@ -551,6 +570,7 @@ export function useRoom(roomID: string | null): RoomHandle {
                 addressedTo: item.addressed_to ?? undefined,
                 replyTo: item.reply_to ?? undefined,
                 attachments: item.attachments ?? undefined,
+                refs: item.refs ?? undefined,
               }
             : {
                 // 系统事件持久化项（v1.25）：round/pause 提醒不再随 SSE 瞬态丢失
@@ -673,8 +693,8 @@ export function useRoom(roomID: string | null): RoomHandle {
   );
 
   const send = useCallback(
-    (body: string, addressedTo: string[] = [], replyTo: string | null = null, attachments: string[] = []) =>
-      runCommand((id, v) => api.postMessage(id, v, body, addressedTo, replyTo, attachments)),
+    (body: string, addressedTo: string[] = [], replyTo: string | null = null, attachments: string[] = [], refs: DocRef[] = []) =>
+      runCommand((id, v) => api.postMessage(id, v, body, addressedTo, replyTo, attachments, refs)),
     [runCommand],
   );
   const pause = useCallback(
@@ -736,6 +756,14 @@ export function useRoom(roomID: string | null): RoomHandle {
       runCommand((id, v) => api.editMemory(id, v, memoryID, edits, note)),
     [runCommand],
   );
+  const attachDoc = useCallback(
+    (docID: string) => runCommand((id, v) => api.attachDoc(id, v, docID)),
+    [runCommand],
+  );
+  const detachDoc = useCallback(
+    (docID: string) => runCommand((id, v) => api.detachDoc(id, v, docID)),
+    [runCommand],
+  );
 
   return {
     roomID: state?.roomID ?? null,
@@ -750,6 +778,7 @@ export function useRoom(roomID: string | null): RoomHandle {
     closures: state?.closures ?? [],
     tasks: state?.tasks ?? [],
     runs: state?.runs ?? [],
+    attachedDocs: state?.attachedDocs ?? [],
     roundOpen: state?.roundOpen ?? false,
     seatFailures: state?.seatFailures ?? [],
     paused: state?.paused ?? false,
@@ -769,6 +798,8 @@ export function useRoom(roomID: string | null): RoomHandle {
     runTask,
     cancelRun,
     editMemory,
+    attachDoc,
+    detachDoc,
     refreshProjections: refreshProjectionsNow,
   };
 }

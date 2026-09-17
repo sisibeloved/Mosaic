@@ -3,12 +3,18 @@
 // （可点 × 移除；上限 3——契约 PostMessagePayload.addressed_to maxItems=3）。
 // M4-0 引用回复：quoted 非空时输入区顶部渲染引用卡片（作者 + 摘要，× 取消），
 // 发送携带 reply_to（message.posted 既有载荷字段）。
+// RFC-0014 §2.4：文档引用 chip（≤8——服务端 refs 上限）；📄 按钮弹文档挑选器
+// （工作区列表客户端过滤），发送时随消息携带 refs 描述子。
 import { useEffect, useRef, useState } from "react";
 import type { ParticipantView } from "../../api/client";
 import { adapterLabel } from "../../lib/copy";
+import { relativeTime } from "../../lib/ui";
+import { refreshDocs, useDocs } from "../../state/docs";
 import { Avatar } from "./Avatar";
 
 const MAX_TARGETS = 3;
+/** 文档引用上限（服务端 PostMessagePayload.refs ≤ 8）。 */
+const MAX_DOC_REFS = 8;
 
 /**
  * 剪贴板粘贴图片（RFC-0013 附件面）：paste 事件的 clipboardData.items 里
@@ -58,6 +64,12 @@ export interface MentionRequest {
   nonce: number;
 }
 
+/** 待发文档引用（RFC-0014 §2.4；title 供 chip 展示——挑选器/卡片引用两路写入）。 */
+export interface PendingDocRef {
+  docID: string;
+  title: string;
+}
+
 export function Composer({
   disabled,
   paused,
@@ -67,6 +79,9 @@ export function Composer({
   attachments,
   onAddAttachment,
   onRemoveAttachment,
+  docRefs,
+  onAddDocRef,
+  onRemoveDocRef,
   mentionRequest,
   onMentionConsumed,
   onSend,
@@ -81,9 +96,13 @@ export function Composer({
   attachments: { token: string; name: string; sizeBytes: number }[];
   onAddAttachment: (file: File) => void;
   onRemoveAttachment: (token: string) => void;
+  /** RFC-0014 文档引用：待发 refs（chip 展示；发送随消息携带 refs 描述子）。 */
+  docRefs: PendingDocRef[];
+  onAddDocRef: (ref: PendingDocRef) => void;
+  onRemoveDocRef: (docID: string) => void;
   mentionRequest: MentionRequest | null;
   onMentionConsumed: () => void;
-  onSend: (body: string, addressedTo: string[], replyTo: string | null, attachments: string[]) => void;
+  onSend: (body: string, addressedTo: string[], replyTo: string | null, attachments: string[], refs: { kind: "doc"; doc_id: string }[]) => void;
 }) {
   const [body, setBody] = useState("");
   const [chips, setChips] = useState<ParticipantView[]>([]);
@@ -142,7 +161,13 @@ export function Composer({
   const submit = () => {
     const text = body.trim();
     if (!text || blocked) return;
-    onSend(text, chips.map((c) => c.participant_id), quoted?.eventID ?? null, attachments.map((a) => a.token));
+    onSend(
+      text,
+      chips.map((c) => c.participant_id),
+      quoted?.eventID ?? null,
+      attachments.map((a) => a.token),
+      docRefs.map((r) => ({ kind: "doc" as const, doc_id: r.docID })),
+    );
     setBody("");
     setChips([]);
     setMention(null);
@@ -200,6 +225,23 @@ export function Composer({
                   type="button"
                   aria-label={`移除附件 ${a.name}`}
                   onClick={() => onRemoveAttachment(a.token)}
+                  className="rounded-full px-1 text-dim hover:text-text"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        {docRefs.length > 0 && (
+          <div className="mb-1.5 flex flex-wrap gap-1.5">
+            {docRefs.map((r) => (
+              <span key={r.docID} className="flex items-center gap-1 rounded-full bg-surface-3 py-0.5 pl-2 pr-1.5 text-xs text-dim">
+                📄 {r.title}
+                <button
+                  type="button"
+                  aria-label={`移除文档引用 ${r.title}`}
+                  onClick={() => onRemoveDocRef(r.docID)}
                   className="rounded-full px-1 text-dim hover:text-text"
                 >
                   ×
@@ -269,6 +311,11 @@ export function Composer({
                 }}
               />
             </label>
+            <DocRefPicker
+              disabled={blocked || docRefs.length >= MAX_DOC_REFS}
+              exclude={docRefs.map((r) => r.docID)}
+              onPick={onAddDocRef}
+            />
             <textarea
               ref={areaRef}
               rows={1}
@@ -309,6 +356,102 @@ export function Composer({
         </div>
         <p className="mt-1 text-[11px] text-faint">Enter 发送 · Shift+Enter 换行 · 消息对所有参与者可见</p>
       </div>
+    </div>
+  );
+}
+
+
+/** 文档引用挑选器（RFC-0014 §2.4）：📄 按钮弹层——工作区文档列表（打开时刷新）
+ * + 标题客户端过滤；选中成待发 chip（引用卡片"引用"按钮是另一路写入）。 */
+function DocRefPicker({
+  disabled,
+  exclude,
+  onPick,
+}: {
+  disabled: boolean;
+  exclude: string[];
+  onPick: (ref: PendingDocRef) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const ref = useRef<HTMLDivElement | null>(null);
+  const { docs } = useDocs();
+
+  useEffect(() => {
+    if (!open) return;
+    void refreshDocs();
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const excluded = new Set(exclude);
+  const q = query.trim().toLowerCase();
+  const candidates = (docs ?? []).filter(
+    (d) => !excluded.has(d.doc_id) && (q === "" || d.title.toLowerCase().includes(q) || d.doc_id.includes(q)),
+  );
+
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => {
+          setQuery("");
+          setOpen((v) => !v);
+        }}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        title="引用文档（随消息发出 doc 卡片；最多 8 个）"
+        aria-label="引用文档"
+        className="text-faint transition-colors hover:text-text disabled:opacity-40"
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
+        </svg>
+      </button>
+      {open && (
+        <div className="animate-fade-in absolute bottom-full left-0 z-40 mb-1.5 w-72 overflow-hidden rounded-xl border border-border bg-surface-2 shadow-lg">
+          <div className="border-b border-border p-1.5">
+            <input
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜索文档标题…"
+              aria-label="搜索文档"
+              className="w-full rounded-lg bg-surface px-2 py-1 text-xs outline-none placeholder:text-faint"
+            />
+          </div>
+          <ul role="listbox" className="max-h-56 overflow-y-auto py-1">
+            {docs === null ? (
+              <li className="px-3 py-1.5 text-[11px] text-faint">文档列表加载中…</li>
+            ) : candidates.length === 0 ? (
+              <li className="px-3 py-1.5 text-[11px] text-faint">没有匹配的文档。</li>
+            ) : (
+              candidates.slice(0, 20).map((d) => (
+                <li key={d.doc_id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onPick({ docID: d.doc_id, title: d.title });
+                      setOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-surface-3"
+                  >
+                    <span className="min-w-0 flex-1 truncate">{d.title}</span>
+                    <span className="shrink-0 text-[10px] text-faint">
+                      v{d.version} · {relativeTime(d.updated_at)}
+                    </span>
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

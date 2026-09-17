@@ -323,28 +323,42 @@ export function AppShell() {
           )}
           {error && <p className="px-2 py-2 text-xs text-danger">{error}</p>}
         </nav>
-        <div className="flex items-center gap-1 border-t border-border px-2 py-2">
+        <div className="flex flex-col gap-1 border-t border-border px-2 py-2">
           <NavLink
-            to="/settings"
-            title="设置（Agent 实例 / 自动化 / 数据 / 外观 / 开发者）"
+            to="/docs"
+            title="文档（工作区文档主页——列表/检索/编辑器）"
             className={({ isActive }) =>
-              `flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 transition-colors ${
+              `flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors ${
                 isActive ? "bg-surface-3" : "hover:bg-surface-2"
               }`
             }
           >
-            <IconGear />
-            <span className="truncate text-sm">设置</span>
+            <IconDoc />
+            <span className="truncate text-sm">文档</span>
           </NavLink>
-          <button
-            type="button"
-            onClick={() => setTheme(toggleTheme(theme))}
-            title={theme === "dark" ? "切换亮色" : "切换暗色"}
-            aria-label="切换主题"
-            className="rounded-lg p-2 text-dim transition-colors hover:bg-surface-2 hover:text-text"
-          >
-            {theme === "dark" ? <IconSun /> : <IconMoon />}
-          </button>
+          <div className="flex items-center gap-1">
+            <NavLink
+              to="/settings"
+              title="设置（Agent 实例 / 自动化 / 数据 / 外观 / 开发者）"
+              className={({ isActive }) =>
+                `flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 transition-colors ${
+                  isActive ? "bg-surface-3" : "hover:bg-surface-2"
+                }`
+              }
+            >
+              <IconGear />
+              <span className="truncate text-sm">设置</span>
+            </NavLink>
+            <button
+              type="button"
+              onClick={() => setTheme(toggleTheme(theme))}
+              title={theme === "dark" ? "切换亮色" : "切换暗色"}
+              aria-label="切换主题"
+              className="rounded-lg p-2 text-dim transition-colors hover:bg-surface-2 hover:text-text"
+            >
+              {theme === "dark" ? <IconSun /> : <IconMoon />}
+            </button>
+          </div>
         </div>
       </aside>
       <main className="min-w-0 flex-1">
@@ -474,6 +488,15 @@ function IconGroup() {
       <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
       <circle cx="9" cy="7" r="4" />
       <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  );
+}
+
+function IconDoc() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
     </svg>
   );
 }

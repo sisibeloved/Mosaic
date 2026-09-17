@@ -9,7 +9,7 @@
 // （随 SSE 事件由 room.ts 防抖重取）；请优先发言沿用 endorse_intent 命令链。
 // 内部枚举一律经 lib/copy 映射层转为用户语言，不裸显。
 import { useEffect, useState } from "react";
-import { api, type AgentSeatInfo, type ParticipantView } from "../../api/client";
+import { api, type AgentSeatInfo, type AttachedDoc, type ParticipantView } from "../../api/client";
 import type {
   ClosureSummary,
   GraphEdge,
@@ -36,15 +36,17 @@ import {
 } from "../../lib/copy";
 import { displayNameOf, relativeTime, shortId, truncate } from "../../lib/ui";
 import { Avatar } from "./Avatar";
+import { DocsTab } from "./DocsTab";
 import { MemoryTab } from "./MemoryTab";
 import { TasksTab } from "./TasksTab";
 
-type Segment = "members" | "tasks" | "memory" | "discuss" | "debug";
+type Segment = "members" | "tasks" | "memory" | "docs" | "discuss" | "debug";
 
 const SEGMENTS: { id: Segment; label: string }[] = [
   { id: "members", label: "成员" },
   { id: "tasks", label: "任务" },
   { id: "memory", label: "记忆" },
+  { id: "docs", label: "文档" },
   { id: "discuss", label: "讨论" },
 ];
 
@@ -56,7 +58,7 @@ const TAB_STORAGE_KEY = "mosaic.panel.segment";
 function loadSegment(devMode: boolean): Segment {
   try {
     const v = window.localStorage.getItem(TAB_STORAGE_KEY);
-    if (v === "members" || v === "tasks" || v === "memory" || v === "discuss" || (v === "debug" && devMode)) {
+    if (v === "members" || v === "tasks" || v === "memory" || v === "docs" || v === "discuss" || (v === "debug" && devMode)) {
       return v;
     }
   } catch {
@@ -89,6 +91,10 @@ export function RoomPanel({
   taskBusy,
   onEditMemory,
   memoryBusy,
+  attachedDocs,
+  docsBusy,
+  onAttachDoc,
+  onDetachDoc,
   onJumpToEvent,
   onMention,
   onTabActive,
@@ -132,6 +138,11 @@ export function RoomPanel({
     note: string,
   ) => void;
   memoryBusy: string | null;
+  /** RFC-0014 §2.4 房间附着文档段（快照 docs 投影）与附着/解除命令链。 */
+  attachedDocs: AttachedDoc[];
+  docsBusy: string | null;
+  onAttachDoc: (docID: string) => void;
+  onDetachDoc: (docID: string) => void;
   /** event_id → 时间线定位（任务申报消息跳转）。 */
   onJumpToEvent: (eventID: string) => void;
   /** v1.73 成员行右键 @：点名注入输入框 chips。 */
@@ -188,6 +199,7 @@ export function RoomPanel({
               {s.id === "members" && <IconPeople />}
               {s.id === "tasks" && <IconTasks />}
               {s.id === "memory" && <IconMemory />}
+              {s.id === "docs" && <IconDoc />}
               {s.id === "discuss" && <IconDiscuss />}
               {s.id === "debug" && <IconBug />}
               {badge > 0 && (
@@ -249,6 +261,15 @@ export function RoomPanel({
               participants={participants}
               editBusy={memoryBusy}
               onEdit={onEditMemory}
+            />
+          )}
+          {segment === "docs" && (
+            <DocsTab
+              attachedDocs={attachedDocs}
+              participants={participants}
+              busy={docsBusy}
+              onAttach={onAttachDoc}
+              onDetach={onDetachDoc}
             />
           )}
           {segment === "discuss" && (
@@ -731,6 +752,15 @@ function IconMemory() {
     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 2a7 7 0 0 1 7 7c0 2.38-1.19 4.47-3 5.74V17a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 0 1 7-7z" />
       <path d="M9 21h6" />
+    </svg>
+  );
+}
+
+function IconDoc() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
     </svg>
   );
 }

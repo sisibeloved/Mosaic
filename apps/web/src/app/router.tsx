@@ -3,6 +3,8 @@
 //                      入口；零房间退化为建房引导）
 //   /new             → 建房页（侧栏 + 与工作台"开始新讨论"的语义化目标）
 //   /rooms/:roomId   → 房间聊天页（局部层）
+//   /docs            → 文档主页（RFC-0014 §2.8：列表/创建者筛选/检索）
+//   /docs/:docId     → 文档编辑器（§2.5：自绘块编辑器 + 修订批 CAS）
 //   /settings        → 设置页（全局层：左子导航 Agent/自动化/数据/外观/通用；
 //                      v1.72 个人中心并入，不含任何房间态）
 // v1.74：/contacts 退役——联系人收敛进侧栏私聊组（在席 Agent 即私聊入口）。
@@ -11,6 +13,8 @@ import { AppShell } from "./AppShell";
 import { HomePage } from "../pages/HomePage";
 import { NewRoomPage } from "../pages/NewRoomPage";
 import { RoomPage } from "../pages/RoomPage";
+import { DocsHomePage } from "../pages/DocsHomePage";
+import { DocEditorPage } from "../pages/DocEditorPage";
 import { SettingsPage } from "../pages/SettingsPage";
 
 export const router = createBrowserRouter([
@@ -20,6 +24,8 @@ export const router = createBrowserRouter([
       { path: "/", element: <HomePage /> },
       { path: "/new", element: <NewRoomPage /> },
       { path: "/rooms/:roomId", element: <RoomPage /> },
+      { path: "/docs", element: <DocsHomePage /> },
+      { path: "/docs/:docId", element: <DocEditorPage /> },
       { path: "/settings", element: <SettingsPage /> },
       { path: "*", element: <Navigate to="/" replace /> },
     ],

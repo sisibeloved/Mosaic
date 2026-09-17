@@ -9,7 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useRoom, type Connection } from "../api/room";
-import { Composer, type QuotedMessage } from "../components/chat/Composer";
+import { Composer, type PendingDocRef, type QuotedMessage } from "../components/chat/Composer";
 import { MessageList } from "../components/chat/MessageList";
 import { RoomPanel } from "../components/chat/RoomPanel";
 import { RoomSearch } from "../components/chat/RoomSearch";
@@ -45,6 +45,9 @@ export function RoomPage() {
   const mentionNonce = useRef(0);
   // RFC-0013 附件：已上传待发送的令牌集（上传即时、发送定稿）。
   const [pendingAttachments, setPendingAttachments] = useState<{ token: string; name: string; sizeBytes: number }[]>([]);
+  // RFC-0014 §2.4 文档引用：待发 refs（卡片"引用"/输入框 📄 挑选器两路写入；≤8）。
+  const [pendingDocRefs, setPendingDocRefs] = useState<PendingDocRef[]>([]);
+  const [docsBusy, setDocsBusy] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteReason, setDeleteReason] = useState("");
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -153,6 +156,39 @@ export function RoomPage() {
     mentionNonce.current += 1;
     setMentionRequest({ pid, nonce: mentionNonce.current });
   }, []);
+
+  // RFC-0014 §2.4：文档卡片"引用"按钮 → 待发 refs chip（去重 + 服务端上限 8）。
+  const onCiteDoc = useCallback((ref: { doc_id: string }, title: string) => {
+    setPendingDocRefs((prev) =>
+      prev.some((r) => r.docID === ref.doc_id) || prev.length >= 8
+        ? prev
+        : [...prev, { docID: ref.doc_id, title }],
+    );
+  }, []);
+
+  // §2.4 房间文档附着/解除：SSE doc.attached/detached 驱动投影刷新；未达时兜底手刷。
+  const onAttachDoc = useCallback(
+    (docID: string) => {
+      setDocsBusy(docID);
+      void room
+        .attachDoc(docID)
+        .then(() => room.refreshProjections())
+        .catch(() => {})
+        .finally(() => setDocsBusy(null));
+    },
+    [room],
+  );
+  const onDetachDoc = useCallback(
+    (docID: string) => {
+      setDocsBusy(docID);
+      void room
+        .detachDoc(docID)
+        .then(() => room.refreshProjections())
+        .catch(() => {})
+        .finally(() => setDocsBusy(null));
+    },
+    [room],
+  );
 
   // M4-0 删除房间：M3-6 命令（reason 必填 1..280 字）→ 级联清库 → 回列表。
   const onDeleteConfirm = useCallback(async () => {
@@ -349,6 +385,7 @@ export function RoomPage() {
             onQuote={(e) => onQuote(e.key)}
             onQuoteMention={onQuoteMention}
             onJumpToEvent={onJumpToEvent}
+            onCiteDoc={onCiteDoc}
           />
           <TypingBar typing={room.typing} participants={room.participants} failures={room.seatFailures} />
           <Composer
@@ -360,14 +397,22 @@ export function RoomPage() {
             attachments={pendingAttachments}
             onAddAttachment={onAddAttachment}
             onRemoveAttachment={(token) => setPendingAttachments((prev) => prev.filter((a) => a.token !== token))}
+            docRefs={pendingDocRefs}
+            onAddDocRef={(ref) =>
+              setPendingDocRefs((prev) =>
+                prev.some((r) => r.docID === ref.docID) || prev.length >= 8 ? prev : [...prev, ref],
+              )
+            }
+            onRemoveDocRef={(docID) => setPendingDocRefs((prev) => prev.filter((r) => r.docID !== docID))}
             mentionRequest={mentionRequest}
             onMentionConsumed={() => setMentionRequest(null)}
-            onSend={(body, addressedTo, replyTo, attachments) => {
+            onSend={(body, addressedTo, replyTo, attachments, refs) => {
               void room
-                .send(body, addressedTo, replyTo, attachments)
+                .send(body, addressedTo, replyTo, attachments, refs)
                 .then(() => {
                   setQuoted(null); // 发送成功才弃引用（失败保留可重试）
                   setPendingAttachments([]); // 附件令牌已被服务端消费
+                  setPendingDocRefs([]); // doc refs 已随消息定稿
                 })
                 .catch(() => {});
             }}
@@ -398,6 +443,10 @@ export function RoomPage() {
             taskBusy={taskBusy}
             onEditMemory={onEditMemory}
             memoryBusy={memoryBusy}
+            attachedDocs={room.attachedDocs}
+            docsBusy={docsBusy}
+            onAttachDoc={onAttachDoc}
+            onDetachDoc={onDetachDoc}
             onJumpToEvent={onJumpToEvent}
             onMention={onMention}
             onTabActive={onTabActive}

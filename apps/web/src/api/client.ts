@@ -19,6 +19,39 @@ export type CuratedBudget = NonNullable<NonNullable<components["schemas"]["Memor
 export type ContextPanorama = Schemas["ContextPanorama"];
 export type ReceiptItem = NonNullable<NonNullable<Schemas["ReceiptListView"]>["receipts"]>[number];
 
+/** RFC-0014 文档面类型（契约 api/http-api/openapi.yaml）。 */
+export type DocSummary = Schemas["DocSummary"];
+export type DocState = Schemas["DocState"];
+export type DocBlock = Schemas["DocBlock"];
+export type DocRef = Schemas["DocRef"];
+export type DocSearchHit = Schemas["DocSearchHit"];
+export type DocCommandResponse = Schemas["DocCommandResponse"];
+export type AttachedDoc = Schemas["AttachedDoc"];
+
+/** 文档命令种类（DocCommand.command_kind 封闭枚举）。 */
+export type DocCommandKind =
+  | "create_doc"
+  | "rename_doc"
+  | "commit_doc_revision"
+  | "archive_doc"
+  | "restore_doc"
+  | "delete_doc"
+  | "duplicate_doc";
+
+/**
+ * 修订批单条块操作（commit_doc_revision 载荷；契约
+ * api/room-protocol/events/doc.revision_committed.schema.json）：
+ * insert_after（block_id 锚点，null=文首；携带 block）/ append（block_id 恒
+ * null，携带 block）/ replace（block_id + text）/ delete（block_id）。
+ * 插入块的非空 block_id 服务端原样保留（空才分配）——编辑器自造稳定 ID。
+ */
+export interface DocOp {
+  op: "insert_after" | "append" | "replace" | "delete";
+  block_id: string | null;
+  block?: DocBlock;
+  text?: string;
+}
+
 /** 记忆查看面（GET /v1/rooms/{id}/memory）。 */
 export interface MemoryView {
   room_id: string;
@@ -31,10 +64,14 @@ export interface MemoryView {
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
-  constructor(status: number, code: string, message: string) {
+  /** 409 文档命令冲突响应携带的当前态（RFC-0014 §2.3：version_conflict 时
+   *  响应体另含 current_version + state——编辑器在新态上重放未提交 ops）。 */
+  readonly docConflict?: { docID?: string; currentVersion?: number; state?: DocState };
+  constructor(status: number, code: string, message: string, docConflict?: ApiError["docConflict"]) {
     super(message);
     this.status = status;
     this.code = code;
+    this.docConflict = docConflict;
   }
 }
 
@@ -89,7 +126,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!resp.ok) {
     const err = (body as { error?: { code?: string; message?: string } })?.error;
-    throw new ApiError(resp.status, err?.code ?? "unknown", err?.message ?? `HTTP ${resp.status}`);
+    let docConflict: ApiError["docConflict"];
+    if (resp.status === 409) {
+      const c = body as { doc_id?: string; current_version?: number; state?: DocState } | undefined;
+      if (c?.state || c?.current_version !== undefined) {
+        docConflict = { docID: c.doc_id, currentVersion: c.current_version, state: c.state };
+      }
+    }
+    throw new ApiError(resp.status, err?.code ?? "unknown", err?.message ?? `HTTP ${resp.status}`, docConflict);
   }
   return body as T;
 }
@@ -123,6 +167,17 @@ function commandBody(kind: string, expectedVersion: number, payload: unknown) {
   return {
     command_kind: kind,
     expected_room_version: expectedVersion,
+    idempotency_key: uuidv7(),
+    issued_at: new Date().toISOString(),
+    payload,
+  };
+}
+
+/** 文档命令信封（RFC-0014 / ADR-0014：镜像房间命令纪律——幂等 + 文档级乐观并发）。 */
+function docCommandBody(kind: DocCommandKind, expectedVersion: number, payload: unknown) {
+  return {
+    command_kind: kind,
+    expected_doc_version: expectedVersion,
     idempotency_key: uuidv7(),
     issued_at: new Date().toISOString(),
     payload,
@@ -220,6 +275,7 @@ export const api = {
     addressedTo: string[] = [],
     replyTo: string | null = null,
     attachments: string[] = [],
+    refs: DocRef[] = [],
   ): Promise<CommandResponse> {
     return post(
       `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
@@ -229,6 +285,8 @@ export const api = {
         addressed_to: addressedTo,
         relations: [],
         ...(attachments.length > 0 ? { attachments } : {}),
+        // RFC-0014 §2.4：分享文档到房间 = 消息携带 doc_ref 描述子（服务端校验存在性）
+        ...(refs.length > 0 ? { refs } : {}),
       }),
     );
   },
@@ -373,5 +431,68 @@ export const api = {
   debugWaves(roomID: string, cursor?: string): Promise<unknown> {
     const q = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
     return request(`/v1/debug/rooms/${encodeURIComponent(roomID)}/waves${q}`);
+  },
+  // ---- RFC-0014 文档面 ----
+  /** 文档列表（§2.8 主页：updated_at 倒序；created_by/status 服务端筛选）。 */
+  listDocs(filter: { createdBy?: string; status?: "active" | "archived" } = {}): Promise<{ docs: DocSummary[] }> {
+    const params = new URLSearchParams();
+    if (filter.createdBy) params.set("created_by", filter.createdBy);
+    if (filter.status) params.set("status", filter.status);
+    const q = params.toString();
+    return request<{ docs: DocSummary[] }>(`/v1/docs${q ? `?${q}` : ""}`);
+  },
+  /** 文档快照（当前态：标题/版本/状态/块清单）。 */
+  getDoc(docID: string): Promise<DocState> {
+    return request<DocState>(`/v1/docs/${encodeURIComponent(docID)}`);
+  },
+  /** 创建文档（create_doc 命令便捷包装；doc_id 服务端分配）。 */
+  createDoc(title: string, initialBlocks?: DocBlock[]): Promise<DocCommandResponse> {
+    return post<DocCommandResponse>(
+      "/v1/docs",
+      docCommandBody("create_doc", 0, {
+        title,
+        ...(initialBlocks && initialBlocks.length > 0 ? { initial_blocks: initialBlocks } : {}),
+      }),
+    );
+  },
+  /** 文档命令统一入口（rename/archive/restore/delete/duplicate 等；409 经 ApiError.docConflict 携带当前态）。 */
+  docCommand(docID: string, kind: DocCommandKind, expectedVersion: number, payload: unknown): Promise<DocCommandResponse> {
+    return post<DocCommandResponse>(
+      `/v1/docs/${encodeURIComponent(docID)}/commands`,
+      docCommandBody(kind, expectedVersion, payload),
+    );
+  },
+  /** 修订批（§2.3：base_version CAS；ops 为一批块操作——编辑器防抖聚合产物）。 */
+  commitDocRevision(docID: string, baseVersion: number, ops: DocOp[], note?: string): Promise<DocCommandResponse> {
+    return post<DocCommandResponse>(
+      `/v1/docs/${encodeURIComponent(docID)}/commands`,
+      docCommandBody("commit_doc_revision", baseVersion, {
+        base_version: baseVersion,
+        ops,
+        ...(note ? { note } : {}),
+      }),
+    );
+  },
+  /** 文档全文检索（FTS5 trigram；CJK ≥3 字子串语义）。 */
+  searchDocs(q: string, limit = 20): Promise<{ hits: DocSearchHit[] }> {
+    const params = new URLSearchParams({ q, limit: String(limit) });
+    return request<{ hits: DocSearchHit[] }>(`/v1/docs/search?${params.toString()}`);
+  },
+  /** 导出 markdown 下载地址（GET 读端点，同源 <a download> 直接可用）。 */
+  exportDocUrl(docID: string): string {
+    return `/v1/docs/${encodeURIComponent(docID)}/export`;
+  },
+  /** §2.4 房间文档附着/解除（房间命令；附着不复制不锁定，重复/未附着 = 幂等空操作）。 */
+  attachDoc(roomID: string, version: number, docID: string): Promise<CommandResponse> {
+    return post(
+      `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
+      commandBody("attach_doc_to_room", version, { doc_id: docID }),
+    );
+  },
+  detachDoc(roomID: string, version: number, docID: string): Promise<CommandResponse> {
+    return post(
+      `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
+      commandBody("detach_doc_from_room", version, { doc_id: docID }),
+    );
   },
 };
