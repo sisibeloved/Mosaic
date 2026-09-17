@@ -654,7 +654,7 @@ export function SettingsPage() {
                     <input
                       type="number"
                       step={0.05}
-                      min={0}
+                      min={0.05}
                       max={0.9}
                       value={gateCooldown ?? ""}
                       disabled={gateCooldown == null}
@@ -673,7 +673,7 @@ export function SettingsPage() {
                       gateThreshold < 0.05 ||
                       gateThreshold > 0.95 ||
                       gateCooldown == null ||
-                      gateCooldown < 0 ||
+                      gateCooldown < 0.05 ||
                       gateCooldown > 0.9
                     }
                     onClick={() => void onSaveRunTimeout()}

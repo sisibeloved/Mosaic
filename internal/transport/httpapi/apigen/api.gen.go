@@ -1372,7 +1372,7 @@ type SettingsDoc struct {
 	// RunTimeoutSeconds 独立任务执行时长上限（秒；缺省 600；长于单轮 180s——"长任务"服务面）
 	RunTimeoutSeconds int `json:"run_timeout_seconds"`
 
-	// SpeakGateCooldownPenalty 上波发言者的资格分扣减（缺省 0.20——软冷却；@点名豁免不受限）
+	// SpeakGateCooldownPenalty 上波发言者的资格分扣减（缺省 0.20，可调 0.05..0.90——软冷却；@点名豁免不受限）
 	SpeakGateCooldownPenalty *float32 `json:"speak_gate_cooldown_penalty,omitempty"`
 
 	// SpeakGateOff 发言资格闸关闭开关（RFC-0012 附录 K）：false（缺省）= 闸开（speak 意图须过资格分阈值，@点名/定向豁免）；true = 关闸（意愿即放行）

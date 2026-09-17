@@ -1135,7 +1135,7 @@ export interface components {
             speak_gate_off?: boolean;
             /** @description 发言资格分阈值（缺省 0.30；资格分 = relevance×0.6 + urgency×0.4，低于阈值被闸并留痕） */
             speak_gate_threshold?: number;
-            /** @description 上波发言者的资格分扣减（缺省 0.20——软冷却；@点名豁免不受限） */
+            /** @description 上波发言者的资格分扣减（缺省 0.20，可调 0.05..0.90——软冷却；@点名豁免不受限） */
             speak_gate_cooldown_penalty?: number;
         };
         /** @description 监控运行态（M4-5）：三水位（观察/处理/送达）与失败分类分开——源失败不动水位、处理失败可重试、no-change 去重计数。 */

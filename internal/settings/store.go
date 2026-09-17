@@ -47,18 +47,21 @@ func (d Document) WithDefaults() Document {
 	if d.SpeakGateThresh <= 0 {
 		d.SpeakGateThresh = DefaultSpeakGateThreshold
 	}
-	if d.SpeakGateCooldown < 0 {
+	if d.SpeakGateCooldown <= 0 {
 		d.SpeakGateCooldown = DefaultSpeakGateCooldown
 	}
 	return d
 }
 
-// 发言资格闸缺省与界限（附录 K：默认保守中位，真机沉默率数据校准前不动）。
+// 发言资格闸缺省与界限（附录 K：默认保守中位，真机沉默率数据校准前不动；
+// cooldown 下限 0.05 与 threshold 对称——显式 0 与"未设置"零值不可区分，
+// 缺省回填优先，"几乎无冷却"取最小档）。
 const (
 	DefaultSpeakGateThreshold = 0.30
 	DefaultSpeakGateCooldown  = 0.20
 	MinSpeakGateThreshold     = 0.05
 	MaxSpeakGateThreshold     = 0.95
+	MinSpeakGateCooldown      = 0.05
 	MaxSpeakGateCooldown      = 0.90
 )
 
@@ -154,8 +157,8 @@ func ValidateSpeakGate(threshold, cooldown float64) error {
 	if threshold < MinSpeakGateThreshold || threshold > MaxSpeakGateThreshold {
 		return fmt.Errorf("speak_gate_threshold 须在 %.2f..%.2f", MinSpeakGateThreshold, MaxSpeakGateThreshold)
 	}
-	if cooldown < 0 || cooldown > MaxSpeakGateCooldown {
-		return fmt.Errorf("speak_gate_cooldown_penalty 须在 0..%.2f", MaxSpeakGateCooldown)
+	if cooldown < MinSpeakGateCooldown || cooldown > MaxSpeakGateCooldown {
+		return fmt.Errorf("speak_gate_cooldown_penalty 须在 %.2f..%.2f", MinSpeakGateCooldown, MaxSpeakGateCooldown)
 	}
 	return nil
 }

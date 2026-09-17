@@ -156,7 +156,7 @@ func (s *server) UpdateSystemSettings(w http.ResponseWriter, r *http.Request) {
 	if threshold <= 0 {
 		threshold = settings.DefaultSpeakGateThreshold
 	}
-	if cooldown < 0 {
+	if cooldown <= 0 {
 		cooldown = settings.DefaultSpeakGateCooldown
 	}
 	if err := s.deps.Settings.UpdateRunTimeoutSeconds(req.RunTimeoutSeconds); err != nil {

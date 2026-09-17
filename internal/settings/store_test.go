@@ -17,6 +17,43 @@ func TestStoreDefaultsAndRoundtrip(t *testing.T) {
 	if got := s.Snapshot().RunTimeoutSeconds; got != DefaultRunTimeoutSeconds {
 		t.Fatalf("缺省 run_timeout = %d, want %d", got, DefaultRunTimeoutSeconds)
 	}
+	// 附录 K：旧设置文件（无 speak gate 字段）零值回填缺省束——cooldown 的
+	// <=0 回填不可写成 <0（2026-09-17 真机实证：旧文件迁移后冷却恒 0）。
+	doc := s.Snapshot()
+	if doc.SpeakGateOff {
+		t.Fatal("缺省 speak_gate_off 应为 false（闸开）")
+	}
+	if doc.SpeakGateThresh != DefaultSpeakGateThreshold {
+		t.Fatalf("缺省 speak_gate_threshold = %v, want %v", doc.SpeakGateThresh, DefaultSpeakGateThreshold)
+	}
+	if doc.SpeakGateCooldown != DefaultSpeakGateCooldown {
+		t.Fatalf("缺省 speak_gate_cooldown_penalty = %v, want %v", doc.SpeakGateCooldown, DefaultSpeakGateCooldown)
+	}
+	// 旧文档（JSON 无三字段）读入同样回填——迁移无歧义。
+	path2 := filepath.Join(t.TempDir(), "old-settings.json")
+	if err := os.WriteFile(path2, []byte(`{"run_timeout_seconds":300}`), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	sOld, err := Open(path2)
+	if err != nil {
+		t.Fatalf("open old: %v", err)
+	}
+	if d := sOld.Snapshot(); d.SpeakGateThresh != DefaultSpeakGateThreshold || d.SpeakGateCooldown != DefaultSpeakGateCooldown || d.SpeakGateOff {
+		t.Fatalf("旧文档回填缺省束失败：%+v", d)
+	}
+	if err := sOld.UpdateSpeakGate(true, 0.5, 0.4); err != nil {
+		t.Fatalf("update gate: %v", err)
+	}
+	if d := sOld.Snapshot(); !d.SpeakGateOff || d.SpeakGateThresh != 0.5 || d.SpeakGateCooldown != 0.4 {
+		t.Fatalf("UpdateSpeakGate 未生效：%+v", d)
+	}
+	// 值域：cooldown 0 与 threshold 越界同拒（0.05 对称下限）。
+	if err := sOld.UpdateSpeakGate(false, 0.3, 0); err == nil {
+		t.Fatal("cooldown=0 应拒绝（0.05 下限——零值歧义由缺省回填承担）")
+	}
+	if err := sOld.UpdateSpeakGate(false, 1.0, 0.2); err == nil {
+		t.Fatal("threshold=1.0 应拒绝")
+	}
 	if got := s.RunTimeout(); got != 10*time.Minute {
 		t.Fatalf("RunTimeout = %v, want 10m", got)
 	}
