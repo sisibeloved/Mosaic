@@ -34,6 +34,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/attach"
 	"github.com/sisibeloved/Mosaic/internal/backup"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
+	"github.com/sisibeloved/Mosaic/internal/doc"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/room"
@@ -195,6 +196,24 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		store.Close()
 		return nil, fmt.Errorf("app: register echo: %w", err)
 	}
+
+	// RFC-0014 文档面：per-doc 事件流与房间日志并列（同一 SQLite 库、不同表）。
+	// doc_id 服务端分配（doc_<12hex> 形态 Schema 锁定——6 随机字节 hex，
+	// 与 newID 的时间有序形态不同源）。
+	docSvc := doc.NewService(doc.Config{
+		Store:    store,
+		Reader:   store,
+		Searcher: store,
+		Lister:   store,
+		Clock:    clock,
+		NewID:    newID,
+		NewDocID: func() string {
+			var b [6]byte
+			_, _ = rand.Read(b[:])
+			return "doc_" + hex.EncodeToString(b[:])
+		},
+		Tenant: "ten_local",
+	})
 	// 受控执行桩（-dev 门）：M4-1 ST 与本地验证的 TaskRuns 能力面；生产装配
 	//（无 -dev）不注册、不入席——能力面如实。
 	if opts.Dev {
@@ -270,6 +289,8 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Attachments:      attachStore,
 		Settings:         settingsStore,
 		Monitors:         monitorMgr,
+		DocSVC:           docSvc,
+		DocReader:        store, // doc:{id} 频道 SSE 追平读路径
 		Diagnostics: diagnosticsBundle(opts.DataDir,
 			func() (int, error) { return countRooms(store) },
 			func() int {
@@ -309,6 +330,16 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		deps.Authority = ln.Addr().String()
 	}
 	mux := httpapi.New(deps)
+
+	// doc outbox 分发（RFC-0014 §2.6）：独立于房间分发器（不同表），消费者只有
+	// doc:{id} SSE 频道——引擎不消费 doc 事件（人类编辑不触发反应波，§2.7 裁定）。
+	// 不等宿主扫描：文档事件分发与引擎就绪无依赖。
+	go func() {
+		docDispatcher := outbox.NewDispatcher(sqlite.DocOutboxStore{Store: store}, []outbox.Consumer{
+			httpapi.DocHubConsumer(hub),
+		}, 20*time.Millisecond).WithLogger(logger)
+		docDispatcher.Run(ctx)
+	}()
 
 	// 房间引擎 + 提交后分发：echo 恒在（conformance 基线）；宿主扫描完成后，
 	// 已启用的真实适配器动态注册并加入座位；此后周期 resync（二轮审校 #1）。

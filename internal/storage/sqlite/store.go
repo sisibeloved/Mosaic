@@ -1164,6 +1164,67 @@ func (s *Store) DeleteDoc(ctx context.Context, docID string) error {
 	return tx.Commit()
 }
 
+// PendingDoc doc_outbox 待分发条目（房间 Pending 先例平移：按提交序取未分发）。
+// Entry 结构复用：RoomID 字段承载 doc_id、GlobalPos 承载 doc version（version 即
+// doc:{id} 频道 SSE cursor——分发消费者据此编码 position）。
+func (s *Store) PendingDoc(ctx context.Context, limit int) ([]outbox.Entry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, doc_id, event_id, version, envelope FROM doc_outbox
+		WHERE dispatched_at IS NULL ORDER BY id LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: query doc outbox: %w", err)
+	}
+	defer rows.Close()
+	var entries []outbox.Entry
+	for rows.Next() {
+		var e outbox.Entry
+		var raw string
+		if err := rows.Scan(&e.ID, &e.RoomID, &e.EventID, &e.GlobalPos, &raw); err != nil {
+			return nil, fmt.Errorf("sqlite: scan doc outbox: %w", err)
+		}
+		e.Envelope = []byte(raw)
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// MarkDocDispatched doc_outbox 条目分发完成标记（幂等，房间 MarkDispatched 先例）。
+func (s *Store) MarkDocDispatched(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE doc_outbox SET dispatched_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id IN ("+
+			strings.Join(placeholders, ",")+")", args...)
+	if err != nil {
+		return fmt.Errorf("sqlite: mark doc dispatched: %w", err)
+	}
+	return nil
+}
+
+// DocOutboxStore doc_outbox → outbox.Store 端口适配（doc 分发器接线用；
+// 条目字段语义见 PendingDoc 注记）。
+type DocOutboxStore struct{ Store *Store }
+
+// Pending 实现 outbox.Store。
+func (a DocOutboxStore) Pending(ctx context.Context, limit int) ([]outbox.Entry, error) {
+	return a.Store.PendingDoc(ctx, limit)
+}
+
+// MarkDispatched 实现 outbox.Store。
+func (a DocOutboxStore) MarkDispatched(ctx context.Context, ids []int64) error {
+	return a.Store.MarkDocDispatched(ctx, ids)
+}
+
 // docFTSFieldsOf 文档信封 → 索引字段（标题 / 本批 ops 文本）。
 func docFTSFieldsOf(env protocol.DocEnvelope) (title, body string, ok bool) {
 	switch env.Type {
@@ -1243,6 +1304,54 @@ func (s *Store) SearchDocs(ctx context.Context, query string, limit int) ([]doc.
 		hits = append(hits, h)
 	}
 	return hits, rows.Err()
+}
+
+// ListDocs 实现 doc.DocLister（RFC-0014 §2.8 文档主页）：每文档聚合成摘要行——
+// 标题取最新 created/renamed、状态取最新生命周期事件、更新者/时间取最新版本行。
+// createdBy 空串 = 全部；删除级联后 doc_events 无行自然不出现。updated_at 倒序。
+func (s *Store) ListDocs(ctx context.Context, createdBy string) ([]doc.DocSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			d.doc_id,
+			COALESCE((SELECT json_extract(e.envelope, '$.payload.title') FROM doc_events e
+				WHERE e.doc_id = d.doc_id AND e.type IN ('doc.created', 'doc.renamed')
+				ORDER BY e.version DESC LIMIT 1), '') AS title,
+			(SELECT MAX(e.version) FROM doc_events e WHERE e.doc_id = d.doc_id) AS version,
+			COALESCE((SELECT CASE WHEN e.type = 'doc.archived' THEN 'archived' ELSE 'active' END
+				FROM doc_events e
+				WHERE e.doc_id = d.doc_id AND e.type IN ('doc.archived', 'doc.restored')
+				ORDER BY e.version DESC LIMIT 1), 'active') AS status,
+			COALESCE((SELECT json_extract(e.envelope, '$.payload.created_by') FROM doc_events e
+				WHERE e.doc_id = d.doc_id AND e.type = 'doc.created'
+				ORDER BY e.version ASC LIMIT 1), '') AS created_by,
+			COALESCE((SELECT e.occurred_at FROM doc_events e
+				WHERE e.doc_id = d.doc_id AND e.type = 'doc.created'
+				ORDER BY e.version ASC LIMIT 1), '') AS created_at,
+			COALESCE((SELECT json_extract(e.envelope, '$.actor.participant_id') FROM doc_events e
+				WHERE e.doc_id = d.doc_id
+				ORDER BY e.version DESC LIMIT 1), '') AS updated_by,
+			COALESCE((SELECT e.occurred_at FROM doc_events e
+				WHERE e.doc_id = d.doc_id
+				ORDER BY e.version DESC LIMIT 1), '') AS updated_at
+		FROM (SELECT DISTINCT doc_id FROM doc_events) d
+		WHERE (? = '' OR COALESCE((SELECT json_extract(e.envelope, '$.payload.created_by') FROM doc_events e
+			WHERE e.doc_id = d.doc_id AND e.type = 'doc.created'
+			ORDER BY e.version ASC LIMIT 1), '') = ?)
+		ORDER BY updated_at DESC, d.doc_id ASC`, createdBy, createdBy)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list docs: %w", err)
+	}
+	defer rows.Close()
+	out := []doc.DocSummary{}
+	for rows.Next() {
+		var sum doc.DocSummary
+		if err := rows.Scan(&sum.DocID, &sum.Title, &sum.Version, &sum.Status,
+			&sum.CreatedBy, &sum.CreatedAt, &sum.UpdatedBy, &sum.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("sqlite: scan doc summary: %w", err)
+		}
+		out = append(out, sum)
+	}
+	return out, rows.Err()
 }
 
 // ensureDocFTS 索引自愈校验：FTS 行数 != 可索引事件数（v4 前旧库/异常缺口）即

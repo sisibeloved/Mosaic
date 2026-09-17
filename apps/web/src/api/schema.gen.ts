@@ -193,6 +193,136 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/docs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 文档列表（RFC-0014 §2.8 文档主页）
+         * @description 全部文档摘要（标题/当前版本/生命周期状态/创建者/最近更新时间与更新者），
+         *     updated_at 倒序。created_by = 创建者筛选（"我/各 agent"）；status =
+         *     active/archived 筛选。删除的文档随级联清除不出现。只读端点：与房间读面
+         *     一致，不设 owner token 门（见本文档顶部形态约束）。
+         */
+        get: operations["listDocs"];
+        put?: never;
+        /**
+         * 创建文档（create_doc 命令；doc_id 服务端分配）
+         * @description 创建 = 命令上行（与房间创建同纪律：集合端点 POST = create_doc 命令便捷包装，
+         *     其余变更走 /v1/docs/{doc_id}/commands）。initial_blocks 可选——携带时同事务
+         *     追加首条 revision（空 block_id 由服务端分配）。
+         */
+        post: operations["createDoc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/docs/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 文档全文检索（FTS5 trigram，标题+正文派生索引）
+         * @description RFC-0014 §2.8 全文搜索：复用 room 检索同型设施（FTS5 trigram——CJK 子串
+         *     ≥3 字与英文词均可用；<3 字回退子串匹配）。每文档取最新命中版本，
+         *     version 供编辑器/卡片跳转定位。
+         */
+        get: operations["searchDocs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/docs/{doc_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 文档快照（当前态：标题/版本/状态/块清单——折叠自 per-doc 事件流） */
+        get: operations["getDoc"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/docs/{doc_id}/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 提交文档命令（rename_doc / commit_doc_revision / archive_doc / restore_doc / delete_doc / duplicate_doc）
+         * @description 修订批语义（RFC-0014 §2.3）：ops 为一批块操作，版本冲突 409 响应含
+         *     current_version 与当前态 state——客户端在新态上重放本地未提交 ops。
+         *     归档为只读态：rename/revision/archive 拒绝（doc_archived），duplicate/export 允许。
+         */
+        post: operations["submitDocCommand"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/docs/{doc_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * SSE 订阅文档事件流（doc:{id} 频道，cursor = doc version）
+         * @description 响应为长流 `text/event-stream`，语义与房间订阅一致：游标 `?cursor=` 或
+         *     `Last-Event-ID`（重连）；先订阅后追平，position 去重兜底；慢消费者/追平失败
+         *     发 `resync_required` 具名事件（data 含 reason）后断流，客户端携最后 id 重连
+         *     或走快照。房间流不冗余转发文档事件——编辑器与卡片直接订 doc 频道。
+         */
+        get: operations["subscribeDocEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/docs/{doc_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 导出 markdown（.md；归档可导出，删除后 404） */
+        get: operations["exportDoc"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/agents": {
         parameters: {
             query?: never;
@@ -667,6 +797,126 @@ export interface components {
             /** Format: int64 */
             room_version: number;
             replayed: boolean;
+        };
+        /**
+         * @description 文档命令信封（RFC-0014 / ADR-0014：镜像房间命令纪律——幂等 + 文档级乐观并发）。
+         *     payload 按 command_kind 严格校验（未知字段拒绝）：
+         *     create_doc → {title, format?, initial_blocks?, anchor_message_id?}（仅 POST /v1/docs）；
+         *     rename_doc → {title}；
+         *     commit_doc_revision → {base_version?, ops[], note?}——ops 为一批块操作
+         *     （insert_after/append 携带 block，replace 携带 text，delete 仅锚点 block_id；
+         *     插入块的空 block_id 由服务端分配）；
+         *     archive_doc / restore_doc → 空 payload；
+         *     delete_doc → {reason}（墓碑 + 内容级联清除，不可逆）；
+         *     duplicate_doc → {title?}（缺省 = 原标题 + "（副本）"）。
+         */
+        DocCommand: {
+            /** @enum {string} */
+            command_kind: "create_doc" | "rename_doc" | "commit_doc_revision" | "archive_doc" | "restore_doc" | "delete_doc" | "duplicate_doc";
+            /** @description 文档级乐观并发期望（create_doc 恒 0；duplicate_doc 为源文档版本断言） */
+            expected_doc_version: number;
+            /** @description UUIDv7（服务端按 tenant+key+kind 去重；同键异指纹 409） */
+            idempotency_key: string;
+            /** Format: date-time */
+            issued_at: string;
+            payload: Record<string, never>;
+        };
+        DocCommandResponse: {
+            doc_id: string;
+            event_id: string;
+            /** Format: int64 */
+            doc_version: number;
+            replayed: boolean;
+        };
+        /** @description 409 响应体：error 恒在；version_conflict 时另含 doc_id/current_version/state（当前态摘要——RFC-0014 §2.3 客户端在新态上重放未提交 ops）。 */
+        DocVersionConflict: {
+            error: {
+                /** @enum {string} */
+                code: "version_conflict" | "idempotency_conflict" | "doc_archived";
+                message: string;
+            };
+            doc_id?: string;
+            /** Format: int64 */
+            current_version?: number;
+            state?: components["schemas"]["DocState"];
+        };
+        DocList: {
+            docs: components["schemas"]["DocSummary"][];
+        };
+        /** @description 文档主页行（RFC-0014 §2.8：updated_at 倒序）。 */
+        DocSummary: {
+            doc_id: string;
+            /** @description 最新 doc.created/doc.renamed 投影 */
+            title: string;
+            /** Format: int64 */
+            version: number;
+            /** @enum {string} */
+            status: "active" | "archived";
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
+            /** @description 最新事件的 actor（人或 agent） */
+            updated_by: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        DocBlock: {
+            /** @description 稳定块 ID（锚定操作/冲突重放/卡片摘要的基础） */
+            block_id: string;
+            /** @enum {string} */
+            type: "heading" | "paragraph" | "list" | "code" | "quote" | "hr";
+            /** @description markdown 行内内容 */
+            text: string;
+        };
+        /** @description 文档当前态（派生态，权威为 per-doc 事件流；GET /v1/docs/{doc_id} 快照）。 */
+        DocState: {
+            doc_id: string;
+            title: string;
+            /** @enum {string} */
+            format: "markdown";
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: int64 */
+            version: number;
+            /** @enum {string} */
+            status: "active" | "archived";
+            blocks: components["schemas"]["DocBlock"][];
+            /** Format: date-time */
+            updated_at: string;
+            updated_by: string;
+        };
+        /** @description 文档事件对外视图（同房间 EventView 纪律：无 tenant_id/version，opaque position 替代；position = doc version 游标）。 */
+        DocEventView: {
+            event_id: string;
+            doc_id: string;
+            type: string;
+            schema_version: number;
+            /** Format: date-time */
+            occurred_at: string;
+            actor: {
+                participant_id: string;
+                /** @enum {string} */
+                kind: "human" | "agent" | "system";
+            };
+            causation_id?: null | string;
+            correlation_id?: null | string;
+            payload: Record<string, never>;
+            /** @description opaque cursor（续传位点，= doc version） */
+            position: string;
+        };
+        /** @description 文档检索命中（每文档取最新命中版本；version 供编辑器/卡片跳转定位）。 */
+        DocSearchHit: {
+            doc_id: string;
+            event_id: string;
+            /** Format: int64 */
+            version: number;
+            actor: string;
+            title: string;
+            /** @description 命中文本（索引行全文，客户端自行截断展示） */
+            body: string;
+            /** Format: date-time */
+            occurred_at: string;
         };
         Error: {
             error: {
@@ -1268,6 +1518,24 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description 版本冲突（version_conflict——含 current_version 与当前态 state，客户端在新态上重放本地未提交 ops，RFC-0014 §2.3）/ 幂等键指纹冲突（idempotency_conflict）/ 归档只读（doc_archived） */
+        DocConflict: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["DocVersionConflict"];
+            };
+        };
+        /** @description 文档不存在（doc_not_found——未创建或已删除级联清除） */
+        DocNotFound: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description 房间或条目不存在（room_not_found / not_found） */
         NotFound: {
             headers: {
@@ -1316,6 +1584,7 @@ export interface components {
     };
     parameters: {
         RoomID: string;
+        DocID: string;
         /** @description 注册表唯一 ID（含路径，URL 编码传递） */
         ExecutableID: string;
     };
@@ -1597,6 +1866,213 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             500: components["responses"]["Internal"];
+        };
+    };
+    listDocs: {
+        parameters: {
+            query?: {
+                /** @description 创建者筛选（participant_id；缺省 = 全部） */
+                created_by?: string;
+                /** @description 生命周期状态筛选（缺省 = 全部） */
+                status?: "active" | "archived";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 文档列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocList"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            500: components["responses"]["Internal"];
+        };
+    };
+    createDoc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "command_kind": "create_doc",
+                 *       "expected_doc_version": 0,
+                 *       "idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4da001",
+                 *       "issued_at": "2026-09-16T09:30:00.000Z",
+                 *       "payload": {
+                 *         "title": "第一个文档",
+                 *         "format": "markdown",
+                 *         "initial_blocks": [
+                 *           {
+                 *             "type": "paragraph",
+                 *             "text": "正文第一段"
+                 *           }
+                 *         ]
+                 *       }
+                 *     }
+                 */
+                "application/json": components["schemas"]["DocCommand"];
+            };
+        };
+        responses: {
+            /** @description 命令受理（含幂等回放） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocCommandResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            409: components["responses"]["DocConflict"];
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+        };
+    };
+    searchDocs: {
+        parameters: {
+            query: {
+                /** @description 检索词（子串语义） */
+                q: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 命中列表（最新命中版本在前） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        hits: components["schemas"]["DocSearchHit"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            500: components["responses"]["Internal"];
+        };
+    };
+    getDoc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                doc_id: components["parameters"]["DocID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 文档当前态 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocState"];
+                };
+            };
+            404: components["responses"]["DocNotFound"];
+            500: components["responses"]["Internal"];
+        };
+    };
+    submitDocCommand: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                doc_id: components["parameters"]["DocID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DocCommand"];
+            };
+        };
+        responses: {
+            /** @description 命令受理（含幂等回放） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocCommandResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["DocNotFound"];
+            409: components["responses"]["DocConflict"];
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+        };
+    };
+    subscribeDocEvents: {
+        parameters: {
+            query?: {
+                /** @description opaque 游标（空 = 从头）；与 Last-Event-ID 同义，query 优先 */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                doc_id: components["parameters"]["DocID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 事件流（SSE） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+        };
+    };
+    exportDoc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                doc_id: components["parameters"]["DocID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description markdown 文本（标题作 H1，块依序排列） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/markdown": string;
+                };
+            };
+            404: components["responses"]["DocNotFound"];
         };
     };
     listAgents: {

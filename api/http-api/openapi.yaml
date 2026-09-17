@@ -323,6 +323,206 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/Internal" }
+  /v1/docs:
+    get:
+      operationId: listDocs
+      summary: 文档列表（RFC-0014 §2.8 文档主页）
+      description: |
+        全部文档摘要（标题/当前版本/生命周期状态/创建者/最近更新时间与更新者），
+        updated_at 倒序。created_by = 创建者筛选（"我/各 agent"）；status =
+        active/archived 筛选。删除的文档随级联清除不出现。只读端点：与房间读面
+        一致，不设 owner token 门（见本文档顶部形态约束）。
+      parameters:
+        - name: created_by
+          in: query
+          required: false
+          schema: { type: string }
+          description: 创建者筛选（participant_id；缺省 = 全部）
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [active, archived] }
+          description: 生命周期状态筛选（缺省 = 全部）
+      responses:
+        "200":
+          description: 文档列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocList"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      operationId: createDoc
+      summary: 创建文档（create_doc 命令；doc_id 服务端分配）
+      description: |
+        创建 = 命令上行（与房间创建同纪律：集合端点 POST = create_doc 命令便捷包装，
+        其余变更走 /v1/docs/{doc_id}/commands）。initial_blocks 可选——携带时同事务
+        追加首条 revision（空 block_id 由服务端分配）。
+      security: [{ OwnerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DocCommand"
+            example:
+              command_kind: create_doc
+              expected_doc_version: 0
+              idempotency_key: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4da001"
+              issued_at: "2026-09-16T09:30:00.000Z"
+              payload:
+                title: 第一个文档
+                format: markdown
+                initial_blocks:
+                  - { type: paragraph, text: 正文第一段 }
+      responses:
+        "200":
+          description: 命令受理（含幂等回放）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocCommandResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/DocConflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+  /v1/docs/search:
+    get:
+      operationId: searchDocs
+      summary: 文档全文检索（FTS5 trigram，标题+正文派生索引）
+      description: |
+        RFC-0014 §2.8 全文搜索：复用 room 检索同型设施（FTS5 trigram——CJK 子串
+        ≥3 字与英文词均可用；<3 字回退子串匹配）。每文档取最新命中版本，
+        version 供编辑器/卡片跳转定位。
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+          description: 检索词（子串语义）
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200":
+          description: 命中列表（最新命中版本在前）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hits]
+                properties:
+                  hits:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DocSearchHit"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /v1/docs/{doc_id}:
+    get:
+      operationId: getDoc
+      summary: 文档快照（当前态：标题/版本/状态/块清单——折叠自 per-doc 事件流）
+      parameters:
+        - $ref: "#/components/parameters/DocID"
+      responses:
+        "200":
+          description: 文档当前态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocState"
+        "404": { $ref: "#/components/responses/DocNotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /v1/docs/{doc_id}/commands:
+    post:
+      operationId: submitDocCommand
+      summary: 提交文档命令（rename_doc / commit_doc_revision / archive_doc / restore_doc / delete_doc / duplicate_doc）
+      description: |
+        修订批语义（RFC-0014 §2.3）：ops 为一批块操作，版本冲突 409 响应含
+        current_version 与当前态 state——客户端在新态上重放本地未提交 ops。
+        归档为只读态：rename/revision/archive 拒绝（doc_archived），duplicate/export 允许。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - $ref: "#/components/parameters/DocID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DocCommand"
+            examples:
+              commit_doc_revision:
+                value:
+                  command_kind: commit_doc_revision
+                  expected_doc_version: 1
+                  idempotency_key: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4da002"
+                  issued_at: "2026-09-16T09:31:00.000Z"
+                  payload:
+                    ops:
+                      - { op: append, block_id: null, block: { type: paragraph, text: 新增一段 } }
+                    note: 首笔修订
+              rename_doc:
+                value:
+                  command_kind: rename_doc
+                  expected_doc_version: 2
+                  idempotency_key: "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4da003"
+                  issued_at: "2026-09-16T09:32:00.000Z"
+                  payload:
+                    title: 新标题
+      responses:
+        "200":
+          description: 命令受理（含幂等回放）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocCommandResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/DocNotFound" }
+        "409": { $ref: "#/components/responses/DocConflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+  /v1/docs/{doc_id}/events:
+    get:
+      operationId: subscribeDocEvents
+      summary: SSE 订阅文档事件流（doc:{id} 频道，cursor = doc version）
+      description: |
+        响应为长流 `text/event-stream`，语义与房间订阅一致：游标 `?cursor=` 或
+        `Last-Event-ID`（重连）；先订阅后追平，position 去重兜底；慢消费者/追平失败
+        发 `resync_required` 具名事件（data 含 reason）后断流，客户端携最后 id 重连
+        或走快照。房间流不冗余转发文档事件——编辑器与卡片直接订 doc 频道。
+      parameters:
+        - $ref: "#/components/parameters/DocID"
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+          description: opaque 游标（空 = 从头）；与 Last-Event-ID 同义，query 优先
+      responses:
+        "200":
+          description: 事件流（SSE）
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /v1/docs/{doc_id}/export:
+    get:
+      operationId: exportDoc
+      summary: 导出 markdown（.md；归档可导出，删除后 404）
+      parameters:
+        - $ref: "#/components/parameters/DocID"
+      responses:
+        "200":
+          description: markdown 文本（标题作 H1，块依序排列）
+          content:
+            text/markdown:
+              schema:
+                type: string
+        "404": { $ref: "#/components/responses/DocNotFound" }
   /v1/agents:
     get:
       operationId: listAgents
@@ -791,6 +991,11 @@ components:
       in: path
       required: true
       schema: { type: string, pattern: "^room_[0-9A-Za-z_-]+$" }
+    DocID:
+      name: doc_id
+      in: path
+      required: true
+      schema: { type: string, pattern: "^doc_[0-9a-f]{12}$" }
     ExecutableID:
       name: id
       in: path
@@ -815,6 +1020,16 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
       description: 版本冲突 / 幂等键指纹冲突（version_conflict / idempotency_conflict）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    DocConflict:
+      description: 版本冲突（version_conflict——含 current_version 与当前态 state，客户端在新态上重放本地未提交 ops，RFC-0014 §2.3）/ 幂等键指纹冲突（idempotency_conflict）/ 归档只读（doc_archived）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/DocVersionConflict" }
+    DocNotFound:
+      description: 文档不存在（doc_not_found——未创建或已删除级联清除）
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -1002,6 +1217,150 @@ components:
         event_id: { type: string }
         room_version: { type: integer, format: int64 }
         replayed: { type: boolean }
+    DocCommand:
+      type: object
+      required: [command_kind, expected_doc_version, idempotency_key, issued_at, payload]
+      additionalProperties: false
+      description: |
+        文档命令信封（RFC-0014 / ADR-0014：镜像房间命令纪律——幂等 + 文档级乐观并发）。
+        payload 按 command_kind 严格校验（未知字段拒绝）：
+        create_doc → {title, format?, initial_blocks?, anchor_message_id?}（仅 POST /v1/docs）；
+        rename_doc → {title}；
+        commit_doc_revision → {base_version?, ops[], note?}——ops 为一批块操作
+        （insert_after/append 携带 block，replace 携带 text，delete 仅锚点 block_id；
+        插入块的空 block_id 由服务端分配）；
+        archive_doc / restore_doc → 空 payload；
+        delete_doc → {reason}（墓碑 + 内容级联清除，不可逆）；
+        duplicate_doc → {title?}（缺省 = 原标题 + "（副本）"）。
+      properties:
+        command_kind:
+          type: string
+          enum: [create_doc, rename_doc, commit_doc_revision, archive_doc, restore_doc, delete_doc, duplicate_doc]
+        expected_doc_version:
+          type: integer
+          minimum: 0
+          description: 文档级乐观并发期望（create_doc 恒 0；duplicate_doc 为源文档版本断言）
+        idempotency_key:
+          type: string
+          pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          description: UUIDv7（服务端按 tenant+key+kind 去重；同键异指纹 409）
+        issued_at:
+          type: string
+          format: date-time
+        payload:
+          type: object
+    DocCommandResponse:
+      type: object
+      required: [doc_id, event_id, doc_version, replayed]
+      properties:
+        doc_id: { type: string }
+        event_id: { type: string }
+        doc_version: { type: integer, format: int64 }
+        replayed: { type: boolean }
+    DocVersionConflict:
+      type: object
+      required: [error]
+      description: 409 响应体：error 恒在；version_conflict 时另含 doc_id/current_version/state（当前态摘要——RFC-0014 §2.3 客户端在新态上重放未提交 ops）。
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [version_conflict, idempotency_conflict, doc_archived]
+            message: { type: string }
+        doc_id: { type: string }
+        current_version: { type: integer, format: int64 }
+        state:
+          $ref: "#/components/schemas/DocState"
+    DocList:
+      type: object
+      required: [docs]
+      properties:
+        docs:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocSummary"
+    DocSummary:
+      type: object
+      required: [doc_id, title, version, status, created_by, created_at, updated_by, updated_at]
+      description: 文档主页行（RFC-0014 §2.8：updated_at 倒序）。
+      properties:
+        doc_id: { type: string }
+        title: { type: string, description: 最新 doc.created/doc.renamed 投影 }
+        version: { type: integer, format: int64 }
+        status: { type: string, enum: [active, archived] }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_by: { type: string, description: 最新事件的 actor（人或 agent） }
+        updated_at: { type: string, format: date-time }
+    DocBlock:
+      type: object
+      required: [block_id, type, text]
+      properties:
+        block_id: { type: string, description: 稳定块 ID（锚定操作/冲突重放/卡片摘要的基础） }
+        type: { type: string, enum: [heading, paragraph, list, code, quote, hr] }
+        text: { type: string, description: markdown 行内内容 }
+    DocState:
+      type: object
+      required: [doc_id, title, format, created_by, created_at, version, status, blocks, updated_at, updated_by]
+      description: 文档当前态（派生态，权威为 per-doc 事件流；GET /v1/docs/{doc_id} 快照）。
+      properties:
+        doc_id: { type: string }
+        title: { type: string }
+        format: { type: string, enum: [markdown] }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        version: { type: integer, format: int64 }
+        status: { type: string, enum: [active, archived] }
+        blocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocBlock"
+        updated_at: { type: string, format: date-time }
+        updated_by: { type: string }
+    DocEventView:
+      type: object
+      required: [event_id, doc_id, type, schema_version, occurred_at, actor, payload, position]
+      description: 文档事件对外视图（同房间 EventView 纪律：无 tenant_id/version，opaque position 替代；position = doc version 游标）。
+      properties:
+        event_id: { type: string }
+        doc_id: { type: string }
+        type: { type: string }
+        schema_version: { type: integer }
+        occurred_at: { type: string, format: date-time }
+        actor:
+          type: object
+          required: [participant_id, kind]
+          properties:
+            participant_id: { type: string }
+            kind: { type: string, enum: [human, agent, system] }
+        causation_id:
+          oneOf:
+            - type: "null"
+            - type: string
+        correlation_id:
+          oneOf:
+            - type: "null"
+            - type: string
+        payload:
+          type: object
+        position:
+          type: string
+          description: opaque cursor（续传位点，= doc version）
+    DocSearchHit:
+      type: object
+      required: [doc_id, event_id, version, actor, title, body, occurred_at]
+      description: 文档检索命中（每文档取最新命中版本；version 供编辑器/卡片跳转定位）。
+      properties:
+        doc_id: { type: string }
+        event_id: { type: string }
+        version: { type: integer, format: int64 }
+        actor: { type: string }
+        title: { type: string }
+        body: { type: string, description: 命中文本（索引行全文，客户端自行截断展示） }
+        occurred_at: { type: string, format: date-time }
     Error:
       type: object
       required: [error]

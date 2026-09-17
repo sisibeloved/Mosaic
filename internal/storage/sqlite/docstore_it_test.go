@@ -7,6 +7,7 @@ package sqlite
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -339,5 +340,154 @@ func TestDocDeleteCascade_IT(t *testing.T) {
 	// 全文检索不再命中已删文档
 	if hits, _ := store.SearchDocs(ctx, "待删文档", 20); len(hits) != 0 {
 		t.Fatalf("已删文档不得命中 = %+v", hits)
+	}
+}
+
+// 文档列表（DocLister）：聚合摘要行（标题取最新 renamed、状态取最新生命周期、
+// 更新者/时间取最新版本行）+ created_by 过滤 + 删除级联后消失。
+func TestDocListDocs_IT(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openTempStore(t)
+
+	seed := func(eventID, docID, typ, payload string) {
+		t.Helper()
+		if _, err := store.AppendDocEvents(ctx, []protocol.DocEnvelope{
+			docEnvelope(eventID, docID, typ, payload),
+		}); err != nil {
+			t.Fatalf("seed %s: %v", eventID, err)
+		}
+	}
+	// 文档 A：owner 创建 → revision → rename → archive（agent 事件者混入校验 actor 口径）
+	seed("evt_la1", "doc_aaaaaaaaaaaa", protocol.EventDocCreated,
+		`{"doc_id":"doc_aaaaaaaaaaaa","title":"初名","format":"markdown","created_by":"par_owner","anchor_message_id":null}`)
+	seed("evt_la2", "doc_aaaaaaaaaaaa", protocol.EventDocRevisionCommitted,
+		`{"doc_id":"doc_aaaaaaaaaaaa","base_version":1,"version":2,"ops":[{"op":"append","block_id":null,"block":{"block_id":"blk_01","type":"paragraph","text":"正文"}}],"actor":"par_codex_x","source":"agent"}`)
+	seed("evt_la3", "doc_aaaaaaaaaaaa", protocol.EventDocRenamed,
+		`{"doc_id":"doc_aaaaaaaaaaaa","title":"改后名"}`)
+	seed("evt_la4", "doc_aaaaaaaaaaaa", protocol.EventDocArchived,
+		`{"doc_id":"doc_aaaaaaaaaaaa"}`)
+	// 文档 B：agent 创建（created_by 过滤的对照组）
+	seed("evt_lb1", "doc_bbbbbbbbbbbb", protocol.EventDocCreated,
+		`{"doc_id":"doc_bbbbbbbbbbbb","title":"agent 稿","format":"markdown","created_by":"par_codex_x","anchor_message_id":null}`)
+	// 文档 C：删除级联后不得出现
+	seed("evt_lc1", "doc_cccccccccccc", protocol.EventDocCreated,
+		`{"doc_id":"doc_cccccccccccc","title":"待删","format":"markdown","created_by":"par_owner","anchor_message_id":null}`)
+	seed("evt_lc2", "doc_cccccccccccc", protocol.EventDocDeleted,
+		`{"doc_id":"doc_cccccccccccc","reason":"清理"}`)
+	if err := store.DeleteDoc(ctx, "doc_cccccccccccc"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	all, err := store.ListDocs(ctx, "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("全量 = %d（期望 2，已删文档不出现）：%+v", len(all), all)
+	}
+	byID := map[string]doc.DocSummary{}
+	for _, s := range all {
+		byID[s.DocID] = s
+	}
+	a := byID["doc_aaaaaaaaaaaa"]
+	if a.Title != "改后名" || a.Version != 4 || a.Status != "archived" ||
+		a.CreatedBy != "par_owner" || a.CreatedAt == "" || a.UpdatedAt == "" {
+		t.Fatalf("文档 A 摘要聚合不符：%+v", a)
+	}
+	if a.UpdatedBy != "par_owner" { // 最新事件（archive）的 actor
+		t.Fatalf("updated_by = %q（期望最新事件 actor par_owner）", a.UpdatedBy)
+	}
+	b := byID["doc_bbbbbbbbbbbb"]
+	if b.Status != "active" || b.CreatedBy != "par_codex_x" || b.Version != 1 {
+		t.Fatalf("文档 B 摘要不符：%+v", b)
+	}
+
+	mine, err := store.ListDocs(ctx, "par_owner")
+	if err != nil || len(mine) != 1 || mine[0].DocID != "doc_aaaaaaaaaaaa" {
+		t.Fatalf("created_by=par_owner = %+v, %v（期望仅文档 A）", mine, err)
+	}
+	none, err := store.ListDocs(ctx, "par_nobody")
+	if err != nil || len(none) != 0 {
+		t.Fatalf("created_by=par_nobody = %+v, %v（期望空）", none, err)
+	}
+
+	// 恢复后状态回 active（最新生命周期事件口径）
+	seed("evt_la5", "doc_aaaaaaaaaaaa", protocol.EventDocRestored,
+		`{"doc_id":"doc_aaaaaaaaaaaa"}`)
+	after, err := store.ListDocs(ctx, "")
+	if err != nil {
+		t.Fatalf("list after restore: %v", err)
+	}
+	for _, s := range after {
+		if s.DocID == "doc_aaaaaaaaaaaa" && (s.Status != "active" || s.Version != 5) {
+			t.Fatalf("恢复后摘要不符：%+v", s)
+		}
+	}
+}
+
+// doc outbox 分发端口：Pending 按提交序、MarkDispatched 幂等标记、
+// DocOutboxStore 适配器满足 outbox.Store 端口（Entry.RoomID=doc_id、GlobalPos=version）。
+func TestDocOutboxDispatch_IT(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openTempStore(t)
+
+	appended, err := store.AppendDocEvents(ctx, []protocol.DocEnvelope{
+		docEnvelope("evt_ob1", "doc_aaaaaaaaaaaa", protocol.EventDocCreated,
+			`{"doc_id":"doc_aaaaaaaaaaaa","title":"分发","format":"markdown","created_by":"par_owner","anchor_message_id":null}`),
+		docEnvelope("evt_ob2", "doc_aaaaaaaaaaaa", protocol.EventDocRevisionCommitted,
+			`{"doc_id":"doc_aaaaaaaaaaaa","base_version":1,"version":2,"ops":[{"op":"append","block_id":null,"block":{"block_id":"blk_01","type":"paragraph","text":"x"}}],"actor":"par_owner","source":"human_editor"}`),
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	other, err := store.AppendDocEvents(ctx, []protocol.DocEnvelope{
+		docEnvelope("evt_ob3", "doc_bbbbbbbbbbbb", protocol.EventDocCreated,
+			`{"doc_id":"doc_bbbbbbbbbbbb","title":"另一篇","format":"markdown","created_by":"par_owner","anchor_message_id":null}`),
+	})
+	if err != nil {
+		t.Fatalf("seed doc_b: %v", err)
+	}
+	appended = append(appended, other...)
+
+	adapter := DocOutboxStore{Store: store}
+	pending, err := adapter.Pending(ctx, 100)
+	if err != nil {
+		t.Fatalf("pending: %v", err)
+	}
+	if len(pending) != 3 {
+		t.Fatalf("pending = %d（期望 3）", len(pending))
+	}
+	for i, e := range pending {
+		if e.RoomID != appended[i].DocID || e.EventID != appended[i].EventID || e.GlobalPos != appended[i].Version {
+			t.Fatalf("条目 %d 字段映射不符：%+v（期望 doc_id/version 承载）", i, e)
+		}
+		var env protocol.DocEnvelope
+		if err := json.Unmarshal(e.Envelope, &env); err != nil || env.EventID != appended[i].EventID {
+			t.Fatalf("条目 %d 信封不符：%v", i, err)
+		}
+	}
+
+	// 标记前两条 → 仅剩第三条；标记幂等（重复标记不报错）
+	if err := adapter.MarkDispatched(ctx, []int64{pending[0].ID, pending[1].ID}); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	if err := adapter.MarkDispatched(ctx, []int64{pending[0].ID}); err != nil {
+		t.Fatalf("重复标记应幂等：%v", err)
+	}
+	rest, err := adapter.Pending(ctx, 100)
+	if err != nil {
+		t.Fatalf("pending after mark: %v", err)
+	}
+	if len(rest) != 1 || rest[0].EventID != "evt_ob3" {
+		t.Fatalf("标记后 pending = %+v（期望仅 evt_ob3）", rest)
+	}
+
+	// 删除级联清 doc_outbox（已分发/未分发同清）
+	if err := store.DeleteDoc(ctx, "doc_bbbbbbbbbbbb"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	rest, err = adapter.Pending(ctx, 100)
+	if err != nil || len(rest) != 0 {
+		t.Fatalf("级联后 pending = %+v, %v（期望空）", rest, err)
 	}
 }

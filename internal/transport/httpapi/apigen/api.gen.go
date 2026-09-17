@@ -93,6 +93,141 @@ func (e ContextPanoramaNearWindowActorKind) Valid() bool {
 	}
 }
 
+// Defines values for DocBlockType.
+const (
+	Code      DocBlockType = "code"
+	Heading   DocBlockType = "heading"
+	Hr        DocBlockType = "hr"
+	List      DocBlockType = "list"
+	Paragraph DocBlockType = "paragraph"
+	Quote     DocBlockType = "quote"
+)
+
+// Valid indicates whether the value is a known member of the DocBlockType enum.
+func (e DocBlockType) Valid() bool {
+	switch e {
+	case Code:
+		return true
+	case Heading:
+		return true
+	case Hr:
+		return true
+	case List:
+		return true
+	case Paragraph:
+		return true
+	case Quote:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DocCommandCommandKind.
+const (
+	ArchiveDoc        DocCommandCommandKind = "archive_doc"
+	CommitDocRevision DocCommandCommandKind = "commit_doc_revision"
+	CreateDoc         DocCommandCommandKind = "create_doc"
+	DeleteDoc         DocCommandCommandKind = "delete_doc"
+	DuplicateDoc      DocCommandCommandKind = "duplicate_doc"
+	RenameDoc         DocCommandCommandKind = "rename_doc"
+	RestoreDoc        DocCommandCommandKind = "restore_doc"
+)
+
+// Valid indicates whether the value is a known member of the DocCommandCommandKind enum.
+func (e DocCommandCommandKind) Valid() bool {
+	switch e {
+	case ArchiveDoc:
+		return true
+	case CommitDocRevision:
+		return true
+	case CreateDoc:
+		return true
+	case DeleteDoc:
+		return true
+	case DuplicateDoc:
+		return true
+	case RenameDoc:
+		return true
+	case RestoreDoc:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DocStateFormat.
+const (
+	Markdown DocStateFormat = "markdown"
+)
+
+// Valid indicates whether the value is a known member of the DocStateFormat enum.
+func (e DocStateFormat) Valid() bool {
+	switch e {
+	case Markdown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DocStateStatus.
+const (
+	DocStateStatusActive   DocStateStatus = "active"
+	DocStateStatusArchived DocStateStatus = "archived"
+)
+
+// Valid indicates whether the value is a known member of the DocStateStatus enum.
+func (e DocStateStatus) Valid() bool {
+	switch e {
+	case DocStateStatusActive:
+		return true
+	case DocStateStatusArchived:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DocSummaryStatus.
+const (
+	DocSummaryStatusActive   DocSummaryStatus = "active"
+	DocSummaryStatusArchived DocSummaryStatus = "archived"
+)
+
+// Valid indicates whether the value is a known member of the DocSummaryStatus enum.
+func (e DocSummaryStatus) Valid() bool {
+	switch e {
+	case DocSummaryStatusActive:
+		return true
+	case DocSummaryStatusArchived:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DocVersionConflictErrorCode.
+const (
+	DocArchived         DocVersionConflictErrorCode = "doc_archived"
+	IdempotencyConflict DocVersionConflictErrorCode = "idempotency_conflict"
+	VersionConflict     DocVersionConflictErrorCode = "version_conflict"
+)
+
+// Valid indicates whether the value is a known member of the DocVersionConflictErrorCode enum.
+func (e DocVersionConflictErrorCode) Valid() bool {
+	switch e {
+	case DocArchived:
+		return true
+	case IdempotencyConflict:
+		return true
+	case VersionConflict:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for EvidenceRequestViewStatus.
 const (
 	EvidenceRequestViewStatusDismissed EvidenceRequestViewStatus = "dismissed"
@@ -392,22 +527,22 @@ func (e SettingsDocReplyOrPassMode) Valid() bool {
 
 // Defines values for SnapshotThreadsState.
 const (
-	Active SnapshotThreadsState = "active"
-	Closed SnapshotThreadsState = "closed"
-	Merged SnapshotThreadsState = "merged"
-	Paused SnapshotThreadsState = "paused"
+	SnapshotThreadsStateActive SnapshotThreadsState = "active"
+	SnapshotThreadsStateClosed SnapshotThreadsState = "closed"
+	SnapshotThreadsStateMerged SnapshotThreadsState = "merged"
+	SnapshotThreadsStatePaused SnapshotThreadsState = "paused"
 )
 
 // Valid indicates whether the value is a known member of the SnapshotThreadsState enum.
 func (e SnapshotThreadsState) Valid() bool {
 	switch e {
-	case Active:
+	case SnapshotThreadsStateActive:
 		return true
-	case Closed:
+	case SnapshotThreadsStateClosed:
 		return true
-	case Merged:
+	case SnapshotThreadsStateMerged:
 		return true
-	case Paused:
+	case SnapshotThreadsStatePaused:
 		return true
 	default:
 		return false
@@ -444,6 +579,24 @@ const (
 func (e GetHealthz200JSONResponseBodyStatus) Valid() bool {
 	switch e {
 	case Ok:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListDocsParamsStatus.
+const (
+	ListDocsParamsStatusActive   ListDocsParamsStatus = "active"
+	ListDocsParamsStatusArchived ListDocsParamsStatus = "archived"
+)
+
+// Valid indicates whether the value is a known member of the ListDocsParamsStatus enum.
+func (e ListDocsParamsStatus) Valid() bool {
+	switch e {
+	case ListDocsParamsStatusActive:
+		return true
+	case ListDocsParamsStatusArchived:
 		return true
 	default:
 		return false
@@ -664,6 +817,125 @@ type DevNote struct {
 	Position   string                 `json:"position"`
 	Type       string                 `json:"type"`
 }
+
+// DocBlock defines model for DocBlock.
+type DocBlock struct {
+	// BlockId 稳定块 ID（锚定操作/冲突重放/卡片摘要的基础）
+	BlockId string `json:"block_id"`
+
+	// Text markdown 行内内容
+	Text string       `json:"text"`
+	Type DocBlockType `json:"type"`
+}
+
+// DocBlockType defines model for DocBlock.Type.
+type DocBlockType string
+
+// DocCommand 文档命令信封（RFC-0014 / ADR-0014：镜像房间命令纪律——幂等 + 文档级乐观并发）。
+// payload 按 command_kind 严格校验（未知字段拒绝）：
+// create_doc → {title, format?, initial_blocks?, anchor_message_id?}（仅 POST /v1/docs）；
+// rename_doc → {title}；
+// commit_doc_revision → {base_version?, ops[], note?}——ops 为一批块操作
+// （insert_after/append 携带 block，replace 携带 text，delete 仅锚点 block_id；
+// 插入块的空 block_id 由服务端分配）；
+// archive_doc / restore_doc → 空 payload；
+// delete_doc → {reason}（墓碑 + 内容级联清除，不可逆）；
+// duplicate_doc → {title?}（缺省 = 原标题 + "（副本）"）。
+type DocCommand struct {
+	CommandKind DocCommandCommandKind `json:"command_kind"`
+
+	// ExpectedDocVersion 文档级乐观并发期望（create_doc 恒 0；duplicate_doc 为源文档版本断言）
+	ExpectedDocVersion int `json:"expected_doc_version"`
+
+	// IdempotencyKey UUIDv7（服务端按 tenant+key+kind 去重；同键异指纹 409）
+	IdempotencyKey string                 `json:"idempotency_key"`
+	IssuedAt       time.Time              `json:"issued_at"`
+	Payload        map[string]interface{} `json:"payload"`
+}
+
+// DocCommandCommandKind defines model for DocCommand.CommandKind.
+type DocCommandCommandKind string
+
+// DocCommandResponse defines model for DocCommandResponse.
+type DocCommandResponse struct {
+	DocId      string `json:"doc_id"`
+	DocVersion int64  `json:"doc_version"`
+	EventId    string `json:"event_id"`
+	Replayed   bool   `json:"replayed"`
+}
+
+// DocList defines model for DocList.
+type DocList struct {
+	Docs []DocSummary `json:"docs"`
+}
+
+// DocSearchHit 文档检索命中（每文档取最新命中版本；version 供编辑器/卡片跳转定位）。
+type DocSearchHit struct {
+	Actor string `json:"actor"`
+
+	// Body 命中文本（索引行全文，客户端自行截断展示）
+	Body       string    `json:"body"`
+	DocId      string    `json:"doc_id"`
+	EventId    string    `json:"event_id"`
+	OccurredAt time.Time `json:"occurred_at"`
+	Title      string    `json:"title"`
+	Version    int64     `json:"version"`
+}
+
+// DocState 文档当前态（派生态，权威为 per-doc 事件流；GET /v1/docs/{doc_id} 快照）。
+type DocState struct {
+	Blocks    []DocBlock     `json:"blocks"`
+	CreatedAt time.Time      `json:"created_at"`
+	CreatedBy string         `json:"created_by"`
+	DocId     string         `json:"doc_id"`
+	Format    DocStateFormat `json:"format"`
+	Status    DocStateStatus `json:"status"`
+	Title     string         `json:"title"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	UpdatedBy string         `json:"updated_by"`
+	Version   int64          `json:"version"`
+}
+
+// DocStateFormat defines model for DocState.Format.
+type DocStateFormat string
+
+// DocStateStatus defines model for DocState.Status.
+type DocStateStatus string
+
+// DocSummary 文档主页行（RFC-0014 §2.8：updated_at 倒序）。
+type DocSummary struct {
+	CreatedAt time.Time        `json:"created_at"`
+	CreatedBy string           `json:"created_by"`
+	DocId     string           `json:"doc_id"`
+	Status    DocSummaryStatus `json:"status"`
+
+	// Title 最新 doc.created/doc.renamed 投影
+	Title     string    `json:"title"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	// UpdatedBy 最新事件的 actor（人或 agent）
+	UpdatedBy string `json:"updated_by"`
+	Version   int64  `json:"version"`
+}
+
+// DocSummaryStatus defines model for DocSummary.Status.
+type DocSummaryStatus string
+
+// DocVersionConflict 409 响应体：error 恒在；version_conflict 时另含 doc_id/current_version/state（当前态摘要——RFC-0014 §2.3 客户端在新态上重放未提交 ops）。
+type DocVersionConflict struct {
+	CurrentVersion *int64  `json:"current_version,omitempty"`
+	DocId          *string `json:"doc_id,omitempty"`
+	Error          struct {
+		Code    DocVersionConflictErrorCode `json:"code"`
+		Message string                      `json:"message"`
+	} `json:"error"`
+
+	// State 文档当前态（派生态，权威为 per-doc 事件流；GET /v1/docs/{doc_id} 快照）。
+	State *DocState `json:"state,omitempty"`
+}
+
+// DocVersionConflictErrorCode defines model for DocVersionConflict.Error.Code.
+type DocVersionConflictErrorCode string
 
 // Error defines model for Error.
 type Error struct {
@@ -1188,6 +1460,9 @@ type TimelineItem struct {
 	Type     string  `json:"type"`
 }
 
+// DocID defines model for DocID.
+type DocID = string
+
 // ExecutableID defines model for ExecutableID.
 type ExecutableID = string
 
@@ -1199,6 +1474,12 @@ type BadRequest = Error
 
 // Conflict defines model for Conflict.
 type Conflict = Error
+
+// DocConflict 409 响应体：error 恒在；version_conflict 时另含 doc_id/current_version/state（当前态摘要——RFC-0014 §2.3 客户端在新态上重放未提交 ops）。
+type DocConflict = DocVersionConflict
+
+// DocNotFound defines model for DocNotFound.
+type DocNotFound = Error
 
 // HarnessUnavailable defines model for HarnessUnavailable.
 type HarnessUnavailable = Error
@@ -1223,6 +1504,31 @@ type UnsupportedMediaType = Error
 
 // GetHealthz200JSONResponseBodyStatus defines parameters for GetHealthz.
 type GetHealthz200JSONResponseBodyStatus string
+
+// ListDocsParams defines parameters for ListDocs.
+type ListDocsParams struct {
+	// CreatedBy 创建者筛选（participant_id；缺省 = 全部）
+	CreatedBy *string `form:"created_by,omitempty" json:"created_by,omitempty"`
+
+	// Status 生命周期状态筛选（缺省 = 全部）
+	Status *ListDocsParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+}
+
+// ListDocsParamsStatus defines parameters for ListDocs.
+type ListDocsParamsStatus string
+
+// SearchDocsParams defines parameters for SearchDocs.
+type SearchDocsParams struct {
+	// Q 检索词（子串语义）
+	Q     string `form:"q" json:"q"`
+	Limit *int   `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// SubscribeDocEventsParams defines parameters for SubscribeDocEvents.
+type SubscribeDocEventsParams struct {
+	// Cursor opaque 游标（空 = 从头）；与 Last-Event-ID 同义，query 优先
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
 
 // AddHarnessExecutable201JSONResponseBodyStatus defines parameters for AddHarnessExecutable.
 type AddHarnessExecutable201JSONResponseBodyStatus string
@@ -1269,6 +1575,12 @@ type RequestRestoreJSONBody struct {
 // RequestRestoreJSONBodyConfirm defines parameters for RequestRestore.
 type RequestRestoreJSONBodyConfirm bool
 
+// CreateDocJSONRequestBody defines body for CreateDoc for application/json ContentType.
+type CreateDocJSONRequestBody = DocCommand
+
+// SubmitDocCommandJSONRequestBody defines body for SubmitDocCommand for application/json ContentType.
+type SubmitDocCommandJSONRequestBody = DocCommand
+
 // AddHarnessExecutableJSONRequestBody defines body for AddHarnessExecutable for application/json ContentType.
 type AddHarnessExecutableJSONRequestBody = ManualExecutableRequest
 
@@ -1301,6 +1613,27 @@ type ServerInterface interface {
 	// ListAgents 当前在席 Agent 座位（建房选择的候选集）+ 已发现未启用项
 	// (GET /v1/agents)
 	ListAgents(w http.ResponseWriter, r *http.Request)
+	// ListDocs 文档列表（RFC-0014 §2.8 文档主页）
+	// (GET /v1/docs)
+	ListDocs(w http.ResponseWriter, r *http.Request, params ListDocsParams)
+	// CreateDoc 创建文档（create_doc 命令；doc_id 服务端分配）
+	// (POST /v1/docs)
+	CreateDoc(w http.ResponseWriter, r *http.Request)
+	// SearchDocs 文档全文检索（FTS5 trigram，标题+正文派生索引）
+	// (GET /v1/docs/search)
+	SearchDocs(w http.ResponseWriter, r *http.Request, params SearchDocsParams)
+	// GetDoc 文档快照（当前态：标题/版本/状态/块清单——折叠自 per-doc 事件流）
+	// (GET /v1/docs/{doc_id})
+	GetDoc(w http.ResponseWriter, r *http.Request, docId DocID)
+	// SubmitDocCommand 提交文档命令（rename_doc / commit_doc_revision / archive_doc / restore_doc / delete_doc / duplicate_doc）
+	// (POST /v1/docs/{doc_id}/commands)
+	SubmitDocCommand(w http.ResponseWriter, r *http.Request, docId DocID)
+	// SubscribeDocEvents SSE 订阅文档事件流（doc:{id} 频道，cursor = doc version）
+	// (GET /v1/docs/{doc_id}/events)
+	SubscribeDocEvents(w http.ResponseWriter, r *http.Request, docId DocID, params SubscribeDocEventsParams)
+	// ExportDoc 导出 markdown（.md；归档可导出，删除后 404）
+	// (GET /v1/docs/{doc_id}/export)
+	ExportDoc(w http.ResponseWriter, r *http.Request, docId DocID)
 	// ListHarnessExecutables 宿主扫描到的 agent CLI 注册表
 	// (GET /v1/harness/executables)
 	ListHarnessExecutables(w http.ResponseWriter, r *http.Request)
@@ -1421,6 +1754,232 @@ func (siw *ServerInterfaceWrapper) ListAgents(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListAgents(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListDocs operation middleware
+func (siw *ServerInterfaceWrapper) ListDocs(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListDocsParams
+
+	// ------------- Optional query parameter "created_by" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "created_by", r.URL.Query(), &params.CreatedBy, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "created_by"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "created_by", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", r.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "status"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "status", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListDocs(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateDoc operation middleware
+func (siw *ServerInterfaceWrapper) CreateDoc(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateDoc(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SearchDocs operation middleware
+func (siw *ServerInterfaceWrapper) SearchDocs(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SearchDocsParams
+
+	// ------------- Required query parameter "q" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "q", r.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "q"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "q", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SearchDocs(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetDoc operation middleware
+func (siw *ServerInterfaceWrapper) GetDoc(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "doc_id" -------------
+	var docId DocID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "doc_id", r.PathValue("doc_id"), &docId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "doc_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetDoc(w, r, docId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SubmitDocCommand operation middleware
+func (siw *ServerInterfaceWrapper) SubmitDocCommand(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "doc_id" -------------
+	var docId DocID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "doc_id", r.PathValue("doc_id"), &docId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "doc_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SubmitDocCommand(w, r, docId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SubscribeDocEvents operation middleware
+func (siw *ServerInterfaceWrapper) SubscribeDocEvents(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "doc_id" -------------
+	var docId DocID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "doc_id", r.PathValue("doc_id"), &docId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "doc_id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SubscribeDocEventsParams
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SubscribeDocEvents(w, r, docId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ExportDoc operation middleware
+func (siw *ServerInterfaceWrapper) ExportDoc(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "doc_id" -------------
+	var docId DocID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "doc_id", r.PathValue("doc_id"), &docId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "doc_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ExportDoc(w, r, docId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2267,6 +2826,13 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/context", wrapper.GetRoomContext)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/receipts", wrapper.GetRoomReceipts)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/search", wrapper.SearchRoomMessages)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/docs", wrapper.ListDocs)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/docs", wrapper.CreateDoc)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/docs/search", wrapper.SearchDocs)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/docs/{doc_id}", wrapper.GetDoc)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/docs/{doc_id}/commands", wrapper.SubmitDocCommand)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/docs/{doc_id}/events", wrapper.SubscribeDocEvents)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/docs/{doc_id}/export", wrapper.ExportDoc)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/agents", wrapper.ListAgents)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/rooms/{room_id}/attachments", wrapper.UploadRoomAttachment)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/rooms/{room_id}/attachments/{attachment_id}", wrapper.DownloadRoomAttachment)

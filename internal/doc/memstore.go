@@ -220,6 +220,39 @@ func (m *MemStore) DocEventsAfter(ctx context.Context, docID, cursor string, lim
 	return events, next, nil
 }
 
+// ListDocs 实现 DocLister：折叠各文档当前态成摘要行（删除级联后 byDoc 无条目，
+// 自然不出现）；createdBy 空串 = 全部；updated_at 倒序、doc_id 升序兜底。
+func (m *MemStore) ListDocs(ctx context.Context, createdBy string) ([]DocSummary, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []DocSummary{}
+	for docID, events := range m.byDoc {
+		stored := make([]StoredDocEvent, 0, len(events))
+		for _, env := range events {
+			stored = append(stored, StoredDocEvent{Envelope: env})
+		}
+		state, err := ProjectDoc(stored)
+		if err != nil || state.Version == 0 || state.Status == StatusDeleted {
+			continue
+		}
+		if createdBy != "" && state.CreatedBy != createdBy {
+			continue
+		}
+		out = append(out, DocSummary{
+			DocID: docID, Title: state.Title, Version: state.Version, Status: state.Status,
+			CreatedBy: state.CreatedBy, CreatedAt: state.CreatedAt,
+			UpdatedBy: state.UpdatedBy, UpdatedAt: state.UpdatedAt,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UpdatedAt != out[j].UpdatedAt {
+			return out[i].UpdatedAt > out[j].UpdatedAt
+		}
+		return out[i].DocID < out[j].DocID
+	})
+	return out, nil
+}
+
 // SearchDocs 实现 DocSearcher 线性语义基准：当前态标题 + 正文子串、大小写不敏感、
 // 每文档一条（version 倒序、doc_id 升序兜底）、limit 1..100 默认 20。
 // 与 SQLite FTS 实现的语义差（FTS 累积历史修订文本、按索引行归并）不影响

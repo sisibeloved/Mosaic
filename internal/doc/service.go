@@ -72,8 +72,10 @@ type Config struct {
 	Reader DocEventReader // 可选：缺省回退 Store（若其实现 DocEventReader）
 	// Searcher 可选：全文搜索读路径（nil 时 SearchDocs 报错）。
 	Searcher DocSearcher
-	Clock    func() string              // RFC3339
-	NewID    func(prefix string) string // 事件 ID 生成（前缀 evt_）
+	// Lister 可选：文档列表读路径（nil 回退 Store，再 nil 时 ListDocs 报错）。
+	Lister DocLister
+	Clock  func() string              // RFC3339
+	NewID  func(prefix string) string // 事件 ID 生成（前缀 evt_）
 	// NewDocID 文档 ID 生成（doc_<12hex>，Schema 锁定形态，服务端分配）。
 	NewDocID func() string
 	// NewBlockID 块 ID 生成（插入块的空 block_id 由服务端分配；可选——
@@ -512,6 +514,21 @@ func (s *Service) SearchDocs(ctx context.Context, query string, limit int) ([]Do
 		return nil, fmt.Errorf("doc: searcher 不可用")
 	}
 	return s.cfg.Searcher.SearchDocs(ctx, query, limit)
+}
+
+// ListDocs 文档列表（RFC-0014 §2.8 文档主页；createdBy 空串 = 全部，
+// status 过滤留给调用方——端口只承载创建者维度）。
+func (s *Service) ListDocs(ctx context.Context, createdBy string) ([]DocSummary, error) {
+	lister := s.cfg.Lister
+	if lister == nil {
+		if l, ok := s.cfg.Store.(DocLister); ok {
+			lister = l
+		}
+	}
+	if lister == nil {
+		return nil, fmt.Errorf("doc: lister 不可用")
+	}
+	return lister.ListDocs(ctx, createdBy)
 }
 
 // ---- 内部 ----

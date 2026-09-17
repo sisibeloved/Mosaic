@@ -107,3 +107,22 @@ type DocSearchHit struct {
 type DocSearcher interface {
 	SearchDocs(ctx context.Context, query string, limit int) ([]DocSearchHit, error)
 }
+
+// DocSummary 文档主页行（RFC-0014 §2.8：标题/当前版本/最近更新时间与更新者/
+// 创建者——生命周期状态供"已归档"分组展示）。JSON 字段即对外契约形态。
+type DocSummary struct {
+	DocID     string `json:"doc_id"`
+	Title     string `json:"title"`
+	Version   int64  `json:"version"`
+	Status    string `json:"status"` // active | archived（删除级联后不出现在列表）
+	CreatedBy string `json:"created_by"`
+	CreatedAt string `json:"created_at"`
+	UpdatedBy string `json:"updated_by"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// DocLister 文档列表读端口（RFC-0014 §2.8 文档主页：创建者筛选 = "我/各 agent"，
+// createdBy 空串 = 全部；按更新时间倒序）。已删除文档随级联清除自然不出现。
+type DocLister interface {
+	ListDocs(ctx context.Context, createdBy string) ([]DocSummary, error)
+}

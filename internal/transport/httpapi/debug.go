@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/contextx"
+	"github.com/sisibeloved/Mosaic/internal/doc"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
 )
@@ -282,6 +283,55 @@ func (s *server) handleDebugExport(w http.ResponseWriter, r *http.Request) {
 	for _, ev := range events {
 		line, _ := json.Marshal(ev.Envelope)
 		w.Write(append(line, '\n'))
+	}
+}
+
+// handleDebugDocExport 文档导出（RFC-0014 平移 M3-6 房间导出）：NDJSON per-doc
+// 事件流 + 首行 manifest——文档事件流即文档权威账本（与房间日志并列）。
+func (s *server) handleDebugDocExport(w http.ResponseWriter, r *http.Request) {
+	docID := r.PathValue("doc_id")
+	if s.deps.DocReader == nil {
+		writeError(w, http.StatusNotFound, "docs_unavailable", "文档事件读路径未装配")
+		return
+	}
+	events, err := s.readAllDocEvents(r, docID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "debug_read_failed", err.Error())
+		return
+	}
+	if len(events) == 0 {
+		writeError(w, http.StatusNotFound, "doc_not_found", "文档不存在或尚无事件")
+		return
+	}
+	manifest := map[string]any{
+		"kind": "mosaic.doc.export", "version": 1, "doc_id": docID,
+		"event_count": len(events),
+		"watermark":   events[len(events)-1].Envelope.Version,
+		"exported_at": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	first, _ := json.Marshal(manifest)
+	w.Write(append(first, '\n'))
+	for _, ev := range events {
+		line, _ := json.Marshal(ev.Envelope)
+		w.Write(append(line, '\n'))
+	}
+}
+
+// readAllDocEvents 分页拉取文档全量事件（doc 调试导出用；游标 = doc version）。
+func (s *server) readAllDocEvents(r *http.Request, docID string) ([]doc.StoredDocEvent, error) {
+	var events []doc.StoredDocEvent
+	cursor := ""
+	for {
+		batch, next, err := s.deps.DocReader.DocEventsAfter(r.Context(), docID, cursor, 1000)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, batch...)
+		if next == "" || len(batch) == 0 {
+			return events, nil
+		}
+		cursor = next
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/attach"
 	"github.com/sisibeloved/Mosaic/internal/backup"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
+	"github.com/sisibeloved/Mosaic/internal/doc"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/monitor"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
@@ -71,6 +72,10 @@ type Deps struct {
 	Settings *settings.Store
 	// Monitors 监控面（M4-5）：nil = 监控端点 404（测试装配）。
 	Monitors *monitor.Manager
+	// DocSVC 文档域服务（RFC-0014 / ADR-0014）：nil = 文档端点 404（测试装配）。
+	DocSVC *doc.Service
+	// DocReader 文档事件读路径（doc:{id} 频道 SSE 追平）：nil = doc SSE 404。
+	DocReader doc.DocEventReader
 	// Diagnostics 自诊断 bundle 构造器（M4-0）：nil = 诊断端点 404。
 	// 内容纪律：不含凭据/环境变量（OQ-20）——版本/运行时/数据面统计/注册表状态/日志尾。
 	Diagnostics func() (map[string]any, error)
@@ -93,6 +98,7 @@ func New(deps Deps) http.Handler {
 		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/claims", s.handleDebugClaims)
 		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/memory", s.handleDebugMemory)
 		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/export", s.handleDebugExport)
+		mux.HandleFunc("GET /v1/debug/docs/{doc_id}/export", s.handleDebugDocExport)
 	}
 	return apigen.HandlerWithOptions(s, apigen.StdHTTPServerOptions{BaseRouter: mux})
 }

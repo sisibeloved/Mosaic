@@ -107,6 +107,34 @@ func TestSpecCommandKindEnum(t *testing.T) {
 	}
 }
 
+// TestSpecDocCommandKindEnum：spec 的 DocCommand.command_kind 枚举 ==
+// doc.Service.ExecuteCommand 的 switch 受理集（RFC-0014 Phase 2；漂移即红）。
+func TestSpecDocCommandKindEnum(t *testing.T) {
+	doc := loadSpec(t)
+	sch, ok := doc.Components.Schemas["DocCommand"]
+	if !ok || sch.Value == nil {
+		t.Fatal("spec 缺 DocCommand schema")
+	}
+	prop, ok := sch.Value.Properties["command_kind"]
+	if !ok || prop.Value == nil || len(prop.Value.Enum) == 0 {
+		t.Fatal("DocCommand.command_kind 缺枚举")
+	}
+	got := map[string]bool{}
+	for _, v := range prop.Value.Enum {
+		s, _ := v.(string)
+		got[s] = true
+	}
+	want := map[string]bool{"create_doc": true, "rename_doc": true, "commit_doc_revision": true, "archive_doc": true, "restore_doc": true, "delete_doc": true, "duplicate_doc": true}
+	if len(got) != len(want) {
+		t.Fatalf("DocCommand.command_kind 枚举漂移：spec=%v 服务端=%v", got, want)
+	}
+	for k := range want {
+		if !got[k] {
+			t.Fatalf("DocCommand.command_kind 枚举漂移：spec=%v 缺 %q", got, k)
+		}
+	}
+}
+
 // specExample 提取操作的 application/json 请求例（example 或具名 examples）。
 func specExample(t *testing.T, op any) map[string]any {
 	t.Helper()
