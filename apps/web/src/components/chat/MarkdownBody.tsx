@@ -78,13 +78,10 @@ const components: Components = {
  *  替换在 markdown 解析前进行——@ 名内的 markdown 元字符由显示名转义兜住。 */
 function resolveMentions(text: string, names: Map<string, string>): string {
   if (names.size === 0 || !text.includes("@")) return text;
-  // pid 形态字符集封闭（par_ 前缀 + [A-Za-z0-9_-]），全局精确替换。
-  text = text.replace(/@(par_[A-Za-z0-9_-]+)/g, (whole, pid: string) => {
-    const name = names.get(pid);
-    return name ? mentionLink(name, pid) : whole;
-  });
-  // 显示名形态：长名优先（防 "Kim" 抢先于 "Kimi"）；转义元字符；
-  // 两侧边界为非 [\w]（中文显示名天然成立，英文名防部分词误命中）。
+  // 顺序纪律：显示名匹配必须先于 pid 替换——pid 一步的产物链接文本是
+  // "[@显示名](#m:pid)"，若显示名匹配在后会把链接文本再包一层（嵌套链接
+  // 不合法，外层方括号成字面文本泄漏）。先显示名后 pid 则无交叉：pid 正则
+  // 要求 @ 前缀，产物 URL（#m:par_…）中 par_ 前是冒号不会命中。
   const displayNames = [...new Set([...names.values()])]
     .filter((n) => n.trim().length > 0)
     .sort((a, b) => b.length - a.length);
@@ -96,6 +93,11 @@ function resolveMentions(text: string, names: Map<string, string>): string {
       `${pre}${mentionLink(hit, pid)}`,
     );
   }
+  // pid 形态字符集封闭（par_ 前缀 + [A-Za-z0-9_-]），全局精确替换。
+  text = text.replace(/@(par_[A-Za-z0-9_-]+)/g, (whole, pid: string) => {
+    const name = names.get(pid);
+    return name ? mentionLink(name, pid) : whole;
+  });
   return text;
 }
 
