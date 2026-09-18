@@ -216,3 +216,148 @@ func TestYourActivityInjectedIntoEvalContext(t *testing.T) {
 		t.Fatal("共享语境键应保留（stimulus_body 丢失）")
 	}
 }
+
+// scriptStub 逐座脚本化桩（任务指派豁免用例）：评估按 pid+调用序出 action/scores
+// （脚本耗尽循环最后一档）；生成回 public_draft（body 逐座配置，可含 mosaic-todo
+// 申报块——走真实发布路径落成任务申报消息）。
+type scriptStub struct {
+	mu      sync.Mutex
+	evals   map[string][]evalStep
+	genBody map[string]string
+	calls   map[string]int
+}
+
+type evalStep struct {
+	action   string
+	rel, urg float64
+}
+
+func (s *scriptStub) Name() string                     { return "script_stub" }
+func (s *scriptStub) Capabilities() agent.Capabilities { return agent.Capabilities{} }
+func (s *scriptStub) Boot(context.Context, agent.Profile) (agent.Session, error) {
+	return s, nil
+}
+func (s *scriptStub) Cancel(string) {}
+func (s *scriptStub) Close()        {}
+
+func (s *scriptStub) Run(_ context.Context, task agent.Task) (agent.Handle, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if task.Kind == agent.KindGenerate {
+		return scriptHandle{res: agent.Result{Block: agent.BlockPublicDraft, Data: map[string]any{
+			"body": s.genBody[task.ParticipantID], "declared_relations": []any{},
+		}}}, nil
+	}
+	if task.Kind != agent.KindEvaluateIntent {
+		return scriptHandle{res: agent.Result{Block: "unsupported"}}, nil
+	}
+	n := s.calls[task.ParticipantID]
+	s.calls[task.ParticipantID] = n + 1
+	steps := s.evals[task.ParticipantID]
+	step := steps[len(steps)-1]
+	if n < len(steps) {
+		step = steps[n]
+	}
+	data := map[string]any{"action": step.action}
+	if step.action != "silent" {
+		data["type"] = "extend"
+		data["public_rationale"] = "script"
+		data["scores"] = map[string]any{
+			"relevance": step.rel, "novelty": 0.5, "urgency": step.urg, "confidence": 0.5,
+		}
+	}
+	return scriptHandle{res: agent.Result{Block: "turn_intent", Data: data}}, nil
+}
+
+type scriptHandle struct{ res agent.Result }
+
+func (scriptHandle) Updates() <-chan agent.DraftUpdate { return nil }
+func (scriptHandle) Cancel()                           {}
+func (h scriptHandle) Result() (agent.Result, error)   { return h.res, nil }
+
+// 任务指派直通（2026-09-18 真机实证回归）：波1 par_aa 高分发布任务申报
+//（mosaic-todo 指派 par_bb）；波2 锚点 = 该申报消息——par_bb 低分（0.10 本被闸）
+//但为开口指派的负责人 → 直通交付；par_aa 低分且非被指派方（申报人）→ 照闸不误。
+func TestSpeakGateTaskAssigneeBypass(t *testing.T) {
+	stub := &scriptStub{
+		evals: map[string][]evalStep{
+			"par_aa": {{action: "speak", rel: 0.9, urg: 0.9}, {action: "speak", rel: 0.1, urg: 0.1}},
+			"par_bb": {{action: "silent"}, {action: "speak", rel: 0.1, urg: 0.1}},
+		},
+		genBody: map[string]string{
+			"par_aa": "收到，拆个任务\n```mosaic-todo\n- [ ] @par_bb 交付方案\n```",
+			"par_bb": "好的，这轮我交付",
+		},
+		calls: map[string]int{},
+	}
+	store := NewMemStore()
+	sup := agent.NewSupervisor()
+	_ = sup.Register(stub)
+	eng := NewEngine(EngineConfig{
+		Store: store, Reader: store, Agents: sup,
+		Seats: []AgentSeat{
+			{ParticipantID: "par_aa", Profile: agent.Profile{ProfileID: "paa", Adapter: "script_stub"}},
+			{ParticipantID: "par_bb", Profile: agent.Profile{ProfileID: "pbb", Adapter: "script_stub"}},
+		},
+		Budget: contextx.Limits{}, ReactionWindow: 5 * time.Millisecond,
+		Clock: testClock, Now: time.Now, NewID: counterNewID(), Tenant: "ten_local",
+	})
+	defer eng.Close()
+	// room.created 携 agents 名单——@par_bb 的解析索引来源（与生产同形）。
+	if _, err := store.AppendEvents(context.Background(), []protocol.Envelope{{
+		EventID: "evt_create_room_gate_task", TenantID: "ten_local", RoomID: "room_gate_task",
+		Type: protocol.EventRoomCreated, SchemaVersion: 1, OccurredAt: testClock(),
+		Actor:      protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Visibility: protocol.Visibility{Kind: "public"},
+		Payload:    []byte(`{"agents":["par_aa","par_bb"]}`), Metadata: map[string]any{},
+	}}); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+	deliverHuman(t, store, eng, "room_gate_task")
+
+	waitRoundsClosed(t, store, "room_gate_task", 3) // 波1 申报 → 波2 交付 → 波3 quiescent
+	time.Sleep(100 * time.Millisecond)
+	events := store.RoomEvents("room_gate_task")
+
+	var agents []protocol.Envelope
+	for _, ev := range events {
+		if ev.Type == protocol.EventMessagePosted && ev.Actor.Kind == "agent" {
+			agents = append(agents, ev)
+		}
+	}
+	if len(agents) != 2 {
+		t.Fatalf("应为申报+交付两条 agent 消息，got %d：%v", len(agents), typesOf(events))
+	}
+	if agents[0].Actor.ParticipantID != "par_aa" {
+		t.Fatalf("首条应为 par_aa 的任务申报，got %s", agents[0].Actor.ParticipantID)
+	}
+	if agents[1].Actor.ParticipantID != "par_bb" {
+		t.Fatalf("次条应为 par_bb 的交付应答（指派直通），got %s", agents[1].Actor.ParticipantID)
+	}
+	declID := agents[0].EventID
+	// 波2 锚点（申报消息）下：par_bb 豁免放行、par_aa 照闸（below_threshold）。
+	var bbSelected, aaGated bool
+	for _, ev := range events {
+		if ev.Type != protocol.EventIntentRecorded || ev.CausationID == nil || *ev.CausationID != declID {
+			continue
+		}
+		var p protocol.IntentRecordedPayload
+		_ = json.Unmarshal(ev.Payload, &p)
+		switch p.ParticipantID {
+		case "par_bb":
+			if p.Selected {
+				bbSelected = true
+			}
+		case "par_aa":
+			if !p.Selected && p.UnselectedReason == reasonBelowThreshold {
+				aaGated = true
+			}
+		}
+	}
+	if !bbSelected {
+		t.Fatal("par_bb 为开口指派负责人，低分也应直通（豁免与 @点名同构）")
+	}
+	if !aaGated {
+		t.Fatal("par_aa 非被指派方且低分，应照闸（below_threshold）——豁免面不可外溢")
+	}
+}

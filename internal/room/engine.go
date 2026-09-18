@@ -936,6 +936,10 @@ func (e *Engine) evaluateWave(ctx context.Context, roomID, roundID string, ancho
 	for _, s := range seats {
 		activities[s.ParticipantID] = seatActivityOf(histEnvs, s.ParticipantID)
 	}
+	// 附录 K 豁免面补全（2026-09-18 真机实证）：锚点消息 mosaic-todo 开口指派
+	// 的负责人与 @点名同构直通——agent 消息从不携带 addressed_to，只看它会把
+	// "发言发布任务"的责任人闸死（全员沉默、任务无人应答）。
+	assignees := anchorTaskAssignees(anchor, histEnvs)
 	evalUsage := map[string]*agent.Usage{}
 	anchorThread := ""
 	if anchor.ThreadID != nil {
@@ -1061,7 +1065,7 @@ func (e *Engine) evaluateWave(ctx context.Context, roomID, roundID string, ancho
 			// 豁免 = 点名/定向直通；上波发言者扣冷却分）。被闸 ≠ 否决意图：R-01
 			// 全记录（selected=false + reason 分类），记分卡可见，人类 endorse 可翻转。
 			if v := speakGatePass(e.speakGate(), intent.Scores, activities[ev.seat.ParticipantID],
-				directAddress(anchor, ev.seat.ParticipantID) > 0); !v.Pass {
+				directAddress(anchor, ev.seat.ParticipantID) > 0 || assignees[ev.seat.ParticipantID]); !v.Pass {
 				selected = false
 				reason = v.Reason
 			}

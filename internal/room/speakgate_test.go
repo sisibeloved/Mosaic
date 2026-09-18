@@ -1,6 +1,7 @@
 package room
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/sisibeloved/Mosaic/internal/attention"
@@ -118,5 +119,58 @@ func TestSeatActivityOf(t *testing.T) {
 	firstWave := []protocol.Envelope{msgEnv("m1", "par_human", "human")}
 	if a := seatActivityOf(firstWave, "par_b"); a.SpokeLastWave {
 		t.Fatal("无 round.closed 时 SpokeLastWave 应 false")
+	}
+}
+
+// anchorTaskAssignees 锚点指派解析（豁免面补全 2026-09-18）：开口指派直通、
+// 人类锚点/完成项/自领项不算、解析回退与 tasklist 归属同源。
+func TestAnchorTaskAssignees(t *testing.T) {
+	created := protocol.Envelope{
+		EventID: "c1", Type: protocol.EventRoomCreated,
+		Actor:   protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Payload: []byte(`{"agents":["par_aa","par_bb"]}`),
+	}
+	decl := func(eid, pid, body string) protocol.Envelope {
+		return protocol.Envelope{
+			EventID: eid, Type: protocol.EventMessagePosted,
+			Actor:   protocol.Actor{ParticipantID: pid, Kind: "agent"},
+			Payload: []byte(`{"body":` + strconv.Quote(body) + `}`),
+		}
+	}
+	hist := []protocol.Envelope{created}
+
+	// 开口指派 → 负责人直通；未提及的自领项不算定向。
+	anchor := decl("m1", "par_aa", "安排一下\n```mosaic-todo\n- [ ] @par_bb 交付方案\n- [ ] 我自己跟进\n```")
+	got := anchorTaskAssignees(anchor, append(hist, anchor))
+	if !got["par_bb"] || len(got) != 1 {
+		t.Fatalf("开口指派应解析出 par_bb（自领项不算），got %v", got)
+	}
+
+	// 完成项不算指派。
+	done := decl("m2", "par_aa", "```mosaic-todo\n- [x] @par_bb 交付方案\n```")
+	if got := anchorTaskAssignees(done, append(hist, done)); len(got) != 0 {
+		t.Fatalf("完成项不应产生豁免，got %v", got)
+	}
+
+	// 人类锚点跳过（人类待办不派生，与 TasksOf 同纪律）。
+	human := protocol.Envelope{
+		EventID: "m3", Type: protocol.EventMessagePosted,
+		Actor:   protocol.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Payload: []byte(`{"body":` + strconv.Quote("```mosaic-todo\n- [ ] @par_bb 交付方案\n```") + `}`),
+	}
+	if got := anchorTaskAssignees(human, append(hist, human)); len(got) != 0 {
+		t.Fatalf("人类锚点不应解析指派，got %v", got)
+	}
+
+	// @指派解析回退与 tasklist 同源：不可解析的 mention → 申报人自领。
+	unresolved := decl("m4", "par_aa", "```mosaic-todo\n- [ ] @nobody 事项\n```")
+	if got := anchorTaskAssignees(unresolved, append(hist, unresolved)); !got["par_aa"] {
+		t.Fatalf("不可解析 mention 应回退申报人（与 resolveMention 同源），got %v", got)
+	}
+
+	// 分段匹配（@bb 命中 par_bb 下划线分段，agent 互见的正是这类 id）。
+	seg := decl("m5", "par_aa", "```mosaic-todo\n- [ ] @bb 事项\n```")
+	if got := anchorTaskAssignees(seg, append(hist, seg)); !got["par_bb"] {
+		t.Fatalf("分段匹配应命中 par_bb，got %v", got)
 	}
 }

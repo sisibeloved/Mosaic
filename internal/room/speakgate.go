@@ -16,6 +16,8 @@
 package room
 
 import (
+	"encoding/json"
+
 	"github.com/sisibeloved/Mosaic/internal/attention"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 )
@@ -138,4 +140,63 @@ func speakGatePass(gate SpeakGateSettings, scores attention.Scores, act SeatActi
 		reason = reasonRecentSpeaker
 	}
 	return SpeakGateVerdict{Pass: false, Reason: reason, Score: score}
+}
+
+// anchorTaskAssignees 锚点消息 mosaic-todo 开口指派（- [ ] @某人 事项）解析出的
+// 负责人集合。任务指派是与 @点名同构（甚至更强）的定向信号：闸豁免面若只看
+// addressed_to 会漏掉它——agent 消息从不携带 addressed_to（生成契约无此字段，
+// ROP 发布路径硬编码空数组），于是"发言发布任务 → 责任人无豁免被闸 → 全员沉默
+// 无人应答"（2026-09-18 真机实证）。人类锚点跳过（人类待办不派生，与 TasksOf
+// 同纪律）；@解析与 tasklist 归属判定同源，否则"清单说是你的、闸说不是"自相矛盾。
+func anchorTaskAssignees(anchor protocol.Envelope, histEnvs []protocol.Envelope) map[string]bool {
+	out := map[string]bool{}
+	if anchor.Type != protocol.EventMessagePosted || anchor.Actor.Kind != "agent" {
+		return out
+	}
+	var p struct {
+		Body string `json:"body"`
+	}
+	if json.Unmarshal(anchor.Payload, &p) != nil {
+		return out
+	}
+	decls, ok := todoDeclarations(p.Body)
+	if !ok {
+		return out
+	}
+	idx := participantIndexOfEnvs(histEnvs)
+	for _, d := range decls {
+		if d.done || d.mention == "" {
+			continue // 完成项与自领项不是定向指派
+		}
+		out[resolveMention(d.mention, idx, anchor.Actor.ParticipantID)] = true
+	}
+	return out
+}
+
+// participantIndexOfEnvs 由波前事件构建参与者索引（TasksOf 同款三来源：事件
+// actor / room.created agents 名单 / participant.admitted）。
+func participantIndexOfEnvs(envs []protocol.Envelope) participantIndex {
+	idx := participantIndex{}
+	for _, e := range envs {
+		idx.add(e.Actor.ParticipantID, e.Actor.Kind)
+		switch e.Type {
+		case protocol.EventRoomCreated:
+			var p struct {
+				Agents []string `json:"agents"`
+			}
+			if json.Unmarshal(e.Payload, &p) == nil {
+				for _, pid := range p.Agents {
+					idx.add(pid, "agent")
+				}
+			}
+		case protocol.EventParticipantAdmitted:
+			var p struct {
+				ParticipantID string `json:"participant_id"`
+			}
+			if json.Unmarshal(e.Payload, &p) == nil {
+				idx.add(p.ParticipantID, "agent")
+			}
+		}
+	}
+	return idx
 }
