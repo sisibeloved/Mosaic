@@ -487,6 +487,11 @@ function AddressedLine({
   return <span className="mr-2 text-accent">{names}</span>;
 }
 
+// 正文 @ 提及解析映射（pid → 显示名；MarkdownBody 消费）。
+function mentionNamesOf(participants: ParticipantView[]): Map<string, string> {
+  return new Map(participants.map((p) => [p.participant_id, p.display_name]));
+}
+
 function HumanBubble({
   entry,
   participants,
@@ -505,6 +510,7 @@ function HumanBubble({
   onCiteDoc: (ref: DocRef, title: string) => void;
 }) {
   // 头像在最右（外侧），气泡在头像左侧（内侧）；名字行省略——自己知道自己。
+  const mentionNames = useMemo(() => mentionNamesOf(participants), [participants]);
   return (
     <div className="animate-rise flex justify-end gap-2.5">
       <div className="flex max-w-[80%] flex-col items-end">
@@ -512,7 +518,7 @@ function HumanBubble({
           {entry.replyTo && (
             <ReplyQuoteBar target={quoteTarget} fallbackID={entry.replyTo} participants={participants} onJump={onJump} />
           )}
-          <MarkdownBody text={entry.body ?? ""} />
+          <MarkdownBody text={entry.body ?? ""} mentionNames={mentionNames} />
           <AttachmentCards roomID={roomID} attachments={entry.attachments} />
           <DocRefCards refs={entry.refs} participants={participants} onCiteDoc={onCiteDoc} />
         </div>
@@ -547,6 +553,7 @@ function AgentBubble({
   const p = participantOf(participants, entry.actorID);
   const name = p?.display_name ?? displayNameOf(participants, entry.actorID);
   const { clean, todos } = splitTodoBlock(entry.body ?? ""); // 协议块不入正文渲染
+  const mentionNames = useMemo(() => mentionNamesOf(participants), [participants]);
   return (
     <div className="animate-rise flex gap-2.5">
       <Avatar participantID={entry.actorID} displayName={name} />
@@ -570,7 +577,7 @@ function AgentBubble({
             <ReplyQuoteBar target={quoteTarget} fallbackID={entry.replyTo} participants={participants} onJump={onJump} />
           )}
           <AddressedLine entry={entry} participants={participants} />
-          <MarkdownBody text={clean} />
+          <MarkdownBody text={clean} mentionNames={mentionNames} />
           <AttachmentCards roomID={roomID} attachments={entry.attachments} />
           <DocRefCards refs={entry.refs} participants={participants} onCiteDoc={onCiteDoc} />
           {todos && <TodoChip items={todos} />}

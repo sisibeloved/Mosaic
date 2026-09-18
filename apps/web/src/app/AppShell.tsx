@@ -319,46 +319,47 @@ export function AppShell() {
                   还没有会话——点上方 + 开始第一场讨论。
                 </p>
               )}
+              {/* 工作区资产（与上方会话列表分区）：文档是内容面，与设置等运维入口分家。 */}
+              <div className="mt-2 border-t border-border pt-2">
+                <NavLink
+                  to="/docs"
+                  title="文档（工作区文档主页——列表/检索/编辑器）"
+                  className={({ isActive }) =>
+                    `flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors ${
+                      isActive ? "bg-surface-3" : "hover:bg-surface-2"
+                    }`
+                  }
+                >
+                  <IconDoc />
+                  <span className="truncate text-sm">文档</span>
+                </NavLink>
+              </div>
             </>
           )}
           {error && <p className="px-2 py-2 text-xs text-danger">{error}</p>}
         </nav>
-        <div className="flex flex-col gap-1 border-t border-border px-2 py-2">
+        <div className="flex items-center gap-1 border-t border-border px-2 py-2">
           <NavLink
-            to="/docs"
-            title="文档（工作区文档主页——列表/检索/编辑器）"
+            to="/settings"
+            title="设置（Agent 实例 / 自动化 / 数据 / 外观 / 开发者）"
             className={({ isActive }) =>
-              `flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors ${
+              `flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 transition-colors ${
                 isActive ? "bg-surface-3" : "hover:bg-surface-2"
               }`
             }
           >
-            <IconDoc />
-            <span className="truncate text-sm">文档</span>
+            <IconGear />
+            <span className="truncate text-sm">设置</span>
           </NavLink>
-          <div className="flex items-center gap-1">
-            <NavLink
-              to="/settings"
-              title="设置（Agent 实例 / 自动化 / 数据 / 外观 / 开发者）"
-              className={({ isActive }) =>
-                `flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 transition-colors ${
-                  isActive ? "bg-surface-3" : "hover:bg-surface-2"
-                }`
-              }
-            >
-              <IconGear />
-              <span className="truncate text-sm">设置</span>
-            </NavLink>
-            <button
-              type="button"
-              onClick={() => setTheme(toggleTheme(theme))}
-              title={theme === "dark" ? "切换亮色" : "切换暗色"}
-              aria-label="切换主题"
-              className="rounded-lg p-2 text-dim transition-colors hover:bg-surface-2 hover:text-text"
-            >
-              {theme === "dark" ? <IconSun /> : <IconMoon />}
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => setTheme(toggleTheme(theme))}
+            title={theme === "dark" ? "切换亮色" : "切换暗色"}
+            aria-label="切换主题"
+            className="rounded-lg p-2 text-dim transition-colors hover:bg-surface-2 hover:text-text"
+          >
+            {theme === "dark" ? <IconSun /> : <IconMoon />}
+          </button>
         </div>
       </aside>
       <main className="min-w-0 flex-1">

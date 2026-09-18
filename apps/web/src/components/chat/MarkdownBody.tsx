@@ -17,13 +17,22 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 
+// mention 锚前缀（渲染层内部协议：@ 解析产物以 #m:<pid> 链接形态过 markdown，
+// a 组件分支渲染为不可导航的高亮 chip——不进浏览器 hash、不开新页签）。
+const MENTION_HREF = "#m:";
+
 const components: Components = {
   // 链接：新开 + 不带referrer（WebView 内外链行为归壳层，渲染面只保证不泄漏referrer）
-  a: ({ children, href }) => (
-    <a href={href} target="_blank" rel="noreferrer noopener" className="text-accent underline break-all">
-      {children}
-    </a>
-  ),
+  a: ({ children, href }) => {
+    if (typeof href === "string" && href.startsWith(MENTION_HREF)) {
+      return <span className="font-medium text-accent">{children}</span>;
+    }
+    return (
+      <a href={href} target="_blank" rel="noreferrer noopener" className="text-accent underline break-all">
+        {children}
+      </a>
+    );
+  },
   // 图片不渲染（防外链请求/追踪/布局破坏）——以链接形式保留线索
   img: ({ alt }) =>
     alt ? <span className="text-dim">[图片：{alt}]</span> : <span className="text-dim">[图片]</span>,
@@ -63,12 +72,58 @@ const components: Components = {
   p: ({ children }) => <p className="leading-relaxed">{children}</p>,
 };
 
-/** 消息正文渲染（memo：SSE 高频刷新下避免同文本重复解析）。 */
-export const MarkdownBody = memo(function MarkdownBody({ text }: { text: string }) {
+/** 正文内 @ 提及解析（v1.77 狗粮：@par_* 原样显示未解析）：
+ *  - @participant_id（pid 精确匹配）→ [@显示名](#m:pid) 高亮；
+ *  - @显示名（在席参与者名，两侧无字母数字下划线时整词匹配）→ 同上。
+ *  替换在 markdown 解析前进行——@ 名内的 markdown 元字符由显示名转义兜住。 */
+function resolveMentions(text: string, names: Map<string, string>): string {
+  if (names.size === 0 || !text.includes("@")) return text;
+  // pid 形态字符集封闭（par_ 前缀 + [A-Za-z0-9_-]），全局精确替换。
+  text = text.replace(/@(par_[A-Za-z0-9_-]+)/g, (whole, pid: string) => {
+    const name = names.get(pid);
+    return name ? mentionLink(name, pid) : whole;
+  });
+  // 显示名形态：长名优先（防 "Kim" 抢先于 "Kimi"）；转义元字符；
+  // 两侧边界为非 [\w]（中文显示名天然成立，英文名防部分词误命中）。
+  const displayNames = [...new Set([...names.values()])]
+    .filter((n) => n.trim().length > 0)
+    .sort((a, b) => b.length - a.length);
+  for (const name of displayNames) {
+    const pid = pidOfName(names, name);
+    if (!pid) continue;
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    text = text.replace(new RegExp(`(^|[^\\w])@(${esc})(?=$|[^\\w])`, "g"), (_w, pre: string, hit: string) =>
+      `${pre}${mentionLink(hit, pid)}`,
+    );
+  }
+  return text;
+}
+
+function mentionLink(name: string, pid: string): string {
+  return `[@${name.replace(/([[\]])/g, "\\$1")}](${MENTION_HREF}${pid})`;
+}
+
+function pidOfName(names: Map<string, string>, name: string): string | null {
+  for (const [pid, n] of names) {
+    if (n === name) return pid;
+  }
+  return null;
+}
+
+/** 消息正文渲染（memo：SSE 高频刷新下避免同文本重复解析）。mentionNames：
+ * pid → 显示名（正文 @ 提及解析；缺省不解析）。 */
+export const MarkdownBody = memo(function MarkdownBody({
+  text,
+  mentionNames,
+}: {
+  text: string;
+  mentionNames?: Map<string, string>;
+}) {
+  const src = mentionNames ? resolveMentions(text, mentionNames) : text;
   return (
     <div className="min-w-0 break-words text-sm">
       <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={components}>
-        {text}
+        {src}
       </ReactMarkdown>
     </div>
   );
