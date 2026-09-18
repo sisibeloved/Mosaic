@@ -5,6 +5,7 @@ package doc
 
 import (
 	"encoding/json"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -231,13 +232,37 @@ func RenderMarkdown(st DocState) string {
 	for _, b := range st.Blocks {
 		sb.WriteString("\n")
 		text := b.Text
-		if b.Type == "hr" && strings.TrimSpace(text) == "" {
+		switch {
+		case b.Type == "hr" && strings.TrimSpace(text) == "":
 			text = "---"
+		case b.Type == "list":
+			text = listBlockText(text)
 		}
 		sb.WriteString(text)
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+// listMarkerRe 列表标记行判定（list 块文本规范化用；编辑器渲染同口径）。
+var listMarkerRe = regexp.MustCompile(`^\s*(?:[-*+]|\d+[.)])\s`)
+
+// listBlockText list 块文本规范化：全文无任何列表标记时逐非空行补 "- "——
+// 块类型即语义（用户/模型按直觉写纯行，导出也应是合法 markdown 列表）；
+// 已含标记的照原样（agent 写 - 项 / 1. 项 的常态路径不受影响）。
+func listBlockText(text string) string {
+	lines := strings.Split(text, "\n")
+	for _, ln := range lines {
+		if listMarkerRe.MatchString(ln) {
+			return text
+		}
+	}
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) != "" {
+			lines[i] = "- " + ln
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // ExcerptRunes 语境注入摘录上限（RFC-0014 §2.9：每文档 8k runes——与附件摘录

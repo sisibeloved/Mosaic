@@ -4,6 +4,19 @@
 // 保留——编辑器自造稳定 ID，新块跨提交可锚定、重放可对应。
 import type { DocBlock, DocOp } from "../api/client";
 
+/** 列表标记行判定（list 块渲染规范化用；与服务端 doc.RenderMarkdown 同口径）。 */
+const LIST_MARKER = /^\s*(?:[-*+]|\d+[.)])\s/;
+
+/**
+ * list 块文本 → 渲染用 markdown：已含列表标记的照原样；否则逐非空行补 "- "——
+ * 块类型即语义（用户/模型按直觉写纯行也渲染为列表，不再与段落无别）。
+ */
+export function listBlockMarkdown(text: string): string {
+  const lines = text.split("\n");
+  if (lines.some((ln) => LIST_MARKER.test(ln))) return text;
+  return lines.map((ln) => (ln.trim() === "" ? ln : `- ${ln}`)).join("\n");
+}
+
 /** 新块 ID（blk_w + 12hex 随机尾；与服务端 blk_<8hex> 形态同族不撞名）。 */
 export function newBlockID(): string {
   const rnd = new Uint8Array(6);

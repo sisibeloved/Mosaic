@@ -15,7 +15,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError, type DocBlock, type DocCommandKind, type DocCommandResponse } from "../api/client";
 import { useDoc } from "../api/doc";
 import { MarkdownBody } from "../components/chat/MarkdownBody";
-import { applyOpsLocal, diffBlocks, newBlockID } from "../lib/docops";
+import { applyOpsLocal, diffBlocks, listBlockMarkdown, newBlockID } from "../lib/docops";
 import { relativeTime } from "../lib/ui";
 import { refreshDocMeta, refreshDocs } from "../state/docs";
 
@@ -543,23 +543,16 @@ function BlockView({
 
   const controls = !readOnly && (
     <div
+      // mousedown 拦默认：控件交互不夺 textarea 焦点（否则 blur → 退编辑 →
+      // 控件随块卸载，下拉/按钮闪现即死——2026-09-18 狗粮实证）；click 止冒泡：
+      // 读模式点控件不进入编辑。
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={(e) => e.stopPropagation()}
       className={`absolute right-1.5 top-1.5 flex items-center gap-0.5 rounded-lg bg-surface px-1 py-0.5 shadow-sm transition-opacity ${
         editing ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-within:opacity-100"
       }`}
     >
-      <select
-        value={block.type}
-        onChange={(e) => onChangeType(e.target.value as DocBlock["type"])}
-        aria-label="块类型"
-        title="块类型"
-        className="rounded bg-transparent text-[11px] text-dim outline-none hover:text-text"
-      >
-        {BLOCK_TYPES.map((t) => (
-          <option key={t.id} value={t.id}>
-            {t.label}
-          </option>
-        ))}
-      </select>
+      <TypeMenu value={block.type} onChange={onChangeType} />
       <button
         type="button"
         onClick={(e) => {
@@ -616,27 +609,44 @@ function BlockView({
           onChange={(e) => onChangeText(e.target.value)}
           onBlur={onFinishEdit}
           onKeyDown={(e) => {
-            if (
-              e.key === "Enter" &&
-              !e.shiftKey &&
-              !e.nativeEvent.isComposing &&
-              block.type !== "code" &&
-              e.currentTarget.selectionStart === e.currentTarget.value.length &&
-              e.currentTarget.selectionEnd === e.currentTarget.value.length
-            ) {
-              e.preventDefault();
-              onFinishEdit();
-              onInsertAfter();
-            }
+            if (e.nativeEvent.isComposing) return;
+            const el = e.currentTarget;
             if (e.key === "Escape") {
               e.preventDefault();
               onFinishEdit();
+              return;
+            }
+            if (e.key !== "Enter") return;
+            // Ctrl/Cmd+Enter：收块并在下方新起一块（显式出口）。
+            if (e.ctrlKey || e.metaKey) {
+              e.preventDefault();
+              onFinishEdit();
+              onInsertAfter();
+              return;
+            }
+            // 空行再 Enter（光标在尾且文本以换行结尾）：去尾换行 → 收块新起——
+            // 多行块（列表/表格/分段）的自然出口；其余 Enter = 块内换行（默认
+            // 行为——此前 Enter 直接切新块，表格/列表逐行被拆散、永不渲染）。
+            if (
+              !e.shiftKey &&
+              el.selectionStart === el.value.length &&
+              el.selectionEnd === el.value.length &&
+              el.value.endsWith("\n")
+            ) {
+              e.preventDefault();
+              onChangeText(el.value.replace(/\n+$/, ""));
+              onFinishEdit();
+              onInsertAfter();
             }
           }}
           rows={1}
           aria-label="块内容（markdown）"
           className="w-full resize-none bg-transparent pr-16 font-mono text-[13px] leading-relaxed outline-none placeholder:text-faint"
-          placeholder={block.type === "code" ? "代码…" : "markdown 文本…（Enter 在文末新起一块，Shift+Enter 换行）"}
+          placeholder={
+            block.type === "code"
+              ? "代码…（Ctrl+Enter 收块）"
+              : "markdown 文本…（Enter 换行；空行再 Enter 或 Ctrl+Enter 新起一块）"
+          }
         />
       </div>
     );
@@ -645,7 +655,11 @@ function BlockView({
   return (
     <div
       className={`group relative rounded-lg px-2.5 py-1.5 transition-colors ${readOnly ? "" : "cursor-text hover:bg-surface-2"}`}
-      onClick={onStartEdit}
+      onClick={(e) => {
+        // 链接可点（新开页签），不进入编辑——markdown 超链接是阅读面的一部分。
+        if ((e.target as HTMLElement).closest("a")) return;
+        onStartEdit();
+      }}
     >
       {controls}
       <BlockContent block={block} />
@@ -653,7 +667,65 @@ function BlockView({
   );
 }
 
-/** 读模式按块类型渲染（标题/段落/列表走 MarkdownBody；代码原文 <pre>；hr 横线）。 */
+/** 块类型下拉（自绘——原生 select 在此控件容器里必被秒杀：读模式点击冒泡进
+ *  编辑态抢焦、编辑态点击触发 textarea blur 退编辑，下拉框闪现即消失；
+ *  2026-09-18 狗粮实证。容器已拦 mousedown 默认 + click 冒泡，此处只管开关）。 */
+function TypeMenu({ value, onChange }: { value: DocBlock["type"]; onChange: (t: DocBlock["type"]) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const current = BLOCK_TYPES.find((t) => t.id === value)?.label ?? value;
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        title="块类型"
+        aria-label="块类型"
+        className="rounded px-1 text-[11px] text-dim transition-colors hover:bg-surface-3 hover:text-text"
+      >
+        {current} ▾
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="animate-fade-in absolute right-0 top-full z-40 mt-1 w-24 overflow-hidden rounded-lg border border-border bg-surface py-0.5 shadow-xl"
+        >
+          {BLOCK_TYPES.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onChange(t.id);
+              }}
+              className={`block w-full px-2.5 py-1 text-left text-[11px] transition-colors hover:bg-surface-2 ${
+                t.id === value ? "font-medium text-text" : "text-dim hover:text-text"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 读模式按块类型渲染（标题/段落走 MarkdownBody；列表补标记后走 MarkdownBody；
+ *  代码原文 <pre>；hr 横线）。 */
 function BlockContent({ block }: { block: DocBlock }) {
   if (block.type !== "hr" && block.text.trim() === "") {
     return <p className="text-sm text-faint">空块——点击编辑</p>;
@@ -677,6 +749,11 @@ function BlockContent({ block }: { block: DocBlock }) {
           <MarkdownBody text={block.text} />
         </div>
       );
+    case "list":
+      // 块类型即语义：纯行文本渲染前补列表标记（listBlockMarkdown 已含标记则
+      // 原样）——列表块不再与段落渲染无别；GFM 表格/超链接等 markdown 语法由
+      // MarkdownBody 全量支持（remark-gfm）。
+      return <MarkdownBody text={listBlockMarkdown(block.text)} />;
     case "hr":
       return <hr className="my-1 border-border" />;
     default:

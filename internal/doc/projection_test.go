@@ -212,6 +212,17 @@ func TestRenderMarkdown(t *testing.T) {
 	if got := RenderMarkdown(DocState{Title: "空"}); got != "# 空\n" {
 		t.Fatalf("空文档渲染 = %q", got)
 	}
+	// list 块规范化（2026-09-18 狗粮：纯行列表与段落渲染无别）——块类型即语义：
+	// 纯行补 "- "；已有标记（含有序/缩进）原样不动。
+	plain := DocState{Title: "t", Blocks: []protocol.DocBlock{
+		blk("b1", "list", "甲\n乙\n\n丙"),
+		blk("b2", "list", "1. 一\n2. 二"),
+		blk("b3", "list", "- 甲\n  - 乙"),
+	}}
+	wantPlain := "# t\n\n- 甲\n- 乙\n\n- 丙\n\n1. 一\n2. 二\n\n- 甲\n  - 乙\n"
+	if got := RenderMarkdown(plain); got != wantPlain {
+		t.Fatalf("list 规范化不符：\nwant %q\ngot  %q", wantPlain, got)
+	}
 }
 
 // TestRenderExcerpt 语境摘录渲染（RFC-0014 §2.7 读面①）：[block_id] 锚点前缀
