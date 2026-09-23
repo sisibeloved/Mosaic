@@ -276,8 +276,8 @@ func (scriptHandle) Cancel()                           {}
 func (h scriptHandle) Result() (agent.Result, error)   { return h.res, nil }
 
 // 任务指派直通（2026-09-18 真机实证回归）：波1 par_aa 高分发布任务申报
-//（mosaic-todo 指派 par_bb）；波2 锚点 = 该申报消息——par_bb 低分（0.10 本被闸）
-//但为开口指派的负责人 → 直通交付；par_aa 低分且非被指派方（申报人）→ 照闸不误。
+// （mosaic-todo 指派 par_bb）；波2 锚点 = 该申报消息——par_bb 低分（0.10 本被闸）
+// 但为开口指派的负责人 → 直通交付；par_aa 低分且非被指派方（申报人）→ 照闸不误。
 func TestSpeakGateTaskAssigneeBypass(t *testing.T) {
 	stub := &scriptStub{
 		evals: map[string][]evalStep{

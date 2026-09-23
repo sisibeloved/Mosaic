@@ -30,27 +30,28 @@ type fakeExecer struct {
 	mu      sync.Mutex
 	calls   []capturedCall
 	outputs []string // 按调用序返回预置 JSONL stdout
+	stderr  string   // 退出码非零时的诊断通道（登录过期等启动级失败）
 	code    int
 	err     error
 	block   bool // 阻塞至 ctx 取消（取消语义用）
 }
 
-func (f *fakeExecer) Exec(ctx context.Context, argv []string, env []string, stdin string) (string, int, error) {
+func (f *fakeExecer) Exec(ctx context.Context, argv []string, env []string, stdin string) (string, string, int, error) {
 	f.mu.Lock()
 	idx := len(f.calls)
 	f.calls = append(f.calls, capturedCall{argv: append([]string(nil), argv...), env: env, stdin: stdin})
 	f.mu.Unlock()
 	if f.block {
 		<-ctx.Done()
-		return "", -1, ctx.Err()
+		return "", "", -1, ctx.Err()
 	}
 	if f.err != nil {
-		return "", f.code, f.err
+		return "", f.stderr, f.code, f.err
 	}
 	if idx < len(f.outputs) {
-		return f.outputs[idx], f.code, nil
+		return f.outputs[idx], f.stderr, f.code, nil
 	}
-	return "", f.code, nil
+	return "", f.stderr, f.code, nil
 }
 
 func newTestAdapter(exec Execer) *Adapter {
@@ -238,14 +239,36 @@ func TestConformanceSuite(t *testing.T) {
 	conformance.Suite(t, New(Config{McodePath: "/x/mcode", Execer: &promptExecer{fn: execFn}}))
 }
 
+// TestExitCodeErrorCarriesStderrReason：退出码非零且流内无 error 事件、stdout 全空时，
+// 错误须携带 stderr 首行——2026-09-23 登录过期实证（退出码 3，真因只在 stderr
+// "Sign in to MiniMax…"）：此前错误只带空 stdout 首行，报出无信息量的"退出码 3："。
+func TestExitCodeErrorCarriesStderrReason(t *testing.T) {
+	exec := &fakeExecer{
+		code:   3,
+		stderr: "mcode exec failed: Sign in to MiniMax to use Agent features. Run `mcode login`, then retry.",
+	}
+	adapter := newTestAdapter(exec)
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p-ut", Adapter: "minimax"})
+	defer sess.Close()
+	h, err := sess.Run(context.Background(), agent.Task{TaskID: "t1", Kind: agent.KindEvaluateIntent})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if _, err := h.Result(); err == nil {
+		t.Fatal("退出码 3 应产生错误")
+	} else if msg := err.Error(); !strings.Contains(msg, "退出码 3") || !strings.Contains(msg, "Sign in to MiniMax") {
+		t.Fatalf("错误应携带 stderr 真因：%q", msg)
+	}
+}
+
 // promptExecer 按 stdin 提示词内容路由的桩（conformance 用——mcode 提示词走 stdin）。
 type promptExecer struct {
 	fn func(prompt string) string
 }
 
-func (p *promptExecer) Exec(_ context.Context, argv []string, _ []string, stdin string) (string, int, error) {
+func (p *promptExecer) Exec(_ context.Context, argv []string, _ []string, stdin string) (string, string, int, error) {
 	_ = argv
-	return p.fn(stdin), 0, nil
+	return p.fn(stdin), "", 0, nil
 }
 
 func mustJSON(t *testing.T, s string) string {

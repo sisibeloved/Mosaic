@@ -43,6 +43,11 @@ var providerUnavailableMarkers = []string{
 	"error sending request",
 	"requires a newer version",
 	"runtime completed without a final assistant response",
+	// 登录态过期（2026-09-23 实证）：mcode 退出码 3、stdout 全空、真因只在
+	// stderr（"Sign in to MiniMax to use Agent features. Run `mcode login`"）。
+	// IT 的登录门只查 ~/.minimax/cli-auth 目录存在——目录在而 token 已死，
+	// 过期与未登录同态（鉴权不可用），按本包纪律降级跳过。
+	"sign in to minimax",
 }
 
 // ProviderUnavailable 报告 err 是否为供应商侧不可用（nil 恒 false）。

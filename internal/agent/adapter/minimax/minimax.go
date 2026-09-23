@@ -52,7 +52,7 @@ type Config struct {
 
 // Execer 进程执行抽象（UT 捕获/阻塞；生产为真实 mcode 子进程）。
 type Execer interface {
-	Exec(ctx context.Context, argv []string, env []string, stdin string) (stdout string, exitCode int, err error)
+	Exec(ctx context.Context, argv []string, env []string, stdin string) (stdout, stderr string, exitCode int, err error)
 }
 
 // Adapter 实现 agent.Adapter。
@@ -158,7 +158,7 @@ func (s *session) execOnce(taskCtx context.Context, task agent.Task, prompt stri
 		argv = append(argv, "--session", sessID)
 	}
 
-	stdout, code, err := s.execer().Exec(taskCtx, argv, s.envFor(), prompt)
+	stdout, stderr, code, err := s.execer().Exec(taskCtx, argv, s.envFor(), prompt)
 	if err != nil {
 		return Parsed{}, fmt.Errorf("minimax: exec: %w", err)
 	}
@@ -175,6 +175,12 @@ func (s *session) execOnce(taskCtx context.Context, task agent.Task, prompt stri
 		// error 事件里；kimi v1.58 诊断行优先同构。
 		if parsed.Err != "" {
 			return parsed, fmt.Errorf("minimax: mcode 退出码 %d：run failed: %s", code, parsed.Err)
+		}
+		// stderr 首行次优先：2026-09-23 实证退出码 3（登录态过期）stdout 全空、
+		// 真因只在 stderr（"Sign in to MiniMax to use Agent features"）——
+		// 此前"诊断走 stderr 恒空"的假设被证伪，不再丢弃。
+		if msg := firstLineOf(stderr, 200); msg != "" {
+			return parsed, fmt.Errorf("minimax: mcode 退出码 %d：%s", code, msg)
 		}
 		return parsed, fmt.Errorf("minimax: mcode 退出码 %d：%s", code, firstLineOf(stdout, 200))
 	}
@@ -643,9 +649,10 @@ func mapResult(kind agent.TaskKind, parsed Parsed) (agent.Result, error) {
 
 type processExecer struct{}
 
-// Exec 返回 stdout（诊断走 stderr，实证恒空——不合并，保持分流语义）。
+// Exec 返回 stdout（stream-json 协议流）与 stderr（诊断通道——退出码非零且流内
+// 无 error 事件时是唯一真因载体，2026-09-23 登录过期实证；分流返回不合并）。
 // 卡死防御与 codex/kimi 同构：WaitDelay + POSIX 进程组击杀（sysproc_posix.go）。
-func (p *processExecer) Exec(ctx context.Context, argv []string, env []string, stdin string) (string, int, error) {
+func (p *processExecer) Exec(ctx context.Context, argv []string, env []string, stdin string) (string, string, int, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = env
 	cmd.Stdin = bytes.NewReader([]byte(stdin))
@@ -656,15 +663,15 @@ func (p *processExecer) Exec(ctx context.Context, argv []string, env []string, s
 	cmd.WaitDelay = 10 * time.Second
 	applySysProc(cmd)
 	if err := cmd.Start(); err != nil {
-		return "", -1, err
+		return "", "", -1, err
 	}
 	if err := cmd.Wait(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
-			return out.String(), ee.ExitCode(), nil
+			return out.String(), errBuf.String(), ee.ExitCode(), nil
 		}
-		return out.String(), -1, err
+		return out.String(), errBuf.String(), -1, err
 	}
-	return out.String(), 0, nil
+	return out.String(), errBuf.String(), 0, nil
 }
 
 // wslExecer 把任务交给发行版内执行：wsl.exe -d <distro> --exec env -i K=V... <argv...>。
@@ -683,9 +690,9 @@ func wslArgs(distro string, env []string, argv []string) []string {
 	return append(args, argv...)
 }
 
-func (w *wslExecer) Exec(ctx context.Context, argv []string, env []string, stdin string) (string, int, error) {
+func (w *wslExecer) Exec(ctx context.Context, argv []string, env []string, stdin string) (string, string, int, error) {
 	// 网络配置改取发行版侧（同 codex 真机复现结论：宿主无代理变量 → 发行版内
-	// CLI 直连被墙）。宿主侧同名键剥除，发行版登录环境白名单键注入。
+	// CLI 直连被墙）。宿主同名键剥除，发行版登录环境白名单键注入。
 	env = wslenv.MergeForWSL(env, wslenv.NetEnv(w.distro))
 	cmd := exec.CommandContext(ctx, "wsl.exe", wslArgs(w.distro, env, argv)...)
 	cmd.Stdin = bytes.NewReader([]byte(stdin))
@@ -698,13 +705,13 @@ func (w *wslExecer) Exec(ctx context.Context, argv []string, env []string, stdin
 	// Object 属 M2 进程管理项；超时值内任务自行退出为主路径。
 	applySysProc(cmd) // Windows：不建控制台窗口（桌面壳防闪框）
 	if err := cmd.Start(); err != nil {
-		return "", -1, err
+		return "", "", -1, err
 	}
 	if err := cmd.Wait(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
-			return out.String(), ee.ExitCode(), nil
+			return out.String(), errBuf.String(), ee.ExitCode(), nil
 		}
-		return out.String(), -1, err
+		return out.String(), errBuf.String(), -1, err
 	}
-	return out.String(), 0, nil
+	return out.String(), errBuf.String(), 0, nil
 }
