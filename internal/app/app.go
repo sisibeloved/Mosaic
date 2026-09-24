@@ -362,6 +362,9 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			logger.Error("agent work root 准备失败：agent 座位不注册（fail closed）", "dir", workRoot, "err", err)
 			workRoot = ""
 		}
+		// zcode 桌面渠道托管缓存根（bundle+provider 副本，见 zcode 适配器
+		// ensureDesktopCache）：与工作根同级——同在 mosaic 缓存位之下，随其清理。
+		zcodeCacheRoot := filepath.Join(filepath.Dir(workRoot), "zcode-desktop")
 		wslHomeCache := map[string]string{}
 		// resolveWorkDir 解析座位工作目录（fail closed）。WSL 面返回发行版内
 		// Linux 路径与 HOME（四轮复审 #4：HOME 非空且绝对路径才可用，无效跳过不缓存）。
@@ -493,14 +496,17 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 					// 0.3.0 Agent 兼容性扩充首员：第四个真实适配器（zcode -p stream-json
 					// --mode yolo + --resume 恢复；提示词经 sh $(cat) 走 stdin——-p 只认
 					// argv 同 kimi 面；模型覆盖走 provider 配置 overlay，无 --model flag）。
+					// 桌面渠道（exe.Bundle 非空）：ELECTRON_RUN_AS_NODE 驱动缓存 bundle
+					// 副本（无感适配 2026-09-23，见 zcode 适配器包注释）。
 					cfg := zcode.Config{ZcodePath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir,
-						EvalModel: exe.EvalModel, Model: exe.Model}
+						EvalModel: exe.EvalModel, Model: exe.Model,
+						Bundle: exe.Bundle, CacheRoot: zcodeCacheRoot}
 					if wslHome != "" {
 						cfg.WSLDistro = exe.Distro
 						cfg.WSLHome = wslHome
 					}
 					if err := registerAdapter(profileID,
-						strings.Join([]string{exe.Path, dir, exe.Distro, wslHome, exe.Model, exe.EvalModel}, "\x1f"),
+						strings.Join([]string{exe.Path, exe.Bundle, dir, exe.Distro, wslHome, exe.Model, exe.EvalModel}, "\x1f"),
 						func() error { return supervisor.RegisterFor(profileID, zcode.New(cfg)) }); err != nil {
 						logger.Warn("zcode adapter register failed", "profile", profileID, "err", err)
 						continue

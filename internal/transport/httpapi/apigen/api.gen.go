@@ -1006,7 +1006,10 @@ type EvidenceRequestViewStatus string
 type Executable struct {
 	Adapter string `json:"adapter"`
 
-	// Channel 实例渠道（ADR-0012）：cli | app:codex-desktop | app:kimi-work
+	// Bundle 桌面渠道内嵌 agent bundle 绝对路径（app:zcode-desktop 实例非空；空 = 纯 CLI 实例）
+	Bundle *string `json:"bundle,omitempty"`
+
+	// Channel 实例渠道（ADR-0012）：cli | app:codex-desktop | app:kimi-work | app:zcode-desktop
 	Channel *string `json:"channel,omitempty"`
 
 	// Digest sha256（版本固定门禁用）
@@ -1047,6 +1050,9 @@ type Executable struct {
 // ManualExecutableRequest defines model for ManualExecutableRequest.
 type ManualExecutableRequest struct {
 	Adapter string `json:"adapter"`
+
+	// Bundle 可选内嵌 bundle 路径覆盖（zcode 桌面形态非约定布局时的逃生口；空值按 exe 同级约定布局推断）
+	Bundle *string `json:"bundle,omitempty"`
 
 	// Channel 可选渠道覆盖（cli 或 app:<小写>），空值按 cli
 	Channel *string `json:"channel,omitempty"`

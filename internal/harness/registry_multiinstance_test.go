@@ -147,7 +147,11 @@ func TestPriorityForRulings(t *testing.T) {
 	if got := PriorityFor("codex", "mystery"); got != PriorityUnknownChannel {
 		t.Fatalf("未知渠道优先级应为 %d，got %d", PriorityUnknownChannel, got)
 	}
-	if got := PriorityFor("zcode", ChannelCLI); got != PriorityDefault {
+	if got := PriorityFor("zcode", ChannelCLI); got >= PriorityFor("zcode", ChannelAppZcodeDesktop) {
+		t.Fatalf("zcode cli(%d) 应优先于桌面垫片(%d)——官方无头形态优先（裁定 2026-09-23）",
+			got, PriorityFor("zcode", ChannelAppZcodeDesktop))
+	}
+	if got := PriorityFor("minimax", ChannelCLI); got != PriorityDefault {
 		t.Fatalf("无裁定家族应为默认优先级 %d，got %d", PriorityDefault, got)
 	}
 }
@@ -225,5 +229,107 @@ func TestListSortedByAdapterPriorityPath(t *testing.T) {
 	enabled := reg.EnabledList()
 	if enabled[0].Channel != ChannelAppCodexDesktop || enabled[3].Adapter != "kimi" {
 		t.Fatalf("EnabledList 排序不符：%+v", enabled)
+	}
+}
+
+// ZCode 桌面应用实例（实证 2026-09-23）：NSIS 默认位经 AppGlobs 发现，命中目录
+// 须同存内嵌 bundle（resources/glm/zcode.cjs）才算有效；版本探测走
+// [exe, bundle, --version] + ELECTRON_RUN_AS_NODE=1 注入；家族裁定 CLI 优先于
+// 桌面垫片（app:zcode-desktop 排后）。
+func TestScanZcodeDesktopAppInstance(t *testing.T) {
+	reg, _ := tempRegistry(t)
+	runner := newFakeRunner()
+	runner.homes["native|"] = `C:/Users/u`
+	appDir := `C:/Users/u/AppData/Local/Programs/ZCode`
+	runner.globs[`C:/Users/u/AppData/Local/Programs/ZCode`] = []string{appDir}
+	bundle := appDir + `/resources/glm/zcode.cjs`
+	runner.exists["native||"+bundle] = true
+	runner.exists["native||"+appDir+"/zcode.exe"] = true
+	runner.runs["native||"+appDir+"/zcode.exe "+bundle+" --version"] = "0.16.9\n"
+	runner.exists["native||C:/Users/u/.zcode/v2/credentials.json"] = true
+	// 同机独立 CLI（优先级对照）
+	cliPath := `C:/Users/u/.zcode/bin/zcode`
+	runner.lookups["native||zcode"] = cliPath
+	runner.exists["native||"+cliPath] = true
+	runner.runs["native||"+cliPath+" --version"] = "0.16.9\n"
+
+	if err := reg.Scan(context.Background(), runner, BuiltinProbes, ScanOptions{}); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	list := reg.List()
+	if len(list) != 2 {
+		t.Fatalf("应发现 CLI+App 两实例，got %+v", list)
+	}
+	if list[0].Channel != ChannelCLI || list[1].Channel != ChannelAppZcodeDesktop {
+		t.Fatalf("家族裁定 CLI 优先于桌面垫片：%+v", list)
+	}
+	if list[0].Priority >= list[1].Priority {
+		t.Fatalf("CLI 优先级数值应更小：%+v", list)
+	}
+	app := list[1]
+	if app.Bundle != bundle {
+		t.Fatalf("App 实例应携带内嵌 bundle 路径：%+v", app)
+	}
+	if app.Version != "0.16.9" || app.Login != LoginLoggedIn {
+		t.Fatalf("bundle 实例版本探测与登录态不符：%+v", app)
+	}
+	if len(runner.envCalls) == 0 {
+		t.Fatal("bundle 实例版本探测应经 RunWithEnv 注入 ELECTRON_RUN_AS_NODE")
+	}
+	found := false
+	for _, env := range runner.envCalls {
+		for _, kv := range env {
+			if kv == "ELECTRON_RUN_AS_NODE=1" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("版本探测 env 应注入 ELECTRON_RUN_AS_NODE=1：%v", runner.envCalls)
+	}
+}
+
+// 缺内嵌 bundle 的裸壳目录不算可驱动实例（版本探测必败——CLI 模式强制定位
+// provider/zcode-builtin.json）：跳过不登记。
+func TestScanZcodeDesktopSkipsWithoutBundle(t *testing.T) {
+	reg, _ := tempRegistry(t)
+	runner := newFakeRunner()
+	runner.homes["native|"] = `C:/Users/u`
+	appDir := `C:/Users/u/AppData/Local/Programs/ZCode`
+	runner.globs[`C:/Users/u/AppData/Local/Programs/ZCode`] = []string{appDir}
+	runner.exists["native||"+appDir+"/zcode.exe"] = true // 有 exe、无 bundle
+
+	if err := reg.Scan(context.Background(), runner, BuiltinProbes, ScanOptions{}); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	for _, e := range reg.List() {
+		if e.Adapter == "zcode" {
+			t.Fatalf("缺 bundle 的目录不得登记 zcode 实例：%+v", e)
+		}
+	}
+}
+
+// 手动登记 zcode .exe（非标准安装位）：按约定布局自动填 Bundle
+// （.exe 即桌面形态推断——避免裸 GUI 探测；同目录存在 bundle 时同构生效）。
+func TestManualAddZcodeDesktopBundleInference(t *testing.T) {
+	reg, _ := tempRegistry(t)
+	runner := newFakeRunner()
+	runner.homes["native|"] = `C:/Users/u`
+	appDir := `D:/Apps/ZCode`
+	bundle := appDir + `/resources/glm/zcode.cjs`
+	runner.exists["native||"+bundle] = true
+	runner.exists["native||"+appDir+"/ZCode.exe"] = true
+	runner.runs["native||"+appDir+"/ZCode.exe "+bundle+" --version"] = "0.16.9\n"
+	runner.exists["native||C:/Users/u/.zcode/v2/provider_config.json"] = true
+
+	if err := reg.AddManual(context.Background(), runner, Executable{
+		Adapter: "zcode", Runtime: "native", Path: appDir + "/ZCode.exe",
+		Channel: ChannelAppZcodeDesktop,
+	}); err != nil {
+		t.Fatalf("add manual: %v", err)
+	}
+	list := reg.List()
+	if len(list) != 1 || list[0].Bundle != bundle {
+		t.Fatalf("手动登记应按约定布局自动填 Bundle：%+v", list)
 	}
 }

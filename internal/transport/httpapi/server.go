@@ -482,6 +482,9 @@ type manualExecutableRequest struct {
 	Path    string `json:"path"`
 	Version string `json:"version"`
 	Channel string `json:"channel"` // 可选渠道覆盖（ADR-0012）：cli 或 app:<小写>
+	// Bundle 可选内嵌 bundle 路径覆盖（zcode 桌面形态非约定布局时的逃生口；
+	// 空值按 exe 同级约定布局推断——AddManual 侧）。
+	Bundle string `json:"bundle"`
 }
 
 func (s *server) AddHarnessExecutable(w http.ResponseWriter, r *http.Request) {
@@ -507,7 +510,7 @@ func (s *server) AddHarnessExecutable(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.deps.Harness.AddManual(r.Context(), s.deps.ProbeRunner, harness.Executable{
 		Adapter: req.Adapter, Runtime: req.Runtime, Distro: req.Distro,
-		Path: req.Path, Version: req.Version, Channel: req.Channel,
+		Path: req.Path, Version: req.Version, Channel: req.Channel, Bundle: req.Bundle,
 	}); err != nil {
 		if errors.Is(err, harness.ErrInvalidEntry) {
 			writeError(w, http.StatusBadRequest, "invalid_entry", err.Error())

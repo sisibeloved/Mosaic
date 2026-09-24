@@ -226,6 +226,25 @@ func wslRunWithDirArgs(binDir string, args []string) []string {
 	return append(wrapped, args...)
 }
 
+// wslRunWithEnvArgs 注入 K=V 环境后执行（export 赋值面；外层 wsl.exe 有 shell
+// 展开，\$ 延迟同 wslRunWithDirArgs）。env 为空时退化为纯透传。
+func wslRunWithEnvArgs(env []string, args []string) []string {
+	if len(env) == 0 {
+		return args
+	}
+	decls := make([]string, 0, len(env))
+	for _, kv := range env {
+		decls = append(decls, shellQuote(kv))
+	}
+	wrapped := []string{
+		"sh",
+		"-c",
+		`export ` + strings.Join(decls, " ") + `; exec "\$@"`,
+		"--",
+	}
+	return append(wrapped, args...)
+}
+
 // Glob 展开通配模式：native filepath.Glob；wsl 用 shell glob（仅保留存在项）。
 func (h *HostRunner) Glob(ctx context.Context, runtime Runtime, distro, pattern string) []string {
 	if runtime == RuntimeNative {
@@ -285,4 +304,31 @@ func (h *HostRunner) RunWithDir(ctx context.Context, runtime Runtime, distro, bi
 		return decodeOutput(runtime, buf.Bytes()), 0, nil
 	}
 	return h.Run(ctx, runtime, distro, wslRunWithDirArgs(binDir, args))
+}
+
+// RunWithEnv 追加环境变量后执行（env 为 K=V 项）：native 追加进 cmd.Env；
+// wsl 经 sh export 前包。桌面渠道版本探测用（ZCode.exe 需 ELECTRON_RUN_AS_NODE=1
+// 才以 node 语义执行 bundle 脚本——实证 2026-09-23）。
+func (h *HostRunner) RunWithEnv(ctx context.Context, runtime Runtime, distro string, env []string, args []string) (string, int, error) {
+	if len(env) == 0 {
+		return h.Run(ctx, runtime, distro, args)
+	}
+	if runtime == RuntimeNative {
+		cmd := h.command(ctx, runtime, distro, args)
+		cmd.Env = append(os.Environ(), env...)
+		var buf bytes.Buffer
+		cmd.Stdout = &buf
+		cmd.Stderr = &buf
+		if err := cmd.Start(); err != nil {
+			return "", -1, err
+		}
+		if err := cmd.Wait(); err != nil {
+			if ee, ok := err.(*exec.ExitError); ok {
+				return decodeOutput(runtime, buf.Bytes()), ee.ExitCode(), nil
+			}
+			return decodeOutput(runtime, buf.Bytes()), -1, err
+		}
+		return decodeOutput(runtime, buf.Bytes()), 0, nil
+	}
+	return h.Run(ctx, runtime, distro, wslRunWithEnvArgs(env, args))
 }

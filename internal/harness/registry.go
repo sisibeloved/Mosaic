@@ -47,6 +47,11 @@ type Executable struct {
 	Login   string `json:"login_state"`      // logged_in | logged_out | unknown
 	Source  string `json:"source"`           // auto_scan | manual
 	Channel string `json:"channel"`          // cli | app:codex-desktop | app:kimi-work（空值按 cli 处理）
+	// Bundle 桌面渠道实例的内嵌 agent bundle 脚本绝对路径（原始路径，非 Mosaic 托管
+	// 缓存副本；空 = 纯 CLI 实例）。实证 2026-09-23：ZCode 桌面版经
+	// ELECTRON_RUN_AS_NODE=1 ZCode.exe <bundle> 无头驱动。ID 仍按 Path 派生
+	// （exeID 不动），旧注册表缺字段 = 空，JSON 兼容。
+	Bundle string `json:"bundle,omitempty"`
 	// BotID 稳定身份（ADR-0013，M4-4）：首次发现时赋值 = ID（路径派生，祖父化零迁移），
 	// 此后 durable——路径变化经消失重绑迁移本字段，座位/会话/事件归属不随路径消亡。
 	BotID        string `json:"bot_id,omitempty"`
@@ -98,6 +103,10 @@ type Runner interface {
 	// RunWithDir 在把 binDir 前置到 PATH 后执行（nvm 布局：CLI 是 #!/usr/bin/env node
 	// 脚本，其 node 运行时在同目录——探测必须带上）。
 	RunWithDir(ctx context.Context, runtime Runtime, distro, binDir string, args []string) (stdout string, exitCode int, err error)
+	// RunWithEnv 追加环境变量后执行（env 为 K=V 项）：native 注入 cmd.Env；
+	// wsl 前包 env 命令。桌面渠道版本探测用（ZCode.exe 需 ELECTRON_RUN_AS_NODE=1
+	// 才以 node 语义执行 bundle 脚本——实证 2026-09-23）。
+	RunWithEnv(ctx context.Context, runtime Runtime, distro string, env []string, args []string) (stdout string, exitCode int, err error)
 	// ReadFile 读目标运行面的小文本文件（v1.49：CLI 配置的确定量默认值——模型/
 	// 思考强度；native 直读、wsl 经 cat）。ok=false = 不存在/不可读。只用于提取
 	// 目标键值，调用方不得回传或记录文件其余内容（配置文件可能含密钥）。
@@ -216,22 +225,33 @@ func equalFold(a, b string) bool {
 
 // probeExecutable 对已知路径的可执行程序做完整探测（版本/登录/摘要）。
 // 探测命令在可执行文件所在目录前置 PATH 的环境下运行（版本管理器布局的 node/CLI 同目录）。
-func probeExecutable(ctx context.Context, r Runner, spec ProbeSpec, runtime Runtime, distro, path string) Executable {
+// bundle 非空（桌面渠道内嵌 bundle 实例）时版本探测改为 [path, bundle, VersionArgs...]
+// 并注入 ELECTRON_RUN_AS_NODE=1（实证 2026-09-23：Electron 以此以 node 语义执行脚本，
+// 输出与 CLI 一致）；登录态探测不受影响（zcode 为家目录凭证文件面）。
+func probeExecutable(ctx context.Context, r Runner, spec ProbeSpec, runtime Runtime, distro, path, bundle string) Executable {
 	binDir := parentDir(path)
 	exe := Executable{
 		Adapter:      spec.Adapter,
 		Runtime:      string(runtime),
 		Distro:       distro,
 		Path:         path,
+		Bundle:       bundle,
 		Login:        probeLogin(ctx, r, spec, runtime, distro, binDir, path),
 		DiscoveredAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if len(spec.VersionArgs) > 0 {
 		vctx, cancel := context.WithTimeout(ctx, ScanOptions{}.probeTimeout())
 		defer cancel()
-		args := append([]string{path}, spec.VersionArgs...)
-		if out, _, err := r.RunWithDir(vctx, runtime, distro, binDir, args); err == nil {
-			exe.Version = firstLine(out)
+		if bundle != "" {
+			args := append([]string{path, bundle}, spec.VersionArgs...)
+			if out, _, err := r.RunWithEnv(vctx, runtime, distro, []string{"ELECTRON_RUN_AS_NODE=1"}, args); err == nil {
+				exe.Version = firstLine(out)
+			}
+		} else {
+			args := append([]string{path}, spec.VersionArgs...)
+			if out, _, err := r.RunWithDir(vctx, runtime, distro, binDir, args); err == nil {
+				exe.Version = firstLine(out)
+			}
 		}
 	}
 	if d, err := r.Digest(ctx, runtime, distro, path); err == nil {
@@ -521,27 +541,28 @@ func (r *Registry) pathGoneLocked(ctx context.Context, runner Runner, e Executab
 
 // discoverExecutables 单规格枚举全部实例：PATH + 已知目录 glob +（native 面）App 位置；
 // 按路径去重，命中即完整探测。渠道：PATH/目录发现为 cli，App 位置带各自渠道标签。
+// AppGlob.BundleRel 非空时命中目录须同存 bundle 文件，命中实例记 Executable.Bundle。
 func discoverExecutables(ctx context.Context, runner Runner, spec ProbeSpec, runtime Runtime, distro, home string) []Executable {
 	var out []Executable
 	seen := map[string]bool{}
-	add := func(path, channel string) {
+	add := func(path, channel, bundle string) {
 		if path == "" || seen[path] {
 			return
 		}
 		seen[path] = true
-		exe := probeExecutable(ctx, runner, spec, runtime, distro, path)
+		exe := probeExecutable(ctx, runner, spec, runtime, distro, path, bundle)
 		exe.Channel = channel
 		out = append(out, exe)
 	}
 
 	if path, ok := runner.LookPath(ctx, runtime, distro, spec.Binary); ok {
-		add(path, ChannelCLI)
+		add(path, ChannelCLI, "")
 	}
 	if home != "" {
 		for _, pattern := range spec.KnownDirGlobs {
 			for _, dir := range runner.Glob(ctx, runtime, distro, home+"/"+pattern) {
 				if candidate, ok := firstExistingBinary(ctx, runner, runtime, distro, dir, spec.Binary); ok {
-					add(candidate, ChannelCLI)
+					add(candidate, ChannelCLI, "")
 				}
 			}
 		}
@@ -551,8 +572,15 @@ func discoverExecutables(ctx context.Context, runner Runner, spec ProbeSpec, run
 		for _, ag := range spec.AppGlobs {
 			for _, pattern := range ag.Patterns {
 				for _, dir := range runner.Glob(ctx, runtime, distro, expandAppPattern(pattern, home)) {
+					bundle := ""
+					if ag.BundleRel != "" {
+						bundle = dir + "/" + ag.BundleRel
+						if !runner.Exists(ctx, runtime, distro, bundle) {
+							continue // 缺内嵌 bundle 的裸壳目录不算可驱动实例（版本探测必败）
+						}
+					}
 					if candidate, ok := firstExistingBinary(ctx, runner, runtime, distro, dir, spec.Binary); ok {
-						add(candidate, ag.Channel)
+						add(candidate, ag.Channel, bundle)
 					}
 				}
 			}
@@ -611,7 +639,18 @@ func (r *Registry) AddManual(ctx context.Context, runner Runner, entry Executabl
 	if spec == nil {
 		return fmt.Errorf("%w: 未知 adapter %q", ErrInvalidEntry, entry.Adapter)
 	}
-	exe := probeExecutable(ctx, runner, *spec, Runtime(entry.Runtime), entry.Distro, entry.Path)
+	bundle := entry.Bundle
+	if bundle == "" && entry.Adapter == "zcode" {
+		// ZCode 桌面版手工登记（非标准安装位——自动扫描只覆盖 NSIS 默认位）：
+		// 路径指向 .exe 或同目录存在内嵌 bundle 时按约定布局自动填 Bundle
+		// （ELECTRON_RUN_AS_NODE 无头驱动实证 2026-09-23）。
+		sibling := parentDir(entry.Path) + "/" + zcodeDesktopBundleRel
+		if strings.HasSuffix(strings.ToLower(entry.Path), ".exe") ||
+			runner.Exists(ctx, Runtime(entry.Runtime), entry.Distro, sibling) {
+			bundle = sibling
+		}
+	}
+	exe := probeExecutable(ctx, runner, *spec, Runtime(entry.Runtime), entry.Distro, entry.Path, bundle)
 	exe.Source = SourceManual
 	exe.Channel = channel
 	if entry.Version != "" {

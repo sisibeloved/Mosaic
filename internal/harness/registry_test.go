@@ -15,14 +15,15 @@ import (
 // fakeRunner 模拟目标运行时（native 与 wsl 发行版）的探测面。
 type fakeRunner struct {
 	// 路径 → 版本输出
-	lookups map[string]string   // key: runtime|distro|binary → path（空串=未找到）
-	runs    map[string]string   // key: runtime|distro|argsJoined → stdout（"\x00EXIT:n" 后缀控制退出码）
-	exists  map[string]bool     // key: runtime|distro|path
-	homes   map[string]string   // key: runtime|distro
-	digests map[string]string   // key: path
-	globs   map[string][]string // key: pattern → 展开结果
-	files   map[string]string   // key: path → 文件内容（ReadFile 面）
-	distros []string
+	lookups  map[string]string   // key: runtime|distro|binary → path（空串=未找到）
+	runs     map[string]string   // key: runtime|distro|argsJoined → stdout（"\x00EXIT:n" 后缀控制退出码）
+	exists   map[string]bool     // key: runtime|distro|path
+	homes    map[string]string   // key: runtime|distro
+	digests  map[string]string   // key: path
+	globs    map[string][]string // key: pattern → 展开结果
+	files    map[string]string   // key: path → 文件内容（ReadFile 面）
+	distros  []string
+	envCalls [][]string // RunWithEnv 每调用的 env 快照（注入断言用）
 }
 
 func (f *fakeRunner) key(runtime Runtime, distro string) string {
@@ -399,5 +400,10 @@ func TestScanFindsViaKnownDirGlobs(t *testing.T) {
 }
 
 func (f *fakeRunner) RunWithDir(ctx context.Context, runtime Runtime, distro, binDir string, args []string) (string, int, error) {
+	return f.Run(ctx, runtime, distro, args)
+}
+
+func (f *fakeRunner) RunWithEnv(ctx context.Context, runtime Runtime, distro string, env []string, args []string) (string, int, error) {
+	f.envCalls = append(f.envCalls, env)
 	return f.Run(ctx, runtime, distro, args)
 }

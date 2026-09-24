@@ -419,6 +419,9 @@ func (miniRunner) Run(ctx context.Context, runtime harness.Runtime, distro strin
 func (miniRunner) RunWithDir(ctx context.Context, runtime harness.Runtime, distro, binDir string, args []string) (string, int, error) {
 	return miniRunner{}.Run(ctx, runtime, distro, args)
 }
+func (miniRunner) RunWithEnv(ctx context.Context, runtime harness.Runtime, distro string, env []string, args []string) (string, int, error) {
+	return miniRunner{}.Run(ctx, runtime, distro, args)
+}
 func (miniRunner) Home(ctx context.Context, runtime harness.Runtime, distro string) string {
 	return "/home/u"
 }

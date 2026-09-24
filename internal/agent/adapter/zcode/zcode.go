@@ -21,15 +21,32 @@
 // modelOrder[0]；overlay 同时写 defaultModelSelection 兼容开源 3.14.3 schema。
 // 输出分流：机器输出 stdout / 诊断 stderr（与 minimax 同构：退出码错误原因优先级
 // 流内 error > stderr 首行 > stdout 首行）。
+// 桌面渠道（app:zcode-desktop，无感适配 2026-09-23）：Windows 桌面版（Electron）
+// 安装自带同一 CLI 内核（resources/glm/zcode.cjs，实证 = 0.16.9），经
+// ELECTRON_RUN_AS_NODE=1 <exe> <bundle> 无头驱动，会话面与 CLI 同 schema。两处
+// 垫片：(1) bundle CLI 模式强制定位 <scriptdir>/provider/zcode-builtin.json（源码
+// resolveBundledZCodeBuiltinProviderConfig 两候选：scriptdir/provider 与 dev 布局
+// 5 级上溯，安装位均不满足）而 stock 安装该文件在 <install>/resources/config/
+// provider，且安装目录不宜写（机器级在 Program Files 需管理员，升级即失）——
+// ensureDesktopCache
+// 把 bundle 与 provider 文件复制进 Mosaic 托管缓存目录（bundle 内容 sha256 前
+// 8 位为键，桌面升级自动换目录）再驱动副本；(2) 无感不依赖宿主 sh——提示词 -p
+// 直进 argv（CLI 面的 sh "$(cat)" stdin 代入不适用），受 Windows CreateProcess
+// 32KiB 命令行物理边界，desktopPromptCap fail fast。env 白名单/凭证定位/模型
+// overlay 与 CLI 面同口径（HOME 之外补 USERPROFILE——node os.homedir 主锚点；
+// SYSTEMROOT 等 Windows 必需键透传）。
 package zcode
 
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +68,13 @@ type Config struct {
 	// 提示词代入在发行版内完成，与 kimi 同路径）。
 	WSLDistro string
 	WSLHome   string // 发行版内 HOME（登录态/配置在 $HOME/.zcode/v2——实证双凭证面）
+	// Bundle 桌面渠道（app:zcode-desktop）内嵌 agent bundle 安装路径（注册表
+	// Executable.Bundle；空 = CLI 面）。非空时经托管缓存副本 + ELECTRON_RUN_AS_NODE
+	// 驱动（见包注释桌面渠道段）。桌面渠道只在 native 运行面（Windows 安装位）。
+	Bundle string
+	// CacheRoot 桌面渠道托管缓存根目录（app 装配传入 Mosaic 缓存位；缺省 = 桌面
+	// 驱动不可用，首任务显式报错——静默回退 CLI 面会打错可执行形态）。
+	CacheRoot string
 	// EvalModel 评估任务专用模型（空 = 与生成同模型）。dogfood 性能治理：
 	// 评估输出仅几十 token，评估可降档、生成保持主模型。zcode 无 --model
 	// flag——生效经 provider 配置 overlay（ensureOverlay）。
@@ -73,6 +97,9 @@ type Execer interface {
 // Adapter 实现 agent.Adapter。
 type Adapter struct {
 	cfg Config
+	// 桌面渠道托管缓存记忆（ensureDesktopCache 成功路径；失败不缓存，任务级重试）。
+	mu          sync.Mutex
+	bundleCache string
 }
 
 // New 构造。
@@ -141,8 +168,15 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 		h.err = err
 		return
 	}
-	if n := len(prompt); n > s.adapter.cfg.MaxPromptBytes {
-		h.err = fmt.Errorf("zcode: 提示词超单参数物理上限（%d > %d 字节，Linux MAX_ARG_STRLEN 128KiB 边界）：缩小上下文", n, s.adapter.cfg.MaxPromptBytes)
+	// 提示词物理上限（fail fast 胜过 OS exec 失败）：CLI 面 = MaxPromptBytes
+	// （Linux MAX_ARG_STRLEN 128KiB/参数边界，默认 100KiB 留边际）；桌面面直
+	// argv 受 Windows CreateProcess 32KiB 命令行边界——两者取小。
+	limit, boundary := s.adapter.cfg.MaxPromptBytes, "Linux MAX_ARG_STRLEN 128KiB"
+	if s.adapter.cfg.Bundle != "" && limit > desktopPromptCap {
+		limit, boundary = desktopPromptCap, "Windows CreateProcess 32KiB 命令行"
+	}
+	if n := len(prompt); n > limit {
+		h.err = fmt.Errorf("zcode: 提示词超单参数物理上限（%d > %d 字节，%s 边界）：缩小上下文", n, limit, boundary)
 		return
 	}
 
@@ -164,15 +198,25 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 	}
 }
 
-// execOnce 单次 zcode -p 全链：argv 组装（sh 包装 + 会话连续性）→ 模型覆盖 overlay
-// → 执行 → stream 解析 → 执行级错误检查（退出码/turn.failed/空输出）。映射级错误
-// （mapResult）留给调用方。
+// execOnce 单次 zcode -p 全链：argv 组装（会话连续性 + 双面分支）→ 模型覆盖
+// overlay → 执行 → stream 解析 → 执行级错误检查（退出码/turn.failed/空输出）。
+// 映射级错误（mapResult）留给调用方。双面：CLI 面 sh "$(cat)" stdin 代入提示词
+// （宿主命令行恒定，kimi 同构）；桌面面直 argv（native Windows 无 sh 依赖——
+// 无感不假设 Git Bash，提示词 -p 直进参数，desktopPromptCap fail fast）。
 func (s *session) execOnce(taskCtx context.Context, task agent.Task, prompt string) (Parsed, error) {
 	s.mu.Lock()
 	sessID := s.sessID
 	s.mu.Unlock()
 
+	bundle, err := s.driveBundle(taskCtx)
+	if err != nil {
+		return Parsed{}, err
+	}
 	args := []string{s.adapter.cfg.ZcodePath, "--output-format", "stream-json", "--mode", "yolo"}
+	if bundle != "" {
+		// 桌面驱动：exe 以 node 语义执行缓存 bundle（argv[1]），其后与 CLI 同参。
+		args = append([]string{s.adapter.cfg.ZcodePath, bundle}, args[1:]...)
+	}
 	if s.adapter.cfg.WorkDir != "" {
 		args = append(args, "--cwd", s.adapter.cfg.WorkDir)
 	}
@@ -180,11 +224,20 @@ func (s *session) execOnce(taskCtx context.Context, task agent.Task, prompt stri
 		args = append(args, "--resume", sessID) // 与 --cwd 可共存（实证）
 	}
 	args = append(args, s.adapter.cfg.ExtraArgs...)
-	// 提示词传输（kimi 同构）：stdin + sh "$(cat)" 代入——宿主命令行恒定；
-	// $(cat) 剥除尾换行无害。
-	argv := append([]string{"sh", "-c", `exec "$@" -p "$(cat)"`, "sh"}, args...)
 
-	env := s.envFor()
+	var argv []string
+	var stdin string
+	var env []string
+	if bundle != "" {
+		argv = append(args, "-p", prompt)
+		env = s.desktopEnvFor()
+	} else {
+		// 提示词传输（kimi 同构）：stdin + sh "$(cat)" 代入——宿主命令行恒定；
+		// $(cat) 剥除尾换行无害。
+		argv = append([]string{"sh", "-c", `exec "$@" -p "$(cat)"`, "sh"}, args...)
+		env = s.envFor()
+		stdin = prompt
+	}
 	if model := s.effectiveModel(task); model != "" {
 		// 模型覆盖：zcode 无 --model flag——provider 配置 overlay + env 重定向
 		// （实证 0.16.9：ZCODE_PERSONAL_PROVIDER_CONFIG_FILE 重定向生效）。
@@ -195,7 +248,7 @@ func (s *session) execOnce(taskCtx context.Context, task agent.Task, prompt stri
 		env = append(env, "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE="+overlay)
 	}
 
-	stdout, stderr, code, err := s.execer().Exec(taskCtx, argv, env, prompt)
+	stdout, stderr, code, err := s.execer().Exec(taskCtx, argv, env, stdin)
 	if err != nil {
 		return Parsed{}, fmt.Errorf("zcode: exec: %w", err)
 	}
@@ -317,7 +370,9 @@ func (s *session) effectiveModel(task agent.Task) string {
 	return model
 }
 
-// homeDir 运行面 HOME（native 用宿主 HOME；WSL 用发行版内 HOME）。
+// homeDir 运行面 HOME（native 用宿主家目录；WSL 用发行版内 HOME）。native 侧
+// UserHomeDir 优先于 HOME 环境变量：Windows 宿主常无 HOME，且从 Git Bash 类壳
+// 启动时 HOME 可能是 POSIX 形（/c/Users/…）——文件路径构造需原生形态。
 func (s *session) homeDir() string {
 	if s.adapter.cfg.WSLDistro != "" {
 		if s.adapter.cfg.WSLHome != "" {
@@ -325,11 +380,13 @@ func (s *session) homeDir() string {
 		}
 		return "/root"
 	}
-	home := os.Getenv("HOME")
-	if home == "" {
-		home = "/root"
+	if home, err := os.UserHomeDir(); err == nil {
+		return home
 	}
-	return home
+	if home := os.Getenv("HOME"); home != "" {
+		return home
+	}
+	return "/root"
 }
 
 // envFor 按运行面构造子进程环境（native 用宿主 HOME；wsl 用发行版内 HOME）。
@@ -337,26 +394,14 @@ func (s *session) envFor() []string {
 	return zcodeEnvWithHome(s.adapter.cfg.ZcodePath, s.homeDir())
 }
 
-// zcodeEnvWithHome 环境构造（native 与 WSL 共用，仅 HOME 来源不同）：
-// PATH 前置可执行目录；登录态/配置在 $HOME/.zcode/v2（实证 credentials.json /
-// provider_config.json 双凭证面），HOME 即锚点；代理/CA 等网络配置从宿主透传
+// passthroughNetEnv 网络配置透传白名单（两运行面共用）：代理/CA 从宿主透传
 // （与 codex/kimi/minimax 同口径：网络配置非凭据——OQ-20 禁的是持有凭证与代理
 // 流量）；不传 API key；其余不透传。
 // ZCODE_HTTP_PROXY 是 zcode 官方代理键（0.16.9 实证生效：标准 http_proxy 系
 // 变量其 HTTP 客户端不理会）——WSL 直连运营商出口不稳时，走宿主代理是
 // 重试风暴（maxAttempts 11 吃满任务超时）的唯一稳定解。
-func zcodeEnvWithHome(zcodePath, home string) []string {
-	if home == "" {
-		home = "/root"
-	}
-	dir := zcodePath
-	if i := strings.LastIndex(zcodePath, "/"); i > 0 {
-		dir = zcodePath[:i]
-	}
-	env := []string{
-		"PATH=" + dir + ":/usr/local/bin:/usr/bin:/bin",
-		"HOME=" + home,
-	}
+func passthroughNetEnv() []string {
+	var env []string
 	for _, key := range []string{
 		"http_proxy", "https_proxy", "all_proxy", "no_proxy",
 		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
@@ -370,6 +415,152 @@ func zcodeEnvWithHome(zcodePath, home string) []string {
 	return env
 }
 
+// desktopEnvFor 桌面渠道（native Windows）子进程环境：ELECTRON_RUN_AS_NODE=1
+// （Electron 以 node 语义执行 bundle——桌面驱动核心开关，实证 2026-09-23）+
+// HOME/USERPROFILE 双锚（node os.homedir 走 USERPROFILE 定位 .zcode/v2 凭证；
+// HOME 兜底自定路径读取）+ Windows 必需系统键（SYSTEMROOT——node winsock 初始
+// 化依赖；TEMP/TMP）+ PATH（exe 目录前置，其余沿用宿主）+ 网络透传白名单同
+// CLI 面。最小集真机实证：会话建立、provider 解析、模型请求均通。
+func (s *session) desktopEnvFor() []string {
+	home := s.homeDir()
+	env := []string{
+		"ELECTRON_RUN_AS_NODE=1",
+		"HOME=" + home,
+		"USERPROFILE=" + home,
+	}
+	for _, key := range []string{"SYSTEMROOT", "SYSTEMDRIVE", "TEMP", "TMP", "APPDATA", "LOCALAPPDATA"} {
+		if v := os.Getenv(key); v != "" {
+			env = append(env, key+"="+v)
+		}
+	}
+	dir := filepath.Dir(s.adapter.cfg.ZcodePath)
+	env = append(env, "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return append(env, passthroughNetEnv()...)
+}
+
+// zcodeEnvWithHome 环境构造（CLI 面，native 与 WSL 共用，仅 HOME 来源不同）：
+// PATH 前置可执行目录；登录态/配置在 $HOME/.zcode/v2（实证 credentials.json /
+// provider_config.json 双凭证面），HOME 即锚点；网络透传见 passthroughNetEnv。
+func zcodeEnvWithHome(zcodePath, home string) []string {
+	if home == "" {
+		home = "/root"
+	}
+	dir := zcodePath
+	if i := strings.LastIndex(zcodePath, "/"); i > 0 {
+		dir = zcodePath[:i]
+	}
+	env := []string{
+		"PATH=" + dir + ":/usr/local/bin:/usr/bin:/bin",
+		"HOME=" + home,
+	}
+	return append(env, passthroughNetEnv()...)
+}
+
+// ---- 桌面渠道驱动（app:zcode-desktop：ELECTRON_RUN_AS_NODE + 托管缓存副本）----
+
+// desktopPromptCap 桌面面提示词上限（字节）：提示词 -p 直进 argv（无 sh stdin
+// 代入），Windows CreateProcess 命令行物理边界 32767 UTF-16 字符（exe+全部参数+
+// 引号转义共享）——UTF-8 字节数 ≥ 同文本 UTF-16 单元数，按字节计量保守，留 ~2.7KiB
+// 边际兜转义膨胀，fail fast 胜过 CreateProcess 静默截断/失败。
+const desktopPromptCap = 30000
+
+// desktopProviderStockRel / desktopProviderScriptRel provider 文件定位的两候选
+// （bundle 源码 resolveBundledZCodeBuiltinProviderConfig 同构）：stock 安装自带
+// <resources>/config/provider/zcode-builtin.json（实证 md5 与可驱动副本一致；
+// 相对 bundle <install>/resources/glm/ 上溯一级）；scriptdir 候选是定位已满足
+// 的安装（如手工放置）。
+const (
+	desktopProviderStockRel  = "../config/provider/zcode-builtin.json"
+	desktopProviderScriptRel = "provider/zcode-builtin.json"
+	desktopProviderCacheName = "zcode-builtin.json"
+)
+
+// driveBundle 解析本任务的驱动面：空 = CLI 面（sh 包装 stdin 提示词）；非空 =
+// 桌面面（返回应进 argv[1] 的 bundle 路径——托管缓存副本，非安装原始路径）。
+// 缓存成功进程内记忆（14MB 级复制不做每任务重复）；失败不记忆，任务级重试。
+func (s *session) driveBundle(ctx context.Context) (string, error) {
+	if s.adapter.cfg.Bundle == "" {
+		return "", nil
+	}
+	s.adapter.mu.Lock()
+	cached := s.adapter.bundleCache
+	s.adapter.mu.Unlock()
+	if cached != "" {
+		return cached, nil
+	}
+	cached, err := s.adapter.ensureDesktopCache(ctx)
+	if err != nil {
+		return "", err
+	}
+	s.adapter.mu.Lock()
+	s.adapter.bundleCache = cached
+	s.adapter.mu.Unlock()
+	return cached, nil
+}
+
+// ensureDesktopCache 桌面渠道托管缓存（幂等）：安装 bundle 复制到
+// <CacheRoot>/<sha256 前 8 hex>/zcode.cjs，旁边 provider/zcode-builtin.json——
+// bundle CLI 模式强制定位 <scriptdir>/provider/zcode-builtin.json（stock 安装
+// 放 <root>/config/provider，安装目录不宜写：机器级在 Program Files 需管理员、
+// 升级即失）。缓存键 = bundle 内容哈希：桌面升级自动换目录，旧版本目录保留
+// （回滚即用，14MB/版本量级不清理）。写入走 tmp+rename 原子化（半写副本不被
+// 后续快路径误判完整）。文件 IO 直用 os 包——桌面渠道只在 native 运行面，
+// 无 WSL 路径翻译问题（CLI 面的 execer 跑 sh 约定不适用）。
+func (a *Adapter) ensureDesktopCache(ctx context.Context) (string, error) {
+	if a.cfg.CacheRoot == "" {
+		return "", fmt.Errorf("zcode: 桌面渠道未配置托管缓存目录（装配缺 CacheRoot）——安装面注册不完整")
+	}
+	raw, err := os.ReadFile(a.cfg.Bundle)
+	if err != nil {
+		return "", fmt.Errorf("zcode: 桌面渠道读安装 bundle %s 失败：%w", a.cfg.Bundle, err)
+	}
+	sum := sha256.Sum256(raw)
+	dir := filepath.Join(a.cfg.CacheRoot, hex.EncodeToString(sum[:4]))
+	cached := filepath.Join(dir, "zcode.cjs")
+	prov := filepath.Join(dir, "provider", desktopProviderCacheName)
+	if _, err := os.Stat(cached); err == nil {
+		if _, err := os.Stat(prov); err == nil {
+			return cached, nil // 快路径：两件齐备（写入原子化保证齐备即完整）
+		}
+	}
+
+	// provider 文件来源：stock resources/config/provider 优先（安装自带），
+	// scriptdir/provider 回退（定位已满足的安装）；均缺 = 布局漂移，显式报错不静默。
+	scriptDir := filepath.Dir(a.cfg.Bundle)
+	src := filepath.Join(scriptDir, desktopProviderStockRel)
+	if _, err := os.Stat(src); err != nil {
+		alt := filepath.Join(scriptDir, desktopProviderScriptRel)
+		if _, err := os.Stat(alt); err != nil {
+			return "", fmt.Errorf("zcode: 桌面渠道定位 %s 失败（%s 与 %s 均不存在——安装布局漂移）：重装 ZCode 桌面版或改登记 CLI 渠道",
+				desktopProviderCacheName, src, alt)
+		}
+		src = alt
+	}
+	provRaw, err := os.ReadFile(src)
+	if err != nil {
+		return "", fmt.Errorf("zcode: 桌面渠道读 %s 失败：%w", src, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(prov), 0o700); err != nil {
+		return "", fmt.Errorf("zcode: 桌面渠道建缓存目录 %s 失败：%w", dir, err)
+	}
+	if err := writeAtomic(cached, raw); err != nil {
+		return "", fmt.Errorf("zcode: 桌面渠道写缓存 bundle %s 失败：%w", cached, err)
+	}
+	if err := writeAtomic(prov, provRaw); err != nil {
+		return "", fmt.Errorf("zcode: 桌面渠道写缓存 provider 配置 %s 失败：%w", prov, err)
+	}
+	return cached, nil
+}
+
+// writeAtomic 同目录 tmp 写入 + rename（半写文件不出现在最终路径上）。
+func writeAtomic(path string, data []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 // ---- 模型覆盖：provider 配置 overlay（zcode 无 --model flag 的对应实现）----
 
 // providerConfigRel 基座 provider 配置文件（相对 HOME；schemaVersion 1）。
@@ -380,29 +571,46 @@ const providerConfigRel = ".zcode/v2/provider_config.json"
 // provider 的 personalModelIds/modelOrder 重排为目标在最前 + 写
 // defaultModelSelection（兼容开源 3.14.3 schema；0.16.9 选模 = 首个 enabled
 // provider 的 modelOrder[0]）→ 写基座同目录 provider_config.mosaic.<model>.json。
-// 文件 IO 统一经 execer 跑 sh（native/WSL 两面同构——不直接用 os 包）。
-// 基座读不到/解析失败/模型不在任何 provider 清单 → 任务报错（信息带路径，不静默
-// 回落 CLI 默认——显式覆盖必须生效或显式失败）。
+// 文件 IO：WSL 面（发行版内路径）经 execer 跑 sh；native 面（CLI/桌面同）直用
+// os 包——桌面渠道无 sh 依赖（无感适配不假设 Git Bash）。基座读不到/解析失败/
+// 模型不在任何 provider 清单 → 任务报错（信息带路径，不静默回落 CLI 默认——
+// 显式覆盖必须生效或显式失败）。
 func (s *session) ensureOverlay(taskCtx context.Context, model string) (string, error) {
 	base := s.homeDir() + "/" + providerConfigRel
-	raw, _, code, err := s.execer().Exec(taskCtx, []string{"sh", "-c", `cat "$1"`, "sh", base}, s.envFor(), "")
-	if err != nil {
-		return "", fmt.Errorf("zcode: 模型覆盖读取 provider 基座配置 %s 失败：%w", base, err)
+	var raw []byte
+	if s.adapter.cfg.WSLDistro != "" {
+		out, _, code, err := s.execer().Exec(taskCtx, []string{"sh", "-c", `cat "$1"`, "sh", base}, s.envFor(), "")
+		if err != nil {
+			return "", fmt.Errorf("zcode: 模型覆盖读取 provider 基座配置 %s 失败：%w", base, err)
+		}
+		if code != 0 {
+			return "", fmt.Errorf("zcode: 模型覆盖读取 provider 基座配置 %s 失败（cat 退出码 %d——文件不存在或不可读）", base, code)
+		}
+		raw = []byte(out)
+	} else {
+		b, err := os.ReadFile(filepath.FromSlash(base))
+		if err != nil {
+			return "", fmt.Errorf("zcode: 模型覆盖读取 provider 基座配置 %s 失败：%w", base, err)
+		}
+		raw = b
 	}
-	if code != 0 {
-		return "", fmt.Errorf("zcode: 模型覆盖读取 provider 基座配置 %s 失败（cat 退出码 %d——文件不存在或不可读）", base, code)
-	}
-	patched, err := patchProviderConfig([]byte(raw), model)
+	patched, err := patchProviderConfig(raw, model)
 	if err != nil {
 		return "", fmt.Errorf("zcode: 模型覆盖处理 provider 基座配置 %s 失败：%w", base, err)
 	}
 	overlay := s.homeDir() + "/.zcode/v2/provider_config.mosaic." + sanitizeModelName(model) + ".json"
-	_, stderr, code, err := s.execer().Exec(taskCtx, []string{"sh", "-c", `cat > "$1"`, "sh", overlay}, s.envFor(), string(patched))
-	if err != nil {
-		return "", fmt.Errorf("zcode: 模型覆盖写入 overlay %s 失败：%w", overlay, err)
+	if s.adapter.cfg.WSLDistro != "" {
+		_, stderr, code, err := s.execer().Exec(taskCtx, []string{"sh", "-c", `cat > "$1"`, "sh", overlay}, s.envFor(), string(patched))
+		if err != nil {
+			return "", fmt.Errorf("zcode: 模型覆盖写入 overlay %s 失败：%w", overlay, err)
+		}
+		if code != 0 {
+			return "", fmt.Errorf("zcode: 模型覆盖写入 overlay %s 失败（cat 退出码 %d：%s）", overlay, code, firstLineOf(stderr, 200))
+		}
+		return overlay, nil
 	}
-	if code != 0 {
-		return "", fmt.Errorf("zcode: 模型覆盖写入 overlay %s 失败（cat 退出码 %d：%s）", overlay, code, firstLineOf(stderr, 200))
+	if err := os.WriteFile(filepath.FromSlash(overlay), patched, 0o600); err != nil {
+		return "", fmt.Errorf("zcode: 模型覆盖写入 overlay %s 失败：%w", overlay, err)
 	}
 	return overlay, nil
 }

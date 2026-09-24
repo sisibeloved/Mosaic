@@ -7,6 +7,7 @@
 ### Added
 
 - 新增 ZCode 原生 Harness 适配器（0.3.0「Agent 兼容性扩充」首员，第四家）：对接 `zcode -p --output-format stream-json --mode yolo`（实证 0.16.9：headless 全自动审批 + `--resume` 跨任务续会话），提示词经 stdin 代入 argv（`-p` 只认 argv，与 Kimi 同传输面）；模型覆盖走 provider 配置 overlay（zcode 无 `--model` flag——实证 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` 重定向基座配置生效，重排目标模型所在 provider 的 `modelOrder` 并兼容开源 3.14.3 的 `defaultModelSelection`）；登录态双凭证面探测（OAuth `credentials.json` / API-key `provider_config.json` 任一即可用），设置页运行参数与评估降档口径与既有三家一致。
+- ZCode 桌面版无感适配：安装桌面版即可入房，无需另装 CLI——自动发现 NSIS 安装位（per-user / 机器级）的内嵌 bundle 实例（渠道 `app:zcode-desktop`，家族位次 CLI 优先、桌面垫后；命中目录须同存 `resources/glm/zcode.cjs` 才算有效），版本探测经 `ELECTRON_RUN_AS_NODE=1` 无头驱动；驱动实现为 Mosaic 托管缓存副本——bundle 与 stock `resources/config/provider/zcode-builtin.json` 复制到用户缓存位（内容寻址，桌面升级自动换目录），不动安装目录（机器级 Program Files 需管理员、升级即失）；桌面面提示词 `-p` 直进 argv（无 sh 依赖），受 Windows 32KiB 命令行物理边界 fail fast；子进程 env 最小面（USERPROFILE 锚定凭证 + 系统必需键 + 既有网络白名单）；模型覆盖 overlay 与 CLI 面同口径（native 面 os 直读写）。非标准安装位可手动登记 `.exe`，按约定布局自动补全 bundle 路径。
 
 ## [0.2.0] - 2026-09-23
 

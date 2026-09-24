@@ -1243,8 +1243,10 @@ export interface components {
             login_state?: string;
             /** @description auto_scan | manual */
             source?: string;
-            /** @description 实例渠道（ADR-0012）：cli | app:codex-desktop | app:kimi-work */
+            /** @description 实例渠道（ADR-0012）：cli | app:codex-desktop | app:kimi-work | app:zcode-desktop */
             channel?: string;
+            /** @description 桌面渠道内嵌 agent bundle 绝对路径（app:zcode-desktop 实例非空；空 = 纯 CLI 实例） */
+            bundle?: string;
             /** @description 家族裁定优先级（数值小者优先；列表已按 adapter→priority→path 排序） */
             priority?: number;
             /** Format: date-time */
@@ -1265,6 +1267,8 @@ export interface components {
             version?: string;
             /** @description 可选渠道覆盖（cli 或 app:<小写>），空值按 cli */
             channel?: string;
+            /** @description 可选内嵌 bundle 路径覆盖（zcode 桌面形态非约定布局时的逃生口；空值按 exe 同级约定布局推断） */
+            bundle?: string;
         };
         /** @description 运行参数更新体（全量替换；空串 = 清除覆盖回 CLI 默认）。 */
         RuntimeUpdateRequest: {
