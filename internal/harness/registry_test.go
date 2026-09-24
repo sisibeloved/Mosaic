@@ -178,6 +178,54 @@ func TestScanKimiLoginViaCredFile(t *testing.T) {
 	}
 }
 
+// zcode 双凭证面（CredFiles）：OAuth credentials.json 或 API-key provider_config.json
+// 任一存在即 logged_in；皆无则 logged_out（实证 2026-09-23，zcode 0.16.9）。
+func TestScanZcodeLoginViaCredFiles(t *testing.T) {
+	newZcodeRunner := func() *fakeRunner {
+		runner := newFakeRunner()
+		runner.lookups["native||zcode"] = "/home/u/.zcode/bin/zcode"
+		runner.runs["native||/home/u/.zcode/bin/zcode --version"] = "0.16.9\n"
+		runner.homes["native|"] = "/home/u"
+		return runner
+	}
+
+	// OAuth 凭证面
+	reg, _ := tempRegistry(t)
+	runner := newZcodeRunner()
+	runner.exists["native||/home/u/.zcode/v2/credentials.json"] = true
+	if err := reg.Scan(context.Background(), runner, BuiltinProbes, ScanOptions{}); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if zc := reg.List()[0]; zc.Adapter != "zcode" || zc.Login != LoginLoggedIn || zc.Version != "0.16.9" {
+		t.Fatalf("credentials.json 面发现/登录态不符：%+v", zc)
+	}
+
+	// API-key 配置面（无 OAuth 凭证）
+	reg, _ = tempRegistry(t)
+	runner = newZcodeRunner()
+	runner.exists["native||/home/u/.zcode/v2/provider_config.json"] = true
+	if err := reg.Scan(context.Background(), runner, BuiltinProbes, ScanOptions{}); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if zc := reg.List()[0]; zc.Login != LoginLoggedIn {
+		t.Fatalf("provider_config.json 面登录态不符：%+v", zc)
+	}
+
+	// 双凭证皆无 → logged_out（启用门控拒绝）
+	reg, _ = tempRegistry(t)
+	runner = newZcodeRunner()
+	if err := reg.Scan(context.Background(), runner, BuiltinProbes, ScanOptions{}); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	zc := reg.List()[0]
+	if zc.Login != LoginLoggedOut {
+		t.Fatalf("无凭证应为 logged_out：%+v", zc)
+	}
+	if err := reg.SetEnabled(zc.ID, true); err == nil {
+		t.Fatal("未登录不得启用")
+	}
+}
+
 // 负责人要求 1：Windows 宿主要扫描 WSL 内安装的 CLI。
 func TestScanCoversWSLDistros(t *testing.T) {
 	reg, _ := tempRegistry(t)

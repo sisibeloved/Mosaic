@@ -105,6 +105,31 @@ jobs:
           STUB
           chmod +x "$stub_dir/mcode"
           MOSAIC_ST_MINIMAX_STUB="$stub_dir/mcode" go test -race -tags st ./cmd/mosaic-server/ -run TestMinimaxProductionPath_ST -v
+      # 0.3.0 Agent 兼容性扩充首员：生产 zcode 路径同制门禁（真二进制+真适配器+真子进程+真发布门）。
+      - name: Production zcode path ST (stub CLI)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          stub_dir="$(mktemp -d)"
+          cat > "$stub_dir/zcode" <<'STUB'
+          #!/usr/bin/env bash
+          # zcode 桩：仅实现 -p <prompt> --output-format stream-json 的最小行流契约
+          #（提示词在 argv（-p 只认 argv，Mosaic 经 sh $(cat) 代入）；行流形状钉
+          # 0.16.9 fixtures——信封事件 + 顶格 {"type":"result"} 终止行）。
+          prompt=""
+          while [ $# -gt 0 ]; do
+            if [ "$1" = "-p" ]; then prompt="$2"; shift 2; continue; fi
+            shift
+          done
+          if printf '%s' "$prompt" | grep -q '"scores"'; then
+            resp='{\"action\":\"speak\",\"type\":\"answer\",\"public_rationale\":\"stub intent\",\"scores\":{\"relevance\":0.9,\"novelty\":0.5,\"urgency\":0.7,\"confidence\":0.8}}'
+          else
+            resp='{\"body\":\"stub 回答：1+1=2\",\"declared_relations\":[]}'
+          fi
+          printf '%s\n' '{"eventId":"e1","sessionId":"sess_stub_1","seq":1,"timestamp":0,"traceId":"t_stub","turnId":"turn_stub","type":"turn.started","payload":{"turnNumber":0}}'
+          printf '%s\n' "{\"type\":\"result\",\"sessionId\":\"sess_stub_1\",\"response\":\"$resp\",\"usage\":{\"inputTokens\":12,\"outputTokens\":5},\"eventCount\":1}"
+          STUB
+          chmod +x "$stub_dir/zcode"
+          MOSAIC_ST_ZCODE_STUB="$stub_dir/zcode" go test -race -tags st ./cmd/mosaic-server/ -run TestZcodeProductionPath_ST -v
       - name: Build mosaic-server
         run: go build ./cmd/mosaic-server
       - name: Cross-compile gate (darwin amd64/arm64 + windows amd64)

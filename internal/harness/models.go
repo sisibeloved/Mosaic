@@ -59,6 +59,12 @@ var codexEffortSet = map[string]bool{
 //     创建；-m 帮助文本"Defaults to default_model in config.toml"）；出厂值
 //     取本机首启生成 default_model。无用户档位（思考内建于模型能力）。
 //   - mcode 0.2.7：~/.minimax/config.yaml 顶层 defaultModel。
+//   - zcode 0.16.9：无适配条目——配置文件 ~/.zcode/v2/provider_config.json 是
+//     JSON 嵌套结构（schemaVersion 1），默认模型 = 首个 enabled provider 的
+//     modelOrder[0]，无顶层标量键可取（本表面只支持 TOML/YAML 顶层键），出厂
+//     回退模型随 provider 配置而定（不虚构常量）。zcode 走默认分支"空候选 +
+//     自由输入"；模型覆盖由适配器侧 provider 配置 overlay 实现
+//     （ZCODE_PERSONAL_PROVIDER_CONFIG_FILE 重定向），与本默认值面正交。
 type adapterDefaultSpec struct {
 	configPath     string // 家目录下配置文件相对路径
 	tomlModelKey   string // TOML 顶层模型键

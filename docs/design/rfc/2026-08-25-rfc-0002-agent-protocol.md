@@ -383,7 +383,7 @@ FloorGrant 绑定 `(room, thread, round, participant)` 与冻结水位随 genera
 
 | 风险 | 影响 | 应对 |
 |---|---|---|
-| ZCode 暂缺公开 headless/JSON 输出模式（官方反馈渠道已有需求追踪） | 首批适配器之一受阻 | 内部推动需求落地；过渡方案：ACP 适配（若 ZCode 提供 ACP agent）或受限集成（hooks/单轮包装）；缺口解除前该 Participant 能力降级可见 |
+| ~~ZCode 暂缺公开 headless/JSON 输出模式（官方反馈渠道已有需求追踪）~~ **（2026-09-23 解除：上游已开源 zai-org/ZCode 且 headless 面具备——实证 zcode 0.16.9 `-p --output-format stream-json --mode yolo` + `--resume` 续会话可用，ZCode 适配器落地为第四家原生适配器）** | 首批适配器之一受阻 | 内部推动需求落地；过渡方案：ACP 适配（若 ZCode 提供 ACP agent）或受限集成（hooks/单轮包装）；缺口解除前该 Participant 能力降级可见 |
 | 逐 agent 原生适配的维护成本（N 个适配器） | 适配层代码量与升级跟进 | 适配器接口最小化 + 共享工具库（进程管理、输出解析）；优先适配首批清单；ACP 适配器覆盖有 ACP 实现的 agent |
 | agent 原生输出解析脆弱（格式漂移、非结构化输出） | 主流程闭环失败率上升 | 优先使用各 agent 的结构化输出模式；Schema 严格校验 + 有限重试 + 失败可见；fixture 度量失败率并设阈值告警 |
 | 各 agent 能力参差（取消、连续性、流式、usage） | 端口语义降级路径复杂 | 能力声明 + 端口按声明降级；降级必须产生可见状态，不静默 |
@@ -408,7 +408,7 @@ FloorGrant 绑定 `(room, thread, round, participant)` 与冻结水位随 genera
 
 1. **闭环梯队终裁（OQ-03 组成部分）**：首个真实适配器（建议 native-codex：headless 最成熟）与参考 OS（建议 WSL/Linux：与部署目标一致）确认；后续晋级顺序（ZCode、Kimi Code；Windows 原生、macOS）与各梯队通过标准。
 2. 各家通道选择（native vs ACP）的 spike 计划与通过标准（与 conformance 同门禁；Kimi/Codex 均有 ACP 路径可选）。
-3. ZCode headless 缺口的解除路径与时间点（内部推动；过渡方案见风险表）；适配器详细设计前复访调研报告缺口清单。
+3. ~~ZCode headless 缺口的解除路径与时间点~~（**2026-09-23 解除**：上游 2026-09-21 开源 zai-org/ZCode，实证 zcode 0.16.9 headless `-p --output-format stream-json` + `--resume` 可用；ZCode 适配器按 A-11 门禁落地——conformance 全绿注册，提示词措辞与 codex/kimi/minimax 同源）；适配器详细设计前复访调研报告缺口清单。
 4. 取消的进程级语义：中断信号升级的等待窗口，与"终止进程即丢会话上下文"的权衡（结合各 agent 会话恢复能力；Windows 形态的信号语义单独处理）。
 5. usage 采集路径：结构化自报定为 Profile 必选还是可选（当前建议：可选 + 默认退化）。
 6. 结构化输出失败的重试次数、退避与降级路径（与 RFC-0003 的 intent 重试策略联动）。

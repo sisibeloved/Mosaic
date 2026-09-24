@@ -907,3 +907,94 @@ func TestMinimaxProductionPath_ST(t *testing.T) {
 	}
 	t.Fatal("minimax 座位未在时限内发布消息（检查登录态/网络/预算）")
 }
+
+// TestZcodeProductionPath_ST（0.3.0 Agent 兼容性扩充首员）：生产 zcode 路径的
+// 端到端门禁——真二进制 + 真适配器 + 真子进程 + 真发布门（模型面以确定性桩 CLI
+// 代理，CI 走桩、本机真机走 MOSAIC_ST_ZCODE）。桩契约：zcode -p <prompt>（提示词
+// 经 sh $(cat) 代入 argv——-p 只认 argv）+ stream-json 行流（顶格 {"type":"result"}
+// 终止行携 response/usage，形状钉 0.16.9 fixtures）。
+func TestZcodeProductionPath_ST(t *testing.T) {
+	zcodePath := os.Getenv("MOSAIC_ST_ZCODE")
+	stub := zcodePath == ""
+	if stub {
+		zcodePath = os.Getenv("MOSAIC_ST_ZCODE_STUB")
+	}
+	if zcodePath == "" {
+		t.Skip("未设 MOSAIC_ST_ZCODE / MOSAIC_ST_ZCODE_STUB（生产 zcode 路径 ST 为显式 opt-in）")
+	}
+	if !stub {
+		// 与 harness 探测口径一致：~/.zcode/v2/credentials.json（OAuth）或
+		// provider_config.json（API-key 配置）任一存在即已登录
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Skipf("家目录解析失败（skip）: %v", err)
+		}
+		logged := false
+		for _, rel := range []string{
+			filepath.Join(".zcode", "v2", "credentials.json"),
+			filepath.Join(".zcode", "v2", "provider_config.json"),
+		} {
+			if _, err := os.Stat(filepath.Join(home, rel)); err == nil {
+				logged = true
+			}
+		}
+		if !logged {
+			t.Skip("zcode 双凭证面均不存在（未登录，skip）")
+		}
+	}
+
+	bin := buildServer(t)
+	dataDir := t.TempDir()
+	// 预置已启用的 manual zcode 登记：启动扫描按 ID 合并（enabled 保留）
+	registry := `{"executables":[{"id":"st-zcode","adapter":"zcode","runtime":"native","path":` +
+		strings.TrimSpace(mustMarshalString(zcodePath)) + `,"login_state":"logged_in","source":"manual","enabled":true}]}`
+	if err := os.WriteFile(filepath.Join(dataDir, "harness-registry.json"), []byte(registry), 0o600); err != nil {
+		t.Fatalf("预置注册表: %v", err)
+	}
+
+	cmd := exec.Command(bin, "-addr", "127.0.0.1:0", "-data", dataDir)
+	stdout, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
+	base := "http://" + waitListening(t, stdout)
+
+	created := postJSONST(t, base, "/v1/rooms", map[string]any{
+		"command_kind": "create_room", "expected_room_version": 0,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4dc001", "issued_at": "2026-09-23T12:00:00.000Z",
+		"payload": map[string]any{"display_name": "zcode st"},
+	})
+	roomID, _ := created["room_id"].(string)
+	postJSONST(t, base, "/v1/rooms/"+roomID+"/commands", map[string]any{
+		"command_kind": "post_message", "expected_room_version": 1,
+		"idempotency_key": "018f6b2e-7c1a-7b3d-9e4f-1a2b3c4dc002", "issued_at": "2026-09-23T12:00:01.000Z",
+		"payload": map[string]any{"body": "用一句话回答：1+1 等于几？", "reply_to": nil, "addressed_to": []any{}, "relations": []any{}},
+	})
+
+	// zcode 评估+生成可能耗时分钟级：轮询快照直至出现 par_zcode 的 agent 消息
+	deadline := time.Now().Add(6 * time.Minute)
+	for time.Now().Before(deadline) {
+		resp, err := (&http.Client{Timeout: 5 * time.Second}).Get(base + "/v1/rooms/" + roomID + "/snapshot")
+		if err == nil {
+			var snap struct {
+				Timeline []struct {
+					ActorID   string `json:"actor_id"`
+					ActorKind string `json:"actor_kind"`
+					Body      string `json:"body"`
+				} `json:"timeline"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&snap) == nil {
+				for _, item := range snap.Timeline {
+					if item.ActorKind == "agent" && strings.HasPrefix(item.ActorID, "par_zcode") && item.Body != "" {
+						t.Logf("zcode 生产路径闭环：par_zcode 发布 %q", truncateStr(item.Body, 80))
+						return
+					}
+				}
+			}
+			resp.Body.Close()
+		}
+		time.Sleep(3 * time.Second)
+	}
+	t.Fatal("zcode 座位未在时限内发布消息（检查登录态/网络/预算）")
+}

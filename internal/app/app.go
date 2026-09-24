@@ -29,6 +29,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/agent/adapter/codex"
 	"github.com/sisibeloved/Mosaic/internal/agent/adapter/kimi"
 	"github.com/sisibeloved/Mosaic/internal/agent/adapter/minimax"
+	"github.com/sisibeloved/Mosaic/internal/agent/adapter/zcode"
 	"github.com/sisibeloved/Mosaic/internal/agent/echo"
 	"github.com/sisibeloved/Mosaic/internal/agent/slowrun"
 	"github.com/sisibeloved/Mosaic/internal/attach"
@@ -487,6 +488,26 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 					seats = append(seats, room.AgentSeat{
 						ParticipantID: "par_minimax_" + exeKey,
 						Profile:       agent.Profile{ProfileID: profileID, Adapter: "minimax", DisplayName: "MiniMax", Channel: channel},
+					})
+				case "zcode":
+					// 0.3.0 Agent 兼容性扩充首员：第四个真实适配器（zcode -p stream-json
+					// --mode yolo + --resume 恢复；提示词经 sh $(cat) 走 stdin——-p 只认
+					// argv 同 kimi 面；模型覆盖走 provider 配置 overlay，无 --model flag）。
+					cfg := zcode.Config{ZcodePath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir,
+						EvalModel: exe.EvalModel, Model: exe.Model}
+					if wslHome != "" {
+						cfg.WSLDistro = exe.Distro
+						cfg.WSLHome = wslHome
+					}
+					if err := registerAdapter(profileID,
+						strings.Join([]string{exe.Path, dir, exe.Distro, wslHome, exe.Model, exe.EvalModel}, "\x1f"),
+						func() error { return supervisor.RegisterFor(profileID, zcode.New(cfg)) }); err != nil {
+						logger.Warn("zcode adapter register failed", "profile", profileID, "err", err)
+						continue
+					}
+					seats = append(seats, room.AgentSeat{
+						ParticipantID: "par_zcode_" + exeKey,
+						Profile:       agent.Profile{ProfileID: profileID, Adapter: "zcode", DisplayName: "ZCode", Channel: channel},
 					})
 				}
 			}

@@ -1,0 +1,9 @@
+{
+  "cli_version": "zcode 0.16.9",
+  "captured_at": "2026-09-23",
+  "note": "zcode -p <prompt> --output-format stream-json --mode yolo 事件流（真机捕获：评估型 JSON 输出全程 + --resume 续会话回忆两形态）。信封 {eventId,sessionId,seq,timestamp,traceId,turnId,type,payload} + 顶格终止行 {\"type\":\"result\",...}（无信封字段）；exec-resume.jsonl 首行是非 JSON 噪声行（ZCode Built-in skipped）——解析口径忽略非 { 行由其钉住。事件 schema 无上游稳定性承诺——conformance 以本 manifest 钉住捕获版本与文件哈希，重捕获必须更新本文件（fixture_gate 测试机器可检，漂移即红）。",
+  "files": {
+    "exec-eval.jsonl": "sha256:1d339a44ccc2dedc5c5571a092f60f3b551d09d805e219530f3c3e0e0357bcdc",
+    "exec-resume.jsonl": "sha256:0dbd791f3ee21f6e8bc7255c13dc2e0fab51ab89f9c2138d8373c5ee6113e67d"
+  }
+}

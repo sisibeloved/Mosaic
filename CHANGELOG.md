@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增 ZCode 原生 Harness 适配器（0.3.0「Agent 兼容性扩充」首员，第四家）：对接 `zcode -p --output-format stream-json --mode yolo`（实证 0.16.9：headless 全自动审批 + `--resume` 跨任务续会话），提示词经 stdin 代入 argv（`-p` 只认 argv，与 Kimi 同传输面）；模型覆盖走 provider 配置 overlay（zcode 无 `--model` flag——实证 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` 重定向基座配置生效，重排目标模型所在 provider 的 `modelOrder` 并兼容开源 3.14.3 的 `defaultModelSelection`）；登录态双凭证面探测（OAuth `credentials.json` / API-key `provider_config.json` 任一即可用），设置页运行参数与评估降档口径与既有三家一致。
+
 ## [0.2.0] - 2026-09-23
 
 路线图 0.2.0 主特性「协作文档」落地（RFC-0014），群聊引擎补上沉默机制——发言资格闸（RFC-0012 附录 K，借鉴 MaiBot）。

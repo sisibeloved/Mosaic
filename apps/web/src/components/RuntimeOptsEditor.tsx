@@ -1,6 +1,7 @@
 // Agent 实例运行参数编辑器（v1.48：模型覆盖与思考强度；v1.49 确定量默认值）：
 // 设置页实例行展开。模型候选：kimi 为 CLI 实查（provider list --json，动态）；
-// codex/mcode 无官方列表命令（空候选+自由输入）。强度档位：仅 codex（五档）。
+// codex/mcode/zcode 无官方列表命令（空候选+自由输入；zcode 覆盖由适配器侧
+// provider 配置 overlay 生效，无 --model flag）。强度档位：仅 codex（五档）。
 // 默认值（v1.49）：不覆盖时的 CLI 默认是确定量——读 CLI 配置文件，缺失回退
 // 官方文档/出厂默认，行内直接展示"CLI 当前默认"。保存 = PUT 全量替换
 //（空 = 清除覆盖回 CLI 默认）；座位 ≤10s resync 生效。
@@ -31,7 +32,9 @@ export function RuntimeOptsEditor({ exe }: { exe: Executable }) {
       ? "如 gpt-5.6-sol（留空 = CLI 默认）"
       : exe.adapter === "minimax"
         ? "如 minimax/MiniMax-M2（留空 = CLI 默认）"
-        : "留空 = CLI 默认";
+        : exe.adapter === "zcode"
+          ? "如 glm-4.6（留空 = CLI 默认）"
+          : "留空 = CLI 默认";
 
   // v1.49 确定量默认值行："CLI 当前默认：gpt-5.6-sol · xhigh（来自配置文件）"。
   // 模型空 = CLI 内置预设（官方未公布常量——如实展示不虚构）。

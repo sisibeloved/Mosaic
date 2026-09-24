@@ -48,6 +48,13 @@ var providerUnavailableMarkers = []string{
 	// IT 的登录门只查 ~/.minimax/cli-auth 目录存在——目录在而 token 已死，
 	// 过期与未登录同态（鉴权不可用），按本包纪律降级跳过。
 	"sign in to minimax",
+	// zcode（2026-09-23 实证 0.16.9）：provider 配置指向空/失效 provider 文件时
+	// headless 报 "Model creation failed"（模型实例建不起来——provider 侧不可用，
+	// 环境态）；无头面缺权限审批客户端时报 "No permission client configured"
+	//（交互宿主缺失，环境态非代码缺陷——同 mcode smart 档 HOST_CAPABILITY_UNAVAILABLE
+	// 一类）。IT 登录门只查双凭证文件存在——凭证在而 provider 失效同态降级。
+	"model creation failed",
+	"no permission client configured",
 }
 
 // ProviderUnavailable 报告 err 是否为供应商侧不可用（nil 恒 false）。

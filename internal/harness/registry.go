@@ -112,6 +112,9 @@ type ProbeSpec struct {
 	LoginCmd       []string // 命令式登录探测（codex）
 	LoginOKPattern string   // 输出含此串且 exit 0 → logged_in
 	CredFile       string   // 凭证文件式探测（kimi）：相对家目录，存在即 logged_in
+	// CredFiles 多凭证面探测（zcode：OAuth credentials.json 或 API-key
+	// provider_config.json 任一存在即 logged_in——与 CredFile 并列生效，老字段不动）。
+	CredFiles []string
 	// KnownDirGlobs：常见安装位置（相对家目录的 glob 模式，展开后拼 /binary）。
 	// 文件系统事实驱动，不依赖 shell 初始化——nvm/fnm/volta 等版本管理器的唯一可靠发现面。
 	KnownDirGlobs []string
@@ -143,7 +146,7 @@ func exeID(e Executable) string {
 	return fmt.Sprintf("%s@%s:%s", e.Adapter, host, e.Path)
 }
 
-// probeLogin 探测登录态：命令式优先，其次凭证文件，皆无则 unknown。
+// probeLogin 探测登录态：命令式优先，其次凭证文件（单面/多面），皆无则 unknown。
 func probeLogin(ctx context.Context, r Runner, spec ProbeSpec, runtime Runtime, distro, binDir, path string) string {
 	if len(spec.LoginCmd) > 0 && spec.LoginOKPattern != "" {
 		ctx, cancel := context.WithTimeout(ctx, ScanOptions{}.probeTimeout())
@@ -162,6 +165,17 @@ func probeLogin(ctx context.Context, r Runner, spec ProbeSpec, runtime Runtime, 
 		home := r.Home(ctx, runtime, distro)
 		if home != "" && r.Exists(ctx, runtime, distro, home+"/"+spec.CredFile) {
 			return LoginLoggedIn
+		}
+		return LoginLoggedOut
+	}
+	if len(spec.CredFiles) > 0 {
+		home := r.Home(ctx, runtime, distro)
+		if home != "" {
+			for _, f := range spec.CredFiles {
+				if r.Exists(ctx, runtime, distro, home+"/"+f) {
+					return LoginLoggedIn
+				}
+			}
 		}
 		return LoginLoggedOut
 	}

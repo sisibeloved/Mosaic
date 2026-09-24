@@ -125,9 +125,19 @@ var BuiltinProbes = []ProbeSpec{
 		},
 	},
 	{
-		// headless 缺口（调研 issue #29）：仅登记存在性与版本，登录探测待 headless 落地后补
+		// 实证 2026-09-23（zcode 0.16.9，桌面版 bundled；开源 zai-org/ZCode 3.14.3
+		// 同面）：zcode --version → "0.16.9"；无 login status 子命令，登录态双凭证
+		// 面——OAuth ~/.zcode/v2/credentials.json 或 API-key 配置
+		// ~/.zcode/v2/provider_config.json 任一存在即可用。无 npm 包（官方 release
+		// tarball 的 install.sh 安装位置未见权威实锤），按 .zcode/bin 与 .local/bin
+		// glob 发现（PATH 命中仍优先）。
 		Adapter:     "zcode",
 		Binary:      "zcode",
 		VersionArgs: []string{"--version"},
+		CredFiles:   []string{".zcode/v2/credentials.json", ".zcode/v2/provider_config.json"},
+		KnownDirGlobs: []string{
+			".zcode/bin",
+			".local/bin",
+		},
 	},
 }
