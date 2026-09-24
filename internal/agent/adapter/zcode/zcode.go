@@ -342,6 +342,9 @@ func (s *session) envFor() []string {
 // provider_config.json 双凭证面），HOME 即锚点；代理/CA 等网络配置从宿主透传
 // （与 codex/kimi/minimax 同口径：网络配置非凭据——OQ-20 禁的是持有凭证与代理
 // 流量）；不传 API key；其余不透传。
+// ZCODE_HTTP_PROXY 是 zcode 官方代理键（0.16.9 实证生效：标准 http_proxy 系
+// 变量其 HTTP 客户端不理会）——WSL 直连运营商出口不稳时，走宿主代理是
+// 重试风暴（maxAttempts 11 吃满任务超时）的唯一稳定解。
 func zcodeEnvWithHome(zcodePath, home string) []string {
 	if home == "" {
 		home = "/root"
@@ -357,6 +360,7 @@ func zcodeEnvWithHome(zcodePath, home string) []string {
 	for _, key := range []string{
 		"http_proxy", "https_proxy", "all_proxy", "no_proxy",
 		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+		"ZCODE_HTTP_PROXY",
 		"SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
 	} {
 		if v := os.Getenv(key); v != "" {
