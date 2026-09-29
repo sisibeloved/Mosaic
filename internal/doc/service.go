@@ -18,13 +18,15 @@ import (
 	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/protocol"
+	"github.com/sisibeloved/Mosaic/internal/sheet"
 )
 
 var (
-	uuidv7Pattern   = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-	eventIDPattern  = regexp.MustCompile(`^evt_[0-9A-Za-z_-]+$`)
-	docIDPattern    = regexp.MustCompile(`^doc_[0-9a-f]{12}$`)
-	revisionSources = map[string]bool{"human_editor": true, "agent": true}
+	uuidv7Pattern  = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	eventIDPattern = regexp.MustCompile(`^evt_[0-9A-Za-z_-]+$`)
+	docIDPattern   = regexp.MustCompile(`^doc_[0-9a-f]{12}$`)
+	// RFC-0017 §3.4：source 枚举含 import/restore（事件 schema 已同步）；M2 表格导入走 import。
+	revisionSources = map[string]bool{"human_editor": true, "agent": true, "import": true}
 )
 
 // Actor 命令行动者（命令通道：human=本地 owner / system；agent 经 CommitRevision 代写）。
@@ -123,6 +125,8 @@ func (s *Service) ExecuteCommand(ctx context.Context, actor Actor, cmd Command) 
 		return s.renameDoc(ctx, actor, cmd)
 	case "commit_doc_revision":
 		return s.commitDocRevision(ctx, actor, cmd)
+	case "commit_sheet_revision":
+		return s.commitSheetRevision(ctx, actor, cmd)
 	case "archive_doc":
 		return s.archiveDoc(ctx, actor, cmd)
 	case "restore_doc":
@@ -163,8 +167,11 @@ func (s *Service) createDoc(ctx context.Context, actor Actor, cmd Command) (*Com
 	if format == "" {
 		format = "markdown"
 	}
-	if format != "markdown" {
-		return nil, fmt.Errorf("%w: format 首版封闭枚举仅 markdown", ErrInvalidCommand)
+	if format != "markdown" && format != FormatSpreadsheet {
+		return nil, fmt.Errorf("%w: format 封闭枚举 markdown | spreadsheet", ErrInvalidCommand)
+	}
+	if format == FormatSpreadsheet && len(payload.InitialBlocks) > 0 {
+		return nil, fmt.Errorf("%w: spreadsheet 文档不支持 initial_blocks（内容走 commit_sheet_revision）", ErrInvalidCommand)
 	}
 	if payload.AnchorMessageID != nil && !eventIDPattern.MatchString(*payload.AnchorMessageID) {
 		return nil, fmt.Errorf("%w: anchor_message_id 形如 evt_*", ErrInvalidCommand)
@@ -403,6 +410,164 @@ func (s *Service) CreateDoc(ctx context.Context, actor Actor, title string, bloc
 	return &CommandResult{DocID: docID, EventID: appended[len(appended)-1].EventID, DocVersion: appended[len(appended)-1].Version}, nil
 }
 
+// commitSheetRevision 命令路径（RFC-0017 M1）：format=spreadsheet 专用；校验
+// 纪律与 commitDocRevision 同构（幂等回放 → 存在 → 活跃 → CAS → 批体 →
+// 归一化校验），任一 op 校验失败整批拒绝。
+func (s *Service) commitSheetRevision(ctx context.Context, actor Actor, cmd Command) (*CommandResult, error) {
+	if res, err := s.replayIfReceived(ctx, cmd, actor); res != nil || err != nil {
+		return res, err
+	}
+	state, err := s.requireState(ctx, cmd.DocID)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireActive(state); err != nil {
+		return nil, err
+	}
+	if res, err := s.checkVersion(ctx, cmd, actor, state); res != nil || err != nil {
+		return res, err
+	}
+	if len(cmd.Payload) > sheet.MaxBatchBytes {
+		return nil, fmt.Errorf("%w: 批体超 %d KiB", ErrInvalidCommand, sheet.MaxBatchBytes>>10)
+	}
+	var payload struct {
+		BaseVersion *int64             `json:"base_version"`
+		Ops         []protocol.SheetOp `json:"ops"`
+		Note        string             `json:"note"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(cmd.Payload)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("%w: commit_sheet_revision payload: %v", ErrInvalidCommand, err)
+	}
+	if payload.BaseVersion != nil && *payload.BaseVersion != cmd.ExpectedDocVersion {
+		return nil, fmt.Errorf("%w: payload.base_version 与命令期望版本不一致", ErrInvalidCommand)
+	}
+	if len([]rune(payload.Note)) > 280 {
+		return nil, fmt.Errorf("%w: note 超 280 字", ErrInvalidCommand)
+	}
+	normalized, err := s.validateSheetOps(state, payload.Ops)
+	if err != nil {
+		return nil, err
+	}
+	env := s.newEnvelope(actor, cmd.DocID, protocol.EventDocSheetRevisionCommitted,
+		mustJSON(protocol.DocSheetRevisionCommittedPayload{
+			DocID: cmd.DocID, BaseVersion: state.Version, Version: state.Version + 1,
+			Ops: normalized, Actor: actor.ParticipantID, Source: "human_editor", Note: payload.Note,
+		}))
+	return s.commitWith(ctx, cmd, actor, env)
+}
+
+// CommitSheetRevision 引擎代写路径（RFC-0017 §4.3：agent 经 sheet_ops 引擎
+// 校验代写，actor 记为该 bot）：与 CommitRevision 同纪律，不走幂等回执。
+func (s *Service) CommitSheetRevision(ctx context.Context, actor Actor, docID string, baseVersion int64, ops []protocol.SheetOp, source, note string) (*CommandResult, error) {
+	if actor.ParticipantID == "" {
+		return nil, fmt.Errorf("%w: actor 必须具名", ErrInvalidCommand)
+	}
+	if !revisionSources[source] {
+		return nil, fmt.Errorf("%w: source 取值 human_editor | agent", ErrInvalidCommand)
+	}
+	if len([]rune(note)) > 280 {
+		return nil, fmt.Errorf("%w: note 超 280 字", ErrInvalidCommand)
+	}
+	state, err := s.requireState(ctx, docID)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireActive(state); err != nil {
+		return nil, err
+	}
+	if state.Version != baseVersion {
+		return nil, &VersionConflictError{DocID: docID, Expected: baseVersion, Current: state.Version}
+	}
+	normalized, err := s.validateSheetOps(state, ops)
+	if err != nil {
+		return nil, err
+	}
+	env := s.newEnvelope(actor, docID, protocol.EventDocSheetRevisionCommitted,
+		mustJSON(protocol.DocSheetRevisionCommittedPayload{
+			DocID: docID, BaseVersion: baseVersion, Version: baseVersion + 1,
+			Ops: normalized, Actor: actor.ParticipantID, Source: source, Note: note,
+		}))
+	cas, ok := s.cfg.Store.(DocCASStore)
+	if !ok {
+		return nil, fmt.Errorf("doc: 存储不支持 CAS 追加")
+	}
+	appended, err := cas.AppendDocEventsIf(ctx, []protocol.DocEnvelope{env}, baseVersion)
+	if err != nil {
+		return nil, fmt.Errorf("doc: append: %w", err)
+	}
+	return &CommandResult{DocID: docID, EventID: appended[0].EventID, DocVersion: appended[0].Version}, nil
+}
+
+// CreateSheetDoc 引擎代写创建（RFC-0017 §4.3 sheet_ops create）：创建
+// format=spreadsheet 资产；initialCells 作用于 doc_id 派生的默认表（≤1000），
+// 携带时同事务追加首条 sheet revision（created + revision 两事件一批）。
+func (s *Service) CreateSheetDoc(ctx context.Context, actor Actor, title string, initialCells []protocol.SheetCell, source, note string) (*CommandResult, error) {
+	if actor.ParticipantID == "" {
+		return nil, fmt.Errorf("%w: actor 必须具名", ErrInvalidCommand)
+	}
+	if !revisionSources[source] {
+		return nil, fmt.Errorf("%w: source 取值 human_editor | agent", ErrInvalidCommand)
+	}
+	if n := len([]rune(title)); n < 1 || n > MaxTitleRunes {
+		return nil, fmt.Errorf("%w: title 必填 1..%d 字", ErrInvalidCommand, MaxTitleRunes)
+	}
+	if len([]rune(note)) > 280 {
+		return nil, fmt.Errorf("%w: note 超 280 字", ErrInvalidCommand)
+	}
+	if len(initialCells) > sheet.MaxCellsPerBatch {
+		return nil, fmt.Errorf("%w: initial cells ≤ %d", ErrInvalidCommand, sheet.MaxCellsPerBatch)
+	}
+	docID := s.cfg.NewDocID()
+	if !docIDPattern.MatchString(docID) {
+		return nil, fmt.Errorf("doc: NewDocID 产物 %q 不符合 doc_<12hex>", docID)
+	}
+	envs := []protocol.DocEnvelope{s.newEnvelope(actor, docID, protocol.EventDocCreated,
+		mustJSON(protocol.DocCreatedPayload{
+			DocID: docID, Title: title, Format: FormatSpreadsheet, CreatedBy: actor.ParticipantID,
+		}))}
+	if len(initialCells) > 0 {
+		wb := sheet.NewWorkbookForDoc(docID)
+		ops := []protocol.SheetOp{{Op: sheet.OpSetCells, SheetID: wb.Sheets[0].SheetID, Cells: initialCells}}
+		normalized, err := sheet.ValidateBatch(wb, ops, s.newSheetID())
+		if err != nil {
+			return nil, fmt.Errorf("%w: initial cells 校验失败: %v", ErrInvalidCommand, err)
+		}
+		envs = append(envs, s.newEnvelope(actor, docID, protocol.EventDocSheetRevisionCommitted,
+			mustJSON(protocol.DocSheetRevisionCommittedPayload{
+				DocID: docID, BaseVersion: 1, Version: 2, Ops: normalized,
+				Actor: actor.ParticipantID, Source: source, Note: note,
+			})))
+	}
+	cas, ok := s.cfg.Store.(DocCASStore)
+	if !ok {
+		return nil, fmt.Errorf("doc: 存储不支持 CAS 追加")
+	}
+	appended, err := cas.AppendDocEventsIf(ctx, envs, 0)
+	if err != nil {
+		return nil, fmt.Errorf("doc: append: %w", err)
+	}
+	return &CommandResult{DocID: docID, EventID: appended[len(appended)-1].EventID, DocVersion: appended[len(appended)-1].Version}, nil
+}
+
+// validateSheetOps 表格批校验：format 门 → sheet 域归一化（副本试算，拒绝时
+// 原件无损；结构操作连带公式改写定稿进事件）。
+func (s *Service) validateSheetOps(state DocState, ops []protocol.SheetOp) ([]protocol.SheetOp, error) {
+	if state.Format != FormatSpreadsheet || state.Workbook == nil {
+		return nil, fmt.Errorf("%w: 该文档不是表格（format=spreadsheet）", ErrInvalidCommand)
+	}
+	if len(ops) == 0 {
+		return nil, fmt.Errorf("%w: ops 至少 1 条", ErrInvalidCommand)
+	}
+	return sheet.ValidateBatch(state.Workbook, ops, s.newSheetID())
+}
+
+// newSheetID add_sheet 的服务端 ID 分配（cfg.NewID("sht")——与 evt_/blk_ 同源）。
+func (s *Service) newSheetID() sheet.NewSheetID {
+	return func() string { return s.cfg.NewID("sht") }
+}
+
 // archiveDoc 归档（active → archived；归档为只读态）。
 func (s *Service) archiveDoc(ctx context.Context, actor Actor, cmd Command) (*CommandResult, error) {
 	return s.lifecycleDoc(ctx, actor, cmd, protocol.EventDocArchived)
@@ -531,7 +696,42 @@ func (s *Service) duplicateDoc(ctx context.Context, actor Actor, cmd Command) (*
 	envs := []protocol.DocEnvelope{mkEnv(protocol.EventDocCreated, mustJSON(protocol.DocCreatedPayload{
 		DocID: docID, Title: title, Format: src.Format, CreatedBy: actor.ParticipantID,
 	}))}
-	if len(src.Blocks) > 0 {
+	if src.Format == FormatSpreadsheet && src.Workbook != nil {
+		// 表格副本：逐条重放源文档的归一化 sheet 修订（公式改写史保真；
+		// 事件批形不变，≤64 ops/条约束天然继承）。默认表 ID 派生自 doc_id——
+		// 重放须把旧默认表 ID 重映射到新 doc 的派生 ID（服务端分配的 add_sheet
+		// ID 全局唯一，原样保留）。
+		history, err := s.historyOf(ctx, cmd.DocID)
+		if err != nil {
+			return nil, err
+		}
+		oldDefault := "sht_" + strings.TrimPrefix(cmd.DocID, "doc_")
+		newDefault := "sht_" + strings.TrimPrefix(docID, "doc_")
+		remapSheet := func(id string) string {
+			if id == oldDefault {
+				return newDefault
+			}
+			return id
+		}
+		ver := int64(1)
+		for _, ev := range history {
+			if ev.Envelope.Type != protocol.EventDocSheetRevisionCommitted {
+				continue
+			}
+			var p protocol.DocSheetRevisionCommittedPayload
+			if json.Unmarshal(ev.Envelope.Payload, &p) != nil {
+				continue
+			}
+			for i := range p.Ops {
+				p.Ops[i].SheetID = remapSheet(p.Ops[i].SheetID)
+			}
+			ver++
+			envs = append(envs, mkEnv(protocol.EventDocSheetRevisionCommitted, mustJSON(protocol.DocSheetRevisionCommittedPayload{
+				DocID: docID, BaseVersion: ver - 1, Version: ver, Ops: p.Ops,
+				Actor: actor.ParticipantID, Source: "human_editor", Note: "副本自 " + cmd.DocID,
+			})))
+		}
+	} else if len(src.Blocks) > 0 {
 		ops := make([]protocol.DocOp, 0, len(src.Blocks))
 		for _, b := range src.Blocks {
 			block := b
@@ -559,12 +759,167 @@ func (s *Service) GetDoc(ctx context.Context, docID string) (DocState, error) {
 }
 
 // ExportDoc 导出 markdown（RFC-0014 §2.8；归档可导出，删除后不可得）。
+// 表格文档不走此面——调用方按 format 分派至 ExportSheetCSV。
 func (s *Service) ExportDoc(ctx context.Context, docID string) (string, DocState, error) {
 	state, err := s.requireState(ctx, docID)
 	if err != nil {
 		return "", DocState{}, err
 	}
+	if state.Format == FormatSpreadsheet {
+		return "", state, fmt.Errorf("%w: spreadsheet 文档按工作表导出 CSV（ExportSheetCSV）", ErrInvalidCommand)
+	}
 	return RenderMarkdown(state), state, nil
+}
+
+// ExportSheetCSV 单表 CSV 导出（快照语义：公式格写当前派生值，不可计算公式
+// 写错误码；sheetID 空 = 首表）。
+func (s *Service) ExportSheetCSV(ctx context.Context, docID, sheetID string) (string, DocState, error) {
+	state, err := s.requireState(ctx, docID)
+	if err != nil {
+		return "", DocState{}, err
+	}
+	if state.Format != FormatSpreadsheet || state.Workbook == nil {
+		return "", state, fmt.Errorf("%w: 该文档不是表格", ErrInvalidCommand)
+	}
+	sh := state.Workbook.SheetByID(sheetID)
+	if sh == nil && sheetID == "" && len(state.Workbook.Sheets) > 0 {
+		sh = state.Workbook.Sheets[0]
+	}
+	if sh == nil {
+		return "", state, fmt.Errorf("%w: 工作表不存在", ErrSheetNotFound)
+	}
+	return RenderSheetCSV(sh, sheet.Evaluate(state.Workbook)[sh.SheetID]), state, nil
+}
+
+// SheetCellView 范围读取的单格视图（内容 + 公式原文 + 派生值）。
+type SheetCellView struct {
+	R       int                      `json:"r"`
+	C       int                      `json:"c"`
+	Type    string                   `json:"type"` // text | number | bool | datetime | formula
+	Text    string                   `json:"text,omitempty"`
+	Number  *float64                 `json:"number,omitempty"`
+	Bool    *bool                    `json:"bool,omitempty"`
+	Formula string                   `json:"formula,omitempty"`
+	Style   *protocol.SheetCellStyle `json:"style,omitempty"`
+	Derived *sheet.Derived           `json:"derived,omitempty"` // formula 格携带
+}
+
+// SheetRangeView 范围读取结果（Truncated = used-range 缺省读取被容量截断）。
+type SheetRangeView struct {
+	DocID     string              `json:"doc_id"`
+	SheetID   string              `json:"sheet_id"`
+	Version   int64               `json:"version"`
+	Range     protocol.SheetRange `json:"range"`
+	Cells     []SheetCellView     `json:"cells"`
+	Truncated bool                `json:"truncated"`
+}
+
+// ReadSheetRange 有界区域读取（RFC-0017 §4.2）：rng=nil → 已填格 used range
+// （超 MaxRangeCellsPerRead 按行截断并标记）；显式范围超限直接拒绝。
+func (s *Service) ReadSheetRange(ctx context.Context, docID, sheetID string, rng *protocol.SheetRange) (SheetRangeView, error) {
+	state, err := s.requireState(ctx, docID)
+	if err != nil {
+		return SheetRangeView{}, err
+	}
+	if state.Format != FormatSpreadsheet || state.Workbook == nil {
+		return SheetRangeView{}, fmt.Errorf("%w: 该文档不是表格", ErrInvalidCommand)
+	}
+	sh := state.Workbook.SheetByID(sheetID)
+	if sh == nil {
+		return SheetRangeView{}, fmt.Errorf("%w: 工作表不存在", ErrSheetNotFound)
+	}
+	view := SheetRangeView{DocID: docID, SheetID: sheetID, Version: state.Version}
+	truncated := false
+	if rng == nil {
+		r, c, ok := usedRange(sh)
+		if !ok {
+			view.Cells = []SheetCellView{}
+			return view, nil
+		}
+		rng = &protocol.SheetRange{R1: 1, C1: 1, R2: r, C2: c}
+		if (rng.R2-rng.R1+1)*(rng.C2-rng.C1+1) > sheet.MaxRangeCellsPerRead {
+			rng.R2 = rng.R1 + sheet.MaxRangeCellsPerRead/(rng.C2-rng.C1+1) - 1
+			truncated = true
+		}
+	} else if (rng.R2-rng.R1+1)*(rng.C2-rng.C1+1) > sheet.MaxRangeCellsPerRead {
+		return SheetRangeView{}, fmt.Errorf("%w: 范围超限（≤%d 格/次）", ErrInvalidCommand, sheet.MaxRangeCellsPerRead)
+	}
+	view.Range = *rng
+	view.Truncated = truncated
+	derived := sheet.Evaluate(state.Workbook)[sh.SheetID]
+	view.Cells = make([]SheetCellView, 0, len(sh.Cells))
+	for r := rng.R1; r <= rng.R2; r++ {
+		for c := rng.C1; c <= rng.C2; c++ {
+			cell := sh.CellAt(r, c)
+			if cell == nil {
+				continue
+			}
+			view.Cells = append(view.Cells, cellView(r, c, cell, derived[sheet.Coord{R: r, C: c}]))
+		}
+	}
+	return view, nil
+}
+
+// usedRange 已填内容的最大行列（全空返回 false）。
+func usedRange(sh *sheet.Sheet) (maxR, maxC int, ok bool) {
+	for coord, cell := range sh.Cells {
+		if cell == nil || (cell.Formula == "" && cell.Value == nil) {
+			continue
+		}
+		if coord.R > maxR {
+			maxR = coord.R
+		}
+		if coord.C > maxC {
+			maxC = coord.C
+		}
+		ok = true
+	}
+	return maxR, maxC, ok
+}
+
+func cellView(r, c int, cell *sheet.Cell, d sheet.Derived) SheetCellView {
+	v := SheetCellView{R: r, C: c, Style: cell.Style}
+	switch {
+	case cell.Formula != "":
+		v.Type = "formula"
+		v.Formula = cell.Formula
+		dv := d
+		v.Derived = &dv
+	case cell.Value != nil:
+		v.Type = cell.Value.Type
+		v.Text = cell.Value.Text
+		v.Number = cell.Value.Number
+		v.Bool = cell.Value.Bool
+	default:
+		return v // 样式-only 格
+	}
+	return v
+}
+
+// RenderSheetCSV 单表 → CSV（RFC4180 引号转义；公式格显派生值）。
+func RenderSheetCSV(sh *sheet.Sheet, derived map[sheet.Coord]sheet.Derived) string {
+	maxR, maxC, ok := usedRange(sh)
+	if !ok {
+		return ""
+	}
+	var sb strings.Builder
+	for r := 1; r <= maxR; r++ {
+		for c := 1; c <= maxC; c++ {
+			if c > 1 {
+				sb.WriteByte(',')
+			}
+			sb.WriteString(csvEscape(sheet.CellDisplay(sh.CellAt(r, c), derived[sheet.Coord{R: r, C: c}])))
+		}
+		sb.WriteByte('\n')
+	}
+	return sb.String()
+}
+
+func csvEscape(s string) string {
+	if strings.ContainsAny(s, ",\"\n\r") {
+		return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+	}
+	return s
 }
 
 // SearchDocs 全文搜索（委托 Searcher 端口；nil 装配如实报错）。

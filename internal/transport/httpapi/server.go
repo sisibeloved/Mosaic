@@ -20,6 +20,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/backup"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/doc"
+	"github.com/sisibeloved/Mosaic/internal/extdocs"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/monitor"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
@@ -76,6 +77,12 @@ type Deps struct {
 	DocSVC *doc.Service
 	// DocReader 文档事件读路径（doc:{id} 频道 SSE 追平）：nil = doc SSE 404。
 	DocReader doc.DocEventReader
+	// ExtDocs 外部云文档集成面（RFC-0016 多 provider：腾讯/飞书）：nil = extdocs
+	// 端点 404（测试装配）。
+	ExtDocs *extdocs.Service
+	// SheetTransfers 表格手动交换服务（RFC-0017 M2）：nil = 交换端点 404。
+	// 与 ExtDocs 双依赖（provider 注册表来自后者）。
+	SheetTransfers *extdocs.SheetTransferService
 	// Diagnostics 自诊断 bundle 构造器（M4-0）：nil = 诊断端点 404。
 	// 内容纪律：不含凭据/环境变量（OQ-20）——版本/运行时/数据面统计/注册表状态/日志尾。
 	Diagnostics func() (map[string]any, error)

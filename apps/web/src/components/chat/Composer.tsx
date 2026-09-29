@@ -6,7 +6,7 @@
 // RFC-0014 §2.4：文档引用 chip（≤8——服务端 refs 上限）；📄 按钮弹文档挑选器
 // （工作区列表客户端过滤），发送时随消息携带 refs 描述子。
 import { useEffect, useRef, useState } from "react";
-import type { ParticipantView } from "../../api/client";
+import { api, type ExternalRef, type ParticipantView } from "../../api/client";
 import { adapterLabel } from "../../lib/copy";
 import { relativeTime } from "../../lib/ui";
 import { refreshDocs, useDocs } from "../../state/docs";
@@ -15,6 +15,34 @@ import { Avatar } from "./Avatar";
 const MAX_TARGETS = 3;
 /** 文档引用上限（服务端 PostMessagePayload.refs ≤ 8）。 */
 const MAX_DOC_REFS = 8;
+/** 外部文档引用上限（服务端 PostMessagePayload.external_refs ≤ 4）。 */
+const MAX_EXTERNAL_REFS = 4;
+
+/** 正文中的外部文档链接检测（RFC-0016 §2.3；https + 白名单 host——
+ * docs.qq.com 精确 / *.feishu.cn 后缀）。 */
+const EXT_DOC_LINK_PATTERN = /https:\/\/(?:docs\.qq\.com|[A-Za-z0-9-]+\.feishu\.cn)\/[A-Za-z0-9/_?&=%.\-]+/g;
+
+/**
+ * 外部文档链接 → 引用描述子：逐条 resolve（补标题/类型/kind），失败降级为裸
+ * URL 引用（{kind, url}——服务端 external_refs 校验只看形状，卡片缺标题时
+ * 显示 URL）。resolve 端点未装配/网络失败均不阻断发送。
+ */
+async function resolveExtDocRefs(text: string): Promise<ExternalRef[] | undefined> {
+  const urls = [...new Set(text.match(EXT_DOC_LINK_PATTERN) ?? [])].slice(0, MAX_EXTERNAL_REFS);
+  if (urls.length === 0) return undefined;
+  const refs = await Promise.all(
+    urls.map(async (url): Promise<ExternalRef> => {
+      try {
+        const info = await api.resolveExtDocLink(url);
+        const kind = info.kind ?? (url.includes("feishu.cn") ? "fdoc" : "txdoc");
+        return { kind, url: info.url, title: info.title ?? undefined, doc_type: info.doc_type || undefined };
+      } catch {
+        return { kind: url.includes("feishu.cn") ? "fdoc" : "txdoc", url };
+      }
+    }),
+  );
+  return refs;
+}
 
 /**
  * 剪贴板粘贴图片（RFC-0013 附件面）：paste 事件的 clipboardData.items 里
@@ -102,7 +130,14 @@ export function Composer({
   onRemoveDocRef: (docID: string) => void;
   mentionRequest: MentionRequest | null;
   onMentionConsumed: () => void;
-  onSend: (body: string, addressedTo: string[], replyTo: string | null, attachments: string[], refs: { kind: "doc"; doc_id: string }[]) => void;
+  onSend: (
+    body: string,
+    addressedTo: string[],
+    replyTo: string | null,
+    attachments: string[],
+    refs: { kind: "doc"; doc_id: string }[],
+    externalRefs?: ExternalRef[],
+  ) => void;
 }) {
   const [body, setBody] = useState("");
   const [chips, setChips] = useState<ParticipantView[]>([]);
@@ -158,19 +193,24 @@ export function Composer({
     areaRef.current?.focus();
   };
 
-  const submit = () => {
+  const submit = async () => {
     const text = body.trim();
     if (!text || blocked) return;
+    // 先清输入面再异步 resolve——防止 resolve 期间二次 Enter 重复提交
+    setBody("");
+    setChips([]);
+    setMention(null);
+    // RFC-0016 §2.3：正文里的外部文档链接 → 发送前 resolve 成卡片描述子
+    //（≤4 去重；resolve 失败降级为裸 URL 引用——服务端只校验形状，卡片缺标题照常渲染）
+    const externalRefs = await resolveExtDocRefs(text);
     onSend(
       text,
       chips.map((c) => c.participant_id),
       quoted?.eventID ?? null,
       attachments.map((a) => a.token),
       docRefs.map((r) => ({ kind: "doc" as const, doc_id: r.docID })),
+      externalRefs,
     );
-    setBody("");
-    setChips([]);
-    setMention(null);
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -192,7 +232,7 @@ export function Composer({
     }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      submit();
+      void submit();
     }
   };
 
@@ -327,7 +367,7 @@ export function Composer({
                   ? "房间已暂停——恢复后可继续发言"
                   : chips.length > 0
                     ? "输入消息…（将点名所选对象）"
-                    : "输入消息，@ 点名 agent（最多 3 个）"
+                    : "输入消息，@ 点名 agent（最多 3 个）；粘贴腾讯/飞书文档链接自动转卡片"
               }
               className="max-h-[180px] flex-1 resize-none bg-transparent text-sm outline-none placeholder:text-faint"
               onChange={(e) => {

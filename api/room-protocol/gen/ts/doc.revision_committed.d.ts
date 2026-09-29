@@ -42,10 +42,18 @@ export interface DocOp {
   text?: string;
 }
 /**
- * 块模型（RFC-0014 §2.2：稳定 block_id 是锚定操作、冲突重放与卡片摘要的共同基础；text 为 markdown 行内语法）。
+ * 块模型（RFC-0014 §2.2；RFC-0016 增补元数据）：level 仅 heading（1..6，缺省导出按 2）、lang 仅 code（≤48 runes，导出 fence 标注）；text 自带标记（# 前缀/fence）导出透传优先——存量数据零迁移。
  */
 export interface DocBlock {
   block_id: string;
   type: "heading" | "paragraph" | "list" | "code" | "quote" | "hr";
   text: string;
+  /**
+   * heading 专属：标题级别
+   */
+  level?: number;
+  /**
+   * code 专属：语言标注（如 go、python）
+   */
+  lang?: string;
 }

@@ -509,19 +509,105 @@ paths:
               schema:
                 type: string
         "400": { $ref: "#/components/responses/BadRequest" }
-  /v1/docs/{doc_id}/export:
+  /v1/docs/{doc_id}/sheets:
     get:
-      operationId: exportDoc
-      summary: 导出 markdown（.md；归档可导出，删除后 404）
+      operationId: listDocSheets
+      summary: 工作表元信息清单（RFC-0017 M1；仅 format=spreadsheet）
+      description: |
+        只读端点（不设 owner token 门）。返回工作表清单（稳定 ID/名称/尺寸/
+        已填格数）与当前文档版本——编辑器据此外加范围读取组装界面。
       parameters:
         - $ref: "#/components/parameters/DocID"
       responses:
         "200":
-          description: markdown 文本（标题作 H1，块依序排列）
+          description: 工作表清单
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [doc_id, version, sheets]
+                properties:
+                  doc_id: { type: string }
+                  version: { type: integer, format: int64 }
+                  sheets:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SheetMeta"
+        "404": { $ref: "#/components/responses/DocNotFound" }
+        "409":
+          description: 该文档不是表格（format != spreadsheet）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+  /v1/docs/{doc_id}/sheets/{sheet_id}/range:
+    get:
+      operationId: getDocSheetRange
+      summary: 有界区域读取（类型化单元格 + 公式原文 + 派生值 + 版本）
+      description: |
+        只读端点。`?range=A1:C10`（缺省 = 已填格 used range，超 10000 格按行
+        截断并标记 truncated）；显式范围超限 400。公式格返回服务端权威派生结果
+        （kind=value|error|unsupported）。
+      parameters:
+        - $ref: "#/components/parameters/DocID"
+        - name: sheet_id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 工作表稳定 ID
+        - name: range
+          in: query
+          required: false
+          schema: { type: string, pattern: "^[A-Za-z]{1,3}[0-9]+:[A-Za-z]{1,3}[0-9]+$" }
+          description: A1:B2 形态（缺省 = used range）
+      responses:
+        "200":
+          description: 范围视图
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SheetRangeView"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/DocNotFound" }
+        "409":
+          description: 该文档不是表格
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/Internal" }
+  /v1/docs/{doc_id}/export:
+    get:
+      operationId: exportDoc
+      summary: 导出（markdown 文档 → .md；表格文档 → 指定工作表 .csv）
+      description: |
+        format 分派（RFC-0017 §4.2）：markdown → text/markdown（标题作 H1）；
+        spreadsheet → text/csv（快照语义：公式格写当前派生值；`?sheet_id=`
+        缺省首表）。归档可导出，删除后 404。
+      parameters:
+        - $ref: "#/components/parameters/DocID"
+        - name: sheet_id
+          in: query
+          required: false
+          schema: { type: string }
+          description: 仅 spreadsheet：目标工作表 ID（缺省 = 首表）
+      responses:
+        "200":
+          description: 导出文本
           content:
             text/markdown:
               schema:
                 type: string
+            text/csv:
+              schema:
+                type: string
+        "400":
+          description: spreadsheet 文档未带 sheet_id 且无工作表 / 非表格走 markdown
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404": { $ref: "#/components/responses/DocNotFound" }
   /v1/agents:
     get:
@@ -808,6 +894,487 @@ paths:
       responses:
         "200":
           description: 已检查（结果反映在运行态水位）
+  /v1/extdocs/providers:
+    get:
+      operationId: listExtDocProviders
+      summary: 外部文档 provider 清单与凭据状态（RFC-0016 多 provider）
+      description: |
+        已注册 provider 的状态视图（凭据配置/授权态/验证水位）。未装配外部
+        文档面（测试装配）返回 404。
+      responses:
+        "200":
+          description: provider 状态列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExtDocProviderList" }
+        "404":
+          description: 本装配未启用外部文档面
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/extdocs/{provider}/settings:
+    get:
+      operationId: getExtDocSettings
+      summary: provider 凭据状态（不含任何凭据值）
+      description: |
+        状态字段按 provider 分化（tencent_docs: configured；feishu_docs:
+        app_configured/authorized/expires_at）——凭据值永不回传。
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, enum: [tencent_docs, feishu_docs] }
+      responses:
+        "200":
+          description: 凭据状态
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExtDocSettingsDoc" }
+        "404":
+          description: 未知 provider 或面未装配（extdocs_bad_provider / extdocs_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    put:
+      operationId: updateExtDocSettings
+      summary: 写入/清除 provider 凭据（0600 原子落盘）
+      security: [{ OwnerToken: [] }]
+      description: |
+        写端点（三层门）。载荷按 provider 分化：tencent_docs 携 token；feishu_docs
+        携 app_id + app_secret（两者须同时给，空 = 清除）。凭据仅落本机，不进
+        日志、不经任何读端点回传。
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, enum: [tencent_docs, feishu_docs] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExtDocSettingsUpdate" }
+      responses:
+        "200":
+          description: 凭据状态（无值）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExtDocSettingsDoc" }
+        "400":
+          description: 载荷不合法
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/extdocs/{provider}/verify:
+    post:
+      operationId: verifyExtDoc
+      summary: 验证凭据（provider 各自探活）
+      security: [{ OwnerToken: [] }]
+      description: |
+        写端点（三层门）。腾讯 = 上游 tools/list；飞书 = token 有效性（必要时
+        刷新成功即证明凭据链健康）。业务失败 200 ok=false 携带上游码。
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, enum: [tencent_docs, feishu_docs] }
+      responses:
+        "200":
+          description: 验证结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExtDocVerifyResult" }
+        "409":
+          description: 凭据未配置（extdocs_token_missing）或需重新授权（extdocs_reauth_required）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: 上游不可达/协议错误（extdocs_upstream_error）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/extdocs/shares:
+    get:
+      operationId: listExtDocShares
+      summary: 文档级共享映射列表（doc_id/provider 双过滤可选）
+      parameters:
+        - name: doc_id
+          in: query
+          required: false
+          schema: { type: string, pattern: "^doc_[0-9a-f]{12}$" }
+        - name: provider
+          in: query
+          required: false
+          schema: { type: string, enum: [tencent_docs, feishu_docs] }
+      responses:
+        "200":
+          description: 映射列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExtDocShareList" }
+        "404":
+          description: 面未装配
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      operationId: createExtDocShare
+      summary: 共享文档到外部云文档（快照语义）
+      security: [{ OwnerToken: [] }]
+      description: |
+        写端点（三层门）。导出 markdown → provider 创建远端文档 → 记录映射。
+        已有同 provider 映射且未 force=true → 409 extdocs_already_shared（响应
+        携带现有映射）；force=true = 重新创建并替换映射（旧远端文档保留）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExtDocShareRequest" }
+      responses:
+        "201":
+          description: 已共享（含远端 URL）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExtDocShare" }
+        "400":
+          description: 载荷不合法
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: 文档不存在（extdocs_doc_not_found）或未知 provider（extdocs_bad_provider）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 已有映射 / 凭据未配置 / 需重新授权
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: 上游失败（extdocs_upstream_error；message 含上游错误码摘要）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/extdocs/shares/{doc_id}:
+    delete:
+      operationId: deleteExtDocShare
+      summary: 解除共享映射（仅本地映射，不删远端文档）
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: doc_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^doc_[0-9a-f]{12}$" }
+        - name: provider
+          in: query
+          required: true
+          schema: { type: string, enum: [tencent_docs, feishu_docs] }
+      responses:
+        "200":
+          description: 已解除
+        "404":
+          description: 映射不存在或面未装配
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/extdocs/resolve:
+    post:
+      operationId: resolveExtDocLink
+      summary: 解析外部文档链接为卡片描述子（按 host 分派 provider）
+      security: [{ OwnerToken: [] }]
+      description: |
+        写端点（三层门；会触发出网）。仅接受已注册 provider 白名单 host 的
+        https 链接（SSRF 防线）；title 尽力拉取（同 host 重定向才跟随），
+        失败降级为空。Composer 发送前调用，产物填入 post_message 的 external_refs。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExtDocLinkResolveRequest" }
+      responses:
+        "200":
+          description: 解析结果（拉取失败也是 200——title 空，卡片降级）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExtDocLinkInfo" }
+        "400":
+          description: 非白名单链接（extdocs_bad_link）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/extdocs/feishu/authorize:
+    get:
+      operationId: getFeishuAuthorizeURL
+      summary: 飞书授权页 URL（设置页"登录飞书"打开）
+      description: |
+        需先保存 app_id/app_secret。返回授权 URL 与须在飞书后台登记的
+        redirect_uri（完全一致）。授权后浏览器跳转 redirect_uri?code=...——
+        页面打不开无妨，从地址栏复制 code 调 callback 端点。
+      responses:
+        "200":
+          description: 授权 URL
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeishuAuthorizeInfo" }
+        "409":
+          description: 应用凭据未配置（extdocs_token_missing）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/extdocs/feishu/callback:
+    post:
+      operationId: feishuOAuthCallback
+      summary: 授权码换取 user_access_token（手动粘 code 路径）
+      security: [{ OwnerToken: [] }]
+      description: |
+        写端点（三层门）。code 单次有效且时效短（约 5 分钟）——粘贴后即刻
+        提交；token 与 refresh_token 持久化（轮换语义自动维护）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FeishuCallbackRequest" }
+      responses:
+        "200":
+          description: 已绑定（含到期时间）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExtDocSettingsDoc" }
+        "409":
+          description: 应用凭据未配置 / 需重新授权
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: 上游交换失败（extdocs_upstream_error）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/extdocs/sheet-transfers/preview:
+    post:
+      operationId: previewSheetTransfer
+      summary: 表格交换预览（RFC-0017 M2）——摘要与转换报告，不含格数据
+      security: [{ OwnerToken: [] }]
+      description: |
+        导入：按 URL（provider 可缺省，按 host 归属分派）拉取云端快照，
+        返回每表摘要（行列/已填/公式数/合并计数）与全部转换损失项，及
+        snapshot_hash（execute 时远端须仍一致）。导出：读本地表格当前态，
+        返回摘要与 source_version（execute 时本地版本须未变）。预检含
+        blocked 项（如全簿公式超限）时返回 409 sheet_transfer_blocked，
+        错误体携带全部报告项。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SheetTransferPreviewRequest" }
+      responses:
+        "200":
+          description: 预览（摘要 + issues + 防偷换锚点）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SheetTransferPreview" }
+        "400":
+          description: 方向/链接不合法（bad_request / extdocs_bad_link）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: 未知 provider / 文档不存在 / 目标不是表格
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 凭据未配置 / 需重新授权 / 预检阻止（sheet_transfer_blocked 时为 SheetTransferBlockedError，report 携报告项）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SheetTransferBlockedError" }
+        "502":
+          description: 上游失败（extdocs_upstream_error）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/extdocs/sheet-transfers:
+    post:
+      operationId: executeSheetTransfer
+      summary: 执行表格副本交换（导入建本地新表 / 导出建云端新副本）
+      security: [{ OwnerToken: [] }]
+      description: |
+        同步执行（有界）。导入：重拉快照比对 snapshot_hash（不符 = 409
+        sheet_transfer_stale_preview）→ 创建本地表格资产并按修订批装配。
+        导出：校验本地版本未变 → 建远端副本 → 回读校验。幂等键必填：同键
+        重放返回既有记录（终态），不重复执行。执行前落 running 记录、终态
+        回写；中断残留于启动时收敛为 unknown（历史可查）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SheetTransferExecuteRequest" }
+      responses:
+        "201":
+          description: 交换记录（终态；report 携全部转换项）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SheetTransferRecord" }
+        "400":
+          description: 载荷不合法 / 缺幂等键
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: 未知 provider / 文档不存在 / 目标不是表格
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 凭据未配置 / 需重新授权 / 预览过期（sheet_transfer_stale_preview）/ 预检阻止
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: 上游失败（extdocs_upstream_error；部分写入时记录保留目标链接）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      operationId: listSheetTransfers
+      summary: 表格交换历史（副本操作记录）
+      parameters:
+        - name: doc_id
+          in: query
+          schema: { type: string }
+          description: 按本地文档过滤
+        - name: direction
+          in: query
+          schema: { type: string, enum: [import, export] }
+          description: 按方向过滤
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: 历史列表（created_at 倒序）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [transfers]
+                properties:
+                  transfers:
+                    type: array
+                    items: { $ref: "#/components/schemas/SheetTransferRecord" }
+        "404":
+          description: 外部文档面未装配（extdocs_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/extdocs/sheet-transfers/update/preview:
+    post:
+      operationId: previewSheetTransferUpdate
+      summary: 回写预览（RFC-0017 M3）——目标与本地的差异摘要 + 目标哈希锚点
+      security: [{ OwnerToken: [] }]
+      description: |
+        只做值域差异覆写（结构不动、远端多出格不清除）。结构不匹配（本地
+        选中表在目标不存在）或差异超限 → 409 sheet_transfer_blocked 携报告。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SheetTransferUpdatePreviewRequest" }
+      responses:
+        "200":
+          description: 差异摘要（每表 to_write/公式差异/远端多出）+ target_hash
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SheetTransferUpdatePreview" }
+        "400": { description: 参数/归属不合法, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: 文档不存在 / 非 / 未知 provider, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409":
+          description: 凭据 / 预检阻止（SheetTransferBlockedError）
+          content: { application/json: { schema: { $ref: "#/components/schemas/SheetTransferBlockedError" } } }
+        "502": { description: 上游失败, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /v1/extdocs/sheet-transfers/update:
+    post:
+      operationId: executeSheetTransferUpdate
+      summary: 执行回写（异步分块；202 返回后轮询单条记录）
+      security: [{ OwnerToken: [] }]
+      description: |
+        预检（源版本 + 目标哈希 + 结构）通过即落 running 并转异步逐块覆写；
+        块间检查点（cells_written）与取消生效。传输类失败 → unknown 停（不
+        盲目续跑，人工 resume 收敛）；取消 → canceled/partial（已写保留）。
+        幂等键同值重放返回既有记录。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SheetTransferUpdateExecuteRequest" }
+      responses:
+        "202":
+          description: 已受理（记录 status=running；零差异直接终态）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SheetTransferRecord" }
+        "400": { description: 载荷不合法, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: 文档/provider 不存在, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409":
+          description: 凭据 / 预览过期（sheet_transfer_stale_preview）/ 预检阻止
+          content: { application/json: { schema: { $ref: "#/components/schemas/SheetTransferBlockedError" } } }
+        "502": { description: 上游失败, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /v1/extdocs/sheet-transfers/by-id/{transfer_id}:
+    get:
+      operationId: getSheetTransfer
+      summary: 单条交换记录（update 轮询进度用）
+      parameters:
+        - name: transfer_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 记录
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SheetTransferRecord" }
+        "404": { description: 记录不存在 / 未装配, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /v1/extdocs/sheet-transfers/by-id/{transfer_id}/cancel:
+    post:
+      operationId: cancelSheetTransfer
+      summary: 取消执行中的回写（块间生效；已写保留 → partial）
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: transfer_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 当前记录（已终态 = 幂等返回；长块仍在跑时 status 仍 running——前端继续轮询）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SheetTransferRecord" }
+        "404": { description: 记录不存在, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: 非 update 方向不可取消, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /v1/extdocs/sheet-transfers/by-id/{transfer_id}/resume:
+    post:
+      operationId: resumeSheetTransfer
+      summary: 续跑 partial/canceled/unknown 回写（校验未写区域仍等于前态）
+      security: [{ OwnerToken: [] }]
+      description: |
+        校验失败（本地版本变 / 目标未写区域被第三方改动）→ 409 重新预览。
+        无前态（超持久化上限）不可续跑。
+      parameters:
+        - name: transfer_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "202":
+          description: 已续跑（status=running）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SheetTransferRecord" }
+        "404": { description: 记录不存在, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: 不可续跑 / 目标被改（sheet_transfer_target_changed）/ 预览过期, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
   /v1/owner/bootstrap:
     get:
       operationId: getOwnerBootstrap
@@ -1172,6 +1739,12 @@ components:
           description: 文档引用（RFC-0014 §2.4）：分享文档到房间 = 发一条带 doc_ref 的消息（人类或 agent 均可）；服务端校验存在性（引用不存在/已删文档即拒）。缺省 = 无引用。
           items:
             $ref: "#/components/schemas/DocRef"
+        external_refs:
+          type: array
+          maxItems: 4
+          description: 外部文档引用（RFC-0016 §2.3，人类路径）：白名单 host 链接经 POST /v1/extdocs/resolve 定稿的描述子快照；服务端校验 kind→provider 归属与长度。缺省 = 无外部引用。
+          items:
+            $ref: "#/components/schemas/ExternalRef"
         thread_id:
           oneOf:
             - type: "null"
@@ -1203,6 +1776,332 @@ components:
         anchor_block_id:
           type: string
           minLength: 1
+    ExternalRef:
+      type: object
+      required: [kind, url]
+      additionalProperties: false
+      description: 外部文档引用描述子（RFC-0016 §2.3 封闭字段集，与 room-protocol message.posted externalRef 同形）：发送时刻定稿的链接事实，卡片不随外部服务刷新。host 白名单与 kind→provider 归属由服务端校验（schema 层只钉 https 前缀与长度）。
+      properties:
+        kind:
+          type: string
+          enum: [txdoc, fdoc]
+        url:
+          type: string
+          pattern: "^https://[A-Za-z0-9.-]+/[A-Za-z0-9/_?&=%.\\-]*"
+          maxLength: 512
+        title:
+          type: string
+          maxLength: 200
+        doc_type:
+          type: string
+          maxLength: 16
+          description: "provider 侧推断的文档类型（txdoc：sheet/doc/slide/aio/form；fdoc：docx/doc/wiki/sheet/base/minutes/mind/slide/file；空 = 未知，卡片降级）"
+    ExtDocSettingsDoc:
+      type: object
+      required: [provider, configured]
+      additionalProperties: false
+      description: provider 凭据状态（字段按 provider 分化；凭据值永不回传）。
+      properties:
+        provider: { type: string, enum: [tencent_docs, feishu_docs] }
+        configured: { type: boolean, description: 凭据就绪可共享（tencent=有 token；feishu=应用+授权齐备） }
+        app_configured: { type: boolean, description: "feishu：app_id/app_secret 已配置" }
+        authorized: { type: boolean, description: "feishu：user_access_token 已授权" }
+        expires_at:
+          oneOf:
+            - type: "null"
+            - type: string
+              format: date-time
+          description: "feishu：access_token 到期时间"
+        last_verified_at:
+          oneOf:
+            - type: "null"
+            - type: string
+              format: date-time
+          description: 最近一次 verify 成功时间（从未 = null）
+    ExtDocSettingsUpdate:
+      type: object
+      additionalProperties: false
+      description: 凭据写入体（字段按 provider 分化；tencent 携 token、feishu 携 app_id+app_secret——两者须同时给；全部空 = 清除）。
+      properties:
+        token: { type: string, maxLength: 512, description: "tencent_docs：个人 MCP token（空串 = 清除）" }
+        app_id: { type: string, maxLength: 128, description: "feishu_docs：自建应用 App ID" }
+        app_secret: { type: string, maxLength: 256, description: "feishu_docs：自建应用 App Secret（空串 = 清除）" }
+    ExtDocVerifyResult:
+      type: object
+      required: [ok]
+      additionalProperties: false
+      properties:
+        ok: { type: boolean }
+        upstream_code:
+          type: string
+          description: 上游错误码（ok=false 时存在，如腾讯 400006 token 无效 / 飞书 job_* 导入错误）
+        message:
+          type: string
+          description: 人类可读摘要（不含凭据）
+    ExtDocProviderView:
+      type: object
+      required: [provider, display_name, ref_kind, configured]
+      additionalProperties: false
+      properties:
+        provider: { type: string, enum: [tencent_docs, feishu_docs] }
+        display_name: { type: string }
+        ref_kind: { type: string, description: external_refs.kind 值（txdoc | fdoc） }
+        configured: { type: boolean }
+        last_verified_at:
+          oneOf:
+            - type: "null"
+            - type: string
+              format: date-time
+    ExtDocProviderList:
+      type: object
+      required: [providers]
+      properties:
+        providers:
+          type: array
+          items: { $ref: "#/components/schemas/ExtDocProviderView" }
+    ExtDocShare:
+      type: object
+      required: [doc_id, provider, external_url, shared_by, shared_at]
+      additionalProperties: false
+      description: 文档级共享映射（快照语义：映射记录创建时点，远端内容不回同步）。
+      properties:
+        doc_id: { type: string, pattern: "^doc_[0-9a-f]{12}$" }
+        provider: { type: string, enum: [tencent_docs, feishu_docs] }
+        external_url: { type: string, description: 远端文档 URL（创建结果） }
+        shared_by: { type: string, description: 共享操作者（本地 owner） }
+        shared_at: { type: string, format: date-time }
+    ExtDocShareList:
+      type: object
+      required: [shares]
+      properties:
+        shares:
+          type: array
+          items: { $ref: "#/components/schemas/ExtDocShare" }
+    ExtDocShareRequest:
+      type: object
+      required: [doc_id, provider]
+      additionalProperties: false
+      properties:
+        doc_id: { type: string, pattern: "^doc_[0-9a-f]{12}$" }
+        provider: { type: string, enum: [tencent_docs, feishu_docs] }
+        force:
+          type: boolean
+          default: false
+          description: true = 已有映射时重新创建并替换（旧远端文档保留）
+    ExtDocLinkResolveRequest:
+      type: object
+      required: [url]
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          maxLength: 512
+          description: 待解析的外部文档链接（须白名单 host 的 https）
+    ExtDocLinkInfo:
+      type: object
+      required: [url, provider, doc_type]
+      additionalProperties: false
+      description: 解析产物（ExternalRef 的构造材料）：title 尽力填充，失败为空串——卡片降级显示 URL。kind = 归属 provider 的 external_refs.kind。
+      properties:
+        url: { type: string }
+        kind: { type: string, enum: [txdoc, fdoc], description: 归属 provider 的 ref kind }
+        provider: { type: string, enum: [tencent_docs, feishu_docs] }
+        title: { type: string, maxLength: 200 }
+        doc_type: { type: string, maxLength: 16 }
+    FeishuAuthorizeInfo:
+      type: object
+      required: [url, redirect_uri, scopes]
+      additionalProperties: false
+      description: 授权引导信息（redirect_uri 须与飞书后台安全设置登记值完全一致）。
+      properties:
+        url: { type: string, description: 授权页 URL（浏览器打开） }
+        redirect_uri: { type: string, description: 须在飞书后台登记的重定向 URL }
+        scopes: { type: array, items: { type: string }, description: 申请的权限 scope 清单 }
+        auto_captured:
+          type: boolean
+          description: |
+            true = 服务端已挂起回环回调监听，授权页跳转落回即自动完成绑定
+            （设置页轮询状态即可）；false = 回调端口被占（如开发态 Vite），
+            降级手动：从浏览器地址栏复制 code 提交 callback 端点。
+    FeishuCallbackRequest:
+      type: object
+      required: [code]
+      additionalProperties: false
+      properties:
+        code: { type: string, maxLength: 512, description: "授权码（浏览器跳转地址栏 ?code= 的值；单次有效）" }
+    SheetTransferPreviewRequest:
+      type: object
+      required: [direction]
+      additionalProperties: false
+      description: 预览请求。导入给 url（provider 可缺省，按 host 归属）；导出给 doc_id + provider。
+      properties:
+        direction: { type: string, enum: [import, export] }
+        provider: { type: string, description: provider id（导入可缺省——按 URL host 分派） }
+        url: { type: string, maxLength: 2048, description: 导入源（云端表格链接） }
+        doc_id: { type: string, description: 导出源（本地表格 doc_id） }
+        sheet_names:
+          type: array
+          items: { type: string, maxLength: 60 }
+          maxItems: 20
+          description: 可选工作表过滤（按名；空 = 全部）
+    SheetTransferExecuteRequest:
+      type: object
+      required: [direction, idempotency_key]
+      additionalProperties: false
+      description: 执行请求。携预览返回的锚点（导入 snapshot_hash / 导出 source_version）防源偷换；缺锚点 = 跳过比对（信任当前态）。
+      properties:
+        direction: { type: string, enum: [import, export] }
+        provider: { type: string }
+        url: { type: string, maxLength: 2048 }
+        doc_id: { type: string }
+        sheet_names:
+          type: array
+          items: { type: string, maxLength: 60 }
+          maxItems: 20
+        snapshot_hash: { type: string, maxLength: 64, description: 导入：预览时的快照哈希（执行重拉须一致） }
+        source_version: { type: integer, format: int64, minimum: 1, description: 导出：预览时的本地版本（执行时须未变） }
+        idempotency_key: { type: string, minLength: 8, maxLength: 64, description: 幂等键（同键重放返回既有记录） }
+    SheetTransferIssue:
+      type: object
+      required: [feature, severity, reason]
+      additionalProperties: false
+      description: 转换报告项（RFC-0017 §3.6——损失可定位，不静默降级）。
+      properties:
+        sheet: { type: string, description: 涉及工作表名 }
+        range: { type: string, description: 涉及范围/坐标（展示用） }
+        feature: { type: string, description: 特性名（如 超精度数值/布尔值/回读校验） }
+        severity: { type: string, enum: [info, warning, blocked], description: info=注记 warning=有损可继续 blocked=阻止 }
+        action: { type: string, enum: [kept, converted, dropped, truncated], description: 处理方式 }
+        reason: { type: string, description: 原因与量化（如"N 格文本超限截断"） }
+    SheetTransferPreviewSheet:
+      type: object
+      required: [name, rows, cols, filled, formulas]
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        rows: { type: integer }
+        cols: { type: integer }
+        filled: { type: integer, description: 已填单元格数 }
+        formulas: { type: integer, description: 公式格数 }
+        merge_count: { type: integer, description: 合并区域数（不迁移，仅报告） }
+    SheetTransferPreview:
+      type: object
+      required: [direction, provider, sheets, issues]
+      additionalProperties: false
+      properties:
+        direction: { type: string, enum: [import, export] }
+        provider: { type: string }
+        title: { type: string, description: 文档标题 }
+        source_url: { type: string, description: 导入源链接 }
+        doc_id: { type: string, description: 导出源本地文档 }
+        source_version: { type: integer, format: int64, description: 导出：预览基于的本地版本 }
+        snapshot_hash: { type: string, description: 导入：预览基于的快照哈希 }
+        sheets:
+          type: array
+          items: { $ref: "#/components/schemas/SheetTransferPreviewSheet" }
+        issues:
+          type: array
+          items: { $ref: "#/components/schemas/SheetTransferIssue" }
+    SheetTransferRecord:
+      type: object
+      required: [transfer_id, idempotency_key, direction, provider, status, report, created_at, updated_at]
+      additionalProperties: false
+      description: 交换记录（终态或 unknown——中断残留）。
+      properties:
+        transfer_id: { type: string }
+        idempotency_key: { type: string }
+        direction: { type: string, enum: [import, export, update] }
+        provider: { type: string }
+        status:
+          type: string
+          enum: [running, succeeded, succeeded_with_warnings, failed, unknown, partial, canceled]
+          description: import/export 同步执行（running 仅崩溃窗口）；update 异步分块（partial=已写部分未跑完，canceled=主动停，unknown=传输中断结果不确定）
+        cells_total: { type: integer, description: update：差异格总数 }
+        cells_written: { type: integer, description: update：已写格数（进度 = written/total） }
+        doc_id: { type: string, description: 导入产物（本地新表格） }
+        external_url: { type: string, description: 导出产物（云端新副本）/ 导入源 }
+        title: { type: string }
+        source_version: { type: integer, format: int64 }
+        snapshot_hash: { type: string }
+        report:
+          type: array
+          items: { $ref: "#/components/schemas/SheetTransferIssue" }
+        error: { type: string, description: failed/unknown 时的原因 }
+        created_at: { type: string }
+        updated_at: { type: string }
+    SheetTransferUpdatePreviewRequest:
+      type: object
+      required: [doc_id, provider, external_url]
+      additionalProperties: false
+      description: 回写预览（M3）：更新既有远端目标——目标取自历史导出记录的 external_url。
+      properties:
+        doc_id: { type: string, description: 本地表格 doc_id }
+        provider: { type: string, description: provider id（须与目标链接归属一致） }
+        external_url: { type: string, maxLength: 2048, description: 远端目标链接 }
+        sheet_names:
+          type: array
+          items: { type: string, maxLength: 60 }
+          maxItems: 20
+          description: 可选工作表过滤（按名；空 = 全部）
+    SheetTransferUpdateDiffSheet:
+      type: object
+      required: [name, to_write, formula_diffs, remote_extra]
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        to_write: { type: integer, description: 将覆写的差异格数 }
+        formula_diffs: { type: integer, description: 其中公式格数 }
+        remote_extra: { type: integer, description: 远端多出格数（不清除，仅注记） }
+    SheetTransferUpdateExecuteRequest:
+      type: object
+      required: [doc_id, provider, external_url, idempotency_key]
+      additionalProperties: false
+      description: 回写执行（异步）：携预览锚点（target_hash/source_version）防源与目标偷换。
+      properties:
+        doc_id: { type: string }
+        provider: { type: string }
+        external_url: { type: string, maxLength: 2048 }
+        sheet_names:
+          type: array
+          items: { type: string, maxLength: 60 }
+          maxItems: 20
+        target_hash: { type: string, maxLength: 64, description: 预览时的目标快照哈希（执行重读须一致） }
+        source_version: { type: integer, format: int64, minimum: 1, description: 预览时的本地版本（执行时须未变） }
+        idempotency_key: { type: string, minLength: 8, maxLength: 64 }
+    SheetTransferUpdatePreview:
+      type: object
+      required: [direction, provider, doc_id, external_url, source_version, target_hash, cells_total, diffs, issues]
+      additionalProperties: false
+      properties:
+        direction: { type: string, enum: [update] }
+        provider: { type: string }
+        doc_id: { type: string }
+        external_url: { type: string }
+        title: { type: string }
+        source_version: { type: integer, format: int64 }
+        target_hash: { type: string }
+        cells_total: { type: integer, description: 差异格总数（= 执行 cells_total） }
+        diffs:
+          type: array
+          items: { $ref: "#/components/schemas/SheetTransferUpdateDiffSheet" }
+        issues:
+          type: array
+          items: { $ref: "#/components/schemas/SheetTransferIssue" }
+    SheetTransferBlockedError:
+      type: object
+      required: [error, report]
+      additionalProperties: false
+      description: 预检阻止（sheet_transfer_blocked）——report 携全部转换项供逐项展示。
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+        report:
+          type: array
+          items: { $ref: "#/components/schemas/SheetTransferIssue" }
     PauseRoomPayload:
       type: object
       additionalProperties: false
@@ -1248,18 +2147,22 @@ components:
       description: |
         文档命令信封（RFC-0014 / ADR-0014：镜像房间命令纪律——幂等 + 文档级乐观并发）。
         payload 按 command_kind 严格校验（未知字段拒绝）：
-        create_doc → {title, format?, initial_blocks?, anchor_message_id?}（仅 POST /v1/docs）；
+        create_doc → {title, format?, initial_blocks?, anchor_message_id?}（仅 POST /v1/docs；
+        format 缺省 markdown；spreadsheet 不接受 initial_blocks）；
         rename_doc → {title}；
         commit_doc_revision → {base_version?, ops[], note?}——ops 为一批块操作
         （insert_after/append 携带 block，replace 携带 text，delete 仅锚点 block_id；
         插入块的空 block_id 由服务端分配）；
+        commit_sheet_revision → {base_version?, sheet_ops[], note?}（RFC-0017 M1，
+        仅 format=spreadsheet；sheet_ops 为一批归一化表格操作——结构插删引发的
+        公式改写由服务端定稿进事件）；
         archive_doc / restore_doc → 空 payload；
         delete_doc → {reason}（墓碑 + 内容级联清除，不可逆）；
         duplicate_doc → {title?}（缺省 = 原标题 + "（副本）"）。
       properties:
         command_kind:
           type: string
-          enum: [create_doc, rename_doc, commit_doc_revision, archive_doc, restore_doc, delete_doc, duplicate_doc]
+          enum: [create_doc, rename_doc, commit_doc_revision, commit_sheet_revision, archive_doc, restore_doc, delete_doc, duplicate_doc]
         expected_doc_version:
           type: integer
           minimum: 0
@@ -1308,11 +2211,12 @@ components:
             $ref: "#/components/schemas/DocSummary"
     DocSummary:
       type: object
-      required: [doc_id, title, version, status, created_by, created_at, updated_by, updated_at]
-      description: 文档主页行（RFC-0014 §2.8：updated_at 倒序）。
+      required: [doc_id, title, format, version, status, created_by, created_at, updated_by, updated_at]
+      description: 文档主页行（RFC-0014 §2.8：updated_at 倒序；format 供列表行分派图标/入口，RFC-0017）。
       properties:
         doc_id: { type: string }
         title: { type: string, description: 最新 doc.created/doc.renamed 投影 }
+        format: { type: string, enum: [markdown, spreadsheet] }
         version: { type: integer, format: int64 }
         status: { type: string, enum: [active, archived] }
         created_by: { type: string }
@@ -1322,18 +2226,25 @@ components:
     DocBlock:
       type: object
       required: [block_id, type, text]
+      description: 块模型（RFC-0014 §2.2；RFC-0016 增补元数据）：level 仅 heading（1..6，缺省导出按 2）、lang 仅 code（≤48 runes）；text 自带标记（# 前缀/fence）导出透传优先——存量数据零迁移。
       properties:
         block_id: { type: string, description: 稳定块 ID（锚定操作/冲突重放/卡片摘要的基础） }
         type: { type: string, enum: [heading, paragraph, list, code, quote, hr] }
         text: { type: string, description: markdown 行内内容 }
+        level: { type: integer, minimum: 1, maximum: 6, description: heading 专属：标题级别 }
+        lang: { type: string, maxLength: 48, description: code 专属：语言标注（如 go、python） }
     DocState:
       type: object
-      required: [doc_id, title, format, created_by, created_at, version, status, blocks, updated_at, updated_by]
-      description: 文档当前态（派生态，权威为 per-doc 事件流；GET /v1/docs/{doc_id} 快照）。
+      required: [doc_id, title, format, created_by, created_at, version, status, updated_at, updated_by]
+      description: |
+        文档当前态（派生态，权威为 per-doc 事件流；GET /v1/docs/{doc_id} 快照）。
+        format 分派（RFC-0017 §3.2）：markdown → blocks；spreadsheet → sheets
+        （工作表元信息清单；单元格内容经 /sheets/{sheet_id}/range 有界读取，
+        不在快照里整簿下发）。
       properties:
         doc_id: { type: string }
         title: { type: string }
-        format: { type: string, enum: [markdown] }
+        format: { type: string, enum: [markdown, spreadsheet] }
         created_by: { type: string }
         created_at: { type: string, format: date-time }
         version: { type: integer, format: int64 }
@@ -1342,8 +2253,127 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/DocBlock"
+          description: format=markdown 携带；spreadsheet 缺省
+        sheets:
+          type: array
+          items:
+            $ref: "#/components/schemas/SheetMeta"
+          description: format=spreadsheet 携带；markdown 缺省
         updated_at: { type: string, format: date-time }
         updated_by: { type: string }
+    SheetMeta:
+      type: object
+      required: [sheet_id, name, rows, cols, filled_cells]
+      description: 工作表元信息（RFC-0017 §3.2；行列尺寸为显式布局意图，filled = 值或公式非空格数）。
+      properties:
+        sheet_id: { type: string }
+        name: { type: string }
+        rows: { type: integer, minimum: 1, maximum: 5000 }
+        cols: { type: integer, minimum: 1, maximum: 200 }
+        filled_cells: { type: integer, minimum: 0 }
+    SheetOp:
+      type: object
+      required: [op]
+      additionalProperties: false
+      description: |
+        单条表格操作（扁平联合，与 room-protocol doc.sheet_revision_committed 的
+        $defs.sheetOp 同形）。服务端归一化后定稿进事件（add_sheet 回填分配 ID、
+        结构插删连带公式改写）。容量护栏：≤64 ops / 256 KiB / 单批 ≤1000 cells。
+      properties:
+        op:
+          type: string
+          enum: [set_cells, clear_range, set_style, add_sheet, rename_sheet, delete_sheet, insert_rows, delete_rows, insert_columns, delete_columns, set_col_width, set_row_height]
+        sheet_id: { type: string, pattern: "^sht_[0-9A-Za-z_-]+$" }
+        name: { type: string, minLength: 1, maxLength: 60 }
+        cells:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            $ref: "#/components/schemas/SheetCellWrite"
+        range: { $ref: "#/components/schemas/SheetRange" }
+        keep_style: { type: boolean }
+        style: { $ref: "#/components/schemas/SheetCellStyle" }
+        at: { type: integer, minimum: 1 }
+        count: { type: integer, minimum: 1, maximum: 1000 }
+        col: { type: integer, minimum: 1, maximum: 200 }
+        row: { type: integer, minimum: 1, maximum: 5000 }
+        width: { type: integer, minimum: 40, maximum: 600 }
+        height: { type: integer, minimum: 20, maximum: 200 }
+    SheetCellWrite:
+      type: object
+      required: [r, c, type]
+      additionalProperties: false
+      description: 单元格写入（类型-字段严格配对；style 缺省保留既有）。
+      properties:
+        r: { type: integer, minimum: 1, maximum: 5000 }
+        c: { type: integer, minimum: 1, maximum: 200 }
+        type: { type: string, enum: [text, number, bool, datetime, formula, null] }
+        text: { type: string, maxLength: 8192 }
+        number: { type: number }
+        bool: { type: boolean }
+        formula: { type: string, minLength: 1, maxLength: 512 }
+        style: { $ref: "#/components/schemas/SheetCellStyle" }
+    SheetCellStyle:
+      type: object
+      additionalProperties: false
+      description: 基础样式（指针语义：仅给出的字段被改写）。
+      properties:
+        bold: { type: boolean }
+        italic: { type: boolean }
+    SheetRange:
+      type: object
+      required: [r1, c1, r2, c2]
+      additionalProperties: false
+      description: 矩形范围（闭区间）。
+      properties:
+        r1: { type: integer, minimum: 1, maximum: 5000 }
+        c1: { type: integer, minimum: 1, maximum: 200 }
+        r2: { type: integer, minimum: 1, maximum: 5000 }
+        c2: { type: integer, minimum: 1, maximum: 200 }
+    SheetCellView:
+      type: object
+      required: [r, c, type]
+      description: 范围读取的单格视图（公式格同时携带原文与派生结果）。
+      properties:
+        r: { type: integer }
+        c: { type: integer }
+        type: { type: string, enum: [text, number, bool, datetime, formula] }
+        text: { type: string }
+        number: { type: number }
+        bool: { type: boolean }
+        formula: { type: string }
+        style: { $ref: "#/components/schemas/SheetCellStyle" }
+        derived:
+          type: object
+          required: [kind]
+          description: 公式派生结果（kind = value | error | unsupported）。
+          properties:
+            kind: { type: string, enum: [value, error, unsupported] }
+            value: { $ref: "#/components/schemas/SheetCellValueOut" }
+            err: { type: string }
+    SheetCellValueOut:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, enum: [text, number, bool, datetime] }
+        text: { type: string }
+        number: { type: number }
+        bool: { type: boolean }
+    SheetRangeView:
+      type: object
+      required: [doc_id, sheet_id, version, range, cells, truncated]
+      description: 范围读取结果（Truncated = used-range 缺省读取被 10000 格上限按行截断）。
+      properties:
+        doc_id: { type: string }
+        sheet_id: { type: string }
+        version: { type: integer, format: int64 }
+        range: { $ref: "#/components/schemas/SheetRange" }
+        cells:
+          type: array
+          items:
+            $ref: "#/components/schemas/SheetCellView"
+        truncated: { type: boolean }
     DocEventView:
       type: object
       required: [event_id, doc_id, type, schema_version, occurred_at, actor, payload, position]
@@ -1733,6 +2763,10 @@ components:
           type: array
           description: 文档引用（RFC-0014 §2.4；缺省 = 无引用；快照/SSE 两路同形——同 attachments 纪律）。
           items: { $ref: "#/components/schemas/DocRef" }
+        external_refs:
+          type: array
+          description: 外部文档引用（RFC-0016 §2.3；缺省 = 无；快照/SSE 两路同形——同 refs 纪律）。发送时刻的描述子快照，不随外部服务刷新。
+          items: { $ref: "#/components/schemas/ExternalRef" }
         thread_id:
           oneOf:
             - type: "null"

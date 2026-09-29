@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaic.local/room-protocol/events/doc.sheet_revision_committed.schema.json",
+  "title": "DocSheetRevisionCommittedPayload",
+  "description": "表格修订批（RFC-0017 M1，仅 format=spreadsheet 资产）：ops 为校验与结构改写后的归一化操作——历史回放是纯机械应用，公式改写已在提交时定稿进事件（RFC-0017 §3.3）。base_version 为文档级乐观并发期望（工作簿级 CAS，整批原子——任一 op 校验失败整批不提交）；version 单调递增兼任 SSE cursor。",
+  "type": "object",
+  "required": ["doc_id", "base_version", "version", "ops", "actor", "source"],
+  "additionalProperties": false,
+  "properties": {
+    "doc_id": { "type": "string", "pattern": "^doc_[0-9a-f]{12}$" },
+    "base_version": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "修订基于的版本（CAS 期望；不符返回 409 + 当前版本）"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "本批落库后的文档版本（= base_version + 1）"
+    },
+    "ops": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/sheetOp" },
+      "description": "归一化表格操作批（护栏：≤64 ops / 256 KiB / 单批 ≤1000 cells，RFC-0017 §3.4）"
+    },
+    "actor": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" },
+    "source": {
+      "enum": ["human_editor", "agent", "import", "restore"],
+      "description": "落笔来源（agent 经 sheet_ops 引擎代写，actor 记为该 bot；import/restore 为 M2+ 交换路径预留）"
+    },
+    "note": { "type": "string", "maxLength": 280 }
+  },
+  "$defs": {
+    "sheetOp": {
+      "type": "object",
+      "required": ["op"],
+      "additionalProperties": false,
+      "description": "单条表格操作（扁平联合，DocOp 先例）。归一化语义：add_sheet 的 sheet_id 由服务端分配后回填；insert/delete 行列的 ops 已携带改写后的公式原文。",
+      "properties": {
+        "op": {
+          "enum": [
+            "set_cells", "clear_range", "set_style", "add_sheet", "rename_sheet",
+            "delete_sheet", "insert_rows", "delete_rows", "insert_columns",
+            "delete_columns", "set_col_width", "set_row_height"
+          ]
+        },
+        "sheet_id": { "type": "string", "pattern": "^sht_[0-9A-Za-z_-]+$", "description": "目标工作表稳定 ID（created 派生默认表为 sht_+doc_id 后缀；add_sheet 归一化后为服务端分配 ID）" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 60, "description": "add_sheet / rename_sheet 的新名称（工作簿内唯一）" },
+        "cells": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/sheetCell" },
+          "description": "set_cells 写入元素（显式坐标）"
+        },
+        "range": { "$ref": "#/$defs/sheetRange" },
+        "keep_style": { "type": "boolean", "description": "clear_range：清值是否保留样式（缺省 false）" },
+        "style": { "$ref": "#/$defs/sheetCellStyle" },
+        "at": { "type": "integer", "minimum": 1, "description": "插删位置（1-based 行/列号）" },
+        "count": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "插删数量" },
+        "col": { "type": "integer", "minimum": 1, "maximum": 200, "description": "set_col_width 列号" },
+        "row": { "type": "integer", "minimum": 1, "maximum": 5000, "description": "set_row_height 行号" },
+        "width": { "type": "integer", "minimum": 40, "maximum": 600, "description": "列宽像素" },
+        "height": { "type": "integer", "minimum": 20, "maximum": 200, "description": "行高像素" }
+      }
+    },
+    "sheetCell": {
+      "type": "object",
+      "required": ["r", "c", "type"],
+      "additionalProperties": false,
+      "description": "单元格写入：内容按 type 携带（text→text、number→number、bool→bool、datetime→text 为 RFC3339、formula→formula 表达式原文不含引导 =、null→清空）。style 可选——缺省保留既有样式。",
+      "properties": {
+        "r": { "type": "integer", "minimum": 1, "maximum": 5000 },
+        "c": { "type": "integer", "minimum": 1, "maximum": 200 },
+        "type": { "enum": ["text", "number", "bool", "datetime", "formula", "null"] },
+        "text": { "type": "string", "maxLength": 8192 },
+        "number": { "type": "number" },
+        "bool": { "type": "boolean" },
+        "formula": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "style": { "$ref": "#/$defs/sheetCellStyle" }
+      }
+    },
+    "sheetCellStyle": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "基础样式（指针语义：仅给出的字段被改写；首版集合 bold/italic）",
+      "properties": {
+        "bold": { "type": "boolean" },
+        "italic": { "type": "boolean" }
+      }
+    },
+    "sheetRange": {
+      "type": "object",
+      "required": ["r1", "c1", "r2", "c2"],
+      "additionalProperties": false,
+      "description": "矩形范围（闭区间，r1≤r2、c1≤c2；行列 1-based）",
+      "properties": {
+        "r1": { "type": "integer", "minimum": 1, "maximum": 5000 },
+        "c1": { "type": "integer", "minimum": 1, "maximum": 200 },
+        "r2": { "type": "integer", "minimum": 1, "maximum": 5000 },
+        "c2": { "type": "integer", "minimum": 1, "maximum": 200 }
+      }
+    }
+  }
+}

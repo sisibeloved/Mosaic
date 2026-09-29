@@ -4,6 +4,7 @@
 // 数据源 state/docs 列表 store（筛选态自持）；页面不轮询。
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { SheetTransferDialog } from "../components/SheetTransferDialog";
 import { api, type DocSearchHit, type DocSummary } from "../api/client";
 import { relativeTime, shortId, truncate } from "../lib/ui";
 import { refreshDocs, setDocsCreatorFilter, useDocs } from "../state/docs";
@@ -27,7 +28,9 @@ export function DocsHomePage() {
     if (notice) window.history.replaceState({}, "");
   }, [notice]);
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [createTitle, setCreateTitle] = useState("");
+  const [createFormat, setCreateFormat] = useState<"markdown" | "spreadsheet">("markdown");
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -92,7 +95,7 @@ export function DocsHomePage() {
     setCreateBusy(true);
     setCreateError(null);
     try {
-      const created = await api.createDoc(title);
+      const created = await api.createDoc(title, undefined, createFormat);
       void refreshDocs();
       navigate(`/docs/${encodeURIComponent(created.doc_id)}`);
     } catch (e) {
@@ -192,7 +195,46 @@ export function DocsHomePage() {
             className="mx-4 w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 className="text-sm font-semibold text-text">新建文档</h2>
+            <h2 className="text-sm font-semibold text-text">新建</h2>
+            {!importing && (
+              <button
+                type="button"
+                disabled={createBusy}
+                onClick={() => setImporting(true)}
+                className="ml-auto rounded-lg px-2 py-1 text-[11px] text-accent transition-colors hover:bg-accent-soft"
+              >
+                从云文档导入 ↗
+              </button>
+            )}
+            {importing ? (
+              <div className="mt-2 -mx-0">
+                <SheetTransferDialog
+                  mode="import"
+                  onClose={() => setImporting(false)}
+                  onImported={(docID) => {
+                    setImporting(false);
+                    setCreating(false);
+                    navigate(`/docs/${encodeURIComponent(docID)}`);
+                  }}
+                />
+              </div>
+            ) : (
+              <>
+            <div className="mt-3 flex gap-1.5">
+              {([["markdown", "文档"], ["spreadsheet", "表格"]] as const).map(([f, label]) => (
+                <button
+                  key={f}
+                  type="button"
+                  disabled={createBusy}
+                  onClick={() => setCreateFormat(f)}
+                  className={`rounded-lg border px-3 py-1.5 text-xs transition-colors ${
+                    createFormat === f ? "border-accent bg-accent-soft text-accent" : "border-border text-dim hover:bg-surface-2 hover:text-text"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <input
               autoFocus
               value={createTitle}
@@ -202,10 +244,15 @@ export function DocsHomePage() {
               }}
               maxLength={200}
               disabled={createBusy}
-              placeholder="文档标题"
-              aria-label="文档标题"
+              placeholder={createFormat === "spreadsheet" ? "表格标题" : "文档标题"}
+              aria-label="标题"
               className="mt-3 w-full rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-sm outline-none placeholder:text-faint focus:border-accent"
             />
+            <p className="mt-2 text-[11px] text-faint">
+              {createFormat === "spreadsheet"
+                ? "工作簿 + 工作表 + 类型化单元格 + 基础公式（服务端权威求值）。"
+                : "markdown 块模型（标题/段落/列表/代码/引用）。"}
+            </p>
             {createError && <p className="mt-2 text-xs text-danger">{createError}</p>}
             <div className="mt-3 flex justify-end gap-2">
               <button
@@ -225,6 +272,8 @@ export function DocsHomePage() {
                 {createBusy ? "创建中…" : "创建"}
               </button>
             </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -256,6 +305,7 @@ function FilterChip({
 }
 
 function DocRow({ doc, nameOf }: { doc: DocSummary; nameOf: (pid: string) => string }) {
+  const isSheet = doc.format === "spreadsheet";
   return (
     <li>
       <Link
@@ -263,11 +313,12 @@ function DocRow({ doc, nameOf }: { doc: DocSummary; nameOf: (pid: string) => str
         className="flex items-center gap-3 rounded-xl border border-border bg-surface px-3.5 py-2.5 transition-colors hover:bg-surface-2"
       >
         <span className="shrink-0 text-dim">
-          <IconDoc />
+          {isSheet ? <IconSheet /> : <IconDoc />}
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
             <span className="truncate text-sm font-medium text-text">{doc.title}</span>
+            {isSheet && <span className="shrink-0 rounded bg-surface-3 px-1.5 text-[10px] leading-4 text-dim">表格</span>}
             {doc.status === "archived" && (
               <span className="shrink-0 rounded bg-surface-3 px-1.5 text-[10px] leading-4 text-dim">已归档</span>
             )}
@@ -279,6 +330,16 @@ function DocRow({ doc, nameOf }: { doc: DocSummary; nameOf: (pid: string) => str
         <span className="shrink-0 rounded bg-surface-3 px-1.5 py-px text-[10px] leading-4 text-dim">v{doc.version}</span>
       </Link>
     </li>
+  );
+}
+
+/** 表格资产图标（RFC-0017：网格形态，与 IconDoc 同尺寸）。 */
+function IconSheet() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M1.5 6.2h13M1.5 9.8h13M6 6.2v7.3M10.5 6.2v7.3" stroke="currentColor" strokeWidth="1" />
+    </svg>
   );
 }
 

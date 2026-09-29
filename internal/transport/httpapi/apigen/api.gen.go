@@ -125,13 +125,14 @@ func (e DocBlockType) Valid() bool {
 
 // Defines values for DocCommandCommandKind.
 const (
-	ArchiveDoc        DocCommandCommandKind = "archive_doc"
-	CommitDocRevision DocCommandCommandKind = "commit_doc_revision"
-	CreateDoc         DocCommandCommandKind = "create_doc"
-	DeleteDoc         DocCommandCommandKind = "delete_doc"
-	DuplicateDoc      DocCommandCommandKind = "duplicate_doc"
-	RenameDoc         DocCommandCommandKind = "rename_doc"
-	RestoreDoc        DocCommandCommandKind = "restore_doc"
+	ArchiveDoc          DocCommandCommandKind = "archive_doc"
+	CommitDocRevision   DocCommandCommandKind = "commit_doc_revision"
+	CommitSheetRevision DocCommandCommandKind = "commit_sheet_revision"
+	CreateDoc           DocCommandCommandKind = "create_doc"
+	DeleteDoc           DocCommandCommandKind = "delete_doc"
+	DuplicateDoc        DocCommandCommandKind = "duplicate_doc"
+	RenameDoc           DocCommandCommandKind = "rename_doc"
+	RestoreDoc          DocCommandCommandKind = "restore_doc"
 )
 
 // Valid indicates whether the value is a known member of the DocCommandCommandKind enum.
@@ -140,6 +141,8 @@ func (e DocCommandCommandKind) Valid() bool {
 	case ArchiveDoc:
 		return true
 	case CommitDocRevision:
+		return true
+	case CommitSheetRevision:
 		return true
 	case CreateDoc:
 		return true
@@ -173,13 +176,16 @@ func (e DocRefKind) Valid() bool {
 
 // Defines values for DocStateFormat.
 const (
-	Markdown DocStateFormat = "markdown"
+	DocStateFormatMarkdown    DocStateFormat = "markdown"
+	DocStateFormatSpreadsheet DocStateFormat = "spreadsheet"
 )
 
 // Valid indicates whether the value is a known member of the DocStateFormat enum.
 func (e DocStateFormat) Valid() bool {
 	switch e {
-	case Markdown:
+	case DocStateFormatMarkdown:
+		return true
+	case DocStateFormatSpreadsheet:
 		return true
 	default:
 		return false
@@ -198,6 +204,24 @@ func (e DocStateStatus) Valid() bool {
 	case DocStateStatusActive:
 		return true
 	case DocStateStatusArchived:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DocSummaryFormat.
+const (
+	DocSummaryFormatMarkdown    DocSummaryFormat = "markdown"
+	DocSummaryFormatSpreadsheet DocSummaryFormat = "spreadsheet"
+)
+
+// Valid indicates whether the value is a known member of the DocSummaryFormat enum.
+func (e DocSummaryFormat) Valid() bool {
+	switch e {
+	case DocSummaryFormatMarkdown:
+		return true
+	case DocSummaryFormatSpreadsheet:
 		return true
 	default:
 		return false
@@ -258,6 +282,132 @@ func (e EvidenceRequestViewStatus) Valid() bool {
 	case EvidenceRequestViewStatusOpen:
 		return true
 	case EvidenceRequestViewStatusResolved:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ExtDocLinkInfoKind.
+const (
+	ExtDocLinkInfoKindFdoc  ExtDocLinkInfoKind = "fdoc"
+	ExtDocLinkInfoKindTxdoc ExtDocLinkInfoKind = "txdoc"
+)
+
+// Valid indicates whether the value is a known member of the ExtDocLinkInfoKind enum.
+func (e ExtDocLinkInfoKind) Valid() bool {
+	switch e {
+	case ExtDocLinkInfoKindFdoc:
+		return true
+	case ExtDocLinkInfoKindTxdoc:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ExtDocLinkInfoProvider.
+const (
+	ExtDocLinkInfoProviderFeishuDocs  ExtDocLinkInfoProvider = "feishu_docs"
+	ExtDocLinkInfoProviderTencentDocs ExtDocLinkInfoProvider = "tencent_docs"
+)
+
+// Valid indicates whether the value is a known member of the ExtDocLinkInfoProvider enum.
+func (e ExtDocLinkInfoProvider) Valid() bool {
+	switch e {
+	case ExtDocLinkInfoProviderFeishuDocs:
+		return true
+	case ExtDocLinkInfoProviderTencentDocs:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ExtDocProviderViewProvider.
+const (
+	ExtDocProviderViewProviderFeishuDocs  ExtDocProviderViewProvider = "feishu_docs"
+	ExtDocProviderViewProviderTencentDocs ExtDocProviderViewProvider = "tencent_docs"
+)
+
+// Valid indicates whether the value is a known member of the ExtDocProviderViewProvider enum.
+func (e ExtDocProviderViewProvider) Valid() bool {
+	switch e {
+	case ExtDocProviderViewProviderFeishuDocs:
+		return true
+	case ExtDocProviderViewProviderTencentDocs:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ExtDocSettingsDocProvider.
+const (
+	ExtDocSettingsDocProviderFeishuDocs  ExtDocSettingsDocProvider = "feishu_docs"
+	ExtDocSettingsDocProviderTencentDocs ExtDocSettingsDocProvider = "tencent_docs"
+)
+
+// Valid indicates whether the value is a known member of the ExtDocSettingsDocProvider enum.
+func (e ExtDocSettingsDocProvider) Valid() bool {
+	switch e {
+	case ExtDocSettingsDocProviderFeishuDocs:
+		return true
+	case ExtDocSettingsDocProviderTencentDocs:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ExtDocShareProvider.
+const (
+	ExtDocShareProviderFeishuDocs  ExtDocShareProvider = "feishu_docs"
+	ExtDocShareProviderTencentDocs ExtDocShareProvider = "tencent_docs"
+)
+
+// Valid indicates whether the value is a known member of the ExtDocShareProvider enum.
+func (e ExtDocShareProvider) Valid() bool {
+	switch e {
+	case ExtDocShareProviderFeishuDocs:
+		return true
+	case ExtDocShareProviderTencentDocs:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ExtDocShareRequestProvider.
+const (
+	ExtDocShareRequestProviderFeishuDocs  ExtDocShareRequestProvider = "feishu_docs"
+	ExtDocShareRequestProviderTencentDocs ExtDocShareRequestProvider = "tencent_docs"
+)
+
+// Valid indicates whether the value is a known member of the ExtDocShareRequestProvider enum.
+func (e ExtDocShareRequestProvider) Valid() bool {
+	switch e {
+	case ExtDocShareRequestProviderFeishuDocs:
+		return true
+	case ExtDocShareRequestProviderTencentDocs:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ExternalRefKind.
+const (
+	ExternalRefKindFdoc  ExternalRefKind = "fdoc"
+	ExternalRefKindTxdoc ExternalRefKind = "txdoc"
+)
+
+// Valid indicates whether the value is a known member of the ExternalRefKind enum.
+func (e ExternalRefKind) Valid() bool {
+	switch e {
+	case ExternalRefKindFdoc:
+		return true
+	case ExternalRefKindTxdoc:
 		return true
 	default:
 		return false
@@ -428,28 +578,28 @@ func (e RoomCommandCommandKind) Valid() bool {
 
 // Defines values for RunViewStatus.
 const (
-	Canceled  RunViewStatus = "canceled"
-	Completed RunViewStatus = "completed"
-	Failed    RunViewStatus = "failed"
-	Requested RunViewStatus = "requested"
-	Running   RunViewStatus = "running"
-	Unknown   RunViewStatus = "unknown"
+	RunViewStatusCanceled  RunViewStatus = "canceled"
+	RunViewStatusCompleted RunViewStatus = "completed"
+	RunViewStatusFailed    RunViewStatus = "failed"
+	RunViewStatusRequested RunViewStatus = "requested"
+	RunViewStatusRunning   RunViewStatus = "running"
+	RunViewStatusUnknown   RunViewStatus = "unknown"
 )
 
 // Valid indicates whether the value is a known member of the RunViewStatus enum.
 func (e RunViewStatus) Valid() bool {
 	switch e {
-	case Canceled:
+	case RunViewStatusCanceled:
 		return true
-	case Completed:
+	case RunViewStatusCompleted:
 		return true
-	case Failed:
+	case RunViewStatusFailed:
 		return true
-	case Requested:
+	case RunViewStatusRequested:
 		return true
-	case Running:
+	case RunViewStatusRunning:
 		return true
-	case Unknown:
+	case RunViewStatusUnknown:
 		return true
 	default:
 		return false
@@ -546,6 +696,246 @@ func (e SettingsDocReplyOrPassMode) Valid() bool {
 	}
 }
 
+// Defines values for SheetCellValueOutType.
+const (
+	SheetCellValueOutTypeBool     SheetCellValueOutType = "bool"
+	SheetCellValueOutTypeDatetime SheetCellValueOutType = "datetime"
+	SheetCellValueOutTypeNumber   SheetCellValueOutType = "number"
+	SheetCellValueOutTypeText     SheetCellValueOutType = "text"
+)
+
+// Valid indicates whether the value is a known member of the SheetCellValueOutType enum.
+func (e SheetCellValueOutType) Valid() bool {
+	switch e {
+	case SheetCellValueOutTypeBool:
+		return true
+	case SheetCellValueOutTypeDatetime:
+		return true
+	case SheetCellValueOutTypeNumber:
+		return true
+	case SheetCellValueOutTypeText:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SheetCellViewDerivedKind.
+const (
+	SheetCellViewDerivedKindError       SheetCellViewDerivedKind = "error"
+	SheetCellViewDerivedKindUnsupported SheetCellViewDerivedKind = "unsupported"
+	SheetCellViewDerivedKindValue       SheetCellViewDerivedKind = "value"
+)
+
+// Valid indicates whether the value is a known member of the SheetCellViewDerivedKind enum.
+func (e SheetCellViewDerivedKind) Valid() bool {
+	switch e {
+	case SheetCellViewDerivedKindError:
+		return true
+	case SheetCellViewDerivedKindUnsupported:
+		return true
+	case SheetCellViewDerivedKindValue:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SheetCellViewType.
+const (
+	SheetCellViewTypeBool     SheetCellViewType = "bool"
+	SheetCellViewTypeDatetime SheetCellViewType = "datetime"
+	SheetCellViewTypeFormula  SheetCellViewType = "formula"
+	SheetCellViewTypeNumber   SheetCellViewType = "number"
+	SheetCellViewTypeText     SheetCellViewType = "text"
+)
+
+// Valid indicates whether the value is a known member of the SheetCellViewType enum.
+func (e SheetCellViewType) Valid() bool {
+	switch e {
+	case SheetCellViewTypeBool:
+		return true
+	case SheetCellViewTypeDatetime:
+		return true
+	case SheetCellViewTypeFormula:
+		return true
+	case SheetCellViewTypeNumber:
+		return true
+	case SheetCellViewTypeText:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SheetTransferExecuteRequestDirection.
+const (
+	SheetTransferExecuteRequestDirectionExport SheetTransferExecuteRequestDirection = "export"
+	SheetTransferExecuteRequestDirectionImport SheetTransferExecuteRequestDirection = "import"
+)
+
+// Valid indicates whether the value is a known member of the SheetTransferExecuteRequestDirection enum.
+func (e SheetTransferExecuteRequestDirection) Valid() bool {
+	switch e {
+	case SheetTransferExecuteRequestDirectionExport:
+		return true
+	case SheetTransferExecuteRequestDirectionImport:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SheetTransferIssueAction.
+const (
+	Converted SheetTransferIssueAction = "converted"
+	Dropped   SheetTransferIssueAction = "dropped"
+	Kept      SheetTransferIssueAction = "kept"
+	Truncated SheetTransferIssueAction = "truncated"
+)
+
+// Valid indicates whether the value is a known member of the SheetTransferIssueAction enum.
+func (e SheetTransferIssueAction) Valid() bool {
+	switch e {
+	case Converted:
+		return true
+	case Dropped:
+		return true
+	case Kept:
+		return true
+	case Truncated:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SheetTransferIssueSeverity.
+const (
+	Blocked SheetTransferIssueSeverity = "blocked"
+	Info    SheetTransferIssueSeverity = "info"
+	Warning SheetTransferIssueSeverity = "warning"
+)
+
+// Valid indicates whether the value is a known member of the SheetTransferIssueSeverity enum.
+func (e SheetTransferIssueSeverity) Valid() bool {
+	switch e {
+	case Blocked:
+		return true
+	case Info:
+		return true
+	case Warning:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SheetTransferPreviewDirection.
+const (
+	SheetTransferPreviewDirectionExport SheetTransferPreviewDirection = "export"
+	SheetTransferPreviewDirectionImport SheetTransferPreviewDirection = "import"
+)
+
+// Valid indicates whether the value is a known member of the SheetTransferPreviewDirection enum.
+func (e SheetTransferPreviewDirection) Valid() bool {
+	switch e {
+	case SheetTransferPreviewDirectionExport:
+		return true
+	case SheetTransferPreviewDirectionImport:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SheetTransferPreviewRequestDirection.
+const (
+	SheetTransferPreviewRequestDirectionExport SheetTransferPreviewRequestDirection = "export"
+	SheetTransferPreviewRequestDirectionImport SheetTransferPreviewRequestDirection = "import"
+)
+
+// Valid indicates whether the value is a known member of the SheetTransferPreviewRequestDirection enum.
+func (e SheetTransferPreviewRequestDirection) Valid() bool {
+	switch e {
+	case SheetTransferPreviewRequestDirectionExport:
+		return true
+	case SheetTransferPreviewRequestDirectionImport:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SheetTransferRecordDirection.
+const (
+	SheetTransferRecordDirectionExport SheetTransferRecordDirection = "export"
+	SheetTransferRecordDirectionImport SheetTransferRecordDirection = "import"
+	SheetTransferRecordDirectionUpdate SheetTransferRecordDirection = "update"
+)
+
+// Valid indicates whether the value is a known member of the SheetTransferRecordDirection enum.
+func (e SheetTransferRecordDirection) Valid() bool {
+	switch e {
+	case SheetTransferRecordDirectionExport:
+		return true
+	case SheetTransferRecordDirectionImport:
+		return true
+	case SheetTransferRecordDirectionUpdate:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SheetTransferRecordStatus.
+const (
+	SheetTransferRecordStatusCanceled              SheetTransferRecordStatus = "canceled"
+	SheetTransferRecordStatusFailed                SheetTransferRecordStatus = "failed"
+	SheetTransferRecordStatusPartial               SheetTransferRecordStatus = "partial"
+	SheetTransferRecordStatusRunning               SheetTransferRecordStatus = "running"
+	SheetTransferRecordStatusSucceeded             SheetTransferRecordStatus = "succeeded"
+	SheetTransferRecordStatusSucceededWithWarnings SheetTransferRecordStatus = "succeeded_with_warnings"
+	SheetTransferRecordStatusUnknown               SheetTransferRecordStatus = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the SheetTransferRecordStatus enum.
+func (e SheetTransferRecordStatus) Valid() bool {
+	switch e {
+	case SheetTransferRecordStatusCanceled:
+		return true
+	case SheetTransferRecordStatusFailed:
+		return true
+	case SheetTransferRecordStatusPartial:
+		return true
+	case SheetTransferRecordStatusRunning:
+		return true
+	case SheetTransferRecordStatusSucceeded:
+		return true
+	case SheetTransferRecordStatusSucceededWithWarnings:
+		return true
+	case SheetTransferRecordStatusUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SheetTransferUpdatePreviewDirection.
+const (
+	SheetTransferUpdatePreviewDirectionUpdate SheetTransferUpdatePreviewDirection = "update"
+)
+
+// Valid indicates whether the value is a known member of the SheetTransferUpdatePreviewDirection enum.
+func (e SheetTransferUpdatePreviewDirection) Valid() bool {
+	switch e {
+	case SheetTransferUpdatePreviewDirectionUpdate:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SnapshotThreadsState.
 const (
 	SnapshotThreadsStateActive SnapshotThreadsState = "active"
@@ -618,6 +1008,114 @@ func (e ListDocsParamsStatus) Valid() bool {
 	case ListDocsParamsStatusActive:
 		return true
 	case ListDocsParamsStatusArchived:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListExtDocSharesParamsProvider.
+const (
+	ListExtDocSharesParamsProviderFeishuDocs  ListExtDocSharesParamsProvider = "feishu_docs"
+	ListExtDocSharesParamsProviderTencentDocs ListExtDocSharesParamsProvider = "tencent_docs"
+)
+
+// Valid indicates whether the value is a known member of the ListExtDocSharesParamsProvider enum.
+func (e ListExtDocSharesParamsProvider) Valid() bool {
+	switch e {
+	case ListExtDocSharesParamsProviderFeishuDocs:
+		return true
+	case ListExtDocSharesParamsProviderTencentDocs:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DeleteExtDocShareParamsProvider.
+const (
+	DeleteExtDocShareParamsProviderFeishuDocs  DeleteExtDocShareParamsProvider = "feishu_docs"
+	DeleteExtDocShareParamsProviderTencentDocs DeleteExtDocShareParamsProvider = "tencent_docs"
+)
+
+// Valid indicates whether the value is a known member of the DeleteExtDocShareParamsProvider enum.
+func (e DeleteExtDocShareParamsProvider) Valid() bool {
+	switch e {
+	case DeleteExtDocShareParamsProviderFeishuDocs:
+		return true
+	case DeleteExtDocShareParamsProviderTencentDocs:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListSheetTransfersParamsDirection.
+const (
+	ListSheetTransfersParamsDirectionExport ListSheetTransfersParamsDirection = "export"
+	ListSheetTransfersParamsDirectionImport ListSheetTransfersParamsDirection = "import"
+)
+
+// Valid indicates whether the value is a known member of the ListSheetTransfersParamsDirection enum.
+func (e ListSheetTransfersParamsDirection) Valid() bool {
+	switch e {
+	case ListSheetTransfersParamsDirectionExport:
+		return true
+	case ListSheetTransfersParamsDirectionImport:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetExtDocSettingsParamsProvider.
+const (
+	GetExtDocSettingsParamsProviderFeishuDocs  GetExtDocSettingsParamsProvider = "feishu_docs"
+	GetExtDocSettingsParamsProviderTencentDocs GetExtDocSettingsParamsProvider = "tencent_docs"
+)
+
+// Valid indicates whether the value is a known member of the GetExtDocSettingsParamsProvider enum.
+func (e GetExtDocSettingsParamsProvider) Valid() bool {
+	switch e {
+	case GetExtDocSettingsParamsProviderFeishuDocs:
+		return true
+	case GetExtDocSettingsParamsProviderTencentDocs:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UpdateExtDocSettingsParamsProvider.
+const (
+	UpdateExtDocSettingsParamsProviderFeishuDocs  UpdateExtDocSettingsParamsProvider = "feishu_docs"
+	UpdateExtDocSettingsParamsProviderTencentDocs UpdateExtDocSettingsParamsProvider = "tencent_docs"
+)
+
+// Valid indicates whether the value is a known member of the UpdateExtDocSettingsParamsProvider enum.
+func (e UpdateExtDocSettingsParamsProvider) Valid() bool {
+	switch e {
+	case UpdateExtDocSettingsParamsProviderFeishuDocs:
+		return true
+	case UpdateExtDocSettingsParamsProviderTencentDocs:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for VerifyExtDocParamsProvider.
+const (
+	VerifyExtDocParamsProviderFeishuDocs  VerifyExtDocParamsProvider = "feishu_docs"
+	VerifyExtDocParamsProviderTencentDocs VerifyExtDocParamsProvider = "tencent_docs"
+)
+
+// Valid indicates whether the value is a known member of the VerifyExtDocParamsProvider enum.
+func (e VerifyExtDocParamsProvider) Valid() bool {
+	switch e {
+	case VerifyExtDocParamsProviderFeishuDocs:
+		return true
+	case VerifyExtDocParamsProviderTencentDocs:
 		return true
 	default:
 		return false
@@ -848,10 +1346,16 @@ type DevNote struct {
 	Type       string                 `json:"type"`
 }
 
-// DocBlock defines model for DocBlock.
+// DocBlock 块模型（RFC-0014 §2.2；RFC-0016 增补元数据）：level 仅 heading（1..6，缺省导出按 2）、lang 仅 code（≤48 runes）；text 自带标记（# 前缀/fence）导出透传优先——存量数据零迁移。
 type DocBlock struct {
 	// BlockId 稳定块 ID（锚定操作/冲突重放/卡片摘要的基础）
 	BlockId string `json:"block_id"`
+
+	// Lang code 专属：语言标注（如 go、python）
+	Lang *string `json:"lang,omitempty"`
+
+	// Level heading 专属：标题级别
+	Level *int `json:"level,omitempty"`
 
 	// Text markdown 行内内容
 	Text string       `json:"text"`
@@ -863,11 +1367,15 @@ type DocBlockType string
 
 // DocCommand 文档命令信封（RFC-0014 / ADR-0014：镜像房间命令纪律——幂等 + 文档级乐观并发）。
 // payload 按 command_kind 严格校验（未知字段拒绝）：
-// create_doc → {title, format?, initial_blocks?, anchor_message_id?}（仅 POST /v1/docs）；
+// create_doc → {title, format?, initial_blocks?, anchor_message_id?}（仅 POST /v1/docs；
+// format 缺省 markdown；spreadsheet 不接受 initial_blocks）；
 // rename_doc → {title}；
 // commit_doc_revision → {base_version?, ops[], note?}——ops 为一批块操作
 // （insert_after/append 携带 block，replace 携带 text，delete 仅锚点 block_id；
 // 插入块的空 block_id 由服务端分配）；
+// commit_sheet_revision → {base_version?, sheet_ops[], note?}（RFC-0017 M1，
+// 仅 format=spreadsheet；sheet_ops 为一批归一化表格操作——结构插删引发的
+// 公式改写由服务端定稿进事件）；
 // archive_doc / restore_doc → 空 payload；
 // delete_doc → {reason}（墓碑 + 内容级联清除，不可逆）；
 // duplicate_doc → {title?}（缺省 = 原标题 + "（副本）"）。
@@ -923,12 +1431,19 @@ type DocSearchHit struct {
 }
 
 // DocState 文档当前态（派生态，权威为 per-doc 事件流；GET /v1/docs/{doc_id} 快照）。
+// format 分派（RFC-0017 §3.2）：markdown → blocks；spreadsheet → sheets
+// （工作表元信息清单；单元格内容经 /sheets/{sheet_id}/range 有界读取，
+// 不在快照里整簿下发）。
 type DocState struct {
-	Blocks    []DocBlock     `json:"blocks"`
+	// Blocks format=markdown 携带；spreadsheet 缺省
+	Blocks    *[]DocBlock    `json:"blocks,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
 	CreatedBy string         `json:"created_by"`
 	DocId     string         `json:"doc_id"`
 	Format    DocStateFormat `json:"format"`
+
+	// Sheets format=spreadsheet 携带；markdown 缺省
+	Sheets    *[]SheetMeta   `json:"sheets,omitempty"`
 	Status    DocStateStatus `json:"status"`
 	Title     string         `json:"title"`
 	UpdatedAt time.Time      `json:"updated_at"`
@@ -942,11 +1457,12 @@ type DocStateFormat string
 // DocStateStatus defines model for DocState.Status.
 type DocStateStatus string
 
-// DocSummary 文档主页行（RFC-0014 §2.8：updated_at 倒序）。
+// DocSummary 文档主页行（RFC-0014 §2.8：updated_at 倒序；format 供列表行分派图标/入口，RFC-0017）。
 type DocSummary struct {
 	CreatedAt time.Time        `json:"created_at"`
 	CreatedBy string           `json:"created_by"`
 	DocId     string           `json:"doc_id"`
+	Format    DocSummaryFormat `json:"format"`
 	Status    DocSummaryStatus `json:"status"`
 
 	// Title 最新 doc.created/doc.renamed 投影
@@ -957,6 +1473,9 @@ type DocSummary struct {
 	UpdatedBy string `json:"updated_by"`
 	Version   int64  `json:"version"`
 }
+
+// DocSummaryFormat defines model for DocSummary.Format.
+type DocSummaryFormat string
 
 // DocSummaryStatus defines model for DocSummary.Status.
 type DocSummaryStatus string
@@ -971,6 +1490,9 @@ type DocVersionConflict struct {
 	} `json:"error"`
 
 	// State 文档当前态（派生态，权威为 per-doc 事件流；GET /v1/docs/{doc_id} 快照）。
+	// format 分派（RFC-0017 §3.2）：markdown → blocks；spreadsheet → sheets
+	// （工作表元信息清单；单元格内容经 /sheets/{sheet_id}/range 有界读取，
+	// 不在快照里整簿下发）。
 	State *DocState `json:"state,omitempty"`
 }
 
@@ -1045,6 +1567,160 @@ type Executable struct {
 	// Source auto_scan | manual
 	Source  *string `json:"source,omitempty"`
 	Version *string `json:"version,omitempty"`
+}
+
+// ExtDocLinkInfo 解析产物（ExternalRef 的构造材料）：title 尽力填充，失败为空串——卡片降级显示 URL。kind = 归属 provider 的 external_refs.kind。
+type ExtDocLinkInfo struct {
+	DocType string `json:"doc_type"`
+
+	// Kind 归属 provider 的 ref kind
+	Kind     *ExtDocLinkInfoKind    `json:"kind,omitempty"`
+	Provider ExtDocLinkInfoProvider `json:"provider"`
+	Title    *string                `json:"title,omitempty"`
+	Url      string                 `json:"url"`
+}
+
+// ExtDocLinkInfoKind 归属 provider 的 ref kind
+type ExtDocLinkInfoKind string
+
+// ExtDocLinkInfoProvider defines model for ExtDocLinkInfo.Provider.
+type ExtDocLinkInfoProvider string
+
+// ExtDocLinkResolveRequest defines model for ExtDocLinkResolveRequest.
+type ExtDocLinkResolveRequest struct {
+	// Url 待解析的外部文档链接（须白名单 host 的 https）
+	Url string `json:"url"`
+}
+
+// ExtDocProviderList defines model for ExtDocProviderList.
+type ExtDocProviderList struct {
+	Providers []ExtDocProviderView `json:"providers"`
+}
+
+// ExtDocProviderView defines model for ExtDocProviderView.
+type ExtDocProviderView struct {
+	Configured     bool                       `json:"configured"`
+	DisplayName    string                     `json:"display_name"`
+	LastVerifiedAt *time.Time                 `json:"last_verified_at,omitempty"`
+	Provider       ExtDocProviderViewProvider `json:"provider"`
+
+	// RefKind external_refs.kind 值（txdoc | fdoc）
+	RefKind string `json:"ref_kind"`
+}
+
+// ExtDocProviderViewProvider defines model for ExtDocProviderView.Provider.
+type ExtDocProviderViewProvider string
+
+// ExtDocSettingsDoc provider 凭据状态（字段按 provider 分化；凭据值永不回传）。
+type ExtDocSettingsDoc struct {
+	// AppConfigured feishu：app_id/app_secret 已配置
+	AppConfigured *bool `json:"app_configured,omitempty"`
+
+	// Authorized feishu：user_access_token 已授权
+	Authorized *bool `json:"authorized,omitempty"`
+
+	// Configured 凭据就绪可共享（tencent=有 token；feishu=应用+授权齐备）
+	Configured bool `json:"configured"`
+
+	// ExpiresAt feishu：access_token 到期时间
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+
+	// LastVerifiedAt 最近一次 verify 成功时间（从未 = null）
+	LastVerifiedAt *time.Time                `json:"last_verified_at,omitempty"`
+	Provider       ExtDocSettingsDocProvider `json:"provider"`
+}
+
+// ExtDocSettingsDocProvider defines model for ExtDocSettingsDoc.Provider.
+type ExtDocSettingsDocProvider string
+
+// ExtDocSettingsUpdate 凭据写入体（字段按 provider 分化；tencent 携 token、feishu 携 app_id+app_secret——两者须同时给；全部空 = 清除）。
+type ExtDocSettingsUpdate struct {
+	// AppId feishu_docs：自建应用 App ID
+	AppId *string `json:"app_id,omitempty"`
+
+	// AppSecret feishu_docs：自建应用 App Secret（空串 = 清除）
+	AppSecret *string `json:"app_secret,omitempty"`
+
+	// Token tencent_docs：个人 MCP token（空串 = 清除）
+	Token *string `json:"token,omitempty"`
+}
+
+// ExtDocShare 文档级共享映射（快照语义：映射记录创建时点，远端内容不回同步）。
+type ExtDocShare struct {
+	DocId string `json:"doc_id"`
+
+	// ExternalUrl 远端文档 URL（创建结果）
+	ExternalUrl string              `json:"external_url"`
+	Provider    ExtDocShareProvider `json:"provider"`
+	SharedAt    time.Time           `json:"shared_at"`
+
+	// SharedBy 共享操作者（本地 owner）
+	SharedBy string `json:"shared_by"`
+}
+
+// ExtDocShareProvider defines model for ExtDocShare.Provider.
+type ExtDocShareProvider string
+
+// ExtDocShareList defines model for ExtDocShareList.
+type ExtDocShareList struct {
+	Shares []ExtDocShare `json:"shares"`
+}
+
+// ExtDocShareRequest defines model for ExtDocShareRequest.
+type ExtDocShareRequest struct {
+	DocId string `json:"doc_id"`
+
+	// Force true = 已有映射时重新创建并替换（旧远端文档保留）
+	Force    *bool                      `json:"force,omitempty"`
+	Provider ExtDocShareRequestProvider `json:"provider"`
+}
+
+// ExtDocShareRequestProvider defines model for ExtDocShareRequest.Provider.
+type ExtDocShareRequestProvider string
+
+// ExtDocVerifyResult defines model for ExtDocVerifyResult.
+type ExtDocVerifyResult struct {
+	// Message 人类可读摘要（不含凭据）
+	Message *string `json:"message,omitempty"`
+	Ok      bool    `json:"ok"`
+
+	// UpstreamCode 上游错误码（ok=false 时存在，如腾讯 400006 token 无效 / 飞书 job_* 导入错误）
+	UpstreamCode *string `json:"upstream_code,omitempty"`
+}
+
+// ExternalRef 外部文档引用描述子（RFC-0016 §2.3 封闭字段集，与 room-protocol message.posted externalRef 同形）：发送时刻定稿的链接事实，卡片不随外部服务刷新。host 白名单与 kind→provider 归属由服务端校验（schema 层只钉 https 前缀与长度）。
+type ExternalRef struct {
+	// DocType provider 侧推断的文档类型（txdoc：sheet/doc/slide/aio/form；fdoc：docx/doc/wiki/sheet/base/minutes/mind/slide/file；空 = 未知，卡片降级）
+	DocType *string         `json:"doc_type,omitempty"`
+	Kind    ExternalRefKind `json:"kind"`
+	Title   *string         `json:"title,omitempty"`
+	Url     string          `json:"url"`
+}
+
+// ExternalRefKind defines model for ExternalRef.Kind.
+type ExternalRefKind string
+
+// FeishuAuthorizeInfo 授权引导信息（redirect_uri 须与飞书后台安全设置登记值完全一致）。
+type FeishuAuthorizeInfo struct {
+	// AutoCaptured true = 服务端已挂起回环回调监听，授权页跳转落回即自动完成绑定
+	// （设置页轮询状态即可）；false = 回调端口被占（如开发态 Vite），
+	// 降级手动：从浏览器地址栏复制 code 提交 callback 端点。
+	AutoCaptured *bool `json:"auto_captured,omitempty"`
+
+	// RedirectUri 须在飞书后台登记的重定向 URL
+	RedirectUri string `json:"redirect_uri"`
+
+	// Scopes 申请的权限 scope 清单
+	Scopes []string `json:"scopes"`
+
+	// Url 授权页 URL（浏览器打开）
+	Url string `json:"url"`
+}
+
+// FeishuCallbackRequest defines model for FeishuCallbackRequest.
+type FeishuCallbackRequest struct {
+	// Code 授权码（浏览器跳转地址栏 ?code= 的值；单次有效）
+	Code string `json:"code"`
 }
 
 // ManualExecutableRequest defines model for ManualExecutableRequest.
@@ -1391,6 +2067,296 @@ type SettingsDoc struct {
 // SettingsDocReplyOrPassMode 单次 reply-or-pass 限定路径（M4-3）：auto（缺省）= 资格座位走单次路径；off = 回退两阶段（A/B 控制组）
 type SettingsDocReplyOrPassMode string
 
+// SheetCellStyle 基础样式（指针语义：仅给出的字段被改写）。
+type SheetCellStyle struct {
+	Bold   *bool `json:"bold,omitempty"`
+	Italic *bool `json:"italic,omitempty"`
+}
+
+// SheetCellValueOut defines model for SheetCellValueOut.
+type SheetCellValueOut struct {
+	Bool   *bool                 `json:"bool,omitempty"`
+	Number *float32              `json:"number,omitempty"`
+	Text   *string               `json:"text,omitempty"`
+	Type   SheetCellValueOutType `json:"type"`
+}
+
+// SheetCellValueOutType defines model for SheetCellValueOut.Type.
+type SheetCellValueOutType string
+
+// SheetCellView 范围读取的单格视图（公式格同时携带原文与派生结果）。
+type SheetCellView struct {
+	Bool *bool `json:"bool,omitempty"`
+	C    int   `json:"c"`
+
+	// Derived 公式派生结果（kind = value | error | unsupported）。
+	Derived *struct {
+		Err   *string                  `json:"err,omitempty"`
+		Kind  SheetCellViewDerivedKind `json:"kind"`
+		Value *SheetCellValueOut       `json:"value,omitempty"`
+	} `json:"derived,omitempty"`
+	Formula *string  `json:"formula,omitempty"`
+	Number  *float32 `json:"number,omitempty"`
+	R       int      `json:"r"`
+
+	// Style 基础样式（指针语义：仅给出的字段被改写）。
+	Style *SheetCellStyle   `json:"style,omitempty"`
+	Text  *string           `json:"text,omitempty"`
+	Type  SheetCellViewType `json:"type"`
+}
+
+// SheetCellViewDerivedKind defines model for SheetCellView.Derived.Kind.
+type SheetCellViewDerivedKind string
+
+// SheetCellViewType defines model for SheetCellView.Type.
+type SheetCellViewType string
+
+// SheetMeta 工作表元信息（RFC-0017 §3.2；行列尺寸为显式布局意图，filled = 值或公式非空格数）。
+type SheetMeta struct {
+	Cols        int    `json:"cols"`
+	FilledCells int    `json:"filled_cells"`
+	Name        string `json:"name"`
+	Rows        int    `json:"rows"`
+	SheetId     string `json:"sheet_id"`
+}
+
+// SheetRange 矩形范围（闭区间）。
+type SheetRange struct {
+	C1 int `json:"c1"`
+	C2 int `json:"c2"`
+	R1 int `json:"r1"`
+	R2 int `json:"r2"`
+}
+
+// SheetRangeView 范围读取结果（Truncated = used-range 缺省读取被 10000 格上限按行截断）。
+type SheetRangeView struct {
+	Cells []SheetCellView `json:"cells"`
+	DocId string          `json:"doc_id"`
+
+	// Range 矩形范围（闭区间）。
+	Range     SheetRange `json:"range"`
+	SheetId   string     `json:"sheet_id"`
+	Truncated bool       `json:"truncated"`
+	Version   int64      `json:"version"`
+}
+
+// SheetTransferBlockedError 预检阻止（sheet_transfer_blocked）——report 携全部转换项供逐项展示。
+type SheetTransferBlockedError struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+	Report []SheetTransferIssue `json:"report"`
+}
+
+// SheetTransferExecuteRequest 执行请求。携预览返回的锚点（导入 snapshot_hash / 导出 source_version）防源偷换；缺锚点 = 跳过比对（信任当前态）。
+type SheetTransferExecuteRequest struct {
+	Direction SheetTransferExecuteRequestDirection `json:"direction"`
+	DocId     *string                              `json:"doc_id,omitempty"`
+
+	// IdempotencyKey 幂等键（同键重放返回既有记录）
+	IdempotencyKey string    `json:"idempotency_key"`
+	Provider       *string   `json:"provider,omitempty"`
+	SheetNames     *[]string `json:"sheet_names,omitempty"`
+
+	// SnapshotHash 导入：预览时的快照哈希（执行重拉须一致）
+	SnapshotHash *string `json:"snapshot_hash,omitempty"`
+
+	// SourceVersion 导出：预览时的本地版本（执行时须未变）
+	SourceVersion *int64  `json:"source_version,omitempty"`
+	Url           *string `json:"url,omitempty"`
+}
+
+// SheetTransferExecuteRequestDirection defines model for SheetTransferExecuteRequest.Direction.
+type SheetTransferExecuteRequestDirection string
+
+// SheetTransferIssue 转换报告项（RFC-0017 §3.6——损失可定位，不静默降级）。
+type SheetTransferIssue struct {
+	// Action 处理方式
+	Action *SheetTransferIssueAction `json:"action,omitempty"`
+
+	// Feature 特性名（如 超精度数值/布尔值/回读校验）
+	Feature string `json:"feature"`
+
+	// Range 涉及范围/坐标（展示用）
+	Range *string `json:"range,omitempty"`
+
+	// Reason 原因与量化（如"N 格文本超限截断"）
+	Reason string `json:"reason"`
+
+	// Severity info=注记 warning=有损可继续 blocked=阻止
+	Severity SheetTransferIssueSeverity `json:"severity"`
+
+	// Sheet 涉及工作表名
+	Sheet *string `json:"sheet,omitempty"`
+}
+
+// SheetTransferIssueAction 处理方式
+type SheetTransferIssueAction string
+
+// SheetTransferIssueSeverity info=注记 warning=有损可继续 blocked=阻止
+type SheetTransferIssueSeverity string
+
+// SheetTransferPreview defines model for SheetTransferPreview.
+type SheetTransferPreview struct {
+	Direction SheetTransferPreviewDirection `json:"direction"`
+
+	// DocId 导出源本地文档
+	DocId    *string                     `json:"doc_id,omitempty"`
+	Issues   []SheetTransferIssue        `json:"issues"`
+	Provider string                      `json:"provider"`
+	Sheets   []SheetTransferPreviewSheet `json:"sheets"`
+
+	// SnapshotHash 导入：预览基于的快照哈希
+	SnapshotHash *string `json:"snapshot_hash,omitempty"`
+
+	// SourceUrl 导入源链接
+	SourceUrl *string `json:"source_url,omitempty"`
+
+	// SourceVersion 导出：预览基于的本地版本
+	SourceVersion *int64 `json:"source_version,omitempty"`
+
+	// Title 文档标题
+	Title *string `json:"title,omitempty"`
+}
+
+// SheetTransferPreviewDirection defines model for SheetTransferPreview.Direction.
+type SheetTransferPreviewDirection string
+
+// SheetTransferPreviewRequest 预览请求。导入给 url（provider 可缺省，按 host 归属）；导出给 doc_id + provider。
+type SheetTransferPreviewRequest struct {
+	Direction SheetTransferPreviewRequestDirection `json:"direction"`
+
+	// DocId 导出源（本地表格 doc_id）
+	DocId *string `json:"doc_id,omitempty"`
+
+	// Provider provider id（导入可缺省——按 URL host 分派）
+	Provider *string `json:"provider,omitempty"`
+
+	// SheetNames 可选工作表过滤（按名；空 = 全部）
+	SheetNames *[]string `json:"sheet_names,omitempty"`
+
+	// Url 导入源（云端表格链接）
+	Url *string `json:"url,omitempty"`
+}
+
+// SheetTransferPreviewRequestDirection defines model for SheetTransferPreviewRequest.Direction.
+type SheetTransferPreviewRequestDirection string
+
+// SheetTransferPreviewSheet defines model for SheetTransferPreviewSheet.
+type SheetTransferPreviewSheet struct {
+	Cols int `json:"cols"`
+
+	// Filled 已填单元格数
+	Filled int `json:"filled"`
+
+	// Formulas 公式格数
+	Formulas int `json:"formulas"`
+
+	// MergeCount 合并区域数（不迁移，仅报告）
+	MergeCount *int   `json:"merge_count,omitempty"`
+	Name       string `json:"name"`
+	Rows       int    `json:"rows"`
+}
+
+// SheetTransferRecord 交换记录（终态或 unknown——中断残留）。
+type SheetTransferRecord struct {
+	// CellsTotal update：差异格总数
+	CellsTotal *int `json:"cells_total,omitempty"`
+
+	// CellsWritten update：已写格数（进度 = written/total）
+	CellsWritten *int                         `json:"cells_written,omitempty"`
+	CreatedAt    string                       `json:"created_at"`
+	Direction    SheetTransferRecordDirection `json:"direction"`
+
+	// DocId 导入产物（本地新表格）
+	DocId *string `json:"doc_id,omitempty"`
+
+	// Error failed/unknown 时的原因
+	Error *string `json:"error,omitempty"`
+
+	// ExternalUrl 导出产物（云端新副本）/ 导入源
+	ExternalUrl    *string              `json:"external_url,omitempty"`
+	IdempotencyKey string               `json:"idempotency_key"`
+	Provider       string               `json:"provider"`
+	Report         []SheetTransferIssue `json:"report"`
+	SnapshotHash   *string              `json:"snapshot_hash,omitempty"`
+	SourceVersion  *int64               `json:"source_version,omitempty"`
+
+	// Status import/export 同步执行（running 仅崩溃窗口）；update 异步分块（partial=已写部分未跑完，canceled=主动停，unknown=传输中断结果不确定）
+	Status     SheetTransferRecordStatus `json:"status"`
+	Title      *string                   `json:"title,omitempty"`
+	TransferId string                    `json:"transfer_id"`
+	UpdatedAt  string                    `json:"updated_at"`
+}
+
+// SheetTransferRecordDirection defines model for SheetTransferRecord.Direction.
+type SheetTransferRecordDirection string
+
+// SheetTransferRecordStatus import/export 同步执行（running 仅崩溃窗口）；update 异步分块（partial=已写部分未跑完，canceled=主动停，unknown=传输中断结果不确定）
+type SheetTransferRecordStatus string
+
+// SheetTransferUpdateDiffSheet defines model for SheetTransferUpdateDiffSheet.
+type SheetTransferUpdateDiffSheet struct {
+	// FormulaDiffs 其中公式格数
+	FormulaDiffs int    `json:"formula_diffs"`
+	Name         string `json:"name"`
+
+	// RemoteExtra 远端多出格数（不清除，仅注记）
+	RemoteExtra int `json:"remote_extra"`
+
+	// ToWrite 将覆写的差异格数
+	ToWrite int `json:"to_write"`
+}
+
+// SheetTransferUpdateExecuteRequest 回写执行（异步）：携预览锚点（target_hash/source_version）防源与目标偷换。
+type SheetTransferUpdateExecuteRequest struct {
+	DocId          string    `json:"doc_id"`
+	ExternalUrl    string    `json:"external_url"`
+	IdempotencyKey string    `json:"idempotency_key"`
+	Provider       string    `json:"provider"`
+	SheetNames     *[]string `json:"sheet_names,omitempty"`
+
+	// SourceVersion 预览时的本地版本（执行时须未变）
+	SourceVersion *int64 `json:"source_version,omitempty"`
+
+	// TargetHash 预览时的目标快照哈希（执行重读须一致）
+	TargetHash *string `json:"target_hash,omitempty"`
+}
+
+// SheetTransferUpdatePreview defines model for SheetTransferUpdatePreview.
+type SheetTransferUpdatePreview struct {
+	// CellsTotal 差异格总数（= 执行 cells_total）
+	CellsTotal    int                                 `json:"cells_total"`
+	Diffs         []SheetTransferUpdateDiffSheet      `json:"diffs"`
+	Direction     SheetTransferUpdatePreviewDirection `json:"direction"`
+	DocId         string                              `json:"doc_id"`
+	ExternalUrl   string                              `json:"external_url"`
+	Issues        []SheetTransferIssue                `json:"issues"`
+	Provider      string                              `json:"provider"`
+	SourceVersion int64                               `json:"source_version"`
+	TargetHash    string                              `json:"target_hash"`
+	Title         *string                             `json:"title,omitempty"`
+}
+
+// SheetTransferUpdatePreviewDirection defines model for SheetTransferUpdatePreview.Direction.
+type SheetTransferUpdatePreviewDirection string
+
+// SheetTransferUpdatePreviewRequest 回写预览（M3）：更新既有远端目标——目标取自历史导出记录的 external_url。
+type SheetTransferUpdatePreviewRequest struct {
+	// DocId 本地表格 doc_id
+	DocId string `json:"doc_id"`
+
+	// ExternalUrl 远端目标链接
+	ExternalUrl string `json:"external_url"`
+
+	// Provider provider id（须与目标链接归属一致）
+	Provider string `json:"provider"`
+
+	// SheetNames 可选工作表过滤（按名；空 = 全部）
+	SheetNames *[]string `json:"sheet_names,omitempty"`
+}
+
 // Snapshot defines model for Snapshot.
 type Snapshot struct {
 	AlgorithmVersion int64 `json:"algorithm_version"`
@@ -1512,8 +2478,11 @@ type TimelineItem struct {
 	Attachments *[]AttachmentDescriptor `json:"attachments,omitempty"`
 	Body        *string                 `json:"body,omitempty"`
 	EventId     string                  `json:"event_id"`
-	OccurredAt  time.Time               `json:"occurred_at"`
-	Position    string                  `json:"position"`
+
+	// ExternalRefs 外部文档引用（RFC-0016 §2.3；缺省 = 无；快照/SSE 两路同形——同 refs 纪律）。发送时刻的描述子快照，不随外部服务刷新。
+	ExternalRefs *[]ExternalRef `json:"external_refs,omitempty"`
+	OccurredAt   time.Time      `json:"occurred_at"`
+	Position     string         `json:"position"`
 
 	// Refs 文档引用（RFC-0014 §2.4；缺省 = 无引用；快照/SSE 两路同形——同 attachments 纪律）。
 	Refs *[]DocRef `json:"refs,omitempty"`
@@ -1594,6 +2563,57 @@ type SubscribeDocEventsParams struct {
 	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
+// ExportDocParams defines parameters for ExportDoc.
+type ExportDocParams struct {
+	// SheetId 仅 spreadsheet：目标工作表 ID（缺省 = 首表）
+	SheetId *string `form:"sheet_id,omitempty" json:"sheet_id,omitempty"`
+}
+
+// GetDocSheetRangeParams defines parameters for GetDocSheetRange.
+type GetDocSheetRangeParams struct {
+	// Range A1:B2 形态（缺省 = used range）
+	Range *string `form:"range,omitempty" json:"range,omitempty"`
+}
+
+// ListExtDocSharesParams defines parameters for ListExtDocShares.
+type ListExtDocSharesParams struct {
+	DocId    *string                         `form:"doc_id,omitempty" json:"doc_id,omitempty"`
+	Provider *ListExtDocSharesParamsProvider `form:"provider,omitempty" json:"provider,omitempty"`
+}
+
+// ListExtDocSharesParamsProvider defines parameters for ListExtDocShares.
+type ListExtDocSharesParamsProvider string
+
+// DeleteExtDocShareParams defines parameters for DeleteExtDocShare.
+type DeleteExtDocShareParams struct {
+	Provider DeleteExtDocShareParamsProvider `form:"provider" json:"provider"`
+}
+
+// DeleteExtDocShareParamsProvider defines parameters for DeleteExtDocShare.
+type DeleteExtDocShareParamsProvider string
+
+// ListSheetTransfersParams defines parameters for ListSheetTransfers.
+type ListSheetTransfersParams struct {
+	// DocId 按本地文档过滤
+	DocId *string `form:"doc_id,omitempty" json:"doc_id,omitempty"`
+
+	// Direction 按方向过滤
+	Direction *ListSheetTransfersParamsDirection `form:"direction,omitempty" json:"direction,omitempty"`
+	Limit     *int                               `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// ListSheetTransfersParamsDirection defines parameters for ListSheetTransfers.
+type ListSheetTransfersParamsDirection string
+
+// GetExtDocSettingsParamsProvider defines parameters for GetExtDocSettings.
+type GetExtDocSettingsParamsProvider string
+
+// UpdateExtDocSettingsParamsProvider defines parameters for UpdateExtDocSettings.
+type UpdateExtDocSettingsParamsProvider string
+
+// VerifyExtDocParamsProvider defines parameters for VerifyExtDoc.
+type VerifyExtDocParamsProvider string
+
 // AddHarnessExecutable201JSONResponseBodyStatus defines parameters for AddHarnessExecutable.
 type AddHarnessExecutable201JSONResponseBodyStatus string
 
@@ -1645,6 +2665,30 @@ type CreateDocJSONRequestBody = DocCommand
 // SubmitDocCommandJSONRequestBody defines body for SubmitDocCommand for application/json ContentType.
 type SubmitDocCommandJSONRequestBody = DocCommand
 
+// FeishuOAuthCallbackJSONRequestBody defines body for FeishuOAuthCallback for application/json ContentType.
+type FeishuOAuthCallbackJSONRequestBody = FeishuCallbackRequest
+
+// ResolveExtDocLinkJSONRequestBody defines body for ResolveExtDocLink for application/json ContentType.
+type ResolveExtDocLinkJSONRequestBody = ExtDocLinkResolveRequest
+
+// CreateExtDocShareJSONRequestBody defines body for CreateExtDocShare for application/json ContentType.
+type CreateExtDocShareJSONRequestBody = ExtDocShareRequest
+
+// ExecuteSheetTransferJSONRequestBody defines body for ExecuteSheetTransfer for application/json ContentType.
+type ExecuteSheetTransferJSONRequestBody = SheetTransferExecuteRequest
+
+// PreviewSheetTransferJSONRequestBody defines body for PreviewSheetTransfer for application/json ContentType.
+type PreviewSheetTransferJSONRequestBody = SheetTransferPreviewRequest
+
+// ExecuteSheetTransferUpdateJSONRequestBody defines body for ExecuteSheetTransferUpdate for application/json ContentType.
+type ExecuteSheetTransferUpdateJSONRequestBody = SheetTransferUpdateExecuteRequest
+
+// PreviewSheetTransferUpdateJSONRequestBody defines body for PreviewSheetTransferUpdate for application/json ContentType.
+type PreviewSheetTransferUpdateJSONRequestBody = SheetTransferUpdatePreviewRequest
+
+// UpdateExtDocSettingsJSONRequestBody defines body for UpdateExtDocSettings for application/json ContentType.
+type UpdateExtDocSettingsJSONRequestBody = ExtDocSettingsUpdate
+
 // AddHarnessExecutableJSONRequestBody defines body for AddHarnessExecutable for application/json ContentType.
 type AddHarnessExecutableJSONRequestBody = ManualExecutableRequest
 
@@ -1695,9 +2739,69 @@ type ServerInterface interface {
 	// SubscribeDocEvents SSE 订阅文档事件流（doc:{id} 频道，cursor = doc version）
 	// (GET /v1/docs/{doc_id}/events)
 	SubscribeDocEvents(w http.ResponseWriter, r *http.Request, docId DocID, params SubscribeDocEventsParams)
-	// ExportDoc 导出 markdown（.md；归档可导出，删除后 404）
+	// ExportDoc 导出（markdown 文档 → .md；表格文档 → 指定工作表 .csv）
 	// (GET /v1/docs/{doc_id}/export)
-	ExportDoc(w http.ResponseWriter, r *http.Request, docId DocID)
+	ExportDoc(w http.ResponseWriter, r *http.Request, docId DocID, params ExportDocParams)
+	// ListDocSheets 工作表元信息清单（RFC-0017 M1；仅 format=spreadsheet）
+	// (GET /v1/docs/{doc_id}/sheets)
+	ListDocSheets(w http.ResponseWriter, r *http.Request, docId DocID)
+	// GetDocSheetRange 有界区域读取（类型化单元格 + 公式原文 + 派生值 + 版本）
+	// (GET /v1/docs/{doc_id}/sheets/{sheet_id}/range)
+	GetDocSheetRange(w http.ResponseWriter, r *http.Request, docId DocID, sheetId string, params GetDocSheetRangeParams)
+	// GetFeishuAuthorizeURL 飞书授权页 URL（设置页"登录飞书"打开）
+	// (GET /v1/extdocs/feishu/authorize)
+	GetFeishuAuthorizeURL(w http.ResponseWriter, r *http.Request)
+	// FeishuOAuthCallback 授权码换取 user_access_token（手动粘 code 路径）
+	// (POST /v1/extdocs/feishu/callback)
+	FeishuOAuthCallback(w http.ResponseWriter, r *http.Request)
+	// ListExtDocProviders 外部文档 provider 清单与凭据状态（RFC-0016 多 provider）
+	// (GET /v1/extdocs/providers)
+	ListExtDocProviders(w http.ResponseWriter, r *http.Request)
+	// ResolveExtDocLink 解析外部文档链接为卡片描述子（按 host 分派 provider）
+	// (POST /v1/extdocs/resolve)
+	ResolveExtDocLink(w http.ResponseWriter, r *http.Request)
+	// ListExtDocShares 文档级共享映射列表（doc_id/provider 双过滤可选）
+	// (GET /v1/extdocs/shares)
+	ListExtDocShares(w http.ResponseWriter, r *http.Request, params ListExtDocSharesParams)
+	// CreateExtDocShare 共享文档到外部云文档（快照语义）
+	// (POST /v1/extdocs/shares)
+	CreateExtDocShare(w http.ResponseWriter, r *http.Request)
+	// DeleteExtDocShare 解除共享映射（仅本地映射，不删远端文档）
+	// (DELETE /v1/extdocs/shares/{doc_id})
+	DeleteExtDocShare(w http.ResponseWriter, r *http.Request, docId string, params DeleteExtDocShareParams)
+	// ListSheetTransfers 表格交换历史（副本操作记录）
+	// (GET /v1/extdocs/sheet-transfers)
+	ListSheetTransfers(w http.ResponseWriter, r *http.Request, params ListSheetTransfersParams)
+	// ExecuteSheetTransfer 执行表格副本交换（导入建本地新表 / 导出建云端新副本）
+	// (POST /v1/extdocs/sheet-transfers)
+	ExecuteSheetTransfer(w http.ResponseWriter, r *http.Request)
+	// GetSheetTransfer 单条交换记录（update 轮询进度用）
+	// (GET /v1/extdocs/sheet-transfers/by-id/{transfer_id})
+	GetSheetTransfer(w http.ResponseWriter, r *http.Request, transferId string)
+	// CancelSheetTransfer 取消执行中的回写（块间生效；已写保留 → partial）
+	// (POST /v1/extdocs/sheet-transfers/by-id/{transfer_id}/cancel)
+	CancelSheetTransfer(w http.ResponseWriter, r *http.Request, transferId string)
+	// ResumeSheetTransfer 续跑 partial/canceled/unknown 回写（校验未写区域仍等于前态）
+	// (POST /v1/extdocs/sheet-transfers/by-id/{transfer_id}/resume)
+	ResumeSheetTransfer(w http.ResponseWriter, r *http.Request, transferId string)
+	// PreviewSheetTransfer 表格交换预览（RFC-0017 M2）——摘要与转换报告，不含格数据
+	// (POST /v1/extdocs/sheet-transfers/preview)
+	PreviewSheetTransfer(w http.ResponseWriter, r *http.Request)
+	// ExecuteSheetTransferUpdate 执行回写（异步分块；202 返回后轮询单条记录）
+	// (POST /v1/extdocs/sheet-transfers/update)
+	ExecuteSheetTransferUpdate(w http.ResponseWriter, r *http.Request)
+	// PreviewSheetTransferUpdate 回写预览（RFC-0017 M3）——目标与本地的差异摘要 + 目标哈希锚点
+	// (POST /v1/extdocs/sheet-transfers/update/preview)
+	PreviewSheetTransferUpdate(w http.ResponseWriter, r *http.Request)
+	// GetExtDocSettings provider 凭据状态（不含任何凭据值）
+	// (GET /v1/extdocs/{provider}/settings)
+	GetExtDocSettings(w http.ResponseWriter, r *http.Request, provider GetExtDocSettingsParamsProvider)
+	// UpdateExtDocSettings 写入/清除 provider 凭据（0600 原子落盘）
+	// (PUT /v1/extdocs/{provider}/settings)
+	UpdateExtDocSettings(w http.ResponseWriter, r *http.Request, provider UpdateExtDocSettingsParamsProvider)
+	// VerifyExtDoc 验证凭据（provider 各自探活）
+	// (POST /v1/extdocs/{provider}/verify)
+	VerifyExtDoc(w http.ResponseWriter, r *http.Request, provider VerifyExtDocParamsProvider)
 	// ListHarnessExecutables 宿主扫描到的 agent CLI 注册表
 	// (GET /v1/harness/executables)
 	ListHarnessExecutables(w http.ResponseWriter, r *http.Request)
@@ -2042,8 +3146,530 @@ func (siw *ServerInterfaceWrapper) ExportDoc(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ExportDocParams
+
+	// ------------- Optional query parameter "sheet_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "sheet_id", r.URL.Query(), &params.SheetId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "sheet_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sheet_id", Err: err})
+		}
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ExportDoc(w, r, docId)
+		siw.Handler.ExportDoc(w, r, docId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListDocSheets operation middleware
+func (siw *ServerInterfaceWrapper) ListDocSheets(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "doc_id" -------------
+	var docId DocID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "doc_id", r.PathValue("doc_id"), &docId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "doc_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListDocSheets(w, r, docId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetDocSheetRange operation middleware
+func (siw *ServerInterfaceWrapper) GetDocSheetRange(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "doc_id" -------------
+	var docId DocID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "doc_id", r.PathValue("doc_id"), &docId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "doc_id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "sheet_id" -------------
+	var sheetId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sheet_id", r.PathValue("sheet_id"), &sheetId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sheet_id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetDocSheetRangeParams
+
+	// ------------- Optional query parameter "range" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "range", r.URL.Query(), &params.Range, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "range"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "range", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetDocSheetRange(w, r, docId, sheetId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetFeishuAuthorizeURL operation middleware
+func (siw *ServerInterfaceWrapper) GetFeishuAuthorizeURL(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetFeishuAuthorizeURL(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// FeishuOAuthCallback operation middleware
+func (siw *ServerInterfaceWrapper) FeishuOAuthCallback(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.FeishuOAuthCallback(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListExtDocProviders operation middleware
+func (siw *ServerInterfaceWrapper) ListExtDocProviders(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListExtDocProviders(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResolveExtDocLink operation middleware
+func (siw *ServerInterfaceWrapper) ResolveExtDocLink(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResolveExtDocLink(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListExtDocShares operation middleware
+func (siw *ServerInterfaceWrapper) ListExtDocShares(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListExtDocSharesParams
+
+	// ------------- Optional query parameter "doc_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "doc_id", r.URL.Query(), &params.DocId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "doc_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "doc_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "provider" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "provider", r.URL.Query(), &params.Provider, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "provider"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListExtDocShares(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateExtDocShare operation middleware
+func (siw *ServerInterfaceWrapper) CreateExtDocShare(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateExtDocShare(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteExtDocShare operation middleware
+func (siw *ServerInterfaceWrapper) DeleteExtDocShare(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "doc_id" -------------
+	var docId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "doc_id", r.PathValue("doc_id"), &docId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "doc_id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteExtDocShareParams
+
+	// ------------- Required query parameter "provider" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "provider", r.URL.Query(), &params.Provider, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "provider"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteExtDocShare(w, r, docId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListSheetTransfers operation middleware
+func (siw *ServerInterfaceWrapper) ListSheetTransfers(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListSheetTransfersParams
+
+	// ------------- Optional query parameter "doc_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "doc_id", r.URL.Query(), &params.DocId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "doc_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "doc_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "direction" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "direction", r.URL.Query(), &params.Direction, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "direction"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "direction", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSheetTransfers(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ExecuteSheetTransfer operation middleware
+func (siw *ServerInterfaceWrapper) ExecuteSheetTransfer(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ExecuteSheetTransfer(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSheetTransfer operation middleware
+func (siw *ServerInterfaceWrapper) GetSheetTransfer(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "transfer_id" -------------
+	var transferId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "transfer_id", r.PathValue("transfer_id"), &transferId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transfer_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSheetTransfer(w, r, transferId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CancelSheetTransfer operation middleware
+func (siw *ServerInterfaceWrapper) CancelSheetTransfer(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "transfer_id" -------------
+	var transferId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "transfer_id", r.PathValue("transfer_id"), &transferId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transfer_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CancelSheetTransfer(w, r, transferId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResumeSheetTransfer operation middleware
+func (siw *ServerInterfaceWrapper) ResumeSheetTransfer(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "transfer_id" -------------
+	var transferId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "transfer_id", r.PathValue("transfer_id"), &transferId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transfer_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResumeSheetTransfer(w, r, transferId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PreviewSheetTransfer operation middleware
+func (siw *ServerInterfaceWrapper) PreviewSheetTransfer(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PreviewSheetTransfer(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ExecuteSheetTransferUpdate operation middleware
+func (siw *ServerInterfaceWrapper) ExecuteSheetTransferUpdate(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ExecuteSheetTransferUpdate(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PreviewSheetTransferUpdate operation middleware
+func (siw *ServerInterfaceWrapper) PreviewSheetTransferUpdate(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PreviewSheetTransferUpdate(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetExtDocSettings operation middleware
+func (siw *ServerInterfaceWrapper) GetExtDocSettings(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "provider" -------------
+	var provider GetExtDocSettingsParamsProvider
+
+	err = runtime.BindStyledParameterWithOptions("simple", "provider", r.PathValue("provider"), &provider, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetExtDocSettings(w, r, provider)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateExtDocSettings operation middleware
+func (siw *ServerInterfaceWrapper) UpdateExtDocSettings(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "provider" -------------
+	var provider UpdateExtDocSettingsParamsProvider
+
+	err = runtime.BindStyledParameterWithOptions("simple", "provider", r.PathValue("provider"), &provider, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateExtDocSettings(w, r, provider)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// VerifyExtDoc operation middleware
+func (siw *ServerInterfaceWrapper) VerifyExtDoc(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "provider" -------------
+	var provider VerifyExtDocParamsProvider
+
+	err = runtime.BindStyledParameterWithOptions("simple", "provider", r.PathValue("provider"), &provider, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.VerifyExtDoc(w, r, provider)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2896,6 +4522,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/docs/{doc_id}", wrapper.GetDoc)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/docs/{doc_id}/commands", wrapper.SubmitDocCommand)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/docs/{doc_id}/events", wrapper.SubscribeDocEvents)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/docs/{doc_id}/sheets", wrapper.ListDocSheets)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/docs/{doc_id}/sheets/{sheet_id}/range", wrapper.GetDocSheetRange)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/docs/{doc_id}/export", wrapper.ExportDoc)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/agents", wrapper.ListAgents)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/rooms/{room_id}/attachments", wrapper.UploadRoomAttachment)
@@ -2912,6 +4540,24 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/monitors/{monitor_id}/enable", wrapper.EnableMonitor)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/monitors/{monitor_id}/disable", wrapper.DisableMonitor)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/monitors/{monitor_id}/check", wrapper.CheckMonitor)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/extdocs/providers", wrapper.ListExtDocProviders)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/extdocs/{provider}/settings", wrapper.GetExtDocSettings)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/v1/extdocs/{provider}/settings", wrapper.UpdateExtDocSettings)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/extdocs/{provider}/verify", wrapper.VerifyExtDoc)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/extdocs/shares", wrapper.ListExtDocShares)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/extdocs/shares", wrapper.CreateExtDocShare)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/extdocs/shares/{doc_id}", wrapper.DeleteExtDocShare)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/extdocs/resolve", wrapper.ResolveExtDocLink)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/extdocs/feishu/authorize", wrapper.GetFeishuAuthorizeURL)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/extdocs/feishu/callback", wrapper.FeishuOAuthCallback)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/extdocs/sheet-transfers/preview", wrapper.PreviewSheetTransfer)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/extdocs/sheet-transfers", wrapper.ListSheetTransfers)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/extdocs/sheet-transfers", wrapper.ExecuteSheetTransfer)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/extdocs/sheet-transfers/update/preview", wrapper.PreviewSheetTransferUpdate)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/extdocs/sheet-transfers/update", wrapper.ExecuteSheetTransferUpdate)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/extdocs/sheet-transfers/by-id/{transfer_id}", wrapper.GetSheetTransfer)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/extdocs/sheet-transfers/by-id/{transfer_id}/cancel", wrapper.CancelSheetTransfer)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/extdocs/sheet-transfers/by-id/{transfer_id}/resume", wrapper.ResumeSheetTransfer)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/owner/bootstrap", wrapper.GetOwnerBootstrap)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)

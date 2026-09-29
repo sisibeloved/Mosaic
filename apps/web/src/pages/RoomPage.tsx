@@ -406,9 +406,9 @@ export function RoomPage() {
             onRemoveDocRef={(docID) => setPendingDocRefs((prev) => prev.filter((r) => r.docID !== docID))}
             mentionRequest={mentionRequest}
             onMentionConsumed={() => setMentionRequest(null)}
-            onSend={(body, addressedTo, replyTo, attachments, refs) => {
+            onSend={(body, addressedTo, replyTo, attachments, refs, externalRefs) => {
               void room
-                .send(body, addressedTo, replyTo, attachments, refs)
+                .send(body, addressedTo, replyTo, attachments, refs, externalRefs)
                 .then(() => {
                   setQuoted(null); // 发送成功才弃引用（失败保留可重试）
                   setPendingAttachments([]); // 附件令牌已被服务端消费

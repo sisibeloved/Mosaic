@@ -27,9 +27,10 @@ export function newBlockID(): string {
 /**
  * 差分：base（已提交态）→ next（工作台）的协议 op 批。
  * 序：先删（腾位 + 释放 ID），再文本替换，最后按文档序插入新块。
- * type 变更无法由 replace 表达 → delete + insert_after 同 ID 重建（ID 保留，
- * 同批先删后插不撞唯一性）。连续新块同锚时逆序 insert_after——服务端语义下
- * 同锚重复 insert_after 逆序堆叠（room 引擎 chainedInserts 同因）。
+ * type/level/lang 变更无法由 replace 表达（replace 只携带 text）→ delete +
+ * insert_after 同 ID 重建（ID 保留，同批先删后插不撞唯一性）。连续新块同锚
+ * 时逆序 insert_after——服务端语义下同锚重复 insert_after 逆序堆叠（room
+ * 引擎 chainedInserts 同因）。
  */
 export function diffBlocks(base: DocBlock[], next: DocBlock[]): DocOp[] {
   const ops: DocOp[] = [];
@@ -38,7 +39,13 @@ export function diffBlocks(base: DocBlock[], next: DocBlock[]): DocOp[] {
   const isNew = (id: string): boolean => {
     const b = baseByID.get(id);
     const n = nextByID.get(id);
-    return !b || !n || b.type !== n.type;
+    return (
+      !b ||
+      !n ||
+      b.type !== n.type ||
+      (b.level ?? 0) !== (n.level ?? 0) || // RFC-0016：仅改标题级别 → 重建
+      (b.lang ?? "") !== (n.lang ?? "") // 仅改代码语言 → 重建
+    );
   };
   // 1) 删除：base 有而 next 无，或 type 变更（旧形态先删）
   for (const b of base) {

@@ -1,0 +1,47 @@
+{
+  "event_id": "evt_01H8TESTSHEETREVSETCELLS00000",
+  "tenant_id": "ten_local",
+  "doc_id": "doc_0123456789ab",
+  "version": 2,
+  "type": "doc.sheet_revision_committed",
+  "schema_version": 1,
+  "occurred_at": "2026-09-28T10:02:00.000Z",
+  "actor": { "participant_id": "par_01H8TESTOWNER00000000000", "kind": "human" },
+  "causation_id": null,
+  "correlation_id": null,
+  "payload": {
+    "doc_id": "doc_0123456789ab",
+    "base_version": 1,
+    "version": 2,
+    "ops": [
+      {
+        "op": "set_cells",
+        "sheet_id": "sht_0123456789ab",
+        "cells": [
+          { "r": 1, "c": 1, "type": "text", "text": "项目" },
+          { "r": 1, "c": 2, "type": "number", "number": 42 },
+          { "r": 1, "c": 3, "type": "bool", "bool": true },
+          { "r": 1, "c": 4, "type": "datetime", "text": "2026-09-28T09:00:00Z" },
+          { "r": 2, "c": 2, "type": "formula", "formula": "SUM(B1:B1)*2" },
+          { "r": 2, "c": 3, "type": "null" }
+        ]
+      },
+      {
+        "op": "set_style",
+        "sheet_id": "sht_0123456789ab",
+        "range": { "r1": 1, "c1": 1, "r2": 1, "c2": 4 },
+        "style": { "bold": true }
+      },
+      {
+        "op": "set_col_width",
+        "sheet_id": "sht_0123456789ab",
+        "col": 2,
+        "width": 120
+      }
+    ],
+    "actor": "par_01H8TESTOWNER00000000000",
+    "source": "human_editor",
+    "note": "首批数据与表头样式"
+  },
+  "metadata": {}
+}

@@ -72,6 +72,17 @@ export interface MessagePostedPayload {
     | [DocRef, DocRef, DocRef, DocRef, DocRef, DocRef]
     | [DocRef, DocRef, DocRef, DocRef, DocRef, DocRef, DocRef]
     | [DocRef, DocRef, DocRef, DocRef, DocRef, DocRef, DocRef, DocRef];
+  /**
+   * 外部文档引用（RFC-0016 §2.3，人类路径）：白名单 host 链接经 resolve 定稿为描述子快照；agent 路径（ROP/run 发布面）不产生。卡片展示发送时刻的链接事实，不随外部服务刷新。缺省 = 无外部引用。
+   *
+   * @maxItems 4
+   */
+  external_refs?:
+    | []
+    | [ExternalRef]
+    | [ExternalRef, ExternalRef]
+    | [ExternalRef, ExternalRef, ExternalRef]
+    | [ExternalRef, ExternalRef, ExternalRef, ExternalRef];
 }
 export interface TypedRelation {
   target_event_id: string;
@@ -99,4 +110,13 @@ export interface DocRef {
   kind: "doc";
   doc_id: string;
   anchor_block_id?: string;
+}
+/**
+ * 外部文档引用描述子（RFC-0016 §2.3 封闭字段集）：kind→provider 归属与 host 白名单由服务端校验（schema 层只钉 https 前缀与长度）；title/doc_type 由 resolve 尽力填充，缺失时卡片降级。
+ */
+export interface ExternalRef {
+  kind: "txdoc" | "fdoc";
+  url: string;
+  title?: string;
+  doc_type?: string;
 }

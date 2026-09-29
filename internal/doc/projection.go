@@ -5,11 +5,13 @@ package doc
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/sisibeloved/Mosaic/internal/protocol"
+	"github.com/sisibeloved/Mosaic/internal/sheet"
 )
 
 // 上限与护栏（RFC-0014 §2.9 建议值）。
@@ -32,6 +34,9 @@ const (
 	StatusDeleted  = "deleted"
 )
 
+// FormatSpreadsheet 表格资产格式（RFC-0017 M1；其余取值 = markdown 块模型）。
+const FormatSpreadsheet = "spreadsheet"
+
 // validBlockTypes 块类型封闭集（RFC-0014 §2.2 首版；表格块随表格立项另行裁定）。
 var validBlockTypes = map[string]bool{
 	"heading": true, "paragraph": true, "list": true,
@@ -39,15 +44,18 @@ var validBlockTypes = map[string]bool{
 }
 
 // DocState 文档当前态（派生态，权威为事件流；UpdatedAt/UpdatedBy 取最新事件）。
+// Format 分派：markdown → Blocks；spreadsheet → Workbook（表格内容模型与
+// Markdown 块模型分离——禁止把表格序列化成 Markdown 充当权威内容，RFC-0017 §3.2）。
 type DocState struct {
 	DocID     string              `json:"doc_id"`
 	Title     string              `json:"title"`
-	Format    string              `json:"format"`
+	Format    string              `json:"format"` // markdown | spreadsheet
 	CreatedBy string              `json:"created_by"`
 	CreatedAt string              `json:"created_at"`
 	Version   int64               `json:"version"`
 	Status    string              `json:"status"` // active | archived | deleted
 	Blocks    []protocol.DocBlock `json:"blocks"`
+	Workbook  *sheet.Workbook     `json:"workbook,omitempty"` // format=spreadsheet
 	UpdatedAt string              `json:"updated_at"`
 	UpdatedBy string              `json:"updated_by"`
 }
@@ -68,6 +76,10 @@ func ProjectDoc(events []StoredDocEvent) (DocState, error) {
 				st.CreatedBy = p.CreatedBy
 				st.CreatedAt = env.OccurredAt
 				st.Status = StatusActive
+				if p.Format == FormatSpreadsheet {
+					// 默认表 ID 由 doc_id 派生（确定性回放，RFC-0017 §3.2）
+					st.Workbook = sheet.NewWorkbookForDoc(p.DocID)
+				}
 			}
 		case protocol.EventDocRenamed:
 			var p protocol.DocRenamedPayload
@@ -80,6 +92,14 @@ func ProjectDoc(events []StoredDocEvent) (DocState, error) {
 				// 回放应用与写入校验同一函数（不双轨）；rejected op 在回放期跳过——
 				// 落库前经严格模式校验，正常流中不会出现。
 				st.Blocks, _ = ApplyDocOps(st.Blocks, p.Ops, nil)
+			}
+		case protocol.EventDocSheetRevisionCommitted:
+			var p protocol.DocSheetRevisionCommittedPayload
+			if json.Unmarshal(env.Payload, &p) == nil && st.Workbook != nil {
+				// 机械回放归一化 ops；畸形 op 逐条跳过（ApplyDocOps 同款容错）
+				for _, op := range p.Ops {
+					_ = sheet.ApplySheetOp(st.Workbook, op)
+				}
 			}
 		case protocol.EventDocArchived:
 			st.Status = StatusArchived
@@ -137,6 +157,10 @@ func ApplyDocOps(blocks []protocol.DocBlock, ops []protocol.DocOp, newBlockID fu
 			case !validBlockTypes[op.Block.Type]:
 				reject("非法 block.type " + quote(op.Block.Type))
 			default:
+				if err := ValidateBlockShape(*op.Block); err != nil {
+					reject(err.Error())
+					break
+				}
 				b := *op.Block
 				if b.BlockID == "" {
 					if newBlockID == nil {
@@ -220,10 +244,38 @@ func bodyBytes(blocks []protocol.DocBlock) int {
 	return n
 }
 
+// ValidateBlockShape 块元数据形状校验（RFC-0016 块模型增补）：level 仅
+// heading 携带且 1..6（0 = 未指定）；lang 仅 code 携带且 ≤48 runes。命令面
+// ops/initial_blocks（经 ApplyDocOps）与 agent 端口校验共用语义——畸形元数据
+// 在写路径被拒，不映射成零值混入事件流。
+func ValidateBlockShape(b protocol.DocBlock) error {
+	if b.Level != 0 {
+		if b.Type != "heading" {
+			return fmt.Errorf("level 仅 heading 块可携带（当前 %s）", quote(b.Type))
+		}
+		if b.Level < 1 || b.Level > 6 {
+			return fmt.Errorf("level 须在 1..6（当前 %d）", b.Level)
+		}
+	}
+	if b.Lang != "" {
+		if b.Type != "code" {
+			return fmt.Errorf("lang 仅 code 块可携带（当前 %s）", quote(b.Type))
+		}
+		if n := len([]rune(b.Lang)); n > 48 {
+			return fmt.Errorf("lang ≤48 字符（当前 %d）", n)
+		}
+	}
+	return nil
+}
+
 func quote(s string) string { return `"` + s + `"` }
 
-// RenderMarkdown 导出渲染（RFC-0014 §2.8 导出 .md）：标题作 H1，块依序排列、
-// 块间空行；块 text 即 markdown 行内内容原样输出（hr 空 text 渲染为 ---）。
+// RenderMarkdown 导出渲染（RFC-0014 §2.8 导出 .md；RFC-0016 渲染加固）：
+// 标题作 H1，块依序排列、块间空行。加固裁定：块类型即语义——heading 无
+// `#` 前缀自动补（#×level，缺省 2）、code 未包 fence 自动包（lang 标注）、
+// quote 行缺 `>` 前缀自动补；text 已自带标记时透传优先（存量数据与模型
+// 手写标记路径不受影响）。导出面向外部文档服务（腾讯智能文档 / 飞书导入），
+// 裸文本行会被当普通段落——这是共享转换链的结构性兜底。
 func RenderMarkdown(st DocState) string {
 	var sb strings.Builder
 	sb.WriteString("# ")
@@ -237,12 +289,35 @@ func RenderMarkdown(st DocState) string {
 			text = "---"
 		case b.Type == "list":
 			text = listBlockText(text)
+		case b.Type == "heading" && !headingPrefixRe.MatchString(text):
+			level := b.Level
+			if level < 1 || level > 6 {
+				level = 2
+			}
+			text = strings.Repeat("#", level) + " " + text
+		case b.Type == "code" && !strings.HasPrefix(strings.TrimSpace(text), "```"):
+			fence := "```" + b.Lang
+			text = fence + "\n" + text + "\n```"
+		case b.Type == "quote" && !quotePrefixRe.MatchString(text):
+			lines := strings.Split(text, "\n")
+			for i, ln := range lines {
+				if strings.TrimSpace(ln) != "" {
+					lines[i] = "> " + ln
+				}
+			}
+			text = strings.Join(lines, "\n")
 		}
 		sb.WriteString(text)
 		sb.WriteString("\n")
 	}
 	return sb.String()
 }
+
+// headingPrefixRe 已带合法标题前缀（#×1..6 + 空白）的判定——命中则导出透传。
+var headingPrefixRe = regexp.MustCompile(`^#{1,6}\s`)
+
+// quotePrefixRe 引文行前缀判定（首个非空行命中即视为已带标记）。
+var quotePrefixRe = regexp.MustCompile(`^\s*>`)
 
 // listMarkerRe 列表标记行判定（list 块文本规范化用；编辑器渲染同口径）。
 var listMarkerRe = regexp.MustCompile(`^\s*(?:[-*+]|\d+[.)])\s`)
@@ -273,7 +348,18 @@ const ExcerptRunes = 8000
 // 每块带 [block_id] 前缀——agent 的 insert_after 锚点与小节定位据此解析；
 // 超 maxRunes 截断并如实标注（不全量灌入）。redact 为 DLP 剔除函数（秘密形状
 // 整段替换；附件摘录同纪律——文档同样可能含密钥），nil = 不剔除。
+// format 分派（RFC-0017 §3.4）：spreadsheet → 表格摘录（每表首个非空
+// ≤10 行 ×8 列 TSV，公式格显派生值——读面有界，不灌整个工作簿）。
 func RenderExcerpt(st DocState, maxRunes int, redact func(string) string) string {
+	if st.Format == FormatSpreadsheet {
+		head := "《" + st.Title + "》(" + st.DocID + " v" +
+			strconv.FormatInt(st.Version, 10) + " " + st.Status + ")\n"
+		body := head + sheet.RenderSheetExcerpt(st.Workbook, sheet.Evaluate(st.Workbook), maxRunes)
+		if redact != nil {
+			body = redact(body)
+		}
+		return body
+	}
 	var sb strings.Builder
 	sb.WriteString("《")
 	sb.WriteString(st.Title)

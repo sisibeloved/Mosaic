@@ -425,8 +425,8 @@ func (e *Engine) completeRun(ctx context.Context, roomID string, req protocol.Ru
 			break
 		}
 		msgPayload := map[string]any{"body": body, "addressed_to": []string{}, "relations": []any{}}
-		// RFC-0014 §2.7：run 通道不接受 doc_ops（v1），模型自报的既有文档引用
-		// 不剥除（白名单化透传）。
+		// RFC-0014 §2.7 / RFC-0017 §4.3：run 通道不接受 doc_ops/sheet_ops（v1），
+		// 模型自报的既有文档引用不剥除（白名单化透传）。
 		if refs := sanitizeDocRefs(res.Data["refs"]); len(refs) > 0 {
 			msgPayload["refs"] = refs
 		}

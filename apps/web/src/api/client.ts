@@ -28,15 +28,44 @@ export type DocSearchHit = Schemas["DocSearchHit"];
 export type DocCommandResponse = Schemas["DocCommandResponse"];
 export type AttachedDoc = Schemas["AttachedDoc"];
 
+/** RFC-0016 外部云文档面类型（契约 api/http-api/openapi.yaml）。 */
+export type ExternalRef = Schemas["ExternalRef"];
+export type ExtDocProviderView = Schemas["ExtDocProviderView"];
+export type ExtDocSettingsDoc = Schemas["ExtDocSettingsDoc"];
+export type ExtDocShare = Schemas["ExtDocShare"];
+export type ExtDocLinkInfo = Schemas["ExtDocLinkInfo"];
+export type ExtDocVerifyResult = Schemas["ExtDocVerifyResult"];
+export type FeishuAuthorizeInfo = Schemas["FeishuAuthorizeInfo"];
+/** provider 稳定标识。 */
+export type ExtDocProviderID = "tencent_docs" | "feishu_docs";
+
+/** RFC-0017 M2 表格交换类型（契约 api/http-api/openapi.yaml）。 */
+export type SheetTransferPreview = Schemas["SheetTransferPreview"];
+export type SheetTransferPreviewSheet = Schemas["SheetTransferPreviewSheet"];
+export type SheetTransferIssue = Schemas["SheetTransferIssue"];
+export type SheetTransferRecord = Schemas["SheetTransferRecord"];
+export type SheetTransferUpdateDiffSheet = Schemas["SheetTransferUpdateDiffSheet"];
+export type SheetTransferUpdatePreview = Schemas["SheetTransferUpdatePreview"];
+export type SheetTransferBlockedPayload = { report?: SheetTransferIssue[] };
+
 /** 文档命令种类（DocCommand.command_kind 封闭枚举）。 */
 export type DocCommandKind =
   | "create_doc"
   | "rename_doc"
   | "commit_doc_revision"
+  | "commit_sheet_revision"
   | "archive_doc"
   | "restore_doc"
   | "delete_doc"
   | "duplicate_doc";
+
+/** RFC-0017 表格面类型（契约 api/http-api/openapi.yaml）。 */
+export type SheetMetaView = Schemas["SheetMeta"];
+export type SheetRangeView = Schemas["SheetRangeView"];
+export type SheetCellView = Schemas["SheetCellView"];
+export type SheetOp = Schemas["SheetOp"];
+export type SheetCellWrite = Schemas["SheetCellWrite"];
+export type SheetRangeBox = Schemas["SheetRange"];
 
 /**
  * 修订批单条块操作（commit_doc_revision 载荷；契约
@@ -67,9 +96,13 @@ export class ApiError extends Error {
   /** 409 文档命令冲突响应携带的当前态（RFC-0014 §2.3：version_conflict 时
    *  响应体另含 current_version + state——编辑器在新态上重放未提交 ops）。 */
   readonly docConflict?: { docID?: string; currentVersion?: number; state?: DocState };
-  constructor(status: number, code: string, message: string, docConflict?: ApiError["docConflict"]) {
+  /** 错误响应的原始体（结构化附加面按 code 取用——如 sheet_transfer_blocked
+   *  的 report 转换报告项）。 */
+  readonly payload?: unknown;
+  constructor(status: number, code: string, message: string, docConflict?: ApiError["docConflict"], payload?: unknown) {
     super(message);
     this.status = status;
+    this.payload = payload;
     this.code = code;
     this.docConflict = docConflict;
   }
@@ -133,7 +166,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         docConflict = { docID: c.doc_id, currentVersion: c.current_version, state: c.state };
       }
     }
-    throw new ApiError(resp.status, err?.code ?? "unknown", err?.message ?? `HTTP ${resp.status}`, docConflict);
+    throw new ApiError(resp.status, err?.code ?? "unknown", err?.message ?? `HTTP ${resp.status}`, docConflict, body);
   }
   return body as T;
 }
@@ -276,6 +309,7 @@ export const api = {
     replyTo: string | null = null,
     attachments: string[] = [],
     refs: DocRef[] = [],
+    externalRefs: ExternalRef[] = [],
   ): Promise<CommandResponse> {
     return post(
       `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
@@ -287,6 +321,8 @@ export const api = {
         ...(attachments.length > 0 ? { attachments } : {}),
         // RFC-0014 §2.4：分享文档到房间 = 消息携带 doc_ref 描述子（服务端校验存在性）
         ...(refs.length > 0 ? { refs } : {}),
+        // RFC-0015 §2.3：腾讯文档链接卡片描述子（服务端校验 host 白名单）
+        ...(externalRefs.length > 0 ? { external_refs: externalRefs } : {}),
       }),
     );
   },
@@ -445,13 +481,15 @@ export const api = {
   getDoc(docID: string): Promise<DocState> {
     return request<DocState>(`/v1/docs/${encodeURIComponent(docID)}`);
   },
-  /** 创建文档（create_doc 命令便捷包装；doc_id 服务端分配）。 */
-  createDoc(title: string, initialBlocks?: DocBlock[]): Promise<DocCommandResponse> {
+  /** 创建文档（create_doc 命令便捷包装；doc_id 服务端分配；format=spreadsheet
+   *  建表格资产——内容经 commit_sheet_revision）。 */
+  createDoc(title: string, initialBlocks?: DocBlock[], format: "markdown" | "spreadsheet" = "markdown"): Promise<DocCommandResponse> {
     return post<DocCommandResponse>(
       "/v1/docs",
       docCommandBody("create_doc", 0, {
         title,
-        ...(initialBlocks && initialBlocks.length > 0 ? { initial_blocks: initialBlocks } : {}),
+        format,
+        ...(format === "markdown" && initialBlocks && initialBlocks.length > 0 ? { initial_blocks: initialBlocks } : {}),
       }),
     );
   },
@@ -473,14 +511,36 @@ export const api = {
       }),
     );
   },
+  // ---- RFC-0017 表格面 ----
+  /** 表格修订批（归一化在服务端：结构插删连带公式改写；409 同 docConflict）。 */
+  commitSheetRevision(docID: string, baseVersion: number, ops: SheetOp[], note?: string): Promise<DocCommandResponse> {
+    return post<DocCommandResponse>(
+      `/v1/docs/${encodeURIComponent(docID)}/commands`,
+      docCommandBody("commit_sheet_revision", baseVersion, {
+        base_version: baseVersion,
+        ops,
+        ...(note ? { note } : {}),
+      }),
+    );
+  },
+  /** 工作表元信息清单。 */
+  listDocSheets(docID: string): Promise<{ doc_id: string; version: number; sheets: SheetMetaView[] }> {
+    return request(`/v1/docs/${encodeURIComponent(docID)}/sheets`);
+  },
+  /** 有界区域读取（range 缺省 = used range ≤10000 格；公式格携服务端派生值）。 */
+  getDocSheetRange(docID: string, sheetID: string, range?: string): Promise<SheetRangeView> {
+    const q = range ? `?range=${encodeURIComponent(range)}` : "";
+    return request<SheetRangeView>(`/v1/docs/${encodeURIComponent(docID)}/sheets/${encodeURIComponent(sheetID)}/range${q}`);
+  },
   /** 文档全文检索（FTS5 trigram；CJK ≥3 字子串语义）。 */
   searchDocs(q: string, limit = 20): Promise<{ hits: DocSearchHit[] }> {
     const params = new URLSearchParams({ q, limit: String(limit) });
     return request<{ hits: DocSearchHit[] }>(`/v1/docs/search?${params.toString()}`);
   },
-  /** 导出 markdown 下载地址（GET 读端点，同源 <a download> 直接可用）。 */
-  exportDocUrl(docID: string): string {
-    return `/v1/docs/${encodeURIComponent(docID)}/export`;
+  /** 导出下载地址（markdown → .md；spreadsheet → 指定工作表 .csv，缺省首表）。 */
+  exportDocUrl(docID: string, sheetID?: string): string {
+    const q = sheetID ? `?sheet_id=${encodeURIComponent(sheetID)}` : "";
+    return `/v1/docs/${encodeURIComponent(docID)}/export${q}`;
   },
   /** §2.4 房间文档附着/解除（房间命令；附着不复制不锁定，重复/未附着 = 幂等空操作）。 */
   attachDoc(roomID: string, version: number, docID: string): Promise<CommandResponse> {
@@ -494,5 +554,120 @@ export const api = {
       `/v1/rooms/${encodeURIComponent(roomID)}/commands`,
       commandBody("detach_doc_from_room", version, { doc_id: docID }),
     );
+  },
+  // ---- RFC-0016 外部云文档面（多 provider：腾讯/飞书） ----
+  /** provider 清单与凭据状态（设置页数据源；404 = 未装配）。 */
+  listExtDocProviders(): Promise<{ providers: ExtDocProviderView[] }> {
+    return request<{ providers: ExtDocProviderView[] }>("/v1/extdocs/providers");
+  },
+  /** 凭据状态（不含任何凭据值）。 */
+  getExtDocSettings(provider: ExtDocProviderID): Promise<ExtDocSettingsDoc> {
+    return request<ExtDocSettingsDoc>(`/v1/extdocs/${provider}/settings`);
+  },
+  /** 写入/清除凭据（tencent: token；feishu: app_id+app_secret；空 = 清除）。 */
+  updateExtDocSettings(provider: ExtDocProviderID, creds: { token?: string; app_id?: string; app_secret?: string }): Promise<ExtDocSettingsDoc> {
+    return put<ExtDocSettingsDoc>(`/v1/extdocs/${provider}/settings`, creds);
+  },
+  /** 验证凭据（业务失败也 200——ok=false 携带上游码）。 */
+  verifyExtDoc(provider: ExtDocProviderID): Promise<ExtDocVerifyResult> {
+    return post<ExtDocVerifyResult>(`/v1/extdocs/${provider}/verify`, {});
+  },
+  /** 共享映射列表（双过滤可选；供 per-provider 徽标态）。 */
+  listExtDocShares(filter: { docID?: string; provider?: ExtDocProviderID } = {}): Promise<{ shares: ExtDocShare[] }> {
+    const params = new URLSearchParams();
+    if (filter.docID) params.set("doc_id", filter.docID);
+    if (filter.provider) params.set("provider", filter.provider);
+    const q = params.toString();
+    return request<{ shares: ExtDocShare[] }>(`/v1/extdocs/shares${q ? `?${q}` : ""}`);
+  },
+  /** 共享文档（快照；409 extdocs_already_shared 携带现有映射）。 */
+  shareDocToExt(docID: string, provider: ExtDocProviderID, force = false): Promise<ExtDocShare> {
+    return post<ExtDocShare>("/v1/extdocs/shares", { doc_id: docID, provider, force });
+  },
+  /** 解除共享映射（仅本地记忆；远端文档保留）。 */
+  deleteExtDocShare(docID: string, provider: ExtDocProviderID): Promise<{ deleted: boolean }> {
+    return request<{ deleted: boolean }>(`/v1/extdocs/shares/${encodeURIComponent(docID)}?provider=${provider}`, { method: "DELETE" });
+  },
+  /** 解析外部文档链接（host 分派 provider；非白名单 400）。 */
+  resolveExtDocLink(url: string): Promise<ExtDocLinkInfo> {
+    return post<ExtDocLinkInfo>("/v1/extdocs/resolve", { url });
+  },
+  /** 飞书授权页 URL（须先保存 app_id/app_secret）。 */
+  feishuAuthorizeURL(): Promise<FeishuAuthorizeInfo> {
+    return request<FeishuAuthorizeInfo>("/v1/extdocs/feishu/authorize");
+  },
+  /** 飞书授权码换取 token（粘 code 路径）。 */
+  feishuOAuthCallback(code: string): Promise<ExtDocSettingsDoc> {
+    return post<ExtDocSettingsDoc>("/v1/extdocs/feishu/callback", { code });
+  },
+
+  // ---- RFC-0017 M2 表格手动交换（副本语义） ----
+  /** 交换预览：导入给 url（provider 可缺省按 host 分派）；导出给 doc_id+provider。
+   *  返回每表摘要 + 全部转换损失项 + 防偷换锚点（snapshot_hash / source_version）。 */
+  previewSheetTransfer(req: {
+    direction: "import" | "export";
+    provider?: ExtDocProviderID;
+    url?: string;
+    doc_id?: string;
+    sheet_names?: string[];
+  }): Promise<SheetTransferPreview> {
+    return post<SheetTransferPreview>("/v1/extdocs/sheet-transfers/preview", req);
+  },
+  /** 执行交换（同步有界）：导入建本地新表格 / 导出建云端新副本。幂等键同值重放
+   *  返回既有记录。409 sheet_transfer_stale_preview = 源已变化须重新预览。 */
+  executeSheetTransfer(req: {
+    direction: "import" | "export";
+    provider?: ExtDocProviderID;
+    url?: string;
+    doc_id?: string;
+    sheet_names?: string[];
+    snapshot_hash?: string;
+    source_version?: number;
+    idempotency_key: string;
+  }): Promise<SheetTransferRecord> {
+    return post<SheetTransferRecord>("/v1/extdocs/sheet-transfers", req);
+  },
+  // ---- RFC-0017 M3 回写（更新已有远端目标） ----
+  /** 回写预览：目标 vs 本地差异摘要 + target_hash 锚点。409 blocked 携报告项。 */
+  previewSheetTransferUpdate(req: {
+    doc_id: string;
+    provider: ExtDocProviderID;
+    external_url: string;
+    sheet_names?: string[];
+  }): Promise<SheetTransferUpdatePreview> {
+    return post<SheetTransferUpdatePreview>("/v1/extdocs/sheet-transfers/update/preview", req);
+  },
+  /** 执行回写（异步分块；202 受理）。轮询单条记录取进度；取消/续跑见下。 */
+  executeSheetTransferUpdate(req: {
+    doc_id: string;
+    provider: ExtDocProviderID;
+    external_url: string;
+    sheet_names?: string[];
+    target_hash?: string;
+    source_version?: number;
+    idempotency_key: string;
+  }): Promise<SheetTransferRecord> {
+    return post<SheetTransferRecord>("/v1/extdocs/sheet-transfers/update", req);
+  },
+  /** 单条记录（update 进度轮询）。 */
+  getSheetTransfer(transferID: string): Promise<SheetTransferRecord> {
+    return request<SheetTransferRecord>(`/v1/extdocs/sheet-transfers/by-id/${encodeURIComponent(transferID)}`);
+  },
+  /** 取消执行中的回写（块间生效；已写保留 → partial；终态幂等返回）。 */
+  cancelSheetTransfer(transferID: string): Promise<SheetTransferRecord> {
+    return post<SheetTransferRecord>(`/v1/extdocs/sheet-transfers/by-id/${encodeURIComponent(transferID)}/cancel`, {});
+  },
+  /** 续跑 partial/canceled/unknown（校验未写区域前态；被改 → 409 重新预览）。 */
+  resumeSheetTransfer(transferID: string): Promise<SheetTransferRecord> {
+    return post<SheetTransferRecord>(`/v1/extdocs/sheet-transfers/by-id/${encodeURIComponent(transferID)}/resume`, {});
+  },
+  /** 交换历史（副本操作记录；doc_id/direction 过滤可选）。 */
+  listSheetTransfers(filter: { doc_id?: string; direction?: "import" | "export"; limit?: number } = {}): Promise<{ transfers: SheetTransferRecord[] }> {
+    const params = new URLSearchParams();
+    if (filter.doc_id) params.set("doc_id", filter.doc_id);
+    if (filter.direction) params.set("direction", filter.direction);
+    if (filter.limit) params.set("limit", String(filter.limit));
+    const q = params.toString();
+    return request<{ transfers: SheetTransferRecord[] }>(`/v1/extdocs/sheet-transfers${q ? `?${q}` : ""}`);
   },
 };

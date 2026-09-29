@@ -15,9 +15,11 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError, type DocBlock, type DocCommandKind, type DocCommandResponse } from "../api/client";
 import { useDoc } from "../api/doc";
 import { MarkdownBody } from "../components/chat/MarkdownBody";
+import { ExtShareBadges, ExtShareMenu } from "../components/ExtShareMenu";
 import { applyOpsLocal, diffBlocks, listBlockMarkdown, newBlockID } from "../lib/docops";
 import { relativeTime } from "../lib/ui";
 import { refreshDocMeta, refreshDocs } from "../state/docs";
+import { SheetEditorPage } from "./SheetEditorPage";
 
 const COMMIT_DEBOUNCE_MS = 1500;
 /** 服务端 MaxOpsPerBatch——超量变更分批顺序提交（op 序自包含，跨批锚定安全）。 */
@@ -38,6 +40,11 @@ export function DocEditorPage() {
   const { docId = null } = useParams();
   const navigate = useNavigate();
   const { doc, notFound, deleted, error: loadError } = useDoc(docId);
+
+  // RFC-0017 format 分派：表格资产进表格编辑器（URL/SSE/useDoc 复用不动）
+  if (doc?.format === "spreadsheet" && docId) {
+    return <SheetEditorPage docId={docId} />;
+  }
 
   const [blocks, setBlocks] = useState<DocBlock[] | null>(null);
   const blocksRef = useRef<DocBlock[] | null>(null);
@@ -72,8 +79,10 @@ export function DocEditorPage() {
     const working = blocksRef.current ?? [];
     const pending = committed ? diffBlocks(committed.blocks, working).length > 0 : false;
     if (!committed || !pending) {
-      committedRef.current = { blocks: doc.blocks, version: doc.version };
-      setWorking(doc.blocks);
+      // 分派后此处恒 markdown——blocks 可选化后做数组归一
+      const serverBlocks = doc.blocks ?? [];
+      committedRef.current = { blocks: serverBlocks, version: doc.version };
+      setWorking(serverBlocks);
       setHasUpdate(false);
     } else {
       setHasUpdate(true);
@@ -123,7 +132,7 @@ export function DocEditorPage() {
       const conflict = e instanceof ApiError && e.status === 409 ? e.docConflict : undefined;
       if (conflict?.state) {
         // 409 重定基：在新态上重放全部未提交 ops（锚点丢失回退文末），重试一次
-        const base2 = { blocks: conflict.state.blocks, version: conflict.state.version };
+        const base2 = { blocks: conflict.state.blocks ?? [], version: conflict.state.version };
         const liveWorking = blocksRef.current ?? [];
         const rebased = applyOpsLocal(base2.blocks, diffBlocks(committed.blocks, liveWorking));
         committedRef.current = base2;
@@ -184,8 +193,22 @@ export function DocEditorPage() {
 
   const updateText = (id: string, text: string) =>
     mutate((ws) => ws.map((b) => (b.block_id === id ? { ...b, text } : b)));
+  /** 块元数据修补（RFC-0016：heading level / code lang；仅改元数据也触发重建 diff）。 */
+  const patchBlock = (id: string, patch: Partial<Pick<DocBlock, "level" | "lang">>) =>
+    mutate((ws) => ws.map((b) => (b.block_id === id ? { ...b, ...patch } : b)));
   const changeType = (id: string, type: DocBlock["type"]) =>
-    mutate((ws) => ws.map((b) => (b.block_id === id ? { ...b, type, text: type === "hr" ? "" : b.text } : b)));
+    mutate((ws) =>
+      ws.map((b) => {
+        if (b.block_id !== id) return b;
+        const nb: DocBlock = { ...b, type, text: type === "hr" ? "" : b.text };
+        // 元数据随类型走（RFC-0016）：切走即清（服务端形状校验拒收跨类型携带）；
+        // 切入 heading 缺省级别 H2（文档标题占 H1）。
+        if (type === "heading" && b.type !== "heading") nb.level = 2;
+        if (type !== "heading") nb.level = undefined;
+        if (type !== "code") nb.lang = undefined;
+        return nb;
+      }),
+    );
   const insertAfter = (afterID: string | null) => {
     const nb: DocBlock = { block_id: newBlockID(), type: "paragraph", text: "" };
     mutate((ws) => {
@@ -371,6 +394,8 @@ export function DocEditorPage() {
         >
           导出
         </a>
+        <ExtShareBadges docID={doc.doc_id} />
+        <ExtShareMenu docID={doc.doc_id} compact />
         <DocMenu
           archived={readOnly}
           busy={actionBusy}
@@ -424,6 +449,7 @@ export function DocEditorPage() {
               onInsertAfter={() => insertAfter(b.block_id)}
               onRemove={() => removeBlock(b.block_id)}
               onChangeType={(t) => changeType(b.block_id, t)}
+              onPatch={(p) => patchBlock(b.block_id, p)}
             />
           ))}
           {!readOnly && (
@@ -509,6 +535,7 @@ function BlockView({
   onInsertAfter,
   onRemove,
   onChangeType,
+  onPatch,
 }: {
   block: DocBlock;
   editing: boolean;
@@ -519,6 +546,7 @@ function BlockView({
   onInsertAfter: () => void;
   onRemove: () => void;
   onChangeType: (type: DocBlock["type"]) => void;
+  onPatch: (patch: Partial<Pick<DocBlock, "level" | "lang">>) => void;
 }) {
   const areaRef = useRef<HTMLTextAreaElement | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -553,6 +581,22 @@ function BlockView({
       }`}
     >
       <TypeMenu value={block.type} onChange={onChangeType} />
+      {block.type === "heading" && (
+        <LevelMenu value={block.level ?? 2} onChange={(level) => onPatch({ level })} />
+      )}
+      {block.type === "code" && (
+        <input
+          value={block.lang ?? ""}
+          onChange={(e) => onPatch({ lang: e.target.value })}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          onBlur={(e) => onPatch({ lang: e.target.value.trim() })}
+          placeholder="lang"
+          aria-label="代码语言"
+          title="代码语言（导出 fence 标注；留空无标注）"
+          className="w-14 rounded border border-border bg-surface px-1 text-[11px] text-dim outline-none placeholder:text-faint focus:border-accent"
+        />
+      )}
       <button
         type="button"
         onClick={(e) => {
@@ -667,6 +711,61 @@ function BlockView({
   );
 }
 
+/** 标题级别下拉（RFC-0016 块模型增补；自绘同 TypeMenu——容器 mousedown 拦默认
+ *  焦点纪律见 BlockView 控件区注释）。H1 预留给文档标题，正文标题缺省 H2。 */
+function LevelMenu({ value, onChange }: { value: number; onChange: (level: number) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        title="标题级别"
+        aria-label="标题级别"
+        className="rounded px-1 text-[11px] text-dim transition-colors hover:bg-surface-3 hover:text-text"
+      >
+        H{value} ▾
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="animate-fade-in absolute right-0 top-full z-40 mt-1 w-14 overflow-hidden rounded-lg border border-border bg-surface py-0.5 shadow-xl"
+        >
+          {[1, 2, 3, 4, 5, 6].map((lv) => (
+            <button
+              key={lv}
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onChange(lv);
+              }}
+              className={`block w-full px-2.5 py-1 text-left text-[11px] transition-colors hover:bg-surface-2 ${
+                lv === value ? "font-medium text-text" : "text-dim hover:text-text"
+              }`}
+            >
+              H{lv}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** 块类型下拉（自绘——原生 select 在此控件容器里必被秒杀：读模式点击冒泡进
  *  编辑态抢焦、编辑态点击触发 textarea blur 退编辑，下拉框闪现即消失；
  *  2026-09-18 狗粮实证。容器已拦 mousedown 默认 + click 冒泡，此处只管开关）。 */
@@ -725,7 +824,17 @@ function TypeMenu({ value, onChange }: { value: DocBlock["type"]; onChange: (t: 
 }
 
 /** 读模式按块类型渲染（标题/段落走 MarkdownBody；列表补标记后走 MarkdownBody；
- *  代码原文 <pre>；hr 横线）。 */
+ *  代码原文 <pre> + lang 标注；hr 横线）。标题按 level 出视觉层级（缺省 H2——
+ *  text 自带 # 前缀时 MarkdownBody 已按前缀渲染标题）。 */
+const HEADING_SIZES: Record<number, string> = {
+  1: "text-[19px] font-semibold",
+  2: "text-[16px] font-semibold",
+  3: "text-[15px] font-semibold",
+  4: "text-[14px] font-semibold",
+  5: "text-[13px] font-semibold",
+  6: "text-[13px] font-medium",
+};
+
 function BlockContent({ block }: { block: DocBlock }) {
   if (block.type !== "hr" && block.text.trim() === "") {
     return <p className="text-sm text-faint">空块——点击编辑</p>;
@@ -733,15 +842,22 @@ function BlockContent({ block }: { block: DocBlock }) {
   switch (block.type) {
     case "heading":
       return (
-        <div className="text-[15px] font-semibold text-text">
+        <div className={`${HEADING_SIZES[block.level ?? 2] ?? HEADING_SIZES[2]} text-text`}>
           <MarkdownBody text={block.text} />
         </div>
       );
     case "code":
       return (
-        <pre className="overflow-x-auto rounded-lg bg-surface-3 p-2.5 font-mono text-xs leading-relaxed">
-          {block.text}
-        </pre>
+        <div className="relative">
+          {block.lang && (
+            <span className="absolute right-2 top-1.5 z-10 rounded bg-surface-2 px-1 text-[10px] text-faint">
+              {block.lang}
+            </span>
+          )}
+          <pre className="overflow-x-auto rounded-lg bg-surface-3 p-2.5 pr-14 font-mono text-xs leading-relaxed">
+            {block.text}
+          </pre>
+        </div>
       );
     case "quote":
       return (

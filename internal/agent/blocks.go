@@ -25,6 +25,13 @@ const (
 	// BlockDocQuery 文档检索两段式（§2.7 读面②，M2 预留——history_request 先例
 	// 扩展）：首版仅锁定块名词汇，不接线校验、无适配器支持。
 	BlockDocQuery = "doc_query"
+	// BlockSheetOps 表格写面（RFC-0017 §4.3）：agent 的表格资产写口——随
+	// public_draft 同波携带（doc_ops 同纪律），编辑类 op 必须携带 base_version
+	// 与显式坐标；引擎逐 op 代写落 doc.sheet_revision_committed。
+	BlockSheetOps = "sheet_ops"
+	// BlockSheetQuery 表格读面（RFC-0017 §4.3，doc_query 同款预留）：读走
+	// referenced_docs 语境摘录（format 分派的有界表格摘要），块名仅锁词汇。
+	BlockSheetQuery = "sheet_query"
 )
 
 // ValidateBlock 端口级结构化块校验（RFC-0002 §3.5.1"结构化输出必须过 Schema 校验"的
@@ -55,6 +62,8 @@ func ValidateBlock(block string, data map[string]any) error {
 		return validateHistoryRequest(data)
 	case BlockDocOps:
 		return validateDocOps(data)
+	case BlockSheetOps:
+		return validateSheetOps(data)
 	default:
 		return fmt.Errorf("agent: 未知结构化块 %q", block)
 	}
@@ -202,7 +211,9 @@ func checkDocOps(ops []any) error {
 	return nil
 }
 
-// checkDocOpBlocks op 的 blocks 字段：非空数组、≤64、逐块类型封闭、非 hr 块 text 非空。
+// checkDocOpBlocks op 的 blocks 字段：非空数组、≤64、逐块类型封闭、非 hr 块
+// text 非空；level/lang 元数据形状（RFC-0016 块模型增补——与 doc 域
+// ValidateBlockShape 同语义，端口边界先行拒绝）。
 func checkDocOpBlocks(i int, op map[string]any) error {
 	blocks, ok := op["blocks"].([]any)
 	if !ok || len(blocks) == 0 {
@@ -227,6 +238,205 @@ func checkDocOpBlocks(i int, op map[string]any) error {
 		if typ != "hr" && strings.TrimSpace(text) == "" {
 			return fmt.Errorf("agent: doc_ops[%d].blocks[%d].text 为空（hr 例外）", i, j)
 		}
+		if lvl, present := b["level"]; present {
+			n, isNum := lvl.(float64)
+			if !isNum || n != float64(int(n)) || typ != "heading" || n < 1 || n > 6 {
+				return fmt.Errorf("agent: doc_ops[%d].blocks[%d].level 仅 heading 可携带且为 1..6 整数", i, j)
+			}
+		}
+		if lang, present := b["lang"]; present {
+			s, isStr := lang.(string)
+			if !isStr || typ != "code" || len([]rune(s)) > 48 || strings.TrimSpace(s) == "" {
+				return fmt.Errorf("agent: doc_ops[%d].blocks[%d].lang 仅 code 可携带且为 1..48 字符", i, j)
+			}
+		}
+	}
+	return nil
+}
+
+// MaxSheetOpsPerWave 单波 sheet_ops 批次上限（RFC-0017 §4.3，doc_ops 同量级）。
+const MaxSheetOpsPerWave = 8
+
+// maxSheetOpCells 单 op 携带单元格上限（端口先行拒形；sheet 域单批上限
+// 1000 仍由服务端强制——agent 端口收紧到与编辑器防抖批同量级）。
+const maxSheetOpCells = 200
+
+var sheetIDPattern = regexp.MustCompile(`^sht_[0-9A-Za-z_-]+$`)
+
+// validateSheetOps sheet_ops 块校验（载荷形 {"ops":[...]}）。编辑类 op 必须
+// 携带 base_version（RFC-0017 §4.3："修改必须携带所依据的版本与明确坐标"）
+// ——版本失配由引擎代写时按 409 逐 op 降级。
+func validateSheetOps(data map[string]any) error {
+	ops, ok := data["ops"].([]any)
+	if !ok {
+		return fmt.Errorf("agent: sheet_ops.ops 必须为数组")
+	}
+	return checkSheetOps(ops)
+}
+
+// checkSheetOps op 列表形状校验（public_draft 侧车与独立块共用）。
+func checkSheetOps(ops []any) error {
+	if len(ops) == 0 {
+		return fmt.Errorf("agent: sheet_ops 至少 1 条 op")
+	}
+	if len(ops) > MaxSheetOpsPerWave {
+		return fmt.Errorf("agent: sheet_ops 超单波上限 %d", MaxSheetOpsPerWave)
+	}
+	for i, raw := range ops {
+		op, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("agent: sheet_ops[%d] 非对象", i)
+		}
+		kind, _ := op["op"].(string)
+		switch kind {
+		case "create":
+			title, _ := op["title"].(string)
+			if n := len([]rune(title)); n < 1 || n > 200 {
+				return fmt.Errorf("agent: sheet_ops[%d] create 缺 title 或超 200 字", i)
+			}
+			if cells, present := op["cells"]; present {
+				if err := checkSheetCells(i, cells, maxSheetOpCells); err != nil {
+					return err
+				}
+			}
+		case "add_sheet", "set_cells", "clear_range", "insert_rows", "insert_columns", "delete_rows", "delete_columns":
+			if err := checkSheetEditOp(i, op, kind); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("agent: sheet_ops[%d].op 非法 %q（create|add_sheet|set_cells|clear_range|insert_rows|insert_columns|delete_rows|delete_columns）", i, kind)
+		}
+	}
+	return nil
+}
+
+// WaveNum 数值字段兼容读取（JSON 解码恒 float64；Go 原生构造可能是 int——
+// room 引擎二次校验与 UT 构造共用）。
+func WaveNum(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	}
+	return 0, false
+}
+
+// checkSheetEditOp 编辑类 op 公共面：doc_id 形态 + base_version ≥1 + sheet_id
+// 可选（空 = 默认表）+ 各 op 专属字段。
+func checkSheetEditOp(i int, op map[string]any, kind string) error {
+	docID, _ := op["doc_id"].(string)
+	if !docIDPattern.MatchString(docID) {
+		return fmt.Errorf("agent: sheet_ops[%d].doc_id 形如 doc_<12hex>", i)
+	}
+	if sid, present := op["sheet_id"]; present {
+		s, isStr := sid.(string)
+		if !isStr || (s != "" && !sheetIDPattern.MatchString(s)) {
+			return fmt.Errorf("agent: sheet_ops[%d].sheet_id 形如 sht_*（空 = 默认表）", i)
+		}
+	}
+	bv, ok := WaveNum(op["base_version"])
+	if !ok || bv < 1 || bv != float64(int(bv)) {
+		return fmt.Errorf("agent: sheet_ops[%d].base_version 必须为 ≥1 整数（所依据的文档版本）", i)
+	}
+	switch kind {
+	case "add_sheet":
+		name, _ := op["name"].(string)
+		if n := len([]rune(name)); n < 1 || n > 60 {
+			return fmt.Errorf("agent: sheet_ops[%d] add_sheet 缺 name 或超 60 字", i)
+		}
+	case "set_cells":
+		if err := checkSheetCells(i, op["cells"], maxSheetOpCells); err != nil {
+			return err
+		}
+	case "clear_range":
+		if err := checkSheetRange(i, op["range"]); err != nil {
+			return err
+		}
+	case "insert_rows", "insert_columns", "delete_rows", "delete_columns":
+		at, atOK := WaveNum(op["at"])
+		cnt, cntOK := WaveNum(op["count"])
+		if !atOK || at < 1 || at != float64(int(at)) {
+			return fmt.Errorf("agent: sheet_ops[%d].at 必须为 ≥1 整数", i)
+		}
+		if !cntOK || cnt < 1 || cnt != float64(int(cnt)) || cnt > 1000 {
+			return fmt.Errorf("agent: sheet_ops[%d].count 必须为 1..1000 整数", i)
+		}
+	}
+	return nil
+}
+
+// checkSheetCells 单元格批形状：数组非空、≤ cap、坐标 1..5000/1..200、
+// 类型-值严格配对（datetime 不对 agent 面开放——导入面专属）。
+func checkSheetCells(i int, raw any, cap int) error {
+	cells, ok := raw.([]any)
+	if !ok || len(cells) == 0 {
+		return fmt.Errorf("agent: sheet_ops[%d].cells 缺失或为空", i)
+	}
+	if len(cells) > cap {
+		return fmt.Errorf("agent: sheet_ops[%d].cells 超单 op 上限 %d", i, cap)
+	}
+	for j, rc := range cells {
+		c, ok := rc.(map[string]any)
+		if !ok {
+			return fmt.Errorf("agent: sheet_ops[%d].cells[%d] 非对象", i, j)
+		}
+		for _, dim := range []struct {
+			key string
+			max int
+		}{{"r", 5000}, {"c", 200}} {
+			v, isNum := WaveNum(c[dim.key])
+			if !isNum || v < 1 || v > float64(dim.max) || v != float64(int(v)) {
+				return fmt.Errorf("agent: sheet_ops[%d].cells[%d].%s 必须为 1..%d 整数", i, j, dim.key, dim.max)
+			}
+		}
+		typ, _ := c["type"].(string)
+		switch typ {
+		case "text":
+			text, isStr := c["text"].(string)
+			if !isStr || len(text) > 8192 {
+				return fmt.Errorf("agent: sheet_ops[%d].cells[%d] text 须为 ≤8192 字节字符串", i, j)
+			}
+		case "number":
+			if _, isNum := c["number"].(float64); !isNum {
+				return fmt.Errorf("agent: sheet_ops[%d].cells[%d] number 缺数值", i, j)
+			}
+		case "bool":
+			if _, isBool := c["bool"].(bool); !isBool {
+				return fmt.Errorf("agent: sheet_ops[%d].cells[%d] bool 缺布尔", i, j)
+			}
+		case "formula":
+			f, isStr := c["formula"].(string)
+			if !isStr || f == "" || len([]rune(f)) > 512 {
+				return fmt.Errorf("agent: sheet_ops[%d].cells[%d] formula 须为 1..512 字符", i, j)
+			}
+		case "null":
+			// 清空
+		default:
+			return fmt.Errorf("agent: sheet_ops[%d].cells[%d].type 非法 %q（text|number|bool|formula|null）", i, j, typ)
+		}
+	}
+	return nil
+}
+
+// checkSheetRange range 字段形状（闭区间四角）。
+func checkSheetRange(i int, raw any) error {
+	r, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("agent: sheet_ops[%d].range 缺失", i)
+	}
+	for _, key := range []string{"r1", "c1", "r2", "c2"} {
+		v, isNum := WaveNum(r[key])
+		if !isNum || v < 1 || v != float64(int(v)) {
+			return fmt.Errorf("agent: sheet_ops[%d].range.%s 必须为 ≥1 整数", i, key)
+		}
+	}
+	r1, _ := WaveNum(r["r1"])
+	r2, _ := WaveNum(r["r2"])
+	c1, _ := WaveNum(r["c1"])
+	c2, _ := WaveNum(r["c2"])
+	if r2 < r1 || c2 < c1 || r2 > 5000 || c2 > 200 {
+		return fmt.Errorf("agent: sheet_ops[%d].range 越界（≤5000 行 ×200 列，r1≤r2、c1≤c2）", i)
 	}
 	return nil
 }
@@ -334,6 +544,16 @@ func validatePublicDraft(data map[string]any) error {
 			return fmt.Errorf("agent: public_draft.doc_ops 必须为数组")
 		}
 		if err := checkDocOps(ops); err != nil {
+			return err
+		}
+	}
+	// RFC-0017 §4.3 侧车写面：sheet_ops 同纪律。
+	if raw, ok := data["sheet_ops"]; ok {
+		ops, isArr := raw.([]any)
+		if !isArr {
+			return fmt.Errorf("agent: public_draft.sheet_ops 必须为数组")
+		}
+		if err := checkSheetOps(ops); err != nil {
 			return err
 		}
 	}

@@ -46,6 +46,7 @@ func TestBlockFixturesGate(t *testing.T) {
 	for _, block := range []string{
 		agent.BlockTurnIntent, agent.BlockAttentionAssessment, agent.BlockPublicDraft,
 		agent.BlockGroundedSummary, agent.BlockClosureIntent, agent.BlockDocOps,
+		agent.BlockSheetOps,
 	} {
 		if !seenBlocks[block] {
 			t.Errorf("valid fixtures 缺块类型 %q 的覆盖", block)

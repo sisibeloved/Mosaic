@@ -65,11 +65,14 @@ const (
 	EventDocCreated           = "doc.created"
 	EventDocRenamed           = "doc.renamed"
 	EventDocRevisionCommitted = "doc.revision_committed"
-	EventDocArchived          = "doc.archived"
-	EventDocRestored          = "doc.restored"
-	EventDocDeleted           = "doc.deleted"
-	EventDocAttachedToRoom    = "doc.attached_to_room"
-	EventDocDetachedFromRoom  = "doc.detached_from_room"
+	// EventDocSheetRevisionCommitted doc.sheet_revision_committed（RFC-0017 M1）：
+	// 表格资产（format=spreadsheet）的修订批——归一化 ops 机械回放。
+	EventDocSheetRevisionCommitted = "doc.sheet_revision_committed"
+	EventDocArchived               = "doc.archived"
+	EventDocRestored               = "doc.restored"
+	EventDocDeleted                = "doc.deleted"
+	EventDocAttachedToRoom         = "doc.attached_to_room"
+	EventDocDetachedFromRoom       = "doc.detached_from_room"
 )
 
 // Envelope 是 room_events 的权威/内部形态（RFC-0001 v0.4）。
@@ -193,12 +196,17 @@ type DocEnvelope struct {
 	Metadata      map[string]any  `json:"metadata"`
 }
 
-// DocBlock 文档块（RFC-0014 §2.2：稳定 block_id 是锚定操作、冲突重放与卡片
-// 摘要的共同基础；Text 为 markdown 行内语法）。
+// DocBlock 文档块（RFC-0014 封闭块集；RFC-0016 增补元数据）：
+// level 仅 heading 携带（1..6，缺省 0 = 未指定——导出渲染按 2 处理，文档
+// 标题占 H1）；lang 仅 code 携带（≤48 runes，导出 fence 标注）。块 text 仍
+// 为内容本体（markdown 行内语法）；text 自带标记（# 前缀/fence）时导出透传
+// 优先——元数据服务编辑器结构化与 agent 语义化，存量数据零迁移。
 type DocBlock struct {
 	BlockID string `json:"block_id"`
 	Type    string `json:"type"` // heading | paragraph | list | code | quote | hr
 	Text    string `json:"text"`
+	Level   int    `json:"level,omitempty"` // heading 专属：标题级别 1..6
+	Lang    string `json:"lang,omitempty"`  // code 专属：语言标注（如 go、python）
 }
 
 // DocOp 单条块操作（修订批 ops 元素；block_id 恒显式——null 或锚点，
@@ -210,11 +218,67 @@ type DocOp struct {
 	Text    string    `json:"text,omitempty"`
 }
 
+// ---- 表格词汇（RFC-0017 M1）：doc.sheet_revision_committed 载荷元素 ----
+// 坐标一律 1-based 行列整数（A1 语法只在读端点参数与公式引用里出现）；范围
+// 四角闭区间。SheetOp 为扁平联合（DocOp 先例）：op 判别，其余字段按 op 出现。
+
+// SheetCellValue 单元格字面值（类型判别）。null 表示清空该格内容。
+type SheetCellValue struct {
+	Type   string   `json:"type"`             // text | number | bool | datetime | null
+	Text   string   `json:"text,omitempty"`   // type=text 原文 / type=datetime RFC3339
+	Number *float64 `json:"number,omitempty"` // type=number
+	Bool   *bool    `json:"bool,omitempty"`   // type=bool
+}
+
+// SheetCellStyle 基础样式（指针字段 = 仅改写给出的项；nil = 不动）。
+type SheetCellStyle struct {
+	Bold   *bool `json:"bold,omitempty"`
+	Italic *bool `json:"italic,omitempty"`
+}
+
+// SheetCell 单个单元格写入（set_cells 元素）。内容按 Type 携带；formula 为
+// 表达式原文（不含引导 =）。Style 可选——缺省保留既有样式。
+type SheetCell struct {
+	R       int             `json:"r"`                 // 行 1-based
+	C       int             `json:"c"`                 // 列 1-based
+	Type    string          `json:"type"`              // text | number | bool | datetime | formula | null
+	Text    string          `json:"text,omitempty"`    // type=text/datetime
+	Number  *float64        `json:"number,omitempty"`  // type=number
+	Bool    *bool           `json:"bool,omitempty"`    // type=bool
+	Formula string          `json:"formula,omitempty"` // type=formula
+	Style   *SheetCellStyle `json:"style,omitempty"`   // 可选；nil = 保留既有
+}
+
+// SheetRange 矩形范围（闭区间；r1≤r2、c1≤c2）。
+type SheetRange struct {
+	R1 int `json:"r1"`
+	C1 int `json:"c1"`
+	R2 int `json:"r2"`
+	C2 int `json:"c2"`
+}
+
+// SheetOp 单条表格操作（归一化后进事件；add_sheet 的 SheetID 由服务端分配回填）。
+type SheetOp struct {
+	Op        string          `json:"op"`                   // set_cells | clear_range | set_style | add_sheet | rename_sheet | delete_sheet | insert_rows | delete_rows | insert_columns | delete_columns | set_col_width | set_row_height
+	SheetID   string          `json:"sheet_id,omitempty"`   // add_sheet 归一化后携带分配 ID
+	Name      string          `json:"name,omitempty"`       // add_sheet/rename_sheet
+	Cells     []SheetCell     `json:"cells,omitempty"`      // set_cells
+	Range     *SheetRange     `json:"range,omitempty"`      // clear_range/set_style
+	KeepStyle bool            `json:"keep_style,omitempty"` // clear_range：是否保留样式
+	Style     *SheetCellStyle `json:"style,omitempty"`      // set_style
+	At        int             `json:"at,omitempty"`         // 插删位置（1-based）
+	Count     int             `json:"count,omitempty"`      // 插删数量
+	Col       int             `json:"col,omitempty"`        // set_col_width 列号
+	Row       int             `json:"row,omitempty"`        // set_row_height 行号
+	Width     int             `json:"width,omitempty"`      // set_col_width 像素
+	Height    int             `json:"height,omitempty"`     // set_row_height 像素
+}
+
 // DocCreatedPayload doc.created：文档创建（doc 流首事件）。
 type DocCreatedPayload struct {
 	DocID           string  `json:"doc_id"`
 	Title           string  `json:"title"`
-	Format          string  `json:"format"` // markdown（首版封闭枚举）
+	Format          string  `json:"format"` // markdown | spreadsheet（封闭枚举）
 	CreatedBy       string  `json:"created_by"`
 	AnchorMessageID *string `json:"anchor_message_id"`
 }
@@ -235,6 +299,19 @@ type DocRevisionCommittedPayload struct {
 	Actor       string  `json:"actor"`
 	Source      string  `json:"source"` // human_editor | agent
 	Note        string  `json:"note,omitempty"`
+}
+
+// DocSheetRevisionCommittedPayload doc.sheet_revision_committed（RFC-0017 M1）：
+// 一批归一化表格操作。ops 为校验+结构改写后的归一化结果——历史回放是纯机械
+// 应用，不依赖解析器行为（公式改写已在提交时定稿进事件）。
+type DocSheetRevisionCommittedPayload struct {
+	DocID       string    `json:"doc_id"`
+	BaseVersion int64     `json:"base_version"`
+	Version     int64     `json:"version"`
+	Ops         []SheetOp `json:"ops"`
+	Actor       string    `json:"actor"`
+	Source      string    `json:"source"` // human_editor | agent | import | restore
+	Note        string    `json:"note,omitempty"`
 }
 
 // DocArchivedPayload doc.archived / DocRestoredPayload doc.restored：生命周期
@@ -273,6 +350,18 @@ type DocRef struct {
 	AnchorBlockID string `json:"anchor_block_id,omitempty"`
 }
 
+// ExternalRef 消息外部文档引用（RFC-0016 §2.3：message.posted.external_refs
+// 元素）。文档级映射的描述子快照：url/title/doc_type 在发送时定稿进事件，
+// 不随外部服务后续变化刷新（与 DocRef 的投影原地刷新语义相反——外部资源
+// 无本地事件流，卡片展示的是"发送那一刻的链接事实"）。kind→provider 归属：
+// txdoc = 腾讯文档、fdoc = 飞书云文档（room service 封闭表校验 host）。
+type ExternalRef struct {
+	Kind    string `json:"kind"`               // txdoc | fdoc（封闭枚举）
+	URL     string `json:"url"`                // 白名单 host 的 https 链接
+	Title   string `json:"title,omitempty"`    // resolve 时抓取的标题（可空 = 卡片降级显示 URL）
+	DocType string `json:"doc_type,omitempty"` // provider 侧推断（sheet/docx/wiki…；空 = 未知）
+}
+
 // DecodeDocPayload 按事件类型把 DocEnvelope.Payload 解码为对应边界结构。
 func (e *DocEnvelope) DecodeDocPayload() any {
 	switch e.Type {
@@ -286,6 +375,10 @@ func (e *DocEnvelope) DecodeDocPayload() any {
 		return p
 	case EventDocRevisionCommitted:
 		var p DocRevisionCommittedPayload
+		_ = json.Unmarshal(e.Payload, &p)
+		return p
+	case EventDocSheetRevisionCommitted:
+		var p DocSheetRevisionCommittedPayload
 		_ = json.Unmarshal(e.Payload, &p)
 		return p
 	case EventDocArchived:

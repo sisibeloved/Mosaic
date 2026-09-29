@@ -84,6 +84,9 @@ type EngineConfig struct {
 	// Docs 可选：doc_ops 代写面（RFC-0014 §2.7）——nil = 无文档面（doc_ops
 	// 到达一律降级为空 refs；纯测试装配）。生产注入 *doc.Service。
 	Docs DocProxy
+	// Sheets 可选：sheet_ops 代写面（RFC-0017 §4.3，doc_ops 同纪律）——nil =
+	// 无表格面（sheet_ops 降级空 refs）。生产注入同一 *doc.Service。
+	Sheets SheetProxy
 	// DocExcerpt 可选：文档语境摘录渲染器（§2.7 读面①）——nil = 不注入文档
 	// 摘录；生产由 app 注入（doc.GetDoc + RenderExcerpt 8k runes + RedactSecrets）。
 	DocExcerpt func(docID string) string
@@ -1296,6 +1299,15 @@ func (e *Engine) publishMessage(ctx context.Context, roomID, roundID string, sti
 			draft.Data["refs"] = refs
 		}
 		delete(draft.Data, "doc_ops")
+	}
+	// RFC-0017 §4.3 表格侧车（doc_ops 同纪律）：sheet 修订先于正文落库，
+	// sheet_ops 键不进消息载荷。
+	if raw, ok := draft.Data["sheet_ops"]; ok {
+		if refs := e.applyWaveSheetOps(ctx, roomID, roundID, sel.ParticipantID, raw); len(refs) > 0 {
+			existing, _ := draft.Data["refs"].([]map[string]any)
+			draft.Data["refs"] = append(existing, refs...)
+		}
+		delete(draft.Data, "sheet_ops")
 	}
 	msg := e.newEnv(roomID, protocol.EventMessagePosted,
 		protocol.Actor{ParticipantID: sel.ParticipantID, Kind: "agent"}, grantEnv.EventID, roundID, draft.Data)

@@ -491,3 +491,63 @@ func TestDocOutboxDispatch_IT(t *testing.T) {
 		t.Fatalf("级联后 pending = %+v, %v（期望空）", rest, err)
 	}
 }
+
+// 表格事件全链路（RFC-0017 M1）：sheet 修订追加/CAS/续读、FTS 不索引正文
+// （仅标题行命中）、outbox 承载、删除级联。
+func TestSheetEventsPipeline_IT(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openTempStore(t)
+
+	appended, err := store.AppendDocEvents(ctx, []protocol.DocEnvelope{
+		docEnvelope("evt_sh1", "doc_cccccccccccc", protocol.EventDocCreated,
+			`{"doc_id":"doc_cccccccccccc","title":"季度预算","format":"spreadsheet","created_by":"par_owner","anchor_message_id":null}`),
+		docEnvelope("evt_sh2", "doc_cccccccccccc", protocol.EventDocSheetRevisionCommitted,
+			`{"doc_id":"doc_cccccccccccc","base_version":1,"version":2,"ops":[{"op":"set_cells","sheet_id":"sht_cccccccccccc","cells":[{"r":1,"c":1,"type":"text","text":"季度预算机密数据"},{"r":2,"c":1,"type":"formula","formula":"SUM(A1:A1)"}]}],"actor":"par_owner","source":"human_editor"}`),
+	})
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if appended[0].Version != 1 || appended[1].Version != 2 {
+		t.Fatalf("version = %d, %d", appended[0].Version, appended[1].Version)
+	}
+
+	// CAS：旧 base 拒绝
+	if _, err := store.AppendDocEventsIf(ctx, []protocol.DocEnvelope{
+		docEnvelope("evt_sh3", "doc_cccccccccccc", protocol.EventDocSheetRevisionCommitted, `{"doc_id":"doc_cccccccccccc"}`),
+	}, 1); !errors.Is(err, doc.ErrVersionConflict) {
+		t.Fatalf("CAS = %v", err)
+	}
+
+	// 续读含 sheet 事件
+	events, _, err := store.DocEventsAfter(ctx, "doc_cccccccccccc", "", 10)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("read back = %d, %v", len(events), err)
+	}
+	var p protocol.DocSheetRevisionCommittedPayload
+	if err := json.Unmarshal(events[1].Envelope.Payload, &p); err != nil || len(p.Ops) != 1 {
+		t.Fatalf("sheet payload = %v", err)
+	}
+
+	// FTS：标题命中、正文（单元格文本）不索引
+	hits, err := store.SearchDocs(ctx, "季度预算", 10)
+	if err != nil || len(hits) == 0 {
+		t.Fatalf("标题命中 = %v, %v", hits, err)
+	}
+	cellHits, _ := store.SearchDocs(ctx, "机密数据", 10)
+	if len(cellHits) != 0 {
+		t.Fatalf("单元格正文不应进 FTS = %v", cellHits)
+	}
+
+	// outbox 承载 + 级联
+	adapter := DocOutboxStore{Store: store}
+	pending, _ := adapter.Pending(ctx, 100)
+	if len(pending) != 2 || pending[1].EventID != "evt_sh2" {
+		t.Fatalf("outbox = %d", len(pending))
+	}
+	if err := store.DeleteDoc(ctx, "doc_cccccccccccc"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if rest, _ := adapter.Pending(ctx, 100); len(rest) != 0 {
+		t.Fatalf("级联后 outbox = %d", len(rest))
+	}
+}

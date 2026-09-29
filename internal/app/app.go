@@ -36,6 +36,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/backup"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/doc"
+	"github.com/sisibeloved/Mosaic/internal/extdocs"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/room"
@@ -232,6 +233,39 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		monitorMgr = nil
 	}
 
+	// RFC-0016 外部云文档面（多 provider：腾讯/飞书）：per-provider 凭据目录
+	// （含 RFC-0015 txdocs-token 单文件迁移）+ provider 注册表。
+	// 装配失败不阻断启动（extdocs 端点 404 继续——monitor 先例）。
+	extMgr, err := extdocs.LoadManager(filepath.Join(opts.DataDir, "extdocs"))
+	if err != nil {
+		logger.Error("外部文档面装配失败（extdocs 端点 404 继续）", "err", err)
+		extMgr = nil
+	}
+	var extSvc *extdocs.Service
+	if extMgr != nil {
+		extSvc = extdocs.NewService(store)
+		extSvc.Logger = logger
+		tencent := extdocs.NewTencentProvider(extMgr, "")
+		tencent.Logger = logger
+		feishu := extdocs.NewFeishuProvider(extMgr, "")
+		feishu.Logger = logger
+		extSvc.Register(tencent)
+		extSvc.Register(feishu)
+	}
+
+	// RFC-0017 M2 表格手动交换：provider 注册表 + doc 落库端口 + 交换记录表。
+	// 启动收敛崩溃残留的 running 记录（M2 同步执行——running 只属中断窗口）。
+	var sheetTransfers *extdocs.SheetTransferService
+	if extSvc != nil {
+		sheetTransfers = extdocs.NewSheetTransferService(extSvc, docSvc, store, newID)
+		sheetTransfers.Logger = logger
+		if n, err := store.MarkStaleRunningTransfers(ctx, time.Now().Format(time.RFC3339)); err != nil {
+			logger.Error("表格交换残留收敛失败", "err", err.Error())
+		} else if n > 0 {
+			logger.Warn("表格交换存在中断残留，已标记 unknown（历史可查）", "count", n)
+		}
+	}
+
 	hub := sse.NewHub()
 
 	// 宿主层：启动自动扫描（探测失败不阻塞启动，注册表持久化合并）。
@@ -293,6 +327,8 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Monitors:         monitorMgr,
 		DocSVC:           docSvc,
 		DocReader:        store, // doc:{id} 频道 SSE 追平读路径
+		ExtDocs:          extSvc,
+		SheetTransfers:   sheetTransfers,
 		Diagnostics: diagnosticsBundle(opts.DataDir,
 			func() (int, error) { return countRooms(store) },
 			func() int {
@@ -532,6 +568,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			ProactiveSilence: 5 * time.Minute,
 			AttachExcerpt:    attachExcerpt,
 			Docs:             docSvc, // RFC-0014 §2.7：doc_ops 引擎代写面（actor 记为该 bot）
+			Sheets:           docSvc, // RFC-0017 §4.3：sheet_ops 引擎代写面（同一 doc.Service）
 			// §2.7 读面①：文档摘录注入（8k runes 有界 + DLP 秘密形状剔除——附件摘录同纪律）。
 			DocExcerpt: func(docID string) string {
 				state, err := docSvc.GetDoc(ctx, docID)

@@ -306,6 +306,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/docs/{doc_id}/sheets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 工作表元信息清单（RFC-0017 M1；仅 format=spreadsheet）
+         * @description 只读端点（不设 owner token 门）。返回工作表清单（稳定 ID/名称/尺寸/
+         *     已填格数）与当前文档版本——编辑器据此外加范围读取组装界面。
+         */
+        get: operations["listDocSheets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/docs/{doc_id}/sheets/{sheet_id}/range": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 有界区域读取（类型化单元格 + 公式原文 + 派生值 + 版本）
+         * @description 只读端点。`?range=A1:C10`（缺省 = 已填格 used range，超 10000 格按行
+         *     截断并标记 truncated）；显式范围超限 400。公式格返回服务端权威派生结果
+         *     （kind=value|error|unsupported）。
+         */
+        get: operations["getDocSheetRange"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/docs/{doc_id}/export": {
         parameters: {
             query?: never;
@@ -313,7 +356,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 导出 markdown（.md；归档可导出，删除后 404） */
+        /**
+         * 导出（markdown 文档 → .md；表格文档 → 指定工作表 .csv）
+         * @description format 分派（RFC-0017 §4.2）：markdown → text/markdown（标题作 H1）；
+         *     spreadsheet → text/csv（快照语义：公式格写当前派生值；`?sheet_id=`
+         *     缺省首表）。归档可导出，删除后 404。
+         */
         get: operations["exportDoc"];
         put?: never;
         post?: never;
@@ -580,6 +628,329 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/extdocs/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 外部文档 provider 清单与凭据状态（RFC-0016 多 provider）
+         * @description 已注册 provider 的状态视图（凭据配置/授权态/验证水位）。未装配外部
+         *     文档面（测试装配）返回 404。
+         */
+        get: operations["listExtDocProviders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/extdocs/{provider}/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * provider 凭据状态（不含任何凭据值）
+         * @description 状态字段按 provider 分化（tencent_docs: configured；feishu_docs:
+         *     app_configured/authorized/expires_at）——凭据值永不回传。
+         */
+        get: operations["getExtDocSettings"];
+        /**
+         * 写入/清除 provider 凭据（0600 原子落盘）
+         * @description 写端点（三层门）。载荷按 provider 分化：tencent_docs 携 token；feishu_docs
+         *     携 app_id + app_secret（两者须同时给，空 = 清除）。凭据仅落本机，不进
+         *     日志、不经任何读端点回传。
+         */
+        put: operations["updateExtDocSettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/extdocs/{provider}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 验证凭据（provider 各自探活）
+         * @description 写端点（三层门）。腾讯 = 上游 tools/list；飞书 = token 有效性（必要时
+         *     刷新成功即证明凭据链健康）。业务失败 200 ok=false 携带上游码。
+         */
+        post: operations["verifyExtDoc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/extdocs/shares": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 文档级共享映射列表（doc_id/provider 双过滤可选） */
+        get: operations["listExtDocShares"];
+        put?: never;
+        /**
+         * 共享文档到外部云文档（快照语义）
+         * @description 写端点（三层门）。导出 markdown → provider 创建远端文档 → 记录映射。
+         *     已有同 provider 映射且未 force=true → 409 extdocs_already_shared（响应
+         *     携带现有映射）；force=true = 重新创建并替换映射（旧远端文档保留）。
+         */
+        post: operations["createExtDocShare"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/extdocs/shares/{doc_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** 解除共享映射（仅本地映射，不删远端文档） */
+        delete: operations["deleteExtDocShare"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/extdocs/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 解析外部文档链接为卡片描述子（按 host 分派 provider）
+         * @description 写端点（三层门；会触发出网）。仅接受已注册 provider 白名单 host 的
+         *     https 链接（SSRF 防线）；title 尽力拉取（同 host 重定向才跟随），
+         *     失败降级为空。Composer 发送前调用，产物填入 post_message 的 external_refs。
+         */
+        post: operations["resolveExtDocLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/extdocs/feishu/authorize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 飞书授权页 URL（设置页"登录飞书"打开）
+         * @description 需先保存 app_id/app_secret。返回授权 URL 与须在飞书后台登记的
+         *     redirect_uri（完全一致）。授权后浏览器跳转 redirect_uri?code=...——
+         *     页面打不开无妨，从地址栏复制 code 调 callback 端点。
+         */
+        get: operations["getFeishuAuthorizeURL"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/extdocs/feishu/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 授权码换取 user_access_token（手动粘 code 路径）
+         * @description 写端点（三层门）。code 单次有效且时效短（约 5 分钟）——粘贴后即刻
+         *     提交；token 与 refresh_token 持久化（轮换语义自动维护）。
+         */
+        post: operations["feishuOAuthCallback"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/extdocs/sheet-transfers/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 表格交换预览（RFC-0017 M2）——摘要与转换报告，不含格数据
+         * @description 导入：按 URL（provider 可缺省，按 host 归属分派）拉取云端快照，
+         *     返回每表摘要（行列/已填/公式数/合并计数）与全部转换损失项，及
+         *     snapshot_hash（execute 时远端须仍一致）。导出：读本地表格当前态，
+         *     返回摘要与 source_version（execute 时本地版本须未变）。预检含
+         *     blocked 项（如全簿公式超限）时返回 409 sheet_transfer_blocked，
+         *     错误体携带全部报告项。
+         */
+        post: operations["previewSheetTransfer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/extdocs/sheet-transfers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 表格交换历史（副本操作记录） */
+        get: operations["listSheetTransfers"];
+        put?: never;
+        /**
+         * 执行表格副本交换（导入建本地新表 / 导出建云端新副本）
+         * @description 同步执行（有界）。导入：重拉快照比对 snapshot_hash（不符 = 409
+         *     sheet_transfer_stale_preview）→ 创建本地表格资产并按修订批装配。
+         *     导出：校验本地版本未变 → 建远端副本 → 回读校验。幂等键必填：同键
+         *     重放返回既有记录（终态），不重复执行。执行前落 running 记录、终态
+         *     回写；中断残留于启动时收敛为 unknown（历史可查）。
+         */
+        post: operations["executeSheetTransfer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/extdocs/sheet-transfers/update/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 回写预览（RFC-0017 M3）——目标与本地的差异摘要 + 目标哈希锚点
+         * @description 只做值域差异覆写（结构不动、远端多出格不清除）。结构不匹配（本地
+         *     选中表在目标不存在）或差异超限 → 409 sheet_transfer_blocked 携报告。
+         */
+        post: operations["previewSheetTransferUpdate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/extdocs/sheet-transfers/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 执行回写（异步分块；202 返回后轮询单条记录）
+         * @description 预检（源版本 + 目标哈希 + 结构）通过即落 running 并转异步逐块覆写；
+         *     块间检查点（cells_written）与取消生效。传输类失败 → unknown 停（不
+         *     盲目续跑，人工 resume 收敛）；取消 → canceled/partial（已写保留）。
+         *     幂等键同值重放返回既有记录。
+         */
+        post: operations["executeSheetTransferUpdate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/extdocs/sheet-transfers/by-id/{transfer_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 单条交换记录（update 轮询进度用） */
+        get: operations["getSheetTransfer"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/extdocs/sheet-transfers/by-id/{transfer_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 取消执行中的回写（块间生效；已写保留 → partial） */
+        post: operations["cancelSheetTransfer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/extdocs/sheet-transfers/by-id/{transfer_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 续跑 partial/canceled/unknown 回写（校验未写区域仍等于前态）
+         * @description 校验失败（本地版本变 / 目标未写区域被第三方改动）→ 409 重新预览。
+         *     无前态（超持久化上限）不可续跑。
+         */
+        post: operations["resumeSheetTransfer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/owner/bootstrap": {
         parameters: {
             query?: never;
@@ -771,6 +1142,8 @@ export interface components {
             attachments?: string[];
             /** @description 文档引用（RFC-0014 §2.4）：分享文档到房间 = 发一条带 doc_ref 的消息（人类或 agent 均可）；服务端校验存在性（引用不存在/已删文档即拒）。缺省 = 无引用。 */
             refs?: components["schemas"]["DocRef"][];
+            /** @description 外部文档引用（RFC-0016 §2.3，人类路径）：白名单 host 链接经 POST /v1/extdocs/resolve 定稿的描述子快照；服务端校验 kind→provider 归属与长度。缺省 = 无外部引用。 */
+            external_refs?: components["schemas"]["ExternalRef"][];
             thread_id?: null | string;
         };
         TypedRelationInput: {
@@ -784,6 +1157,290 @@ export interface components {
             kind: "doc";
             doc_id: string;
             anchor_block_id?: string;
+        };
+        /** @description 外部文档引用描述子（RFC-0016 §2.3 封闭字段集，与 room-protocol message.posted externalRef 同形）：发送时刻定稿的链接事实，卡片不随外部服务刷新。host 白名单与 kind→provider 归属由服务端校验（schema 层只钉 https 前缀与长度）。 */
+        ExternalRef: {
+            /** @enum {string} */
+            kind: "txdoc" | "fdoc";
+            url: string;
+            title?: string;
+            /** @description provider 侧推断的文档类型（txdoc：sheet/doc/slide/aio/form；fdoc：docx/doc/wiki/sheet/base/minutes/mind/slide/file；空 = 未知，卡片降级） */
+            doc_type?: string;
+        };
+        /** @description provider 凭据状态（字段按 provider 分化；凭据值永不回传）。 */
+        ExtDocSettingsDoc: {
+            /** @enum {string} */
+            provider: "tencent_docs" | "feishu_docs";
+            /** @description 凭据就绪可共享（tencent=有 token；feishu=应用+授权齐备） */
+            configured: boolean;
+            /** @description feishu：app_id/app_secret 已配置 */
+            app_configured?: boolean;
+            /** @description feishu：user_access_token 已授权 */
+            authorized?: boolean;
+            /** @description feishu：access_token 到期时间 */
+            expires_at?: null | string;
+            /** @description 最近一次 verify 成功时间（从未 = null） */
+            last_verified_at?: null | string;
+        };
+        /** @description 凭据写入体（字段按 provider 分化；tencent 携 token、feishu 携 app_id+app_secret——两者须同时给；全部空 = 清除）。 */
+        ExtDocSettingsUpdate: {
+            /** @description tencent_docs：个人 MCP token（空串 = 清除） */
+            token?: string;
+            /** @description feishu_docs：自建应用 App ID */
+            app_id?: string;
+            /** @description feishu_docs：自建应用 App Secret（空串 = 清除） */
+            app_secret?: string;
+        };
+        ExtDocVerifyResult: {
+            ok: boolean;
+            /** @description 上游错误码（ok=false 时存在，如腾讯 400006 token 无效 / 飞书 job_* 导入错误） */
+            upstream_code?: string;
+            /** @description 人类可读摘要（不含凭据） */
+            message?: string;
+        };
+        ExtDocProviderView: {
+            /** @enum {string} */
+            provider: "tencent_docs" | "feishu_docs";
+            display_name: string;
+            /** @description external_refs.kind 值（txdoc | fdoc） */
+            ref_kind: string;
+            configured: boolean;
+            last_verified_at?: null | string;
+        };
+        ExtDocProviderList: {
+            providers: components["schemas"]["ExtDocProviderView"][];
+        };
+        /** @description 文档级共享映射（快照语义：映射记录创建时点，远端内容不回同步）。 */
+        ExtDocShare: {
+            doc_id: string;
+            /** @enum {string} */
+            provider: "tencent_docs" | "feishu_docs";
+            /** @description 远端文档 URL（创建结果） */
+            external_url: string;
+            /** @description 共享操作者（本地 owner） */
+            shared_by: string;
+            /** Format: date-time */
+            shared_at: string;
+        };
+        ExtDocShareList: {
+            shares: components["schemas"]["ExtDocShare"][];
+        };
+        ExtDocShareRequest: {
+            doc_id: string;
+            /** @enum {string} */
+            provider: "tencent_docs" | "feishu_docs";
+            /**
+             * @description true = 已有映射时重新创建并替换（旧远端文档保留）
+             * @default false
+             */
+            force: boolean;
+        };
+        ExtDocLinkResolveRequest: {
+            /** @description 待解析的外部文档链接（须白名单 host 的 https） */
+            url: string;
+        };
+        /** @description 解析产物（ExternalRef 的构造材料）：title 尽力填充，失败为空串——卡片降级显示 URL。kind = 归属 provider 的 external_refs.kind。 */
+        ExtDocLinkInfo: {
+            url: string;
+            /**
+             * @description 归属 provider 的 ref kind
+             * @enum {string}
+             */
+            kind?: "txdoc" | "fdoc";
+            /** @enum {string} */
+            provider: "tencent_docs" | "feishu_docs";
+            title?: string;
+            doc_type: string;
+        };
+        /** @description 授权引导信息（redirect_uri 须与飞书后台安全设置登记值完全一致）。 */
+        FeishuAuthorizeInfo: {
+            /** @description 授权页 URL（浏览器打开） */
+            url: string;
+            /** @description 须在飞书后台登记的重定向 URL */
+            redirect_uri: string;
+            /** @description 申请的权限 scope 清单 */
+            scopes: string[];
+            /**
+             * @description true = 服务端已挂起回环回调监听，授权页跳转落回即自动完成绑定
+             *     （设置页轮询状态即可）；false = 回调端口被占（如开发态 Vite），
+             *     降级手动：从浏览器地址栏复制 code 提交 callback 端点。
+             */
+            auto_captured?: boolean;
+        };
+        FeishuCallbackRequest: {
+            /** @description 授权码（浏览器跳转地址栏 ?code= 的值；单次有效） */
+            code: string;
+        };
+        /** @description 预览请求。导入给 url（provider 可缺省，按 host 归属）；导出给 doc_id + provider。 */
+        SheetTransferPreviewRequest: {
+            /** @enum {string} */
+            direction: "import" | "export";
+            /** @description provider id（导入可缺省——按 URL host 分派） */
+            provider?: string;
+            /** @description 导入源（云端表格链接） */
+            url?: string;
+            /** @description 导出源（本地表格 doc_id） */
+            doc_id?: string;
+            /** @description 可选工作表过滤（按名；空 = 全部） */
+            sheet_names?: string[];
+        };
+        /** @description 执行请求。携预览返回的锚点（导入 snapshot_hash / 导出 source_version）防源偷换；缺锚点 = 跳过比对（信任当前态）。 */
+        SheetTransferExecuteRequest: {
+            /** @enum {string} */
+            direction: "import" | "export";
+            provider?: string;
+            url?: string;
+            doc_id?: string;
+            sheet_names?: string[];
+            /** @description 导入：预览时的快照哈希（执行重拉须一致） */
+            snapshot_hash?: string;
+            /**
+             * Format: int64
+             * @description 导出：预览时的本地版本（执行时须未变）
+             */
+            source_version?: number;
+            /** @description 幂等键（同键重放返回既有记录） */
+            idempotency_key: string;
+        };
+        /** @description 转换报告项（RFC-0017 §3.6——损失可定位，不静默降级）。 */
+        SheetTransferIssue: {
+            /** @description 涉及工作表名 */
+            sheet?: string;
+            /** @description 涉及范围/坐标（展示用） */
+            range?: string;
+            /** @description 特性名（如 超精度数值/布尔值/回读校验） */
+            feature: string;
+            /**
+             * @description info=注记 warning=有损可继续 blocked=阻止
+             * @enum {string}
+             */
+            severity: "info" | "warning" | "blocked";
+            /**
+             * @description 处理方式
+             * @enum {string}
+             */
+            action?: "kept" | "converted" | "dropped" | "truncated";
+            /** @description 原因与量化（如"N 格文本超限截断"） */
+            reason: string;
+        };
+        SheetTransferPreviewSheet: {
+            name: string;
+            rows: number;
+            cols: number;
+            /** @description 已填单元格数 */
+            filled: number;
+            /** @description 公式格数 */
+            formulas: number;
+            /** @description 合并区域数（不迁移，仅报告） */
+            merge_count?: number;
+        };
+        SheetTransferPreview: {
+            /** @enum {string} */
+            direction: "import" | "export";
+            provider: string;
+            /** @description 文档标题 */
+            title?: string;
+            /** @description 导入源链接 */
+            source_url?: string;
+            /** @description 导出源本地文档 */
+            doc_id?: string;
+            /**
+             * Format: int64
+             * @description 导出：预览基于的本地版本
+             */
+            source_version?: number;
+            /** @description 导入：预览基于的快照哈希 */
+            snapshot_hash?: string;
+            sheets: components["schemas"]["SheetTransferPreviewSheet"][];
+            issues: components["schemas"]["SheetTransferIssue"][];
+        };
+        /** @description 交换记录（终态或 unknown——中断残留）。 */
+        SheetTransferRecord: {
+            transfer_id: string;
+            idempotency_key: string;
+            /** @enum {string} */
+            direction: "import" | "export" | "update";
+            provider: string;
+            /**
+             * @description import/export 同步执行（running 仅崩溃窗口）；update 异步分块（partial=已写部分未跑完，canceled=主动停，unknown=传输中断结果不确定）
+             * @enum {string}
+             */
+            status: "running" | "succeeded" | "succeeded_with_warnings" | "failed" | "unknown" | "partial" | "canceled";
+            /** @description update：差异格总数 */
+            cells_total?: number;
+            /** @description update：已写格数（进度 = written/total） */
+            cells_written?: number;
+            /** @description 导入产物（本地新表格） */
+            doc_id?: string;
+            /** @description 导出产物（云端新副本）/ 导入源 */
+            external_url?: string;
+            title?: string;
+            /** Format: int64 */
+            source_version?: number;
+            snapshot_hash?: string;
+            report: components["schemas"]["SheetTransferIssue"][];
+            /** @description failed/unknown 时的原因 */
+            error?: string;
+            created_at: string;
+            updated_at: string;
+        };
+        /** @description 回写预览（M3）：更新既有远端目标——目标取自历史导出记录的 external_url。 */
+        SheetTransferUpdatePreviewRequest: {
+            /** @description 本地表格 doc_id */
+            doc_id: string;
+            /** @description provider id（须与目标链接归属一致） */
+            provider: string;
+            /** @description 远端目标链接 */
+            external_url: string;
+            /** @description 可选工作表过滤（按名；空 = 全部） */
+            sheet_names?: string[];
+        };
+        SheetTransferUpdateDiffSheet: {
+            name: string;
+            /** @description 将覆写的差异格数 */
+            to_write: number;
+            /** @description 其中公式格数 */
+            formula_diffs: number;
+            /** @description 远端多出格数（不清除，仅注记） */
+            remote_extra: number;
+        };
+        /** @description 回写执行（异步）：携预览锚点（target_hash/source_version）防源与目标偷换。 */
+        SheetTransferUpdateExecuteRequest: {
+            doc_id: string;
+            provider: string;
+            external_url: string;
+            sheet_names?: string[];
+            /** @description 预览时的目标快照哈希（执行重读须一致） */
+            target_hash?: string;
+            /**
+             * Format: int64
+             * @description 预览时的本地版本（执行时须未变）
+             */
+            source_version?: number;
+            idempotency_key: string;
+        };
+        SheetTransferUpdatePreview: {
+            /** @enum {string} */
+            direction: "update";
+            provider: string;
+            doc_id: string;
+            external_url: string;
+            title?: string;
+            /** Format: int64 */
+            source_version: number;
+            target_hash: string;
+            /** @description 差异格总数（= 执行 cells_total） */
+            cells_total: number;
+            diffs: components["schemas"]["SheetTransferUpdateDiffSheet"][];
+            issues: components["schemas"]["SheetTransferIssue"][];
+        };
+        /** @description 预检阻止（sheet_transfer_blocked）——report 携全部转换项供逐项展示。 */
+        SheetTransferBlockedError: {
+            error: {
+                code: string;
+                message: string;
+            };
+            report: components["schemas"]["SheetTransferIssue"][];
         };
         PauseRoomPayload: {
             reason?: string;
@@ -813,18 +1470,22 @@ export interface components {
         /**
          * @description 文档命令信封（RFC-0014 / ADR-0014：镜像房间命令纪律——幂等 + 文档级乐观并发）。
          *     payload 按 command_kind 严格校验（未知字段拒绝）：
-         *     create_doc → {title, format?, initial_blocks?, anchor_message_id?}（仅 POST /v1/docs）；
+         *     create_doc → {title, format?, initial_blocks?, anchor_message_id?}（仅 POST /v1/docs；
+         *     format 缺省 markdown；spreadsheet 不接受 initial_blocks）；
          *     rename_doc → {title}；
          *     commit_doc_revision → {base_version?, ops[], note?}——ops 为一批块操作
          *     （insert_after/append 携带 block，replace 携带 text，delete 仅锚点 block_id；
          *     插入块的空 block_id 由服务端分配）；
+         *     commit_sheet_revision → {base_version?, sheet_ops[], note?}（RFC-0017 M1，
+         *     仅 format=spreadsheet；sheet_ops 为一批归一化表格操作——结构插删引发的
+         *     公式改写由服务端定稿进事件）；
          *     archive_doc / restore_doc → 空 payload；
          *     delete_doc → {reason}（墓碑 + 内容级联清除，不可逆）；
          *     duplicate_doc → {title?}（缺省 = 原标题 + "（副本）"）。
          */
         DocCommand: {
             /** @enum {string} */
-            command_kind: "create_doc" | "rename_doc" | "commit_doc_revision" | "archive_doc" | "restore_doc" | "delete_doc" | "duplicate_doc";
+            command_kind: "create_doc" | "rename_doc" | "commit_doc_revision" | "commit_sheet_revision" | "archive_doc" | "restore_doc" | "delete_doc" | "duplicate_doc";
             /** @description 文档级乐观并发期望（create_doc 恒 0；duplicate_doc 为源文档版本断言） */
             expected_doc_version: number;
             /** @description UUIDv7（服务端按 tenant+key+kind 去重；同键异指纹 409） */
@@ -855,11 +1516,13 @@ export interface components {
         DocList: {
             docs: components["schemas"]["DocSummary"][];
         };
-        /** @description 文档主页行（RFC-0014 §2.8：updated_at 倒序）。 */
+        /** @description 文档主页行（RFC-0014 §2.8：updated_at 倒序；format 供列表行分派图标/入口，RFC-0017）。 */
         DocSummary: {
             doc_id: string;
             /** @description 最新 doc.created/doc.renamed 投影 */
             title: string;
+            /** @enum {string} */
+            format: "markdown" | "spreadsheet";
             /** Format: int64 */
             version: number;
             /** @enum {string} */
@@ -872,6 +1535,7 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /** @description 块模型（RFC-0014 §2.2；RFC-0016 增补元数据）：level 仅 heading（1..6，缺省导出按 2）、lang 仅 code（≤48 runes）；text 自带标记（# 前缀/fence）导出透传优先——存量数据零迁移。 */
         DocBlock: {
             /** @description 稳定块 ID（锚定操作/冲突重放/卡片摘要的基础） */
             block_id: string;
@@ -879,13 +1543,22 @@ export interface components {
             type: "heading" | "paragraph" | "list" | "code" | "quote" | "hr";
             /** @description markdown 行内内容 */
             text: string;
+            /** @description heading 专属：标题级别 */
+            level?: number;
+            /** @description code 专属：语言标注（如 go、python） */
+            lang?: string;
         };
-        /** @description 文档当前态（派生态，权威为 per-doc 事件流；GET /v1/docs/{doc_id} 快照）。 */
+        /**
+         * @description 文档当前态（派生态，权威为 per-doc 事件流；GET /v1/docs/{doc_id} 快照）。
+         *     format 分派（RFC-0017 §3.2）：markdown → blocks；spreadsheet → sheets
+         *     （工作表元信息清单；单元格内容经 /sheets/{sheet_id}/range 有界读取，
+         *     不在快照里整簿下发）。
+         */
         DocState: {
             doc_id: string;
             title: string;
             /** @enum {string} */
-            format: "markdown";
+            format: "markdown" | "spreadsheet";
             created_by: string;
             /** Format: date-time */
             created_at: string;
@@ -893,10 +1566,102 @@ export interface components {
             version: number;
             /** @enum {string} */
             status: "active" | "archived";
-            blocks: components["schemas"]["DocBlock"][];
+            /** @description format=markdown 携带；spreadsheet 缺省 */
+            blocks?: components["schemas"]["DocBlock"][];
+            /** @description format=spreadsheet 携带；markdown 缺省 */
+            sheets?: components["schemas"]["SheetMeta"][];
             /** Format: date-time */
             updated_at: string;
             updated_by: string;
+        };
+        /** @description 工作表元信息（RFC-0017 §3.2；行列尺寸为显式布局意图，filled = 值或公式非空格数）。 */
+        SheetMeta: {
+            sheet_id: string;
+            name: string;
+            rows: number;
+            cols: number;
+            filled_cells: number;
+        };
+        /**
+         * @description 单条表格操作（扁平联合，与 room-protocol doc.sheet_revision_committed 的
+         *     $defs.sheetOp 同形）。服务端归一化后定稿进事件（add_sheet 回填分配 ID、
+         *     结构插删连带公式改写）。容量护栏：≤64 ops / 256 KiB / 单批 ≤1000 cells。
+         */
+        SheetOp: {
+            /** @enum {string} */
+            op: "set_cells" | "clear_range" | "set_style" | "add_sheet" | "rename_sheet" | "delete_sheet" | "insert_rows" | "delete_rows" | "insert_columns" | "delete_columns" | "set_col_width" | "set_row_height";
+            sheet_id?: string;
+            name?: string;
+            cells?: components["schemas"]["SheetCellWrite"][];
+            range?: components["schemas"]["SheetRange"];
+            keep_style?: boolean;
+            style?: components["schemas"]["SheetCellStyle"];
+            at?: number;
+            count?: number;
+            col?: number;
+            row?: number;
+            width?: number;
+            height?: number;
+        };
+        /** @description 单元格写入（类型-字段严格配对；style 缺省保留既有）。 */
+        SheetCellWrite: {
+            r: number;
+            c: number;
+            /** @enum {string} */
+            type: "text" | "number" | "bool" | "datetime" | "formula" | null;
+            text?: string;
+            number?: number;
+            bool?: boolean;
+            formula?: string;
+            style?: components["schemas"]["SheetCellStyle"];
+        };
+        /** @description 基础样式（指针语义：仅给出的字段被改写）。 */
+        SheetCellStyle: {
+            bold?: boolean;
+            italic?: boolean;
+        };
+        /** @description 矩形范围（闭区间）。 */
+        SheetRange: {
+            r1: number;
+            c1: number;
+            r2: number;
+            c2: number;
+        };
+        /** @description 范围读取的单格视图（公式格同时携带原文与派生结果）。 */
+        SheetCellView: {
+            r: number;
+            c: number;
+            /** @enum {string} */
+            type: "text" | "number" | "bool" | "datetime" | "formula";
+            text?: string;
+            number?: number;
+            bool?: boolean;
+            formula?: string;
+            style?: components["schemas"]["SheetCellStyle"];
+            /** @description 公式派生结果（kind = value | error | unsupported）。 */
+            derived?: {
+                /** @enum {string} */
+                kind: "value" | "error" | "unsupported";
+                value?: components["schemas"]["SheetCellValueOut"];
+                err?: string;
+            };
+        };
+        SheetCellValueOut: {
+            /** @enum {string} */
+            type: "text" | "number" | "bool" | "datetime";
+            text?: string;
+            number?: number;
+            bool?: boolean;
+        };
+        /** @description 范围读取结果（Truncated = used-range 缺省读取被 10000 格上限按行截断）。 */
+        SheetRangeView: {
+            doc_id: string;
+            sheet_id: string;
+            /** Format: int64 */
+            version: number;
+            range: components["schemas"]["SheetRange"];
+            cells: components["schemas"]["SheetCellView"][];
+            truncated: boolean;
         };
         /** @description 文档事件对外视图（同房间 EventView 纪律：无 tenant_id/version，opaque position 替代；position = doc version 游标）。 */
         DocEventView: {
@@ -1223,6 +1988,8 @@ export interface components {
             attachments?: components["schemas"]["AttachmentDescriptor"][];
             /** @description 文档引用（RFC-0014 §2.4；缺省 = 无引用；快照/SSE 两路同形——同 attachments 纪律）。 */
             refs?: components["schemas"]["DocRef"][];
+            /** @description 外部文档引用（RFC-0016 §2.3；缺省 = 无；快照/SSE 两路同形——同 refs 纪律）。发送时刻的描述子快照，不随外部服务刷新。 */
+            external_refs?: components["schemas"]["ExternalRef"][];
             thread_id?: null | string;
             /** Format: date-time */
             occurred_at: string;
@@ -2086,7 +2853,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
         };
     };
-    exportDoc: {
+    listDocSheets: {
         parameters: {
             query?: never;
             header?: never;
@@ -2097,13 +2864,103 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description markdown 文本（标题作 H1，块依序排列） */
+            /** @description 工作表清单 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        doc_id: string;
+                        /** Format: int64 */
+                        version: number;
+                        sheets: components["schemas"]["SheetMeta"][];
+                    };
+                };
+            };
+            404: components["responses"]["DocNotFound"];
+            /** @description 该文档不是表格（format != spreadsheet） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            500: components["responses"]["Internal"];
+        };
+    };
+    getDocSheetRange: {
+        parameters: {
+            query?: {
+                /** @description A1:B2 形态（缺省 = used range） */
+                range?: string;
+            };
+            header?: never;
+            path: {
+                doc_id: components["parameters"]["DocID"];
+                /** @description 工作表稳定 ID */
+                sheet_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 范围视图 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SheetRangeView"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["DocNotFound"];
+            /** @description 该文档不是表格 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            500: components["responses"]["Internal"];
+        };
+    };
+    exportDoc: {
+        parameters: {
+            query?: {
+                /** @description 仅 spreadsheet：目标工作表 ID（缺省 = 首表） */
+                sheet_id?: string;
+            };
+            header?: never;
+            path: {
+                doc_id: components["parameters"]["DocID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 导出文本 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "text/markdown": string;
+                    "text/csv": string;
+                };
+            };
+            /** @description spreadsheet 文档未带 sheet_id 且无工作表 / 非表格走 markdown */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             404: components["responses"]["DocNotFound"];
@@ -2486,6 +3343,756 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    listExtDocProviders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description provider 状态列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtDocProviderList"];
+                };
+            };
+            /** @description 本装配未启用外部文档面 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getExtDocSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: "tencent_docs" | "feishu_docs";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 凭据状态 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtDocSettingsDoc"];
+                };
+            };
+            /** @description 未知 provider 或面未装配（extdocs_bad_provider / extdocs_unavailable） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    updateExtDocSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: "tencent_docs" | "feishu_docs";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExtDocSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description 凭据状态（无值） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtDocSettingsDoc"];
+                };
+            };
+            /** @description 载荷不合法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    verifyExtDoc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: "tencent_docs" | "feishu_docs";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 验证结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtDocVerifyResult"];
+                };
+            };
+            /** @description 凭据未配置（extdocs_token_missing）或需重新授权（extdocs_reauth_required） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 上游不可达/协议错误（extdocs_upstream_error） */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listExtDocShares: {
+        parameters: {
+            query?: {
+                doc_id?: string;
+                provider?: "tencent_docs" | "feishu_docs";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 映射列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtDocShareList"];
+                };
+            };
+            /** @description 面未装配 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createExtDocShare: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExtDocShareRequest"];
+            };
+        };
+        responses: {
+            /** @description 已共享（含远端 URL） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtDocShare"];
+                };
+            };
+            /** @description 载荷不合法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 文档不存在（extdocs_doc_not_found）或未知 provider（extdocs_bad_provider） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 已有映射 / 凭据未配置 / 需重新授权 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 上游失败（extdocs_upstream_error；message 含上游错误码摘要） */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deleteExtDocShare: {
+        parameters: {
+            query: {
+                provider: "tencent_docs" | "feishu_docs";
+            };
+            header?: never;
+            path: {
+                doc_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已解除 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 映射不存在或面未装配 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    resolveExtDocLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExtDocLinkResolveRequest"];
+            };
+        };
+        responses: {
+            /** @description 解析结果（拉取失败也是 200——title 空，卡片降级） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtDocLinkInfo"];
+                };
+            };
+            /** @description 非白名单链接（extdocs_bad_link） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getFeishuAuthorizeURL: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 授权 URL */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeishuAuthorizeInfo"];
+                };
+            };
+            /** @description 应用凭据未配置（extdocs_token_missing） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    feishuOAuthCallback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeishuCallbackRequest"];
+            };
+        };
+        responses: {
+            /** @description 已绑定（含到期时间） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtDocSettingsDoc"];
+                };
+            };
+            /** @description 应用凭据未配置 / 需重新授权 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 上游交换失败（extdocs_upstream_error） */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    previewSheetTransfer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SheetTransferPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description 预览（摘要 + issues + 防偷换锚点） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SheetTransferPreview"];
+                };
+            };
+            /** @description 方向/链接不合法（bad_request / extdocs_bad_link） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 未知 provider / 文档不存在 / 目标不是表格 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 凭据未配置 / 需重新授权 / 预检阻止（sheet_transfer_blocked 时为 SheetTransferBlockedError，report 携报告项） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SheetTransferBlockedError"];
+                };
+            };
+            /** @description 上游失败（extdocs_upstream_error） */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listSheetTransfers: {
+        parameters: {
+            query?: {
+                /** @description 按本地文档过滤 */
+                doc_id?: string;
+                /** @description 按方向过滤 */
+                direction?: "import" | "export";
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 历史列表（created_at 倒序） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        transfers: components["schemas"]["SheetTransferRecord"][];
+                    };
+                };
+            };
+            /** @description 外部文档面未装配（extdocs_unavailable） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    executeSheetTransfer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SheetTransferExecuteRequest"];
+            };
+        };
+        responses: {
+            /** @description 交换记录（终态；report 携全部转换项） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SheetTransferRecord"];
+                };
+            };
+            /** @description 载荷不合法 / 缺幂等键 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 未知 provider / 文档不存在 / 目标不是表格 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 凭据未配置 / 需重新授权 / 预览过期（sheet_transfer_stale_preview）/ 预检阻止 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 上游失败（extdocs_upstream_error；部分写入时记录保留目标链接） */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    previewSheetTransferUpdate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SheetTransferUpdatePreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description 差异摘要（每表 to_write/公式差异/远端多出）+ target_hash */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SheetTransferUpdatePreview"];
+                };
+            };
+            /** @description 参数/归属不合法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 文档不存在 / 非 / 未知 provider */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 凭据 / 预检阻止（SheetTransferBlockedError） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SheetTransferBlockedError"];
+                };
+            };
+            /** @description 上游失败 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    executeSheetTransferUpdate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SheetTransferUpdateExecuteRequest"];
+            };
+        };
+        responses: {
+            /** @description 已受理（记录 status=running；零差异直接终态） */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SheetTransferRecord"];
+                };
+            };
+            /** @description 载荷不合法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 文档/provider 不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 凭据 / 预览过期（sheet_transfer_stale_preview）/ 预检阻止 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SheetTransferBlockedError"];
+                };
+            };
+            /** @description 上游失败 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getSheetTransfer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                transfer_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 记录 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SheetTransferRecord"];
+                };
+            };
+            /** @description 记录不存在 / 未装配 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    cancelSheetTransfer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                transfer_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 当前记录（已终态 = 幂等返回；长块仍在跑时 status 仍 running——前端继续轮询） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SheetTransferRecord"];
+                };
+            };
+            /** @description 记录不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 非 update 方向不可取消 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    resumeSheetTransfer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                transfer_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已续跑（status=running） */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SheetTransferRecord"];
+                };
+            };
+            /** @description 记录不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 不可续跑 / 目标被改（sheet_transfer_target_changed）/ 预览过期 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
             };
         };
     };

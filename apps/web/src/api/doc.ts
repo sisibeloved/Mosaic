@@ -11,6 +11,7 @@ import type { Connection } from "./room";
 const DOC_EVENTS = [
   "doc.created",
   "doc.revision_committed",
+  "doc.sheet_revision_committed",
   "doc.renamed",
   "doc.archived",
   "doc.restored",

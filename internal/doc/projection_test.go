@@ -225,6 +225,66 @@ func TestRenderMarkdown(t *testing.T) {
 	}
 }
 
+// TestRenderMarkdownHardening RFC-0016 渲染加固：heading 无 # 前缀按 level 补
+// （缺省 2）、code 未包 fence 自动包（lang 标注）、quote 行缺 > 前缀补；text 已
+// 自带标记透传优先（存量数据零迁移）。
+func TestRenderMarkdownHardening(t *testing.T) {
+	st := DocState{
+		Title: "加固",
+		Blocks: []protocol.DocBlock{
+			{BlockID: "h1", Type: "heading", Text: "裸标题（无前缀）"},           // 缺省 H2
+			{BlockID: "h2", Type: "heading", Text: "三级标题", Level: 3},     // 元数据生效
+			{BlockID: "h3", Type: "heading", Text: "### 自带前缀", Level: 5}, // 前缀透传优先（level 不叠加）
+			{BlockID: "c1", Type: "code", Text: "print(1)"},              // 无 fence → 包裸 fence
+			{BlockID: "c2", Type: "code", Text: "x = 2", Lang: "python"}, // 无 fence → 带 lang 包
+			{BlockID: "c3", Type: "code", Text: "```go\nf()\n```"},       // 已 fence 透传
+			{BlockID: "q1", Type: "quote", Text: "裸引文行\n第二行"},            // 无 > 前缀 → 逐行补
+			{BlockID: "q2", Type: "quote", Text: "> 已带前缀"},               // 前缀透传
+		},
+	}
+	want := "# 加固\n\n" +
+		"## 裸标题（无前缀）\n\n" +
+		"### 三级标题\n\n" +
+		"### 自带前缀\n\n" +
+		"```\nprint(1)\n```\n\n" +
+		"```python\nx = 2\n```\n\n" +
+		"```go\nf()\n```\n\n" +
+		"> 裸引文行\n> 第二行\n\n" +
+		"> 已带前缀\n"
+	if got := RenderMarkdown(st); got != want {
+		t.Fatalf("加固渲染不符：\nwant %q\ngot  %q", want, got)
+	}
+}
+
+// TestValidateBlockShape RFC-0016 块元数据形状：level 仅 heading 且 1..6、lang
+// 仅 code 且 ≤48 runes；写路径（ApplyDocOps/agent 端口）据此拒收。
+func TestValidateBlockShape(t *testing.T) {
+	ok := []protocol.DocBlock{
+		blk("b1", "paragraph", "无元数据"),
+		{BlockID: "b2", Type: "heading", Text: "t", Level: 1},
+		{BlockID: "b3", Type: "heading", Text: "t", Level: 6},
+		{BlockID: "b4", Type: "code", Text: "x", Lang: "go"},
+		{BlockID: "b5", Type: "code", Text: "x", Lang: string(make([]rune, 48))},
+	}
+	for _, b := range ok {
+		if err := ValidateBlockShape(b); err != nil {
+			t.Fatalf("%s/%s 应合法: %v", b.Type, b.BlockID, err)
+		}
+	}
+	bad := []protocol.DocBlock{
+		{BlockID: "e1", Type: "paragraph", Text: "t", Level: 2},   // level 仅 heading
+		{BlockID: "e3", Type: "heading", Text: "t", Level: 7},     // 越上界
+		{BlockID: "e4", Type: "heading", Text: "t", Level: -1},    // 越下界
+		{BlockID: "e5", Type: "paragraph", Text: "t", Lang: "go"}, // lang 仅 code
+		{BlockID: "e6", Type: "code", Text: "x", Lang: string(make([]rune, 49))},
+	}
+	for _, b := range bad {
+		if err := ValidateBlockShape(b); err == nil {
+			t.Fatalf("%s 应非法（%s/level=%d/lang=%s）", b.BlockID, b.Type, b.Level, b.Lang)
+		}
+	}
+}
+
 // TestRenderExcerpt 语境摘录渲染（RFC-0014 §2.7 读面①）：[block_id] 锚点前缀
 // （agent 的 insert_after/小节定位据此解析）、8k runes 截断如实标注、DLP 秘密
 // 形状剔除（附件摘录同纪律——文档同样可能含密钥）。

@@ -15,8 +15,8 @@
       "description": "标题（≤200 runes，RFC-0014 §2.2）"
     },
     "format": {
-      "enum": ["markdown"],
-      "description": "正文格式（首版封闭枚举，表格随专项立项另行裁定）"
+      "enum": ["markdown", "spreadsheet"],
+      "description": "正文格式（封闭枚举；spreadsheet = 协作表格 RFC-0017，内容经 doc.sheet_revision_committed 修订，禁止序列化为 Markdown 充当权威内容）"
     },
     "created_by": { "type": "string", "pattern": "^par_[0-9A-Za-z_-]+$" },
     "anchor_message_id": {

@@ -50,6 +50,12 @@
       "items": { "$ref": "#/$defs/docRef" },
       "maxItems": 8,
       "description": "文档引用（RFC-0014 §2.4）：分享文档到房间 = 发一条带 doc_ref 的消息（人类或 agent 均可）；卡片为文档投影、原地刷新，消息本体不被修改。缺省 = 无引用。"
+    },
+    "external_refs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/externalRef" },
+      "maxItems": 4,
+      "description": "外部文档引用（RFC-0016 §2.3，人类路径）：白名单 host 链接经 resolve 定稿为描述子快照；agent 路径（ROP/run 发布面）不产生。卡片展示发送时刻的链接事实，不随外部服务刷新。缺省 = 无外部引用。"
     }
   },
   "additionalProperties": false,
@@ -94,6 +100,22 @@
         "kind": { "const": "doc" },
         "doc_id": { "type": "string", "pattern": "^doc_[0-9a-f]{12}$" },
         "anchor_block_id": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "externalRef": {
+      "type": "object",
+      "required": ["kind", "url"],
+      "description": "外部文档引用描述子（RFC-0016 §2.3 封闭字段集）：kind→provider 归属与 host 白名单由服务端校验（schema 层只钉 https 前缀与长度）；title/doc_type 由 resolve 尽力填充，缺失时卡片降级。",
+      "properties": {
+        "kind": { "enum": ["txdoc", "fdoc"] },
+        "url": {
+          "type": "string",
+          "pattern": "^https://[A-Za-z0-9.-]+/[A-Za-z0-9/_?&=%.\\-]*",
+          "maxLength": 512
+        },
+        "title": { "type": "string", "maxLength": 200 },
+        "doc_type": { "type": "string", "maxLength": 16 }
       },
       "additionalProperties": false
     }

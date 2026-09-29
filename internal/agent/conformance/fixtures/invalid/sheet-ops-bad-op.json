@@ -1,0 +1,1 @@
+{"block": "sheet_ops", "data": {"ops": [{"op": "merge_cells", "doc_id": "doc_0123456789ab", "base_version": 2, "range": {"r1": 1, "c1": 1, "r2": 2, "c2": 2}}]}}

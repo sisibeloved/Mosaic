@@ -1,0 +1,43 @@
+{
+  "event_id": "evt_01H8TESTSHEETREVSTRUCTURAL000",
+  "tenant_id": "ten_local",
+  "doc_id": "doc_0123456789ab",
+  "version": 3,
+  "type": "doc.sheet_revision_committed",
+  "schema_version": 1,
+  "occurred_at": "2026-09-28T10:05:00.000Z",
+  "actor": { "participant_id": "par_01H8TESTAGENT0000000000", "kind": "agent" },
+  "causation_id": null,
+  "correlation_id": null,
+  "payload": {
+    "doc_id": "doc_0123456789ab",
+    "base_version": 2,
+    "version": 3,
+    "ops": [
+      { "op": "add_sheet", "sheet_id": "sht_aabbccddeeff", "name": "月度" },
+      {
+        "op": "insert_rows",
+        "sheet_id": "sht_0123456789ab",
+        "at": 2,
+        "count": 1
+      },
+      {
+        "op": "set_cells",
+        "sheet_id": "sht_0123456789ab",
+        "cells": [
+          { "r": 3, "c": 2, "type": "formula", "formula": "SUM(B1:B2)*2" }
+        ]
+      },
+      {
+        "op": "clear_range",
+        "sheet_id": "sht_0123456789ab",
+        "range": { "r1": 10, "c1": 1, "r2": 20, "c2": 8 },
+        "keep_style": true
+      }
+    ],
+    "actor": "par_01H8TESTAGENT0000000000",
+    "source": "agent",
+    "note": "插行并回填改写后的公式（归一化产物随事件定稿）"
+  },
+  "metadata": {}
+}

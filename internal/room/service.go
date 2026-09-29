@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -340,19 +341,26 @@ func (s *Service) postMessage(ctx context.Context, actor Actor, cmd Command) (*C
 			}
 		}
 	}
+	// RFC-0015 §2.3 外部文档引用（人类路径）：≤4、kind 封闭（首版仅 txdoc）、
+	// host 白名单（https + docs.qq.com）+ 长度/去重护栏。无存在性校验——外部
+	// 资源无本地权威；描述子是发送时刻的快照，不是可解析投影。
+	if err := validateExternalRefs(payload.ExternalRefs); err != nil {
+		return nil, err
+	}
 
 	// 事件载荷：描述子形态（attachments/refs 缺省 = 无附件/无引用；与 Schema 对齐）。
 	eventPayload := struct {
-		Body        string                 `json:"body"`
-		ReplyTo     *string                `json:"reply_to"`
-		AddressedTo []string               `json:"addressed_to"`
-		Relations   []typedRelation        `json:"relations"`
-		ThreadID    *string                `json:"thread_id"`
-		Attachments []AttachmentDescriptor `json:"attachments,omitempty"`
-		Refs        []protocol.DocRef      `json:"refs,omitempty"`
+		Body         string                 `json:"body"`
+		ReplyTo      *string                `json:"reply_to"`
+		AddressedTo  []string               `json:"addressed_to"`
+		Relations    []typedRelation        `json:"relations"`
+		ThreadID     *string                `json:"thread_id"`
+		Attachments  []AttachmentDescriptor `json:"attachments,omitempty"`
+		Refs         []protocol.DocRef      `json:"refs,omitempty"`
+		ExternalRefs []protocol.ExternalRef `json:"external_refs,omitempty"`
 	}{Body: payload.Body, ReplyTo: payload.ReplyTo, AddressedTo: payload.AddressedTo,
 		Relations: payload.Relations, ThreadID: payload.ThreadID, Attachments: attachments,
-		Refs: payload.Refs}
+		Refs: payload.Refs, ExternalRefs: payload.ExternalRefs}
 
 	env := protocol.Envelope{
 		EventID:       s.cfg.NewID("evt"),
@@ -384,16 +392,59 @@ func (s *Service) postMessage(ctx context.Context, actor Actor, cmd Command) (*C
 // 字段集与 events/message.posted.schema.json 对齐，M2 定稿；attachments 为
 // RFC-0013 上传令牌数组——落库前由服务定稿为描述子，令牌不进事件）。
 // refs（RFC-0014 文档引用，Phase 3 走线）：校验后原样进事件载荷与投影。
+// external_refs（RFC-0015 外部文档引用，人类路径）：校验后原样进事件载荷。
 type postMessagePayload struct {
-	Body        string                 `json:"body"`
-	ReplyTo     *string                `json:"reply_to"`
-	AddressedTo []string               `json:"addressed_to"`
-	Relations   []typedRelation        `json:"relations"`
-	ThreadID    *string                `json:"thread_id"` // 可选：发往指定线程（根线程随 room.created 载荷）
-	Attachments []string               `json:"attachments"`
-	Refs        []protocol.DocRef      `json:"refs"`
-	Resolved    []AttachmentDescriptor `json:"-"` // 定稿产物（不参与命令解码——DisallowUnknownFields 之外的内部字段）
+	Body         string                 `json:"body"`
+	ReplyTo      *string                `json:"reply_to"`
+	AddressedTo  []string               `json:"addressed_to"`
+	Relations    []typedRelation        `json:"relations"`
+	ThreadID     *string                `json:"thread_id"` // 可选：发往指定线程（根线程随 room.created 载荷）
+	Attachments  []string               `json:"attachments"`
+	Refs         []protocol.DocRef      `json:"refs"`
+	ExternalRefs []protocol.ExternalRef `json:"external_refs"`
+	Resolved     []AttachmentDescriptor `json:"-"` // 定稿产物（不参与命令解码——DisallowUnknownFields 之外的内部字段）
 }
+
+// validateExternalRefs RFC-0016 §2.3 外部文档引用校验：≤4（Schema maxItems
+// 对齐）、kind→host 归属分派（封闭表 externalRefHostRules——与 extdocs 各
+// provider 的 HostMatches 同源，改一处必看两处）、URL ≤512 字节、title ≤200
+// runes、去重。doc_type 不校验枚举（卡片降级容错）。
+func validateExternalRefs(refs []protocol.ExternalRef) error {
+	if len(refs) > 4 {
+		return fmt.Errorf("%w: external_refs ≤ 4", ErrInvalidCommand)
+	}
+	seen := map[string]bool{}
+	for i, ref := range refs {
+		rule, ok := externalRefHostRules[ref.Kind]
+		if !ok {
+			return fmt.Errorf("%w: external_refs[%d].kind 封闭枚举仅 %s", ErrInvalidCommand, i, externalRefKinds)
+		}
+		if len(ref.URL) > 512 {
+			return fmt.Errorf("%w: external_refs[%d].url ≤512 字节", ErrInvalidCommand, i)
+		}
+		u, err := url.Parse(ref.URL)
+		if err != nil || u.Scheme != "https" || !rule(u.Hostname()) {
+			return fmt.Errorf("%w: external_refs[%d].url 与 kind=%s 的 host 白名单不符", ErrInvalidCommand, i, ref.Kind)
+		}
+		if len([]rune(ref.Title)) > 200 {
+			return fmt.Errorf("%w: external_refs[%d].title ≤200 字", ErrInvalidCommand, i)
+		}
+		if seen[ref.URL] {
+			return fmt.Errorf("%w: external_refs[%d].url 重复", ErrInvalidCommand, i)
+		}
+		seen[ref.URL] = true
+	}
+	return nil
+}
+
+// externalRefHostRules kind → host 归属封闭表（extdocs provider 的 HostMatches
+// 同源镜像：txdoc→docs.qq.com 精确；fdoc→feishu.cn/后缀 .feishu.cn）。
+var externalRefHostRules = map[string]func(string) bool{
+	"txdoc": func(h string) bool { return h == "docs.qq.com" },
+	"fdoc":  func(h string) bool { return h == "feishu.cn" || strings.HasSuffix(h, ".feishu.cn") },
+}
+
+var externalRefKinds = "txdoc|fdoc"
 
 // typedRelation 类型化关系声明（RFC-0004 §3.1.4）。命令侧不收 provenance
 // （DisallowUnknownFields 即拒绝），落库前由服务固化为 explicit。

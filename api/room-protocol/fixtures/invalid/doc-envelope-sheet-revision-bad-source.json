@@ -1,0 +1,23 @@
+{
+  "event_id": "evt_01H8BADDSHEETREVBADESOURCE0000",
+  "tenant_id": "ten_local",
+  "doc_id": "doc_0123456789ab",
+  "version": 2,
+  "type": "doc.sheet_revision_committed",
+  "schema_version": 1,
+  "occurred_at": "2026-09-28T10:02:00.000Z",
+  "actor": { "participant_id": "par_01H8TESTOWNER00000000000", "kind": "human" },
+  "causation_id": null,
+  "correlation_id": null,
+  "payload": {
+    "doc_id": "doc_0123456789ab",
+    "base_version": 1,
+    "version": 2,
+    "ops": [
+      { "op": "add_sheet", "name": "新表" }
+    ],
+    "actor": "par_01H8TESTOWNER00000000000",
+    "source": "sync_worker"
+  },
+  "metadata": {}
+}

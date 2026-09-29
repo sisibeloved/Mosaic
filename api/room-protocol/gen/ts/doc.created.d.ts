@@ -15,9 +15,9 @@ export interface DocCreatedPayload {
    */
   title: string;
   /**
-   * 正文格式（首版封闭枚举，表格随专项立项另行裁定）
+   * 正文格式（封闭枚举；spreadsheet = 协作表格 RFC-0017，内容经 doc.sheet_revision_committed 修订，禁止序列化为 Markdown 充当权威内容）
    */
-  format: "markdown";
+  format: "markdown" | "spreadsheet";
   created_by: string;
   /**
    * 创建起源消息（讨论中沉淀为文档时锚定；缺省 null）

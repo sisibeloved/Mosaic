@@ -1,0 +1,1 @@
+{"block": "public_draft", "data": {"body": "我把对比数据写进了表格：预算表新增一行合计，公式在服务端计算。", "declared_relations": [], "sheet_ops": [{"op": "create", "title": "对比数据", "cells": [{"r": 1, "c": 1, "type": "text", "text": "方案"}, {"r": 2, "c": 2, "type": "formula", "formula": "SUM(B3:B5)"}]}]}}

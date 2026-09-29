@@ -16,6 +16,7 @@ import (
 
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/doc"
+	"github.com/sisibeloved/Mosaic/internal/extdocs"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
@@ -90,6 +91,7 @@ INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (1, strftime('%Y-%
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (3, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (4, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (5, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox(id) WHERE dispatched_at IS NULL;
 
 -- v4（RFC-0014 / ADR-0014）：per-doc 事件流（同一 SQLite 库、不同表）——
@@ -134,6 +136,42 @@ CREATE TABLE IF NOT EXISTS doc_tombstones (
   doc_id TEXT PRIMARY KEY,
   reason TEXT NOT NULL,
   deleted_at TEXT NOT NULL
+);
+
+-- v5（RFC-0015）：文档级外部共享映射（快照语义——记录创建时点，远端内容
+-- 不回同步）。非事件派生的权威状态（外部副作用不可由本地事件流重建），
+-- 故独立成表而非投影；文档删除不级联（解除映射是显式动作）。
+CREATE TABLE IF NOT EXISTS doc_external_shares (
+  doc_id       TEXT NOT NULL,
+  provider     TEXT NOT NULL,
+  external_url TEXT NOT NULL,
+  shared_by    TEXT NOT NULL,
+  shared_at    TEXT NOT NULL,
+  PRIMARY KEY (doc_id, provider)
+);
+
+-- v6（RFC-0017 M2）：表格手动交换记录（副本语义——远端副作用为权威事实，
+-- 非事件派生，独立成表）。幂等键唯一支撑 execute 重放去重；running 态
+-- 仅崩溃窗口存在（启动扫成 unknown，M2 不做自动恢复）。
+CREATE TABLE IF NOT EXISTS sheet_transfers (
+  transfer_id     TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  direction       TEXT NOT NULL,
+  provider        TEXT NOT NULL,
+  status          TEXT NOT NULL,
+  doc_id          TEXT NOT NULL DEFAULT '',
+  external_url    TEXT NOT NULL DEFAULT '',
+  title           TEXT NOT NULL DEFAULT '',
+  source_version  INTEGER NOT NULL DEFAULT 0,
+  snapshot_hash   TEXT NOT NULL DEFAULT '',
+  report_json     TEXT NOT NULL DEFAULT '',
+  error           TEXT NOT NULL DEFAULT '',
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  -- M3 回写：进度与恢复状态（state_json 含目标前态/剩余计划——不出网）
+  cells_total     INTEGER NOT NULL DEFAULT 0,
+  cells_written   INTEGER NOT NULL DEFAULT 0,
+  state_json      TEXT NOT NULL DEFAULT ''
 );
 `
 
@@ -1225,6 +1263,202 @@ func (a DocOutboxStore) MarkDispatched(ctx context.Context, ids []int64) error {
 	return a.Store.MarkDocDispatched(ctx, ids)
 }
 
+// ListExternalShares doc_external_shares 查询（extdocs.ShareStore 端口；
+// docID/provider 空串 = 全量该维度，按 shared_at 倒序）。
+func (s *Store) ListExternalShares(ctx context.Context, docID, provider string) ([]extdocs.Share, error) {
+	q := "SELECT doc_id, provider, external_url, shared_by, shared_at FROM doc_external_shares"
+	var conds []string
+	var args []any
+	if docID != "" {
+		conds = append(conds, "doc_id=?")
+		args = append(args, docID)
+	}
+	if provider != "" {
+		conds = append(conds, "provider=?")
+		args = append(args, provider)
+	}
+	if len(conds) > 0 {
+		q += " WHERE " + strings.Join(conds, " AND ")
+	}
+	q += " ORDER BY shared_at DESC"
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list external shares: %w", err)
+	}
+	defer rows.Close()
+	var out []extdocs.Share
+	for rows.Next() {
+		var sh extdocs.Share
+		if err := rows.Scan(&sh.DocID, &sh.Provider, &sh.ExternalURL, &sh.SharedBy, &sh.SharedAt); err != nil {
+			return nil, fmt.Errorf("sqlite: scan external share: %w", err)
+		}
+		out = append(out, sh)
+	}
+	return out, rows.Err()
+}
+
+// GetExternalShare 单条映射（不存在 = extdocs.ErrShareNotFound）。
+func (s *Store) GetExternalShare(ctx context.Context, docID, provider string) (extdocs.Share, error) {
+	var sh extdocs.Share
+	err := s.db.QueryRowContext(ctx,
+		"SELECT doc_id, provider, external_url, shared_by, shared_at FROM doc_external_shares WHERE doc_id=? AND provider=?",
+		docID, provider).Scan(&sh.DocID, &sh.Provider, &sh.ExternalURL, &sh.SharedBy, &sh.SharedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return extdocs.Share{}, extdocs.ErrShareNotFound
+	}
+	if err != nil {
+		return extdocs.Share{}, fmt.Errorf("sqlite: get external share: %w", err)
+	}
+	return sh, nil
+}
+
+// UpsertExternalShare 插入或替换映射（force 重共享 = 新 URL 覆盖旧值）。
+func (s *Store) UpsertExternalShare(ctx context.Context, sh extdocs.Share) error {
+	if _, err := s.db.ExecContext(ctx,
+		"INSERT INTO doc_external_shares(doc_id, provider, external_url, shared_by, shared_at) VALUES(?,?,?,?,?) "+
+			"ON CONFLICT(doc_id, provider) DO UPDATE SET external_url=excluded.external_url, shared_by=excluded.shared_by, shared_at=excluded.shared_at",
+		sh.DocID, sh.Provider, sh.ExternalURL, sh.SharedBy, sh.SharedAt); err != nil {
+		return fmt.Errorf("sqlite: upsert external share: %w", err)
+	}
+	return nil
+}
+
+// DeleteExternalShare 删除映射（行数 0 = ErrShareNotFound；不删远端文档）。
+func (s *Store) DeleteExternalShare(ctx context.Context, docID, provider string) error {
+	res, err := s.db.ExecContext(ctx,
+		"DELETE FROM doc_external_shares WHERE doc_id=? AND provider=?", docID, provider)
+	if err != nil {
+		return fmt.Errorf("sqlite: delete external share: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return extdocs.ErrShareNotFound
+	}
+	return nil
+}
+
+// ---- sheet_transfers（RFC-0017 M2 extdocs.SheetTransferStore 端口）----
+
+// transferColumns 全字段列序（INSERT/SELECT/Scan 共用）。
+const transferColumns = "transfer_id, idempotency_key, direction, provider, status, doc_id, external_url, title, source_version, snapshot_hash, report_json, error, created_at, updated_at, cells_total, cells_written, state_json"
+
+func scanTransfer(row interface{ Scan(...any) error }) (extdocs.SheetTransferRecord, error) {
+	var r extdocs.SheetTransferRecord
+	if err := row.Scan(&r.TransferID, &r.IdempotencyKey, &r.Direction, &r.Provider, &r.Status,
+		&r.DocID, &r.ExternalURL, &r.Title, &r.SourceVersion, &r.SnapshotHash,
+		&r.ReportJSON, &r.Error, &r.CreatedAt, &r.UpdatedAt,
+		&r.CellsTotal, &r.CellsWritten, &r.StateJSON); err != nil {
+		return extdocs.SheetTransferRecord{}, err
+	}
+	return r, nil
+}
+
+// InsertSheetTransfer 插入记录（幂等键被占 = extdocs.ErrTransferKeyConflict）。
+func (s *Store) InsertSheetTransfer(ctx context.Context, rec extdocs.SheetTransferRecord) error {
+	_, err := s.db.ExecContext(ctx,
+		"INSERT INTO sheet_transfers("+transferColumns+") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		rec.TransferID, rec.IdempotencyKey, rec.Direction, rec.Provider, rec.Status,
+		rec.DocID, rec.ExternalURL, rec.Title, rec.SourceVersion, rec.SnapshotHash,
+		rec.ReportJSON, rec.Error, rec.CreatedAt, rec.UpdatedAt,
+		rec.CellsTotal, rec.CellsWritten, rec.StateJSON)
+	if err != nil {
+		if strings.Contains(err.Error(), "sheet_transfers.idempotency_key") {
+			return extdocs.ErrTransferKeyConflict
+		}
+		return fmt.Errorf("sqlite: insert sheet transfer: %w", err)
+	}
+	return nil
+}
+
+// GetSheetTransfer 按 ID 取（不存在 = extdocs.ErrTransferNotFound）。
+func (s *Store) GetSheetTransfer(ctx context.Context, transferID string) (extdocs.SheetTransferRecord, error) {
+	r, err := scanTransfer(s.db.QueryRowContext(ctx,
+		"SELECT "+transferColumns+" FROM sheet_transfers WHERE transfer_id=?", transferID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return extdocs.SheetTransferRecord{}, extdocs.ErrTransferNotFound
+	}
+	if err != nil {
+		return extdocs.SheetTransferRecord{}, fmt.Errorf("sqlite: get sheet transfer: %w", err)
+	}
+	return r, nil
+}
+
+// GetSheetTransferByKey 按幂等键取（不存在 = extdocs.ErrTransferNotFound）。
+func (s *Store) GetSheetTransferByKey(ctx context.Context, idempotencyKey string) (extdocs.SheetTransferRecord, error) {
+	r, err := scanTransfer(s.db.QueryRowContext(ctx,
+		"SELECT "+transferColumns+" FROM sheet_transfers WHERE idempotency_key=?", idempotencyKey))
+	if errors.Is(err, sql.ErrNoRows) {
+		return extdocs.SheetTransferRecord{}, extdocs.ErrTransferNotFound
+	}
+	if err != nil {
+		return extdocs.SheetTransferRecord{}, fmt.Errorf("sqlite: get sheet transfer by key: %w", err)
+	}
+	return r, nil
+}
+
+// UpdateSheetTransfer 终态全量更新（按 transfer_id）。
+func (s *Store) UpdateSheetTransfer(ctx context.Context, rec extdocs.SheetTransferRecord) error {
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE sheet_transfers SET direction=?, provider=?, status=?, doc_id=?, external_url=?, title=?, source_version=?, snapshot_hash=?, report_json=?, error=?, updated_at=?, cells_total=?, cells_written=?, state_json=? WHERE transfer_id=?",
+		rec.Direction, rec.Provider, rec.Status, rec.DocID, rec.ExternalURL, rec.Title,
+		rec.SourceVersion, rec.SnapshotHash, rec.ReportJSON, rec.Error, rec.UpdatedAt,
+		rec.CellsTotal, rec.CellsWritten, rec.StateJSON, rec.TransferID)
+	if err != nil {
+		return fmt.Errorf("sqlite: update sheet transfer: %w", err)
+	}
+	return nil
+}
+
+// ListSheetTransfers 历史查询（docID/direction 空串 = 全量该维度；按
+// created_at 倒序；limit ≤0 = 50）。
+func (s *Store) ListSheetTransfers(ctx context.Context, docID, direction string, limit int) ([]extdocs.SheetTransferRecord, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	q := "SELECT " + transferColumns + " FROM sheet_transfers"
+	var conds []string
+	var args []any
+	if docID != "" {
+		conds = append(conds, "doc_id=?")
+		args = append(args, docID)
+	}
+	if direction != "" {
+		conds = append(conds, "direction=?")
+		args = append(args, direction)
+	}
+	if len(conds) > 0 {
+		q += " WHERE " + strings.Join(conds, " AND ")
+	}
+	q += " ORDER BY created_at DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list sheet transfers: %w", err)
+	}
+	defer rows.Close()
+	var out []extdocs.SheetTransferRecord
+	for rows.Next() {
+		r, err := scanTransfer(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: scan sheet transfer: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// MarkStaleRunningTransfers 启动扫残留 running → unknown（崩溃窗口收敛；
+// 返回迁移行数）。
+func (s *Store) MarkStaleRunningTransfers(ctx context.Context, now string) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE sheet_transfers SET status=?, error=?, updated_at=? WHERE status=?",
+		extdocs.TransferUnknown, "执行中断（应用重启）——请在历史中核对目标后手动处理", now, extdocs.TransferRunning)
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: mark stale transfers: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // docFTSFieldsOf 文档信封 → 索引字段（标题 / 本批 ops 文本）。
 func docFTSFieldsOf(env protocol.DocEnvelope) (title, body string, ok bool) {
 	switch env.Type {
@@ -1316,6 +1550,9 @@ func (s *Store) ListDocs(ctx context.Context, createdBy string) ([]doc.DocSummar
 			COALESCE((SELECT json_extract(e.envelope, '$.payload.title') FROM doc_events e
 				WHERE e.doc_id = d.doc_id AND e.type IN ('doc.created', 'doc.renamed')
 				ORDER BY e.version DESC LIMIT 1), '') AS title,
+			COALESCE((SELECT json_extract(e.envelope, '$.payload.format') FROM doc_events e
+				WHERE e.doc_id = d.doc_id AND e.type = 'doc.created'
+				ORDER BY e.version ASC LIMIT 1), 'markdown') AS format,
 			(SELECT MAX(e.version) FROM doc_events e WHERE e.doc_id = d.doc_id) AS version,
 			COALESCE((SELECT CASE WHEN e.type = 'doc.archived' THEN 'archived' ELSE 'active' END
 				FROM doc_events e
@@ -1345,7 +1582,7 @@ func (s *Store) ListDocs(ctx context.Context, createdBy string) ([]doc.DocSummar
 	out := []doc.DocSummary{}
 	for rows.Next() {
 		var sum doc.DocSummary
-		if err := rows.Scan(&sum.DocID, &sum.Title, &sum.Version, &sum.Status,
+		if err := rows.Scan(&sum.DocID, &sum.Title, &sum.Format, &sum.Version, &sum.Status,
 			&sum.CreatedBy, &sum.CreatedAt, &sum.UpdatedBy, &sum.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("sqlite: scan doc summary: %w", err)
 		}

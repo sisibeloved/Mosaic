@@ -31,16 +31,16 @@ type docCommandRequest struct {
 }
 
 // docConflictResponse 409 响应体（DocVersionConflict 契约）：error 恒在；
-// version_conflict 时含当前 version 与当前态摘要（RFC-0014 §2.3——客户端在
-// 新态上重放本地未提交 ops）。
+// version_conflict 时含当前 version 与当前态摘要（RFC-0014 §2.3——客户端在新态上
+// 重放未提交 ops）。state 走 docStateView 投影（spreadsheet 不整簿出网）。
 type docConflictResponse struct {
 	Error struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
 	} `json:"error"`
-	DocID          string        `json:"doc_id,omitempty"`
-	CurrentVersion int64         `json:"current_version,omitempty"`
-	State          *doc.DocState `json:"state,omitempty"`
+	DocID          string `json:"doc_id,omitempty"`
+	CurrentVersion int64  `json:"current_version,omitempty"`
+	State          any    `json:"state,omitempty"`
 }
 
 // docsAvailable 文档面装配门（nil DocSVC = 测试装配未装配文档面——404 不暴露面，
@@ -132,6 +132,8 @@ func (s *server) writeDocDomainError(w http.ResponseWriter, r *http.Request, doc
 		code, status = "idempotency_conflict", http.StatusConflict
 	case errors.Is(err, doc.ErrDocNotFound):
 		code, status = "doc_not_found", http.StatusNotFound
+	case errors.Is(err, doc.ErrSheetNotFound):
+		code, status = "sheet_not_found", http.StatusNotFound
 	case errors.Is(err, doc.ErrDocArchived):
 		code, status = "doc_archived", http.StatusConflict
 	}
@@ -150,7 +152,7 @@ func (s *server) writeDocVersionConflict(w http.ResponseWriter, r *http.Request,
 	if docID != "" {
 		body.DocID = docID
 		if state, gerr := s.deps.DocSVC.GetDoc(r.Context(), docID); gerr == nil {
-			body.State = &state
+			body.State = docStateView(state)
 			body.CurrentVersion = state.Version
 			writeJSON(w, http.StatusConflict, body)
 			return
@@ -197,7 +199,9 @@ func (s *server) ListDocs(w http.ResponseWriter, r *http.Request, params apigen.
 	writeJSON(w, http.StatusOK, map[string]any{"docs": out})
 }
 
-// GetDoc 文档快照（GET /v1/docs/{doc_id}）：当前态含块清单（折叠自事件流）。
+// GetDoc 文档快照（GET /v1/docs/{doc_id}）：当前态（折叠自事件流）。
+// spreadsheet 文档走 docStateView——工作簿全量内容不出网（sheets 元信息 +
+// range 端点有界读取，RFC-0017 §4.2）。
 func (s *server) GetDoc(w http.ResponseWriter, r *http.Request, docID apigen.DocID) {
 	if !s.docsAvailable(w) {
 		return
@@ -207,12 +211,77 @@ func (s *server) GetDoc(w http.ResponseWriter, r *http.Request, docID apigen.Doc
 		s.writeDocDomainError(w, r, docID, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, state)
+	writeJSON(w, http.StatusOK, docStateView(state))
 }
 
-// ExportDoc 导出 markdown（GET /v1/docs/{doc_id}/export；归档可导出，删除后 404）。
-func (s *server) ExportDoc(w http.ResponseWriter, r *http.Request, docID apigen.DocID) {
+// sheetMetaOut 工作表元信息（SheetMeta 契约）。
+type sheetMetaOut struct {
+	SheetID     string `json:"sheet_id"`
+	Name        string `json:"name"`
+	Rows        int    `json:"rows"`
+	Cols        int    `json:"cols"`
+	FilledCells int    `json:"filled_cells"`
+}
+
+// docStateView DocState 出网投影：markdown 原样；spreadsheet 剥离 Workbook
+// 本体（本地投影缓存对象，含全部稀疏格），代之以 sheets 元信息清单。
+func docStateView(state doc.DocState) any {
+	if state.Format != doc.FormatSpreadsheet {
+		return state
+	}
+	sheets := []sheetMetaOut{}
+	if state.Workbook != nil {
+		for _, sh := range state.Workbook.Sheets {
+			sheets = append(sheets, sheetMetaOut{
+				SheetID: sh.SheetID, Name: sh.Name, Rows: sh.Rows, Cols: sh.Cols,
+				FilledCells: sh.FilledCells(),
+			})
+		}
+	}
+	return struct {
+		DocID     string         `json:"doc_id"`
+		Title     string         `json:"title"`
+		Format    string         `json:"format"`
+		CreatedBy string         `json:"created_by"`
+		CreatedAt string         `json:"created_at"`
+		Version   int64          `json:"version"`
+		Status    string         `json:"status"`
+		Sheets    []sheetMetaOut `json:"sheets"`
+		UpdatedAt string         `json:"updated_at"`
+		UpdatedBy string         `json:"updated_by"`
+	}{
+		DocID: state.DocID, Title: state.Title, Format: state.Format,
+		CreatedBy: state.CreatedBy, CreatedAt: state.CreatedAt,
+		Version: state.Version, Status: state.Status,
+		Sheets: sheets, UpdatedAt: state.UpdatedAt, UpdatedBy: state.UpdatedBy,
+	}
+}
+
+// ExportDoc 导出（GET /v1/docs/{doc_id}/export）：format 分派——markdown →
+// .md（标题 H1）；spreadsheet → 指定工作表 .csv（快照语义，公式格写派生值）。
+func (s *server) ExportDoc(w http.ResponseWriter, r *http.Request, docID apigen.DocID, params apigen.ExportDocParams) {
 	if !s.docsAvailable(w) {
+		return
+	}
+	sheetID := ""
+	if params.SheetId != nil {
+		sheetID = *params.SheetId
+	}
+	state, err := s.deps.DocSVC.GetDoc(r.Context(), docID)
+	if err != nil {
+		s.writeDocDomainError(w, r, docID, err)
+		return
+	}
+	if state.Format == doc.FormatSpreadsheet {
+		csv, _, err := s.deps.DocSVC.ExportSheetCSV(r.Context(), docID, sheetID)
+		if err != nil {
+			s.writeDocDomainError(w, r, docID, err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", docID+".csv"))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(csv))
 		return
 	}
 	md, _, err := s.deps.DocSVC.ExportDoc(r.Context(), docID)

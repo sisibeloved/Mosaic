@@ -125,7 +125,7 @@ func TestSpecDocCommandKindEnum(t *testing.T) {
 		s, _ := v.(string)
 		got[s] = true
 	}
-	want := map[string]bool{"create_doc": true, "rename_doc": true, "commit_doc_revision": true, "archive_doc": true, "restore_doc": true, "delete_doc": true, "duplicate_doc": true}
+	want := map[string]bool{"create_doc": true, "rename_doc": true, "commit_doc_revision": true, "commit_sheet_revision": true, "archive_doc": true, "restore_doc": true, "delete_doc": true, "duplicate_doc": true}
 	if len(got) != len(want) {
 		t.Fatalf("DocCommand.command_kind 枚举漂移：spec=%v 服务端=%v", got, want)
 	}

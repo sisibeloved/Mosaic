@@ -49,11 +49,13 @@
       "type": "object",
       "required": ["block_id", "type", "text"],
       "additionalProperties": false,
-      "description": "块模型（RFC-0014 §2.2：稳定 block_id 是锚定操作、冲突重放与卡片摘要的共同基础；text 为 markdown 行内语法）。",
+      "description": "块模型（RFC-0014 §2.2；RFC-0016 增补元数据）：level 仅 heading（1..6，缺省导出按 2）、lang 仅 code（≤48 runes，导出 fence 标注）；text 自带标记（# 前缀/fence）导出透传优先——存量数据零迁移。",
       "properties": {
         "block_id": { "type": "string", "minLength": 1 },
         "type": { "enum": ["heading", "paragraph", "list", "code", "quote", "hr"] },
-        "text": { "type": "string" }
+        "text": { "type": "string" },
+        "level": { "type": "integer", "minimum": 1, "maximum": 6, "description": "heading 专属：标题级别" },
+        "lang": { "type": "string", "maxLength": 48, "description": "code 专属：语言标注（如 go、python）" }
       }
     }
   }

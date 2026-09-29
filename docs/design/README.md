@@ -17,6 +17,9 @@
 | 2026-09-01 | [RFC-0012 群聊交互模型（取代 RFC-0003 轮次驱动模型）](rfc/2026-09-01-rfc-0012-chat-model.md) | Accepted |
 | 2026-09-04 | [RFC-0013 聊天附件（文件上传）](rfc/2026-09-04-rfc-0013-attachments.md) | Accepted |
 | 2026-09-16 | [RFC-0014 协作文档（全局资产、消息卡片与文档管理）](rfc/2026-09-16-rfc-0014-documents.md) | Accepted |
+| 2026-09-24 | [RFC-0015 腾讯文档集成 M1（人工面：token、文档共享与链接卡片）](rfc/2026-09-24-rfc-0015-tencent-docs.md) | Accepted |
+| 2026-09-26 | [RFC-0016 飞书云文档接入、多 provider 泛化与块模型元数据增补](rfc/2026-09-26-rfc-0016-feishu-extdocs.md) | Accepted |
+| 2026-09-28 | [RFC-0017 协作表格与飞书 / 腾讯文档手动双向交换](rfc/2026-09-28-rfc-0017-spreadsheets.md) | Accepted（M1 已实现，M2/M3 后置） |
 | 2026-08-25 | [Harness 调研报告](research/2026-08-25-harness-survey.md) | Done |
 
 RFC 系列存放于 `rfc/` 目录，状态取 Draft / Reviewing / Approved / Rejected / Superseded；每份 RFC 吸收架构说明书 11.5 中的对应开放问题，Accepted 后回填架构文档与 `api/room-protocol` 工程。

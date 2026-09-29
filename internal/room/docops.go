@@ -87,7 +87,8 @@ func (e *Engine) applyWaveDocOps(ctx context.Context, roomID, roundID, participa
 	return refs
 }
 
-// waveBlocksOf agent 块 JSON → 协议块（block_id 缺省——服务端规范化分配）。
+// waveBlocksOf agent 块 JSON → 协议块（block_id 缺省——服务端规范化分配；
+// level/lang 元数据随块透传——RFC-0016 块模型增补，端口已校验形状）。
 func waveBlocksOf(op map[string]any) []protocol.DocBlock {
 	rawBlocks, _ := op["blocks"].([]any)
 	out := make([]protocol.DocBlock, 0, len(rawBlocks))
@@ -95,7 +96,14 @@ func waveBlocksOf(op map[string]any) []protocol.DocBlock {
 		b, _ := rb.(map[string]any)
 		typ, _ := b["type"].(string)
 		text, _ := b["text"].(string)
-		out = append(out, protocol.DocBlock{Type: typ, Text: text})
+		block := protocol.DocBlock{Type: typ, Text: text}
+		if lvl, ok := b["level"].(float64); ok && lvl == float64(int(lvl)) {
+			block.Level = int(lvl)
+		}
+		if lang, ok := b["lang"].(string); ok {
+			block.Lang = lang
+		}
+		out = append(out, block)
 	}
 	return out
 }

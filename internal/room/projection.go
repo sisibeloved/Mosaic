@@ -21,18 +21,19 @@ const (
 // 与引用回复丢失，投影补齐两路同形）；Attachments 为 RFC-0013 附件描述子；
 // Refs 为 RFC-0014 文档引用（§2.4 消息卡片的数据源——快照/SSE 两路同形纪律同附件）。
 type TimelineItem struct {
-	Position    string                 `json:"position"`
-	EventID     string                 `json:"event_id"`
-	Type        string                 `json:"type"`
-	ActorID     string                 `json:"actor_id"`
-	ActorKind   string                 `json:"actor_kind"`
-	Body        string                 `json:"body,omitempty"`
-	AddressedTo []string               `json:"addressed_to,omitempty"`
-	ReplyTo     *string                `json:"reply_to,omitempty"`
-	Attachments []AttachmentDescriptor `json:"attachments,omitempty"`
-	Refs        []protocol.DocRef      `json:"refs,omitempty"`
-	ThreadID    *string                `json:"thread_id,omitempty"`
-	OccurredAt  string                 `json:"occurred_at"`
+	Position     string                 `json:"position"`
+	EventID      string                 `json:"event_id"`
+	Type         string                 `json:"type"`
+	ActorID      string                 `json:"actor_id"`
+	ActorKind    string                 `json:"actor_kind"`
+	Body         string                 `json:"body,omitempty"`
+	AddressedTo  []string               `json:"addressed_to,omitempty"`
+	ReplyTo      *string                `json:"reply_to,omitempty"`
+	Attachments  []AttachmentDescriptor `json:"attachments,omitempty"`
+	Refs         []protocol.DocRef      `json:"refs,omitempty"`
+	ExternalRefs []protocol.ExternalRef `json:"external_refs,omitempty"`
+	ThreadID     *string                `json:"thread_id,omitempty"`
+	OccurredAt   string                 `json:"occurred_at"`
 }
 
 // Snapshot 快照载体：版本三元组 + 水位（opaque cursor）+ Timeline + 策略区。
@@ -202,26 +203,28 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 			continue
 		}
 		var body struct {
-			Body        string                 `json:"body"`
-			AddressedTo []string               `json:"addressed_to"`
-			ReplyTo     *string                `json:"reply_to"`
-			Attachments []AttachmentDescriptor `json:"attachments"`
-			Refs        []protocol.DocRef      `json:"refs"`
+			Body         string                 `json:"body"`
+			AddressedTo  []string               `json:"addressed_to"`
+			ReplyTo      *string                `json:"reply_to"`
+			Attachments  []AttachmentDescriptor `json:"attachments"`
+			Refs         []protocol.DocRef      `json:"refs"`
+			ExternalRefs []protocol.ExternalRef `json:"external_refs"`
 		}
 		_ = json.Unmarshal(ev.Envelope.Payload, &body)
 		snap.Timeline = append(snap.Timeline, TimelineItem{
-			Position:    ev.Cursor,
-			EventID:     ev.Envelope.EventID,
-			Type:        ev.Envelope.Type,
-			ActorID:     ev.Envelope.Actor.ParticipantID,
-			ActorKind:   ev.Envelope.Actor.Kind,
-			Body:        body.Body,
-			AddressedTo: body.AddressedTo,
-			ReplyTo:     body.ReplyTo,
-			Attachments: body.Attachments,
-			Refs:        body.Refs,
-			ThreadID:    ev.Envelope.ThreadID,
-			OccurredAt:  ev.Envelope.OccurredAt,
+			Position:     ev.Cursor,
+			EventID:      ev.Envelope.EventID,
+			Type:         ev.Envelope.Type,
+			ActorID:      ev.Envelope.Actor.ParticipantID,
+			ActorKind:    ev.Envelope.Actor.Kind,
+			Body:         body.Body,
+			AddressedTo:  body.AddressedTo,
+			ReplyTo:      body.ReplyTo,
+			Attachments:  body.Attachments,
+			Refs:         body.Refs,
+			ExternalRefs: body.ExternalRefs,
+			ThreadID:     ev.Envelope.ThreadID,
+			OccurredAt:   ev.Envelope.OccurredAt,
 		})
 	}
 	snap.Closures = closuresOf(events)

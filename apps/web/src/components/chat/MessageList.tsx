@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { TimelineEntry } from "../../api/room";
-import type { DocRef, ParticipantView } from "../../api/client";
+import type { DocRef, ExternalRef, ParticipantView } from "../../api/client";
 import { adapterLabel, channelLabel, kindLabel } from "../../lib/copy";
 import { absoluteTime, displayNameOf, participantOf, relativeTime, truncate } from "../../lib/ui";
 import { copyText } from "../../lib/clipboard";
@@ -253,11 +253,15 @@ function DocRefCard({
       </div>
     );
   }
-  // 摘录：前三块非空文本（纯文本、去标记噪声从简——卡片是线索不是正文）
-  const excerpt = doc.blocks
-    .filter((b) => b.type !== "hr" && b.text.trim() !== "")
-    .slice(0, 3)
-    .map((b) => truncate(b.text.replace(/\s+/g, " ").trim(), 60));
+  // 摘录：前三块非空文本（纯文本、去标记噪声从简——卡片是线索不是正文）；
+  // 表格资产（RFC-0017）无块——摘要行改为工作表概览
+  const excerpt =
+    doc.format === "spreadsheet"
+      ? (doc.sheets ?? []).map((s) => `${s.name}（${s.filled_cells} 格）`)
+      : (doc.blocks ?? [])
+          .filter((b) => b.type !== "hr" && b.text.trim() !== "")
+          .slice(0, 3)
+          .map((b) => truncate(b.text.replace(/\s+/g, " ").trim(), 60));
   const updater = doc.updated_by === "par_owner" ? "我" : displayNameOf(participants, doc.updated_by);
   return (
     <div className="w-fit max-w-full rounded-lg border border-border bg-surface-3/50 px-2.5 py-1.5 text-[11px] leading-5">
@@ -316,6 +320,68 @@ function DocRefCard({
         </span>
       </div>
     </div>
+  );
+}
+
+/** 外部文档链接卡片列表（RFC-0016 §2.3）：每个 external_refs 项一张卡。
+ * 描述子是发送时刻的快照——无实时面、不原地刷新（与 DocRefCard 的投影刷新
+ * 语义相反：外部资源无本地事件流）。kind 分流两家样式。 */
+function TxDocCards({ refs }: { refs?: ExternalRef[] }) {
+  if (!refs || refs.length === 0) return null;
+  return (
+    <div className="mt-1.5 flex flex-col gap-1">
+      {refs.map((r, i) => (
+        <ExtDocCard key={`${r.url}:${i}`} refItem={r} />
+      ))}
+    </div>
+  );
+}
+
+/** 两家类型徽标（doc_type → 中文；未知 = 不显示）。 */
+const EXT_DOC_TYPE_LABEL: Record<string, string> = {
+  // 腾讯文档
+  sheet: "表格",
+  doc: "文档",
+  slide: "幻灯片",
+  aio: "智能文档",
+  form: "收集表",
+  // 飞书云文档
+  docx: "文档",
+  wiki: "知识库",
+  base: "多维表格",
+  minutes: "妙记",
+  mind: "思维笔记",
+  file: "文件",
+};
+
+/** kind → 提供方标识（色块 + 单字/图标）。 */
+const EXT_DOC_KIND_BADGE: Record<string, { label: string; className: string; title: string }> = {
+  txdoc: { label: "腾", className: "bg-[#2a7be8]", title: "腾讯文档" },
+  fdoc: { label: "飞", className: "bg-[#0f7b6c]", title: "飞书云文档" },
+};
+
+function ExtDocCard({ refItem }: { refItem: ExternalRef }) {
+  const badge = EXT_DOC_KIND_BADGE[refItem.kind] ?? { label: "文", className: "bg-surface-3", title: "外部文档" };
+  const typeLabel = EXT_DOC_TYPE_LABEL[refItem.doc_type ?? ""];
+  return (
+    <a
+      href={refItem.url}
+      target="_blank"
+      rel="noreferrer"
+      title={`在${badge.title}打开`}
+      className="flex w-fit max-w-full items-center gap-1.5 rounded-lg border border-border bg-surface-3/50 px-2.5 py-1.5 text-[11px] leading-5 transition-colors hover:border-accent/60"
+    >
+      <span className={`grid h-4 w-4 shrink-0 place-items-center rounded-[3px] text-[9px] font-bold text-white ${badge.className}`}>
+        {badge.label}
+      </span>
+      <span className="min-w-0 truncate font-medium text-text">{refItem.title || refItem.url}</span>
+      {typeLabel && (
+        <span className="shrink-0 rounded bg-surface-3 px-1 text-[10px] text-faint">{typeLabel}</span>
+      )}
+      <span className="shrink-0 text-faint" aria-hidden>
+        ↗
+      </span>
+    </a>
   );
 }
 
@@ -521,6 +587,7 @@ function HumanBubble({
           <MarkdownBody text={entry.body ?? ""} mentionNames={mentionNames} />
           <AttachmentCards roomID={roomID} attachments={entry.attachments} />
           <DocRefCards refs={entry.refs} participants={participants} onCiteDoc={onCiteDoc} />
+          <TxDocCards refs={entry.externalRefs} />
         </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-faint">
           <AddressedLine entry={entry} participants={participants} />
@@ -580,6 +647,7 @@ function AgentBubble({
           <MarkdownBody text={clean} mentionNames={mentionNames} />
           <AttachmentCards roomID={roomID} attachments={entry.attachments} />
           <DocRefCards refs={entry.refs} participants={participants} onCiteDoc={onCiteDoc} />
+          <TxDocCards refs={entry.externalRefs} />
           {todos && <TodoChip items={todos} />}
         </div>
       </div>

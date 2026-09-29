@@ -1,12 +1,15 @@
 // 房间面板"文档"段（RFC-0014 §2.4 房间文档附着，MemoryTab 先例平移）：
 // 附着清单（标题/版本/附着者与时间——附着不复制不锁定，同一文档可附着多房间）
 // + 附着操作（工作区文档挑选器 / 新建文档并附着）+ 解除附着。
+// RFC-0016 §2.2：行内共享到外部云文档（多 provider 菜单 + per-provider 徽标）。
 // 标题数据源 = state/docs 元信息缓存（快照订阅——附着段不需要卡片级 SSE）。
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { SheetTransferDialog } from "../SheetTransferDialog";
 import { api, type AttachedDoc, type ParticipantView } from "../../api/client";
 import { displayNameOf, relativeTime, truncate } from "../../lib/ui";
 import { refreshDocs, useDocMeta, useDocs } from "../../state/docs";
+import { ExtShareBadges, ExtShareMenu } from "../ExtShareMenu";
 
 export function DocsTab({
   attachedDocs,
@@ -68,7 +71,8 @@ export function DocsTab({
   );
 }
 
-/** 附着行：标题/状态徽标（元信息缓存）+ 附着者/时间（快照投影）+ 打开/解除。 */
+/** 附着行：标题/状态徽标（元信息缓存）+ 附着者/时间（快照投影）+ 打开/解除
+ * + 外部云文档共享（RFC-0016：多 provider 菜单 + per-provider 徽标）。 */
 function AttachedRow({
   item,
   participants,
@@ -103,6 +107,8 @@ function AttachedRow({
           {doc?.status === "archived" ? " · 已归档" : ""}
         </span>
       </div>
+      <ExtShareBadges docID={item.doc_id} />
+      <ExtShareMenu docID={item.doc_id} />
       <button
         type="button"
         disabled={busy}
@@ -133,6 +139,7 @@ function AttachPicker({
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
 
   useEffect(() => {
     void refreshDocs();
@@ -144,13 +151,13 @@ function AttachPicker({
     (d) => !attached.has(d.doc_id) && (q === "" || d.title.toLowerCase().includes(q) || d.doc_id.includes(q)),
   );
 
-  const createAndAttach = async () => {
+  const createAndAttach = async (format: "markdown" | "spreadsheet") => {
     const title = query.trim();
     if (!title || creating) return;
     setCreating(true);
     setCreateError(null);
     try {
-      const created = await api.createDoc(title);
+      const created = await api.createDoc(title, undefined, format);
       onCreated(created.doc_id);
       navigate(`/docs/${encodeURIComponent(created.doc_id)}`);
     } catch (e) {
@@ -195,14 +202,41 @@ function AttachPicker({
         )}
       </ul>
       {q !== "" && (
-        <button
-          type="button"
-          disabled={creating}
-          onClick={() => void createAndAttach()}
-          className="mt-1 w-full rounded-lg bg-accent-soft px-2 py-1.5 text-left text-xs text-accent transition-opacity hover:opacity-85 disabled:opacity-40"
-        >
-          {creating ? "创建中…" : `新建文档「${truncate(query.trim(), 24)}」并附着`}
-        </button>
+        <div className="mt-1 flex gap-1.5">
+          <button
+            type="button"
+            disabled={creating}
+            onClick={() => void createAndAttach("markdown")}
+            className="flex-1 rounded-lg bg-accent-soft px-2 py-1.5 text-left text-xs text-accent transition-opacity hover:opacity-85 disabled:opacity-40"
+          >
+            {creating ? "创建中…" : `新建文档「${truncate(query.trim(), 20)}」`}
+          </button>
+          <button
+            type="button"
+            disabled={creating}
+            onClick={() => void createAndAttach("spreadsheet")}
+            className="flex-1 rounded-lg bg-accent-soft px-2 py-1.5 text-left text-xs text-accent transition-opacity hover:opacity-85 disabled:opacity-40"
+          >
+            新建表格并附着
+          </button>
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={() => setImporting(true)}
+        className="mt-1 w-full rounded-lg border border-border px-2 py-1 text-[11px] text-dim transition-colors hover:bg-surface-3 hover:text-text"
+      >
+        导入云表格并附着（腾讯 / 飞书）
+      </button>
+      {importing && (
+        <SheetTransferDialog
+          mode="import"
+          onClose={() => setImporting(false)}
+          onImported={(docID) => {
+            setImporting(false);
+            onAttach(docID);
+          }}
+        />
       )}
     </div>
   );

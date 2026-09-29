@@ -23,6 +23,8 @@ var (
 	ErrIdempotencyConflict = errors.New("doc: idempotency conflict")
 	// ErrDocNotFound 目标文档不存在（未见 doc.created，或已删除级联清除）。
 	ErrDocNotFound = errors.New("doc: doc not found")
+	// ErrSheetNotFound 表格文档的目标工作表不存在（RFC-0017 M1 读/导出面）。
+	ErrSheetNotFound = errors.New("doc: sheet not found")
 	// ErrDocArchived 文档已归档：归档为只读态（RFC-0014 §2.8），
 	// rename/revision/archive 拒绝；duplicate/export 允许。
 	ErrDocArchived = errors.New("doc: doc archived")
@@ -113,6 +115,7 @@ type DocSearcher interface {
 type DocSummary struct {
 	DocID     string `json:"doc_id"`
 	Title     string `json:"title"`
+	Format    string `json:"format"` // markdown | spreadsheet（RFC-0017：列表行按 format 分派图标/入口）
 	Version   int64  `json:"version"`
 	Status    string `json:"status"` // active | archived（删除级联后不出现在列表）
 	CreatedBy string `json:"created_by"`

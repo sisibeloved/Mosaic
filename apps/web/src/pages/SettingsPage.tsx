@@ -4,7 +4,7 @@
 // 外观（主题，v1.72 自个人中心迁入）/ 通用（开发者开关 + 关于，v1.72 并入个人中心）。
 // 分层规矩：房间讨论策略在房间内调（右侧信息面板）；本页子导航纯前端态（刷新回
 // 默认 Agent 区）。
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, type BackupSummary, type Executable, type MonitorView, type SettingsDoc } from "../api/client";
 import { AppLogo } from "../components/AppLogo";
 import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
@@ -14,13 +14,14 @@ import { useTheme } from "../state/theme";
 import { adapterLabel, channelLabel } from "../lib/copy";
 import { absoluteTime, truncate } from "../lib/ui";
 
-type Section = "agent" | "automation" | "data" | "appearance" | "general";
+type Section = "agent" | "automation" | "data" | "appearance" | "integration" | "general";
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "agent", label: "Agent" },
   { id: "automation", label: "自动化" },
   { id: "data", label: "数据" },
   { id: "appearance", label: "外观" },
+  { id: "integration", label: "集成" },
   { id: "general", label: "通用" },
 ];
 
@@ -52,6 +53,149 @@ export function SettingsPage() {
   }>({ kind: "script", target: "", args: "", roomID: "", assignee: "", intervalMin: 5 });
   const [rooms, setRooms] = useState<{ room_id: string; display_name: string }[]>([]);
   const [agentSeats, setAgentSeats] = useState<{ participant_id: string; display_name: string }[]>([]);
+  // RFC-0016 外部云文档面（多 provider）
+  const [extUnavailable, setExtUnavailable] = useState(false); // 面未装配
+  const [extProviders, setExtProviders] = useState<{ provider: string; display_name: string; configured: boolean }[]>([]);
+  // 腾讯文档
+  const [txToken, setTxToken] = useState("");
+  const [txMsg, setTxMsg] = useState<string | null>(null);
+  const [txBusy, setTxBusy] = useState(false);
+  // 飞书
+  const [fsAppID, setFsAppID] = useState("");
+  const [fsAppSecret, setFsAppSecret] = useState("");
+  const [fsCode, setFsCode] = useState("");
+  const [fsMsg, setFsMsg] = useState<string | null>(null);
+  const [fsBusy, setFsBusy] = useState(false);
+  const [fsAuthorized, setFsAuthorized] = useState(false);
+  // 自动绑定轮询序号：新一次「登录飞书」或组件卸载令旧轮询失效
+  const fsPollSeq = useRef(0);
+
+  const refreshExtDocs = useCallback(async () => {
+    try {
+      const { providers } = await api.listExtDocProviders();
+      setExtProviders(providers);
+      setExtUnavailable(false);
+      const fs = providers.find((p) => p.provider === "feishu_docs");
+      setFsAuthorized(fs?.configured ?? false);
+    } catch {
+      setExtUnavailable(true);
+    }
+  }, []);
+
+  const saveTxToken = useCallback(
+    async (token: string) => {
+      setTxBusy(true);
+      setTxMsg(null);
+      try {
+        await api.updateExtDocSettings("tencent_docs", { token });
+        setTxToken("");
+        setTxMsg(token === "" ? "已清除 token" : "已保存 token（0600 本地落盘，不回传）");
+        await refreshExtDocs();
+      } catch (e) {
+        setTxMsg(e instanceof Error ? e.message : String(e));
+      } finally {
+        setTxBusy(false);
+      }
+    },
+    [refreshExtDocs],
+  );
+
+  const verifyExtDoc = useCallback(
+    async (provider: "tencent_docs" | "feishu_docs") => {
+      setTxBusy(true);
+      setTxMsg(null);
+      try {
+        const r = await api.verifyExtDoc(provider);
+        setTxMsg(r.ok ? "连接成功" : `上游拒绝（${r.upstream_code ?? "?"}）：${r.message ?? ""}`);
+        if (r.ok) await refreshExtDocs();
+      } catch (e) {
+        setTxMsg(e instanceof Error ? e.message : String(e));
+      } finally {
+        setTxBusy(false);
+      }
+    },
+    [refreshExtDocs],
+  );
+
+  const saveFeishuApp = useCallback(async () => {
+    setFsBusy(true);
+    setFsMsg(null);
+    try {
+      await api.updateExtDocSettings("feishu_docs", { app_id: fsAppID, app_secret: fsAppSecret });
+      setFsAppSecret("");
+      setFsMsg("应用凭据已保存——点「登录飞书」完成授权");
+      await refreshExtDocs();
+    } catch (e) {
+      setFsMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFsBusy(false);
+    }
+  }, [fsAppID, fsAppSecret, refreshExtDocs]);
+
+  // pollFeishuBind 自动绑定轮询：回调监听收到 code 换 token 后 authorized 变
+  // true——每 2s 查一次，10 分钟（回调监听空闲上限）后放弃。
+  const pollFeishuBind = useCallback(async () => {
+    const seq = ++fsPollSeq.current;
+    const startedAt = Date.now();
+    const tick = async () => {
+      if (fsPollSeq.current !== seq || Date.now() - startedAt > 10 * 60_000) return;
+      let authorized = false;
+      try {
+        const st = await api.getExtDocSettings("feishu_docs");
+        authorized = st.authorized ?? false;
+      } catch {
+        return void setTimeout(() => void tick(), 2000); // 轮询瞬断不放弃
+      }
+      if (authorized) {
+        fsPollSeq.current = 0;
+        setFsAuthorized(true);
+        setFsMsg("已自动绑定飞书账号（token 自动刷新）——浏览器授权页可以关闭了。");
+        await refreshExtDocs();
+        return;
+      }
+      setTimeout(() => void tick(), 2000);
+    };
+    void tick();
+  }, [refreshExtDocs]);
+
+  const loginFeishu = useCallback(async () => {
+    try {
+      const info = await api.feishuAuthorizeURL();
+      window.open(info.url, "_blank", "noreferrer");
+      if (info.auto_captured) {
+        setFsMsg("已打开授权页——在浏览器完成授权后这里会自动绑定，无需复制 code。");
+        void pollFeishuBind();
+      } else {
+        setFsMsg(
+          `回调端口（localhost:3000）被占用，自动绑定不可用。手动路径：确认飞书后台安全设置的重定向 URL 登记为 ${info.redirect_uri}（须完全一致），授权后从地址栏复制 code 粘贴到下方。`,
+        );
+      }
+    } catch (e) {
+      setFsMsg(e instanceof Error ? e.message : String(e));
+    }
+  }, [pollFeishuBind]);
+
+  // 卸载时终止轮询
+  useEffect(() => {
+    return () => {
+      fsPollSeq.current++;
+    };
+  }, []);
+
+  const submitFeishuCode = useCallback(async () => {
+    setFsBusy(true);
+    setFsMsg(null);
+    try {
+      await api.feishuOAuthCallback(fsCode.trim());
+      setFsCode("");
+      setFsMsg("已绑定飞书账号（token 自动刷新）");
+      await refreshExtDocs();
+    } catch (e) {
+      setFsMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFsBusy(false);
+    }
+  }, [fsCode, refreshExtDocs]);
 
   const refreshMonitors = useCallback(async () => {
     try {
@@ -160,6 +304,11 @@ export function SettingsPage() {
   useEffect(() => {
     void refreshExecutables();
   }, [refreshExecutables]);
+
+  // RFC-0016 外部云文档面：provider 状态加载（404 = 未装配）
+  useEffect(() => {
+    void refreshExtDocs();
+  }, [refreshExtDocs]);
 
   // M4-0 备份面：列表加载（404 = 装配未启用，如实提示）
   const refreshBackups = useCallback(async () => {
@@ -798,6 +947,141 @@ export function SettingsPage() {
                 ))}
               </div>
             </section>
+          )}
+
+          {section === "integration" && (
+            extUnavailable ? (
+              <p className="text-xs text-faint">本装配未启用外部文档面。</p>
+            ) : (
+              <>
+                <p className="mb-4 text-xs text-faint">
+                  文档级映射：Mosaic 文档一键共享到外部云文档（markdown 快照）；聊天里粘贴白名单链接
+                  自动渲染成卡片。凭据仅存本机（0600），不进日志、不经 API 回传。
+                </p>
+
+                <section className="mb-6">
+                  <h2 className="mb-1 text-sm font-medium">腾讯文档</h2>
+                  <p className="mb-2 text-xs text-faint">
+                    token 经官方授权页 docs.qq.com/scenario/open-claw.html 获取（老地址
+                    open/auth/mcp.html 已跳转至此）——登录腾讯文档 → 个人身份 → 获取/重置 token。
+                    频控：免费 2000 次/天，超级会员 20000 次/天。
+                  </p>
+                  <div className="mb-2 text-xs">
+                    <span className={extProviders.find((p) => p.provider === "tencent_docs")?.configured ? "text-accent" : "text-faint"}>
+                      {extProviders.find((p) => p.provider === "tencent_docs")?.configured ? "● 已配置" : "○ 未配置"}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      type="password"
+                      value={txToken}
+                      onChange={(e) => setTxToken(e.target.value)}
+                      placeholder="粘贴个人 MCP token"
+                      autoComplete="off"
+                      className="w-72 rounded-xl border border-border bg-surface-2 px-3 py-2 font-mono text-xs text-text placeholder:text-faint focus:border-accent focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      disabled={txBusy || txToken.trim() === ""}
+                      onClick={() => void saveTxToken(txToken.trim())}
+                      className="rounded-xl border border-accent bg-accent-soft px-3 py-2 text-xs text-accent transition-colors hover:bg-accent/20 disabled:opacity-40"
+                    >
+                      保存
+                    </button>
+                    {extProviders.find((p) => p.provider === "tencent_docs")?.configured && (
+                      <>
+                        <button
+                          type="button"
+                          disabled={txBusy}
+                          onClick={() => void verifyExtDoc("tencent_docs")}
+                          className="rounded-xl border border-border bg-surface-2 px-3 py-2 text-xs text-text transition-colors hover:border-faint disabled:opacity-40"
+                        >
+                          测试连接
+                        </button>
+                        <button
+                          type="button"
+                          disabled={txBusy}
+                          onClick={() => void saveTxToken("")}
+                          className="rounded-xl border border-border bg-surface-2 px-3 py-2 text-xs text-dim transition-colors hover:border-faint hover:text-text disabled:opacity-40"
+                        >
+                          清除
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  {txMsg && <p className="mt-2 text-xs text-dim">{txMsg}</p>}
+                </section>
+
+                <section>
+                  <h2 className="mb-1 text-sm font-medium">飞书云文档</h2>
+                  <p className="mb-2 text-xs text-faint">
+                    用户身份 OAuth（文档落你自己的"我的云文档"）。一次性准备：open.feishu.cn 创建
+                    <b>自建应用</b> → 权限管理开通 <code className="rounded bg-surface-3 px-1">drive:drive</code>、
+                    <code className="mx-1 rounded bg-surface-3 px-1">offline_access</code> 与
+                    <code className="mx-1 rounded bg-surface-3 px-1">bitable:app:readonly</code>（多维表格导入）→
+                    安全设置登记重定向 URL <code className="rounded bg-surface-3 px-1">http://localhost:3000/callback</code>
+                    （完全一致）→ 发布应用版本。「登录飞书」自动绑定：授权页跳转落回本地
+                    回调即自动换取 token（端口被占时降级手动粘 code）。
+                  </p>
+                  <div className="mb-2 text-xs">
+                    <span className={fsAuthorized ? "text-accent" : "text-faint"}>
+                      {fsAuthorized ? "● 已授权（token 自动刷新）" : "○ 未授权"}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      value={fsAppID}
+                      onChange={(e) => setFsAppID(e.target.value)}
+                      placeholder="App ID（cli_ 开头）"
+                      autoComplete="off"
+                      className="w-44 rounded-xl border border-border bg-surface-2 px-3 py-2 font-mono text-xs text-text placeholder:text-faint focus:border-accent focus:outline-none"
+                    />
+                    <input
+                      type="password"
+                      value={fsAppSecret}
+                      onChange={(e) => setFsAppSecret(e.target.value)}
+                      placeholder="App Secret"
+                      autoComplete="off"
+                      className="w-56 rounded-xl border border-border bg-surface-2 px-3 py-2 font-mono text-xs text-text placeholder:text-faint focus:border-accent focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      disabled={fsBusy || fsAppID.trim() === "" || fsAppSecret.trim() === ""}
+                      onClick={() => void saveFeishuApp()}
+                      className="rounded-xl border border-accent bg-accent-soft px-3 py-2 text-xs text-accent transition-colors hover:bg-accent/20 disabled:opacity-40"
+                    >
+                      保存应用凭据
+                    </button>
+                    <button
+                      type="button"
+                      disabled={fsBusy || fsAppID.trim() === ""}
+                      onClick={() => void loginFeishu()}
+                      className="rounded-xl border border-border bg-surface-2 px-3 py-2 text-xs text-text transition-colors hover:border-faint disabled:opacity-40"
+                    >
+                      登录飞书
+                    </button>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <input
+                      value={fsCode}
+                      onChange={(e) => setFsCode(e.target.value)}
+                      placeholder="手动备用通道：从地址栏复制 code 粘贴（自动绑定时无需）"
+                      autoComplete="off"
+                      className="w-72 rounded-xl border border-border bg-surface-2 px-3 py-2 font-mono text-xs text-text placeholder:text-faint focus:border-accent focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      disabled={fsBusy || fsCode.trim() === ""}
+                      onClick={() => void submitFeishuCode()}
+                      className="rounded-xl border border-border bg-surface-2 px-3 py-2 text-xs text-text transition-colors hover:border-faint disabled:opacity-40"
+                    >
+                      绑定
+                    </button>
+                  </div>
+                  {fsMsg && <p className="mt-2 max-w-2xl break-all text-xs text-dim">{fsMsg}</p>}
+                </section>
+              </>
+            )
           )}
 
           {section === "general" && (

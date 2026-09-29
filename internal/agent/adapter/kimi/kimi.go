@@ -374,7 +374,7 @@ Reply with ONLY a JSON object, no prose, no code fences:
 {"body":"your public message","declared_relations":[]}
 The JSON must contain your public chat message in "body" — never an arbitration decision (action/silent/scores) or any other internal JSON.
 If (and only if) the discussion clearly refers to earlier context you cannot see, reply {"history_query":"search phrase"} instead of a body — you will receive the matching room messages and retry once.
-When you create or edit a document, narrate the change in "body" and add "doc_ops" in the same JSON (at most 8 ops): {"op":"create","title":"...","blocks":[{"type":"heading|paragraph|list|code|quote|hr","text":"..."}]} | {"op":"append","doc_id":"doc_...","blocks":[...]} | {"op":"replace_section","doc_id":"doc_...","heading":"<exact heading text>","blocks":[...]} | {"op":"insert_after","doc_id":"doc_...","block_id":"blk_...","blocks":[...]} | {"op":"delete_section","doc_id":"doc_...","heading":"<exact heading text>"}. Document excerpts in the context carry [block_id] prefixes; a section is a heading plus the blocks up to the next heading. Never emit doc_ops without explaining the change in "body".`
+When you create or edit a document, narrate the change in "body" and add "doc_ops" in the same JSON (at most 8 ops): {"op":"create","title":"...","blocks":[{"type":"heading|paragraph|list|code|quote|hr","text":"..."}]} | {"op":"append","doc_id":"doc_...","blocks":[...]} | {"op":"replace_section","doc_id":"doc_...","heading":"<exact heading text>","blocks":[...]} | {"op":"insert_after","doc_id":"doc_...","block_id":"blk_...","blocks":[...]} | {"op":"delete_section","doc_id":"doc_...","heading":"<exact heading text>"}. Document excerpts in the context carry [block_id] prefixes; a section is a heading plus the blocks up to the next heading. Never emit doc_ops without explaining the change in "body". For heading blocks prefer "level" (1..6, default 2) over hand-written "#" prefixes; for code blocks prefer "lang" (e.g. "go") over hand-written fences. When you create or edit a spreadsheet, narrate the change in "body" and add "sheet_ops" in the same JSON (at most 8 ops): {"op":"create","title":"...","cells":[{"r":1,"c":1,"type":"text|number|bool|formula|null","text":"..."|...}]} | {"op":"add_sheet","doc_id":"doc_...","base_version":N,"name":"..."} | {"op":"set_cells","doc_id":"doc_...","base_version":N,"sheet_id":"sht_... (empty = first sheet)","cells":[...]} | {"op":"clear_range","doc_id":"doc_...","base_version":N,"range":{"r1":1,"c1":1,"r2":10,"c2":5}} | {"op":"insert_rows|insert_columns|delete_rows|delete_columns","doc_id":"doc_...","base_version":N,"at":N,"count":N}. Edit ops MUST carry the current "base_version" (the v-number in the spreadsheet excerpt header) and explicit coordinates. Formulas (e.g. "SUM(A1:B3)*2") are stored verbatim and evaluated by the server; supported functions: SUM, AVERAGE, MIN, MAX, COUNT, COUNTA, IF, ROUND. Never emit sheet_ops without explaining the change in "body".`
 
 // reviewInstruction 每波记忆评审（v1.70，Hermes background_review 同构——
 // 措辞三家同源；容量门在引擎侧，提示词只强调"先查清单再动笔"的策展纪律）。
@@ -510,6 +510,12 @@ func mapResult(kind agent.TaskKind, parsed Parsed) (agent.Result, error) {
 			if rawOps, ok := data["doc_ops"]; ok {
 				if verr := agent.ValidateBlock(agent.BlockDocOps, map[string]any{"ops": rawOps}); verr == nil {
 					draft["doc_ops"] = rawOps
+				}
+			}
+			// RFC-0017 §4.3 表格侧车：sheet_ops 同纪律（端口校验过门才投影）。
+			if rawSheetOps, ok := data["sheet_ops"]; ok {
+				if verr := agent.ValidateBlock(agent.BlockSheetOps, map[string]any{"ops": rawSheetOps}); verr == nil {
+					draft["sheet_ops"] = rawSheetOps
 				}
 			}
 			return agent.Result{

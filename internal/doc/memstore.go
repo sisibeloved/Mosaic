@@ -239,7 +239,7 @@ func (m *MemStore) ListDocs(ctx context.Context, createdBy string) ([]DocSummary
 			continue
 		}
 		out = append(out, DocSummary{
-			DocID: docID, Title: state.Title, Version: state.Version, Status: state.Status,
+			DocID: docID, Title: state.Title, Format: state.Format, Version: state.Version, Status: state.Status,
 			CreatedBy: state.CreatedBy, CreatedAt: state.CreatedAt,
 			UpdatedBy: state.UpdatedBy, UpdatedAt: state.UpdatedAt,
 		})

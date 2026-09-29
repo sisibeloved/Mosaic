@@ -188,8 +188,8 @@ func (e *Engine) runReplyOrPass(ctx context.Context, roomID, roundID string, anc
 				continue
 			}
 			payload := map[string]any{"body": clean, "addressed_to": []string{}, "relations": []any{}}
-			// RFC-0014 §2.7：ROP 面不接受 doc_ops（v1），但模型自报的既有文档
-			// 引用不剥除（白名单化透传——引用卡片是叙事的一部分）。
+			// RFC-0014 §2.7 / RFC-0017 §4.3：ROP 面不接受 doc_ops/sheet_ops（v1），
+			// 但模型自报的既有文档引用不剥除（白名单化透传——引用卡片是叙事的一部分）。
 			if refs := sanitizeDocRefs(res.Data["refs"]); len(refs) > 0 {
 				payload["refs"] = refs
 			}
