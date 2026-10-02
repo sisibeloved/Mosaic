@@ -41,6 +41,10 @@ Thumbs.db
 apps/web/package.json.md5
 apps/web/wailsjs/
 
+# wails 桌面壳本地构建产物（build/bin 产物与 build/darwin 等平台目录——缺失时
+# wails build 自动生成模板，不入库）
+apps/desktop/build/
+
 # 交叉编译落仓根的产物（go build 无 -o 输出）
 /mosaic-server
 /desktop

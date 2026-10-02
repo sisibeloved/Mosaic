@@ -17,6 +17,13 @@
   - **SPA**：任务详情控制区（暂停/恢复/取消/续驱停止按钮按状态呈现）+ paused/canceling 状态徽章与说明（停止进行中不掩盖、不通用重试）+ Run canceled 徽章。
   - 契约面：MissionView/MissionSummary `status` 枚举 += paused, canceling；MissionRunView `state` 枚举 += canceled；MissionPause/MissionResume 请求体；无 migration（状态值扩展）。
 
+### Fixed
+
+- macOS 桌面壳首屏修复：WKWebView 不跟随自定义 scheme 资产桥上的 307（首屏渲染 "Temporary Redirect" 白页、需手点链接才落到回环源）——桥响应按平台拆分（`assetbridge_*.go`），darwin 落地立即 `location.replace` 跳转页（meta refresh/锚点兜底），Windows 保持 dogfood 验证过的 307 原路径不变。
+- 桌面壳外链打开修复：WebView（WKWebView/WebView2）不处理 `window.open`，飞书 OAuth 授权页点击无响应——新增壳集成端点 `POST /v1/shell/open-external`（非 OpenAPI 契约、仅壳装配注册，服务端/Web 形态零变化；三层写门全量适用、仅放行 http/https），前端 `window.open` 返回 null 时兜底请壳调系统浏览器（darwin `open` / windows `rundll32`）。
+- mcode 0.6 凭据布局适配：0.6.x 起登录凭据移至 `~/.minimax/auth/prod`（0.2.x 为 `~/.minimax/cli-auth`）——探针与 IT 登录门双面任一命中即 logged_in，升级 mcode 后不再误报未登录（真机实证 0.6.1 适配器契约三件套全绿）。
+- 飞书多维表格导入修复：快照落格此前直接迭代记录字段 map（JSON 对象），Go map 迭代序随机致 SnapshotHash 两次读取恒漂移，导入执行恒报「预览已过期：远端内容已变化」（真机实证：无人编辑连续两次预览哈希不同——多维表格导入 100% 失败）——改为按字段列序落格恢复确定性，回归测试 20 连读哈希全等 + 行主序断言。
+
 ## [0.6.5] - 2026-10-31
 
 ### Fixed
