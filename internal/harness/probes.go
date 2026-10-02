@@ -129,13 +129,16 @@ var BuiltinProbes = []ProbeSpec{
 		},
 	},
 	{
-		// 实证 2026-09-02：mcode --version → "0.2.7"；无 login status 子命令，
-		// 登录态以 ~/.minimax/cli-auth 存在性判定（目录形态，test -e 兼容）。
+		// 实证 2026-09-02：mcode --version → "0.2.7"；无 login status 子命令。
+		// 凭据布局两代并存（实证 2026-10-02，mcode 0.6.1）：≤0.2.x 用
+		// ~/.minimax/cli-auth（目录形态，test -e 兼容）；0.6.x 起 ~/.minimax/auth/prod
+		//（prod/<region>/… 凭据树——auth.lock 在 auth/ 根不足以证登录，探到 prod 层）。
+		// 任一存在即 logged_in。
 		// npm 全局装于 nvm 版本目录（bin 与 node 同目录——适配器 env PATH 前置即可用）。
 		Adapter:     "minimax",
 		Binary:      "mcode",
 		VersionArgs: []string{"--version"},
-		CredFile:    ".minimax/cli-auth",
+		CredFiles:   []string{".minimax/cli-auth", ".minimax/auth/prod"},
 		KnownDirGlobs: []string{
 			".nvm/versions/node/*/bin",
 			".fnm/node-versions/*/installation/bin",

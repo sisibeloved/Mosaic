@@ -399,6 +399,43 @@ func TestScanFindsViaKnownDirGlobs(t *testing.T) {
 	}
 }
 
+// minimax 凭据两代布局（实证 2026-10-02，mcode 0.6.1）：旧 cli-auth 与新
+// auth/prod 任一存在即 logged_in；皆无则 logged_out。
+func TestScanMinimaxLoginViaCredFiles(t *testing.T) {
+	newMinimaxRunner := func() *fakeRunner {
+		runner := newFakeRunner()
+		runner.lookups["native||mcode"] = "/opt/nvm/v24.14.1/bin/mcode"
+		runner.runs["native||/opt/nvm/v24.14.1/bin/mcode --version"] = "0.6.1\n"
+		runner.homes["native|"] = "/home/u"
+		return runner
+	}
+
+	for name, cred := range map[string]string{
+		"旧布局 cli-auth":  "/home/u/.minimax/cli-auth",
+		"新布局 auth/prod": "/home/u/.minimax/auth/prod",
+	} {
+		reg, _ := tempRegistry(t)
+		runner := newMinimaxRunner()
+		runner.exists["native||"+cred] = true
+		if err := reg.Scan(context.Background(), runner, BuiltinProbes, ScanOptions{}); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if m := reg.List()[0]; m.Adapter != "minimax" || m.Login != LoginLoggedIn || m.Version != "0.6.1" {
+			t.Fatalf("%s 发现/登录态不符：%+v", name, m)
+		}
+	}
+
+	// 无任何凭据：logged_out，不得误报
+	reg, _ := tempRegistry(t)
+	runner := newMinimaxRunner()
+	if err := reg.Scan(context.Background(), runner, BuiltinProbes, ScanOptions{}); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if m := reg.List()[0]; m.Login != LoginLoggedOut {
+		t.Fatalf("无凭据 login = %s, want logged_out", m.Login)
+	}
+}
+
 func (f *fakeRunner) RunWithDir(ctx context.Context, runtime Runtime, distro, binDir string, args []string) (string, int, error) {
 	return f.Run(ctx, runtime, distro, args)
 }

@@ -34,18 +34,25 @@ func requireMcode(t *testing.T) string {
 	return ""
 }
 
-// loggedIn 与 harness 探测口径一致：~/.minimax/cli-auth 存在即已登录（实证目录形态）。
+// loggedIn 与 harness 探测口径一致（probes.go minimax CredFiles）：旧
+// ~/.minimax/cli-auth 或新 ~/.minimax/auth/prod（mcode 0.6+）任一存在即已登录。
 func loggedIn(t *testing.T) bool {
 	t.Helper()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return false
 	}
-	if _, err := os.Stat(filepath.Join(home, ".minimax", "cli-auth")); err != nil {
-		t.Logf("mcode 登录态目录不存在（未登录）: %s", filepath.Join(home, ".minimax", "cli-auth"))
-		return false
+	for _, cred := range []string{
+		filepath.Join(home, ".minimax", "cli-auth"),
+		filepath.Join(home, ".minimax", "auth", "prod"),
+	} {
+		if _, err := os.Stat(cred); err == nil {
+			return true
+		}
 	}
-	return true
+	t.Logf("mcode 凭据不存在（未登录）：%s 与 %s 均缺失",
+		filepath.Join(home, ".minimax", "cli-auth"), filepath.Join(home, ".minimax", "auth", "prod"))
+	return false
 }
 
 // TestMinimaxRealEvaluateIntent_IT：结构 conformance——turn_intent 块字段齐全 + usage 透传。
