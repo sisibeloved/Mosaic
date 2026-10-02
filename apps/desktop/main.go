@@ -5,7 +5,9 @@
 // 与 mosaic-server 共用同一装配（引擎/分发/宿主层），不再经子进程。
 //
 // 传输形态（dogfood 修复）：装配以回环 TCP（127.0.0.1:0）启动，Wails 资产服务器的
-// Handler 仅做 307 重定向，让 WebView 直接落在真实 HTTP 源上。原因：Windows 上
+// Handler 只负责把首次导航送到回环源（响应形态按平台分流：Windows 307，WebView2
+// 自动跟随；macOS 跳转页，WKWebView 不跟随资产桥上的 307——见 assetbridge_*.go），
+// 让 WebView 直接落在真实 HTTP 源上。原因：Windows 上
 // WebView2 的 WebResourceRequested 资产桥会缓冲/改写响应——SSE（text/event-stream）
 // 过不去，EventSource 永久 CLOSED，UI 卡"恢复中"。落到回环源后 SPA/API/SSE 与
 // web 形态完全一致（同源相对路径、同源 owner token bootstrap），流式与后续任何
@@ -31,15 +33,15 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 )
 
-// newAssetServerOptions 不设置 Assets：所有请求落到 Handler——这里是一枚 307
-// 重定向（Location: 回环源 + 路径与查询串），WebView 首次导航即离开资产桥。
+// newAssetServerOptions 不设置 Assets：所有请求落到 Handler——它把首次导航送到
+// 回环源（Location: 回环源 + 路径与查询串），WebView 首次导航即离开资产桥。
 // 注意资产桥传来的 RequestURI 是绝对 URL 形式（http://wails.localhost/...），
 // 须经 r.URL.RequestURI() 取 path+query 再拼接。Wails 初始化会校验非 nil 的
 // Assets 根目录，因此不能使用永不命中的虚拟 FS。
 func newAssetServerOptions(externalBase string) *assetserver.Options {
 	return &assetserver.Options{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, externalBase+r.URL.RequestURI(), http.StatusTemporaryRedirect)
+			redirectToLoopback(w, r, externalBase+r.URL.RequestURI())
 		}),
 	}
 }
@@ -80,6 +82,7 @@ func main() {
 		Logger:           logger,
 		Dev:              true,
 		ExtraOriginHosts: []string{"wails.localhost"},
+		ShellOpenURL:     openExternal,
 	})
 	if err != nil {
 		logger.Error("mosaic 桌面装配失败", "err", err)
