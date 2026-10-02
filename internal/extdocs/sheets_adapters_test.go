@@ -694,6 +694,56 @@ func TestFeishuReadBaseSnapshot(t *testing.T) {
 	}
 }
 
+// TestFeishuReadBaseSnapshotDeterministic 多维表格快照必须确定：记录字段按列序
+// 落格、位序列两次读取全等——SnapshotHash（导入防偷换锚点）成立的前提。
+// 回归：此前直接迭代记录字段 map（JSON 对象），顺序随机导致快照哈希每次漂移，
+// 导入执行恒报「预览已过期：远端内容已变化」。
+func TestFeishuReadBaseSnapshotDeterministic(t *testing.T) {
+	_, p := newFeishu(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/apps/APPTOKEN12") && r.URL.Query().Get("page_size") == "":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"app":{"name":"确定快照"}}`))
+		case strings.HasSuffix(r.URL.Path, "/tables"):
+			_, _ = w.Write([]byte(`{"code":0,"data":{"items":[{"table_id":"tblA","name":"表A"}],"has_more":false}}`))
+		case strings.HasSuffix(r.URL.Path, "/tables/tblA/fields"):
+			_, _ = w.Write([]byte(`{"code":0,"data":{"items":[
+				{"field_name":"F1","type":1},{"field_name":"F2","type":1},{"field_name":"F3","type":1},
+				{"field_name":"F4","type":1},{"field_name":"F5","type":1},{"field_name":"F6","type":1},
+				{"field_name":"F7","type":1},{"field_name":"F8","type":1}],"has_more":false}}`))
+		case strings.HasSuffix(r.URL.Path, "/tables/tblA/records"):
+			_, _ = w.Write([]byte(`{"code":0,"data":{"items":[
+				{"record_id":"r1","fields":{"F8":"v8","F3":"v3","F1":"v1","F7":"v7","F5":"v5","F2":"v2","F6":"v6","F4":"v4"}},
+				{"record_id":"r2","fields":{"F2":"w2","F6":"w6","F4":"w4"}}],"has_more":false}}`))
+		default:
+			_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+		}
+	})
+	if err := p.mgr.Save(ProviderFeishu, feishuCreds{AppID: "a", AppSecret: "s", AccessToken: "tok", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	var first string
+	for i := 0; i < 20; i++ {
+		snap, _, err := p.ReadSheetSnapshot(ctx, "https://icn.feishu.cn/base/APPTOKEN12", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h := SnapshotHash(snap); first == "" {
+			first = h
+		} else if h != first {
+			t.Fatalf("快照哈希第 %d 次读取漂移：%s ≠ %s", i+1, h, first)
+		}
+		// 落格顺序必须行主序（按 (R,C) 比对断言会漏掉序漂移，这里钉死位序列）
+		for j := 1; j < len(snap.Sheets[0].Cells); j++ {
+			a, b := snap.Sheets[0].Cells[j-1], snap.Sheets[0].Cells[j]
+			if a.R > b.R || (a.R == b.R && a.C >= b.C) {
+				t.Fatalf("格序非行主序：%+v 之后 %+v", a, b)
+			}
+		}
+	}
+}
+
 func TestFeishuOpenSheetTargetRejectsBase(t *testing.T) {
 	_, p := newFeishu(t, func(w http.ResponseWriter, r *http.Request) {})
 	if err := p.mgr.Save(ProviderFeishu, feishuCreds{AppID: "a", AppSecret: "s", AccessToken: "tok", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {

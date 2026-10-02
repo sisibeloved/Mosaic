@@ -353,31 +353,28 @@ func (p *FeishuProvider) readBaseSnapshot(ctx context.Context, token, appToken s
 			})
 		}
 		fieldType := map[string]int{}
-		colOf := map[string]int{}
 		cells := make([]CloudCell, 0, len(records)*len(fields)+len(fields))
 		for i, f := range fields {
 			cells = append(cells, CloudCell{R: 1, C: i + 1, Kind: CloudCellText, Text: f.FieldName})
 			fieldType[f.FieldName] = f.Type
-			colOf[f.FieldName] = i + 1
 		}
 		for ri, rec := range records {
-			for name, v := range rec {
-				if v == nil {
-					continue
-				}
-				c, ok := colOf[name]
-				if !ok {
+			// 确定性纪律：记录字段是 map（JSON 对象），直接迭代其顺序随机——
+			// 快照哈希（防偷换锚点）要求两次读取位序列一致，必须按 fields 列序取值。
+			for fi, f := range fields {
+				v, ok := rec[f.FieldName]
+				if !ok || v == nil {
 					continue
 				}
 				switch v.(type) {
 				case []any, map[string]any:
 					richCount++
 				}
-				cc := feishuBaseValueToCloud(v, fieldType[name])
+				cc := feishuBaseValueToCloud(v, fieldType[f.FieldName])
 				if cc.Kind == CloudCellText && cc.Text == "" {
 					continue
 				}
-				cc.R, cc.C = ri+2, c
+				cc.R, cc.C = ri+2, fi+1
 				cells = append(cells, cc)
 			}
 		}
