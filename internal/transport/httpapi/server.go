@@ -128,6 +128,10 @@ type Deps struct {
 	// Diagnostics 自诊断 bundle 构造器（M4-0）：nil = 诊断端点 404。
 	// 内容纪律：不含凭据/环境变量（OQ-20）——版本/运行时/数据面统计/注册表状态/日志尾。
 	Diagnostics func() (map[string]any, error)
+	// ShellOpenURL 桌面壳系统浏览器打开面（手工注册路由 POST /v1/shell/open-external，
+	// 非 apigen 契约）：nil = 端点不注册（服务端形态）。WebView 不处理 window.open，
+	// SPA 的外链兜底经此请壳调系统浏览器；回调纪律见 shell.go。
+	ShellOpenURL func(url string) error
 }
 
 // New 构造路由。对外契约面（ADR-0007）由 apigen 生成的 ServerInterface +
@@ -148,6 +152,10 @@ func New(deps Deps) http.Handler {
 		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/memory", s.handleDebugMemory)
 		mux.HandleFunc("GET /v1/debug/rooms/{room_id}/export", s.handleDebugExport)
 		mux.HandleFunc("GET /v1/debug/docs/{doc_id}/export", s.handleDebugDocExport)
+	}
+	// 桌面壳集成面（非对外契约，同 /v1/debug 类别）：仅壳装配注册。
+	if deps.ShellOpenURL != nil {
+		mux.HandleFunc("POST /v1/shell/open-external", s.handleShellOpenExternal)
 	}
 	return apigen.HandlerWithOptions(s, apigen.StdHTTPServerOptions{BaseRouter: mux})
 }

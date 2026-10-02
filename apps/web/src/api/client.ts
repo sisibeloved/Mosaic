@@ -882,6 +882,11 @@ export const api = {
   feishuAuthorizeURL(): Promise<FeishuAuthorizeInfo> {
     return request<FeishuAuthorizeInfo>("/v1/extdocs/feishu/authorize");
   },
+  /** 桌面壳系统浏览器打开外链（WebView 不处理 window.open 的兜底；服务端形态
+   *  无此端点，404 抛 ApiError）。 */
+  shellOpenExternal(url: string): Promise<{ opened: boolean }> {
+    return post<{ opened: boolean }>("/v1/shell/open-external", { url });
+  },
   /** 飞书授权码换取 token（粘 code 路径）。 */
   feishuOAuthCallback(code: string): Promise<ExtDocSettingsDoc> {
     return post<ExtDocSettingsDoc>("/v1/extdocs/feishu/callback", { code });

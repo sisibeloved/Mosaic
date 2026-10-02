@@ -192,7 +192,18 @@ export function SettingsPage() {
   const loginFeishu = useCallback(async () => {
     try {
       const info = await api.feishuAuthorizeURL();
-      window.open(info.url, "_blank", "noreferrer");
+      // 浏览器形态：window.open 生效。桌面壳 WebView（WKWebView/WebView2）不开
+      // 新窗口、返回 null——兜底请壳调系统浏览器（POST /v1/shell/open-external，
+      // 仅壳装配存在；服务端形态 404 走提示分支）。
+      const win = window.open(info.url, "_blank", "noreferrer");
+      if (!win) {
+        try {
+          await api.shellOpenExternal(info.url);
+        } catch {
+          setFsMsg("弹窗被拦截且桌面壳兜底不可用——请允许本站弹窗后重试。");
+          return;
+        }
+      }
       if (info.auto_captured) {
         setFsMsg("已打开授权页——在浏览器完成授权后这里会自动绑定，无需复制 code。");
         void pollFeishuBind();

@@ -72,6 +72,10 @@ type Options struct {
 	// ExtraOriginHosts 跨源写门的壳集成信任源（如 wails.localhost——浏览器对
 	// Origin 不可伪造，该主机名只能来自本应用自带的 WebView 页面）。
 	ExtraOriginHosts []string
+	// ShellOpenURL 桌面壳系统浏览器打开回调（透传 httpapi.Deps.ShellOpenURL）：
+	// WebView 不处理 window.open，SPA 的外链兜底经此走壳。nil = 端点不注册
+	//（服务端形态）。
+	ShellOpenURL func(url string) error
 	// UI 前端产物根（空 = apps/web 构建产物）。
 	UI fs.FS
 }
@@ -429,6 +433,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Searcher:         store, // M3-3 按需平面：FTS5 trigram（SQLite 实现端口）
 		ReceiptLister:    store, // v1.70 展示对齐：回执流水正式面
 		ExtraOriginHosts: opts.ExtraOriginHosts,
+		ShellOpenURL:     opts.ShellOpenURL,
 		OwnerToken:       ownerToken,
 		UI:               ui,
 		Backups:          backupMgr,
