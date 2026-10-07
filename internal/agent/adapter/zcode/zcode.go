@@ -35,6 +35,15 @@
 // 32KiB 命令行物理边界，desktopPromptCap fail fast。env 白名单/凭证定位/模型
 // overlay 与 CLI 面同口径（HOME 之外补 USERPROFILE——node os.homedir 主锚点；
 // SYSTEMROOT 等 Windows 必需键透传）。
+// 桌面 PiP 耦合与隔离（macOS 实证 2026-10-06）：ZCode 桌面版常驻 CUA PiP 悬浮球
+// （屏幕边缘小窗），由 GUI 派生的 zcode-cli 镜像进程盯默认会话库激活——该库路径
+// 硬编码 homedir()/.zcode/cli/db/db.sqlite（ZCODE_STORAGE_DIR 管不到它），Mosaic
+// 任务（经 --cwd 项目绑定会话）写入共享库即被镜像进程观测，悬浮球亮起标题移位，
+// 用户看到"ZCode 弹窗"。隔离面：bundle 有官方 env 配置 ZCODE_SESSION_DB_PATH →
+// storage.sessionDbPath，把 Mosaic 子进程会话库重定向到 Mosaic 托管私有路径
+// （Config.SessionDB）即切断耦合——桌面版历史不再出现 Mosaic 会话；凭据面
+// （credentials.json/provider_config.json 锚定 ZCODE_DATA_BASE_DIR，默认
+// homedir → ~/.zcode/v2）不受影响，登录态照常共享。
 package zcode
 
 import (
@@ -87,6 +96,10 @@ type Config struct {
 	// zcode argv，受 Linux MAX_ARG_STRLEN（128KiB/参数）约束——留边际 fail fast，
 	// 胜过 OS exec 失败（物理边界而非策略闸，与 kimi 同口径）。
 	MaxPromptBytes int
+	// SessionDB 私有会话库路径（空 = 不隔离，沿用默认共享库，保持旧行为）。
+	// 非空时经 ZCODE_SESSION_DB_PATH 重定向会话存储（CLI/桌面/WSL 三面同注）——
+	// 桌面 PiP 耦合隔离用，见包注释末节。
+	SessionDB string
 }
 
 // Execer 进程执行抽象（UT 捕获/阻塞；生产为真实 zcode 子进程）。
@@ -391,7 +404,19 @@ func (s *session) homeDir() string {
 
 // envFor 按运行面构造子进程环境（native 用宿主 HOME；wsl 用发行版内 HOME）。
 func (s *session) envFor() []string {
-	return zcodeEnvWithHome(s.adapter.cfg.ZcodePath, s.homeDir())
+	env := zcodeEnvWithHome(s.adapter.cfg.ZcodePath, s.homeDir())
+	return append(env, sessionDBEnv(s.adapter.cfg.SessionDB)...)
+}
+
+// sessionDBEnv 会话库私有化注入（三面共用）：空 = 不隔离（默认共享库，旧行为）；
+// 非空 = ZCODE_SESSION_DB_PATH 重定向会话存储——桌面版 CUA PiP 悬浮球的镜像进程
+// 只盯默认库（homedir()/.zcode/cli/db/db.sqlite 硬编码），私有库内的 Mosaic 会话
+// 不再激活桌面悬浮球（实证 2026-10-06，见包注释末节）。
+func sessionDBEnv(sessionDB string) []string {
+	if sessionDB == "" {
+		return nil
+	}
+	return []string{"ZCODE_SESSION_DB_PATH=" + sessionDB}
 }
 
 // passthroughNetEnv 网络配置透传白名单（两运行面共用）：代理/CA 从宿主透传
@@ -435,6 +460,7 @@ func (s *session) desktopEnvFor() []string {
 	}
 	dir := filepath.Dir(s.adapter.cfg.ZcodePath)
 	env = append(env, "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	env = append(env, sessionDBEnv(s.adapter.cfg.SessionDB)...)
 	return append(env, passthroughNetEnv()...)
 }
 
@@ -1085,7 +1111,11 @@ func (p *processExecer) Exec(ctx context.Context, argv []string, env []string, s
 	if err := cmd.Start(); err != nil {
 		return "", "", -1, err
 	}
-	if err := cmd.Wait(); err != nil {
+	err := cmd.Wait()
+	// 正常结束同样整组收尾：插件宿主孙进程不随主进程退出（sysproc_posix.go
+	// killGroup 注释——残留宿主重派子进程即桌面壳弹窗根因，2026-10-07 真机实证）。
+	defer killGroup(cmd.Process.Pid)
+	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			return out.String(), errBuf.String(), ee.ExitCode(), nil
 		}

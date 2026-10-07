@@ -14,3 +14,7 @@ import (
 func applySysProc(cmd *exec.Cmd) {
 	winhide.Hide(cmd)
 }
+
+// killGroup POSIX 专属组收尾的 Windows 空实现：无进程组语义（Job Object 属 M2
+// 进程管理项），Windows 侧未观察到弹窗/残留问题，行为保持不变。
+func killGroup(int) {}

@@ -19,3 +19,14 @@ func applySysProc(cmd *exec.Cmd) {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 }
+
+// killGroup 主进程退出后的组收尾。真机实证（2026-10-07，macOS）：zcode 桌面
+// bundle 的插件宿主（__zcode-plugin-host 孙进程）不随主进程退出——残留宿主以
+// 约两秒间隔反复重派 ZCode.app 子进程，非 headless 形态启动即闪 GUI 窗口
+// （桌面壳"单独进程窗口弹出"根因）。Wait 已回收主进程，对残余组发 SIGKILL；
+// 组已空时的错误静默即可。
+func killGroup(pid int) {
+	if pid > 0 {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+	}
+}
