@@ -253,7 +253,9 @@ func probeExecutable(ctx context.Context, r Runner, spec ProbeSpec, runtime Runt
 		// 版本事实只认执行成功（exit 0）——非零退出的错误文本（常含数字）
 		// 不是版本，两个分支同口径（0.6.3 审校 P2#3：经健康适配器影响 ready）
 		if bundle != "" {
-			args := append([]string{path, bundle}, spec.VersionArgs...)
+// darwin：主二进制探测也会注册主 bundle（Dock 弹第二个 ZCode）——
+			// 经内嵌 Helper 二进制探测（desktopbin_darwin.go，2026-10-07 实证）。
+			args := append([]string{DesktopHelperInterpreter(path, bundle), bundle}, spec.VersionArgs...)
 			if out, code, err := r.RunWithEnv(vctx, runtime, distro, []string{"ELECTRON_RUN_AS_NODE=1"}, args); err == nil && code == 0 {
 				exe.Version = sanitizeVersion(firstLine(out))
 			}

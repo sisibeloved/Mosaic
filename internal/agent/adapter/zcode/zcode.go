@@ -228,7 +228,10 @@ func (s *session) execOnce(taskCtx context.Context, task agent.Task, prompt stri
 	args := []string{s.adapter.cfg.ZcodePath, "--output-format", "stream-json", "--mode", "yolo"}
 	if bundle != "" {
 		// 桌面驱动：exe 以 node 语义执行缓存 bundle（argv[1]），其后与 CLI 同参。
-		args = append([]string{s.adapter.cfg.ZcodePath, bundle}, args[1:]...)
+		// darwin 以内嵌 Helper 二进制承载（desktopbin_darwin.go——主二进制会注册
+		// 主 bundle 致 Dock 弹出第二个 ZCode，2026-10-07 真机实证）。
+		interp := desktopInterpreter(s.adapter.cfg.ZcodePath, bundle)
+		args = append([]string{interp, bundle}, args[1:]...)
 	}
 	if s.adapter.cfg.WorkDir != "" {
 		args = append(args, "--cwd", s.adapter.cfg.WorkDir)
