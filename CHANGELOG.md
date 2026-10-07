@@ -19,10 +19,14 @@
 
 ### Fixed
 
+- 中文输入法 Enter 确认候选误触发送/提交（macOS WKWebView）：WebKit 在按 Enter 确认候选时先派发 compositionend、后派发 isComposing=false 的 keydown——单查事件内标志必然失效（Chrome/Edge 系组合中 isComposing=true 的路径本就正常，两内核都要拦）。新增 `useIMEGuard`（组合态跟踪 + 组合刚结束一拍守卫，setTimeout(0) 清除——事件派发先于定时器），接入全部 9 处 Enter 提交点（聊天发送/@提及候选、房间与文档重命名、文档/表格标题、房内搜索、云表格链接、表格公式栏/单元格/工作表名）。
+- zcode 子进程残留与弹窗（macOS）：桌面 bundle 的插件宿主（`__zcode-plugin-host` 孙进程）不随主进程退出，残留宿主以 1-2 秒间隔反复重派 ZCode.app 子进程（真机实证）——进程组击杀此前只在超时/取消路径生效（cmd.Cancel），正常结束路径补齐 `killGroup`：Wait 返回后对残余组 SIGKILL（POSIX；Windows 无进程组语义保持不变）。真机验证：跑后无残留宿主、无再发爆发；运行期短命子进程实测均 headless（ELECTRON_RUN_AS_NODE=1 透传），高速连拍无窗口闪现。
 - macOS 桌面壳首屏修复：WKWebView 不跟随自定义 scheme 资产桥上的 307（首屏渲染 "Temporary Redirect" 白页、需手点链接才落到回环源）——桥响应按平台拆分（`assetbridge_*.go`），darwin 落地立即 `location.replace` 跳转页（meta refresh/锚点兜底），Windows 保持 dogfood 验证过的 307 原路径不变。
 - 桌面壳外链打开修复：WebView（WKWebView/WebView2）不处理 `window.open`，飞书 OAuth 授权页点击无响应——新增壳集成端点 `POST /v1/shell/open-external`（非 OpenAPI 契约、仅壳装配注册，服务端/Web 形态零变化；三层写门全量适用、仅放行 http/https），前端 `window.open` 返回 null 时兜底请壳调系统浏览器（darwin `open` / windows `rundll32`）。
 - mcode 0.6 凭据布局适配：0.6.x 起登录凭据移至 `~/.minimax/auth/prod`（0.2.x 为 `~/.minimax/cli-auth`）——探针与 IT 登录门双面任一命中即 logged_in，升级 mcode 后不再误报未登录（真机实证 0.6.1 适配器契约三件套全绿）。
 - 飞书多维表格导入修复：快照落格此前直接迭代记录字段 map（JSON 对象），Go map 迭代序随机致 SnapshotHash 两次读取恒漂移，导入执行恒报「预览已过期：远端内容已变化」（真机实证：无人编辑连续两次预览哈希不同——多维表格导入 100% 失败）——改为按字段列序落格恢复确定性，回归测试 20 连读哈希全等 + 行主序断言。
+- kimi 2.x 适配（实证 2026-10-02，本机 0.39.1→2.1.1 升级）：默认模型切到 k3-256k，严格 JSON 契约任务首次观测输出形状漂移（意图评估 `public_rationale` 内嵌未转义直引号——`ExtractJSON` 报 `invalid character '婚'`，座位整轮弃权，桌面日志呈现为「意图评估失败，跳过该座」）——补上与 minimax v1.69/zcode 同构的一次矫正重试（原提示词 + CORRECTION 追记、`-S` 同会话续接让模型可见自己的跑偏输出；仍失败保留末次错误并附输出首行，排障不依赖 CLI 侧转录），v1.69 裁定「codex/kimi 未观测不加重试」至此对 kimi 失效（codex 仍未观测、维持不重试）；另实证 Mosaic 的后台 kimi 任务进程会参与用户 CLI 的升级 rollout 判定（`~/.kimi-code/updates/rollout.log`），子进程 env 恒置 `KIMI_CODE_NO_AUTO_UPDATE=1`/`KIMI_CLI_NO_AUTO_UPDATE=1`——后台实例不触碰用户 CLI 升级通道（桌面壳后台纪律：agent 进程零 UI 副作用）。
+- zcode 会话库私有化隔离（macOS 实证 2026-10-06）：桌面端出现标题为 "ZCode" 的悬浮小窗被 Mosaic 任务激活弹出——根因不是 Mosaic 拉起 GUI 进程（任务全程 `ELECTRON_RUN_AS_NODE=1` 无头），而是 ZCode 桌面版的 CUA PiP 悬浮球由 GUI 派生的 zcode-cli 镜像进程驱动，该镜像盯默认会话库（`homedir()/.zcode/cli/db/db.sqlite`，bundle 内硬编码、`ZCODE_STORAGE_DIR` 管不到），Mosaic 任务（`--cwd` 项目绑定会话）写入共享库即被观测激活；修复走 bundle 官方 env 配置面 `ZCODE_SESSION_DB_PATH` → `storage.sessionDbPath`，把 Mosaic 全部 zcode 子进程（CLI/桌面/WSL 三面）的会话库重定向到 Mosaic 托管私有路径（native 在缓存位 `zcode-session/db.sqlite`、WSL 在发行版内 `~/.mosaic/zcode-session/`）——桌面版历史不再出现 Mosaic 会话、悬浮球不再被激活；凭据面（`credentials.json`/`provider_config.json` 锚定 `~/.zcode/v2`）不受影响，登录态照常共享（决定性实验：设私有库后共享库 WAL 零写入、会话只进私有库、任务成功）。
 
 ## [0.6.5] - 2026-10-31
 
