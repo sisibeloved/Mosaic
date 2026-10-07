@@ -12,6 +12,7 @@ import { AppLogo } from "../components/AppLogo";
 import { Avatar } from "../components/chat/Avatar";
 import { useContextMenu, type ContextMenuItem } from "../components/ContextMenu";
 import { copyText } from "../lib/clipboard";
+import { useIMEGuard } from "../lib/ime";
 import { relativeTime } from "../lib/ui";
 import { execRoomCommand, findOrCreateDM, refreshAgentSeats, refreshRooms, useRooms } from "../state/rooms";
 import { toggleTheme, useTheme } from "../state/theme";
@@ -112,6 +113,7 @@ export function AppShell() {
   const menu = useContextMenu();
   // 侧栏右键操作弹层：重命名 / 删除（危险，理由必填留痕——与房间页 ⋯ 菜单同契约）。
   const [renaming, setRenaming] = useState<{ roomID: string; name: string } | null>(null);
+  const ime = useIMEGuard();
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<{ roomID: string; name: string } | null>(null);
@@ -413,8 +415,10 @@ export function AppShell() {
               value={renaming.name}
               onChange={(e) => setRenaming({ ...renaming, name: e.target.value })}
               onKeyDown={(e) => {
+                if (ime.consuming(e)) return;
                 if (e.key === "Enter") void submitRename();
               }}
+              {...ime.props}
               maxLength={120}
               disabled={renameBusy}
               aria-label="房间名"

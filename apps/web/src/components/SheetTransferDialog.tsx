@@ -14,6 +14,7 @@ import {
   type SheetTransferUpdatePreview,
 } from "../api/client";
 import { refreshExtShares, useExtShares } from "../state/extdocs";
+import { useIMEGuard } from "../lib/ime";
 import { relativeTime } from "../lib/ui";
 
 /** provider 展示名（与 ExtShareMenu 对齐）。 */
@@ -80,6 +81,7 @@ export function SheetTransferDialog({
 }) {
   const ext = useExtShares();
   const [url, setUrl] = useState("");
+  const ime = useIMEGuard();
   const [provider, setProvider] = useState<string>("");
   const [preview, setPreview] = useState<SheetTransferPreview | null>(null);
   const [record, setRecord] = useState<SheetTransferRecord | null>(null);
@@ -322,8 +324,10 @@ export function SheetTransferDialog({
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               onKeyDown={(e) => {
+                if (ime.consuming(e)) return;
                 if (e.key === "Enter" && url.trim()) void doPreview();
               }}
+              {...ime.props}
               disabled={busy !== "idle"}
               placeholder="粘贴腾讯文档表格 / 飞书电子表格或多维表格链接（https://…）"
               aria-label="云端表格链接"

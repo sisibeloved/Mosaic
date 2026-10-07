@@ -13,6 +13,7 @@ import { Link } from "react-router-dom";
 import { SheetTransferDialog } from "../components/SheetTransferDialog";
 import { api, ApiError, type SheetCellView, type SheetCellWrite, type SheetOp } from "../api/client";
 import { useDoc } from "../api/doc";
+import { useIMEGuard } from "../lib/ime";
 import {
   applySheetOpsLocal, cellDisplay, cellKey, cellRaw, clearCell, colName, parseCellInput,
   type LocalCell, type LocalSheet,
@@ -39,6 +40,7 @@ export function SheetEditorPage({ docId }: { docId: string }) {
   const [hasUpdate, setHasUpdate] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
   const [renaming, setRenaming] = useState<{ idx: number; draft: string } | null>(null);
+  const ime = useIMEGuard();
 
   const versionRef = useRef<number>(0);
   const sheetsRef = useRef<LocalSheet[] | null>(null);
@@ -427,6 +429,7 @@ export function SheetEditorPage({ docId }: { docId: string }) {
           disabled={doc.status === "archived"}
           onChange={(e) => setEditing({ r: sel.r, c: sel.c, draft: e.target.value })}
           onKeyDown={(e) => {
+            if (ime.consuming(e)) return;
             if (e.key === "Enter") {
               e.preventDefault();
               commitEdit("down");
@@ -437,6 +440,7 @@ export function SheetEditorPage({ docId }: { docId: string }) {
               (e.target as HTMLInputElement).blur();
             }
           }}
+          {...ime.props}
         />
       </div>
 
@@ -508,6 +512,7 @@ export function SheetEditorPage({ docId }: { docId: string }) {
                             onChange={(e) => setEditing({ r, c, draft: e.target.value })}
                             onBlur={() => commitEdit(null)}
                             onKeyDown={(e) => {
+                              if (ime.consuming(e)) return;
                               if (e.key === "Enter") {
                                 e.preventDefault();
                                 commitEdit("down");
@@ -524,6 +529,7 @@ export function SheetEditorPage({ docId }: { docId: string }) {
                                 gridRef.current?.focus();
                               }
                             }}
+                            {...ime.props}
                           />
                         ) : (
                           <span className={`truncate ${pending ? "italic text-dim" : ""}`} title={display}>{display}</span>
@@ -554,9 +560,11 @@ export function SheetEditorPage({ docId }: { docId: string }) {
                   setRenaming(null);
                 }}
                 onKeyDown={(e) => {
+                  if (ime.consuming(e)) return;
                   if (e.key === "Enter") (e.target as HTMLInputElement).blur();
                   if (e.key === "Escape") setRenaming(null);
                 }}
+                {...ime.props}
               />
             ) : (
               <button

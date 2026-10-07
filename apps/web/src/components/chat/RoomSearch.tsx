@@ -3,6 +3,7 @@
 // ESC 关闭。空态/错误如实呈现。
 import { useEffect, useRef, useState } from "react";
 import { api, type SearchHit } from "../../api/client";
+import { useIMEGuard } from "../../lib/ime";
 import { truncate } from "../../lib/ui";
 
 export function RoomSearch({
@@ -15,6 +16,7 @@ export function RoomSearch({
   onClose: () => void;
 }) {
   const [q, setQ] = useState("");
+  const ime = useIMEGuard();
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,8 +57,10 @@ export function RoomSearch({
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
+              if (ime.consuming(e)) return;
               if (e.key === "Enter") run();
             }}
+            {...ime.props}
             placeholder="搜索房内消息（关键词，如：预算 超限）"
             aria-label="搜索房内消息"
             className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-faint"

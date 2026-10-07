@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type ExternalRef, type ParticipantView } from "../../api/client";
 import { adapterLabel } from "../../lib/copy";
+import { useIMEGuard } from "../../lib/ime";
 import { relativeTime } from "../../lib/ui";
 import { refreshDocs, useDocs } from "../../state/docs";
 import { Avatar } from "./Avatar";
@@ -213,7 +214,10 @@ export function Composer({
     );
   };
 
+  const ime = useIMEGuard();
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // IME 组合/确认期间（含 WebKit「确认候选的 Enter」）不处理任何按键
+    if (ime.consuming(e)) return;
     if (candidates.length > 0) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
@@ -383,6 +387,7 @@ export function Composer({
                 for (const f of imgs) onAddAttachment(f);
               }}
               onKeyDown={onKeyDown}
+              {...ime.props}
             />
             <button
               type="button"

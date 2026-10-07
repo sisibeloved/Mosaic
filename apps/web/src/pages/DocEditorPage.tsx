@@ -18,6 +18,7 @@ import { MarkdownBody } from "../components/chat/MarkdownBody";
 import { ExtShareBadges, ExtShareMenu } from "../components/ExtShareMenu";
 import { applyOpsLocal, diffBlocks, listBlockMarkdown, newBlockID } from "../lib/docops";
 import { relativeTime } from "../lib/ui";
+import { useIMEGuard } from "../lib/ime";
 import { refreshDocMeta, refreshDocs } from "../state/docs";
 import { SheetEditorPage } from "./SheetEditorPage";
 
@@ -59,6 +60,7 @@ export function DocEditorPage() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [titleDraft, setTitleDraft] = useState("");
+  const ime = useIMEGuard();
   const [titleEditing, setTitleEditing] = useState(false);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -350,12 +352,14 @@ export function DocEditorPage() {
             value={titleDraft}
             onChange={(e) => setTitleDraft(e.target.value)}
             onKeyDown={(e) => {
+              if (ime.consuming(e)) return;
               if (e.key === "Enter") void submitTitle();
               if (e.key === "Escape") {
                 setTitleDraft(doc.title);
                 setTitleEditing(false);
               }
             }}
+            {...ime.props}
             onBlur={() => void submitTitle()}
             maxLength={200}
             aria-label="文档标题"

@@ -14,6 +14,7 @@ import { MessageList } from "../components/chat/MessageList";
 import { RoomPanel } from "../components/chat/RoomPanel";
 import { RoomSearch } from "../components/chat/RoomSearch";
 import { TypingBar } from "../components/chat/TypingBar";
+import { useIMEGuard } from "../lib/ime";
 import { displayNameOf, truncate } from "../lib/ui";
 import { refreshRooms } from "../state/rooms";
 
@@ -38,6 +39,7 @@ export function RoomPage() {
   const [memoryBusy, setMemoryBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
+  const ime = useIMEGuard();
   // M4-0 引用回复：被引消息（发送成功后清除）；删除房间：确认弹层 + 留痕理由。
   const [quoted, setQuoted] = useState<QuotedMessage | null>(null);
   // v1.73 右键点名注入：{pid, nonce}——nonce 使同目标可重复触发；Composer 消费后清零。
@@ -297,9 +299,11 @@ export function RoomPage() {
             value={nameDraft}
             onChange={(e) => setNameDraft(e.target.value)}
             onKeyDown={(e) => {
+              if (ime.consuming(e)) return;
               if (e.key === "Enter") void submitRename();
               if (e.key === "Escape") setEditing(false);
             }}
+            {...ime.props}
             onBlur={() => void submitRename()}
             maxLength={120}
             aria-label="房间名"

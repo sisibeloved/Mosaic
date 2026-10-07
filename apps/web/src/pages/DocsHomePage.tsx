@@ -7,6 +7,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { SheetTransferDialog } from "../components/SheetTransferDialog";
 import { api, type DocSearchHit, type DocSummary } from "../api/client";
 import { relativeTime, shortId, truncate } from "../lib/ui";
+import { useIMEGuard } from "../lib/ime";
 import { refreshDocs, setDocsCreatorFilter, useDocs } from "../state/docs";
 import { refreshAgentSeats, useRooms } from "../state/rooms";
 
@@ -30,6 +31,7 @@ export function DocsHomePage() {
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
   const [createTitle, setCreateTitle] = useState("");
+  const ime = useIMEGuard();
   const [createFormat, setCreateFormat] = useState<"markdown" | "spreadsheet">("markdown");
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -240,8 +242,10 @@ export function DocsHomePage() {
               value={createTitle}
               onChange={(e) => setCreateTitle(e.target.value)}
               onKeyDown={(e) => {
+                if (ime.consuming(e)) return;
                 if (e.key === "Enter") void submitCreate();
               }}
+              {...ime.props}
               maxLength={200}
               disabled={createBusy}
               placeholder={createFormat === "spreadsheet" ? "表格标题" : "文档标题"}
