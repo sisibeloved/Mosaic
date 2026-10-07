@@ -549,11 +549,13 @@ function BlockView({
   onFinishEdit: () => void;
   onInsertAfter: () => void;
   onRemove: () => void;
-  onChangeType: (type: DocBlock["type"]) => void;
+  onChangeType: (t: DocBlock["type"]) => void;
   onPatch: (patch: Partial<Pick<DocBlock, "level" | "lang">>) => void;
+
 }) {
   const areaRef = useRef<HTMLTextAreaElement | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const ime = useIMEGuard();
 
   // 删除两步确认（仅非空块）：× → 3s 内"确认？"，超时回退
   useEffect(() => {
@@ -657,7 +659,7 @@ function BlockView({
           onChange={(e) => onChangeText(e.target.value)}
           onBlur={onFinishEdit}
           onKeyDown={(e) => {
-            if (e.nativeEvent.isComposing) return;
+            if (ime.consuming(e)) return;
             const el = e.currentTarget;
             if (e.key === "Escape") {
               e.preventDefault();
@@ -687,6 +689,7 @@ function BlockView({
               onInsertAfter();
             }
           }}
+          {...ime.props}
           rows={1}
           aria-label="块内容（markdown）"
           className="w-full resize-none bg-transparent pr-16 font-mono text-[13px] leading-relaxed outline-none placeholder:text-faint"
