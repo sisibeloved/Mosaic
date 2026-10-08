@@ -13,18 +13,17 @@ import (
 // LaunchServices——任务期间 Dock 弹出"第二个 ZCode"应用实体、任务结束消失
 // （2026-10-07 真机实证：主 bundle ASN 注册随每次任务出现/消失；复制品因代码
 // 签名被 SIGKILL）。改用内嵌 Helper 二进制承载同一 node 语义——与桌面版自身
-// zcode-cli 工人同机制，注册于 dev.zcode.app.helper（helper bundle，无 Dock 面，
-// 同日实证：任务前后主 bundle 注册恒为 1）。Helper 缺失时回退主二进制。
+// zcode-cli 工人同机制，注册于 dev.zcode.app.helper（helper bundle，无 Dock 面）。
+// 派生必须从 exe 路径出发：运行时 bundle 是缓存副本路径
+// （~/Library/Caches/mosaic/zcode-desktop/<hash>/zcode.cjs），从中上溯定位不到
+// 安装位（2026-10-08 真机实证：bundle 派生版静默回退主二进制，注册照旧）。
 func desktopInterpreter(exePath, bundle string) string {
-	if exePath == "" || bundle == "" {
+	if exePath == "" {
 		return exePath
 	}
-	// bundle = <app>/Contents/Resources/glm/zcode.cjs → app 根上溯三级
-	app := bundle
-	for i := 0; i < 3; i++ {
-		app = filepath.Dir(app)
-	}
-	helper := app + string(filepath.Separator) + filepath.Join("Frameworks", "ZCode Helper.app", "Contents", "MacOS", "ZCode Helper")
+	// exe = <app>/Contents/MacOS/<name> → app 根上溯三级（文件 → MacOS → Contents → app）
+	app := filepath.Dir(filepath.Dir(filepath.Dir(exePath)))
+	helper := filepath.Join(app, "Contents", "Frameworks", "ZCode Helper.app", "Contents", "MacOS", "ZCode Helper")
 	if _, err := os.Stat(helper); err == nil && !strings.HasSuffix(exePath, "ZCode Helper") {
 		return helper
 	}

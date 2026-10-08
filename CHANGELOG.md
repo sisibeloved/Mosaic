@@ -19,7 +19,7 @@
 
 ### Fixed
 
-- zcode macOS 桌面渠道弹窗根除：无头运行的主二进制即便带 `ELECTRON_RUN_AS_NODE=1` 也会以 `dev.zcode.app` 主 bundle 注册 LaunchServices——Dock 里弹出"第二个 ZCode"应用实体、随任务出现/消失（真机实证：ASN 主 bundle 注册计数随任务振荡 8↔10，全程无新窗口）。改以内嵌 `ZCode Helper` 二进制承载同一 node 语义（与桌面版自身 zcode-cli 工人同机制，注册于 `dev.zcode.app.helper` 无 Dock 面）——适配器与 harness 探针两处同口径，Helper 缺失回退主二进制，Windows 不变；任务全链路验证模型回复正常、主 bundle 注册恒为 1。
+- zcode macOS 桌面渠道弹窗根除：无头运行的主二进制即便带 `ELECTRON_RUN_AS_NODE=1` 也会以 `dev.zcode.app` 主 bundle 注册 LaunchServices——Dock 里弹出"第二个 ZCode"应用实体、随任务出现/消失（真机实证：ASN 主 bundle 注册计数随任务振荡 8↔10，全程无新窗口）。改以内嵌 `ZCode Helper` 二进制承载同一 node 语义（与桌面版自身 zcode-cli 工人同机制，注册于 `dev.zcode.app.helper` 无 Dock 面）——适配器与 harness 探针两处同口径（从 exe 路径派生安装位——bundle 派生版对缓存副本路径静默失效，2026-10-08 复验抓出修正），Helper 缺失回退主二进制，Windows 不变；任务全链路验证模型回复正常、运行期解释器确为 Helper、主 bundle 注册零出现。
 - 中文输入法 Enter 确认候选误触发送/提交（macOS WKWebView）：WebKit 在按 Enter 确认候选时先派发 compositionend、后派发 isComposing=false 的 keydown——单查事件内标志必然失效（Chrome/Edge 系组合中 isComposing=true 的路径本就正常，两内核都要拦）。新增 `useIMEGuard`（组合态跟踪 + 组合刚结束一拍守卫，setTimeout(0) 清除——事件派发先于定时器），接入全部 9 处 Enter 提交点（聊天发送/@提及候选、房间与文档重命名、文档/表格标题、房内搜索、云表格链接、表格公式栏/单元格/工作表名）。
 - zcode 子进程残留与弹窗（macOS）：桌面 bundle 的插件宿主（`__zcode-plugin-host` 孙进程）不随主进程退出，残留宿主以 1-2 秒间隔反复重派 ZCode.app 子进程（真机实证）——进程组击杀此前只在超时/取消路径生效（cmd.Cancel），正常结束路径补齐 `killGroup`：Wait 返回后对残余组 SIGKILL（POSIX；Windows 无进程组语义保持不变）。真机验证：跑后无残留宿主、无再发爆发；运行期短命子进程实测均 headless（ELECTRON_RUN_AS_NODE=1 透传），高速连拍无窗口闪现。
 - macOS 桌面壳首屏修复：WKWebView 不跟随自定义 scheme 资产桥上的 307（首屏渲染 "Temporary Redirect" 白页、需手点链接才落到回环源）——桥响应按平台拆分（`assetbridge_*.go`），darwin 落地立即 `location.replace` 跳转页（meta refresh/锚点兜底），Windows 保持 dogfood 验证过的 307 原路径不变。
