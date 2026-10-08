@@ -19,6 +19,7 @@
 
 ### Fixed
 
+- 表格文档打开必崩修复（v0.3.0 回归）：DocEditorPage 在组件顶部对 spreadsheet 做条件提前 return（分派给 SheetEditorPage），doc 加载前首渲染走完整 hooks 路径、加载后提前 return——hook 数在渲染间变化触发 React「Rendered fewer hooks…accidental early return」，经文档列表点击或直链打开任何表格均白屏报错（数据无损；真机实证：空表同样崩溃，服务端三层 API 全部正常）。拆分为外层分派壳 + 内层 MarkdownEditor 组件（hooks 恒定）。
 - zcode macOS 桌面渠道弹窗根除：无头运行的主二进制即便带 `ELECTRON_RUN_AS_NODE=1` 也会以 `dev.zcode.app` 主 bundle 注册 LaunchServices——Dock 里弹出"第二个 ZCode"应用实体、随任务出现/消失（真机实证：ASN 主 bundle 注册计数随任务振荡 8↔10，全程无新窗口）。改以内嵌 `ZCode Helper` 二进制承载同一 node 语义（与桌面版自身 zcode-cli 工人同机制，注册于 `dev.zcode.app.helper` 无 Dock 面）——适配器与 harness 探针两处同口径（从 exe 路径派生安装位——bundle 派生版对缓存副本路径静默失效，2026-10-08 复验抓出修正），Helper 缺失回退主二进制，Windows 不变；任务全链路验证模型回复正常、运行期解释器确为 Helper、主 bundle 注册零出现。
 - 中文输入法 Enter 确认候选误触发送/提交（macOS WKWebView）：WebKit 在按 Enter 确认候选时先派发 compositionend、后派发 isComposing=false 的 keydown——单查事件内标志必然失效（Chrome/Edge 系组合中 isComposing=true 的路径本就正常，两内核都要拦）。新增 `useIMEGuard`（组合态跟踪 + 组合刚结束一拍守卫，setTimeout(0) 清除——事件派发先于定时器），接入全部 9 处 Enter 提交点（聊天发送/@提及候选、房间与文档重命名、文档/表格标题、房内搜索、云表格链接、表格公式栏/单元格/工作表名）。
 - zcode 子进程残留与弹窗（macOS）：桌面 bundle 的插件宿主（`__zcode-plugin-host` 孙进程）不随主进程退出，残留宿主以 1-2 秒间隔反复重派 ZCode.app 子进程（真机实证）——进程组击杀此前只在超时/取消路径生效（cmd.Cancel），正常结束路径补齐 `killGroup`：Wait 返回后对残余组 SIGKILL（POSIX；Windows 无进程组语义保持不变）。真机验证：跑后无残留宿主、无再发爆发；运行期短命子进程实测均 headless（ELECTRON_RUN_AS_NODE=1 透传），高速连拍无窗口闪现。

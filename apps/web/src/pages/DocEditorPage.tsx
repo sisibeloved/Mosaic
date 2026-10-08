@@ -12,7 +12,7 @@
 //  归档 = 只读横幅；他端删除 → 回列表并提示。标题改名独立命令（rename_doc）。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, ApiError, type DocBlock, type DocCommandKind, type DocCommandResponse } from "../api/client";
+import { api, ApiError, type DocBlock, type DocCommandKind, type DocCommandResponse, type DocState } from "../api/client";
 import { useDoc } from "../api/doc";
 import { MarkdownBody } from "../components/chat/MarkdownBody";
 import { ExtShareBadges, ExtShareMenu } from "../components/ExtShareMenu";
@@ -39,13 +39,35 @@ const BLOCK_TYPES: { id: DocBlock["type"]; label: string }[] = [
 
 export function DocEditorPage() {
   const { docId = null } = useParams();
-  const navigate = useNavigate();
   const { doc, notFound, deleted, error: loadError } = useDoc(docId);
 
-  // RFC-0017 format 分派：表格资产进表格编辑器（URL/SSE/useDoc 复用不动）
+  // RFC-0017 format 分派：表格资产进表格编辑器（URL/SSE/useDoc 复用不动）。
+  // 分派必须停留在外层壳组件：内层 markdown 编辑器持有全部 hooks，条件提前
+  // return 会在 doc 加载前后产生不同 hook 数——React「Rendered fewer hooks
+  // …accidental early return」崩溃（真机实证 2026-10-08：表格文档经列表点击/
+  // 直链打开必崩；首渲染 doc 未加载走全 hooks 路径、加载后提前 return）。
   if (doc?.format === "spreadsheet" && docId) {
     return <SheetEditorPage docId={docId} />;
   }
+  return (
+    <MarkdownEditor docId={docId} doc={doc} notFound={notFound} deleted={deleted} loadError={loadError} />
+  );
+}
+
+function MarkdownEditor({
+  docId,
+  doc,
+  notFound,
+  deleted,
+  loadError,
+}: {
+  docId: string | null;
+  doc: DocState | null;
+  notFound: boolean;
+  deleted: boolean;
+  loadError: string | null;
+}) {
+  const navigate = useNavigate();
 
   const [blocks, setBlocks] = useState<DocBlock[] | null>(null);
   const blocksRef = useRef<DocBlock[] | null>(null);
