@@ -60,10 +60,8 @@ export function UpdateEditor({ exe, onUpdated }: { exe: Executable; onUpdated: (
       </button>
       {check && !checking && (
         <>
-          {check.up_to_date ? (
-            <span className="text-[11px] text-faint">
-              {check.latest ? `已是最新（${check.latest}）` : check.note ? "" : "—"}
-            </span>
+          {check.comparable && check.up_to_date ? (
+            <span className="text-[11px] text-faint">已是最新（{check.latest}）</span>
           ) : hasUpdate ? (
             <span className="rounded-md bg-[color-mix(in_srgb,var(--warn)_14%,transparent)] px-1.5 py-px text-[11px] text-warn">
               新版本 {check.latest}

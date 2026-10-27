@@ -416,6 +416,7 @@ func (e ExternalRefKind) Valid() bool {
 
 // Defines values for HarnessUpdateCheckChannel.
 const (
+	GitTags    HarnessUpdateCheckChannel = "git-tags"
 	Manual     HarnessUpdateCheckChannel = "manual"
 	Npm        HarnessUpdateCheckChannel = "npm"
 	SelfUpdate HarnessUpdateCheckChannel = "self-update"
@@ -424,6 +425,8 @@ const (
 // Valid indicates whether the value is a known member of the HarnessUpdateCheckChannel enum.
 func (e HarnessUpdateCheckChannel) Valid() bool {
 	switch e {
+	case GitTags:
+		return true
 	case Manual:
 		return true
 	case Npm:
@@ -1759,19 +1762,22 @@ type FeishuCallbackRequest struct {
 	Code string `json:"code"`
 }
 
-// HarnessUpdateCheck Agent CLI 版本检测（0.4.1）：注册表探测版本对照上游最新版（npm 分发面经登录 shell 实查，缓存 30 分钟）。
+// HarnessUpdateCheck Agent CLI 版本检测（0.4.1）：注册表探测版本对照上游最新版（npm 分发面经登录 shell 实查 npm view；自建分发面对齐源码 tag 经 git ls-remote——均缓存 30 分钟）。
 type HarnessUpdateCheck struct {
 	Adapter string `json:"adapter"`
 
-	// CanCheck 有 npm 分发面（可查最新版）
+	// CanCheck 有检测面（npm 分发 / 源码 tag）
 	CanCheck bool `json:"can_check"`
 
 	// CanUpdate 有自动更新通道（npm / 官方自更新）
 	CanUpdate bool `json:"can_update"`
 
-	// Channel 更新通道
+	// Channel 检测/更新通道
 	Channel   HarnessUpdateCheckChannel `json:"channel"`
 	CheckedAt time.Time                 `json:"checked_at"`
+
+	// Comparable 版本方案可比（两侧 semver 同 major 系——zcode 实录：安装侧 0.16.9 桌面内核版方案 vs 上游源码 tag 3.x，跨系比对必恒误报）
+	Comparable bool `json:"comparable"`
 
 	// CurrentSemver 原文中解析出的 x.y.z（解析不出为空）
 	CurrentSemver *string `json:"current_semver,omitempty"`
@@ -1779,17 +1785,17 @@ type HarnessUpdateCheck struct {
 	// CurrentVersion 注册表探测原文（如 "2.1.172 (Claude Code)"）
 	CurrentVersion string `json:"current_version"`
 
-	// Latest 上游最新版（检测失败为空）
+	// Latest 上游最新版（npm 版本 / 源码最新 semver tag；检测失败为空）
 	Latest *string `json:"latest,omitempty"`
 
-	// Note manual 指引 / 检测失败原因
+	// Note manual 指引 / 不可比说明 / 检测失败原因
 	Note *string `json:"note,omitempty"`
 
-	// UpToDate current_semver ≥ latest（无检测面的 manual 家族恒 true——不标红）
+	// UpToDate comparable 时为语义化比较结果；不可比（版本方案不同）或无检测面恒 true——不标红
 	UpToDate bool `json:"up_to_date"`
 }
 
-// HarnessUpdateCheckChannel 更新通道
+// HarnessUpdateCheckChannel 检测/更新通道
 type HarnessUpdateCheckChannel string
 
 // HarnessUpdateRun 更新执行结果（0.4.1）：完成后重探版本并回填注册表。

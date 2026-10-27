@@ -18,7 +18,8 @@ func updateTestRegistry(t *testing.T) (*Registry, string) {
 }
 
 // TestUpdateChannelSpecs：五家族通道分类（实证 2026-10-27 分发面；kimi 验收
-// 反馈轮改道官方自更新——无 npm 包但 upgrade 子命令在席，-y 免确认）。
+// 反馈轮改道官方自更新；zcode 负责人问询轮改道源码 tag 检测——官方无 Linux
+// CLI 产物、本机为自建打包，检测对齐 git tag、更新保持 manual）。
 func TestUpdateChannelSpecs(t *testing.T) {
 	cases := map[string]struct {
 		channel   string
@@ -29,7 +30,7 @@ func TestUpdateChannelSpecs(t *testing.T) {
 		"codex":   {"npm", true, true},
 		"minimax": {"npm", true, true},
 		"kimi":    {"self-update", false, true},
-		"zcode":   {"manual", false, false},
+		"zcode":   {"git-tags", true, false},
 	}
 	for adapter, want := range cases {
 		spec := updateChannels[adapter]
@@ -39,7 +40,7 @@ func TestUpdateChannelSpecs(t *testing.T) {
 		if got := len(spec.selfUpdateArgs) > 0 || spec.npmPackage != ""; got != want.canUpdate {
 			t.Fatalf("%s canUpdate = %v，期望 %v", adapter, got, want.canUpdate)
 		}
-		if got := spec.npmPackage != ""; got != want.canCheck {
+		if got := spec.npmPackage != "" || spec.gitRepo != ""; got != want.canCheck {
 			t.Fatalf("%s canCheck = %v，期望 %v", adapter, got, want.canCheck)
 		}
 	}
@@ -47,6 +48,9 @@ func TestUpdateChannelSpecs(t *testing.T) {
 		updateChannels["codex"].npmPackage != "@openai/codex" ||
 		updateChannels["minimax"].npmPackage != "@minimax-ai/code" {
 		t.Fatal("npm 分发面包名与实证不符")
+	}
+	if updateChannels["zcode"].gitRepo != "zai-org/ZCode" {
+		t.Fatal("zcode 源码仓应为 zai-org/ZCode")
 	}
 	if !reflect.DeepEqual(updateChannels["kimi"].selfUpdateArgs, []string{"upgrade", "--yes"}) {
 		t.Fatal("kimi 自更新子命令应为 upgrade --yes")
@@ -120,25 +124,59 @@ func TestCheckUpdateLatestAndCache(t *testing.T) {
 	}
 }
 
-// TestCheckUpdateManualChannel：zcode 非 npm 分发且无自更新子命令——无检测面
-// 不标红、note 携指引、不发起任何 runner 调用（kimi 验收反馈③改道官方自更新后
-// manual 只剩 zcode；kimi 通道由 TestRunUpdateSelfUpdateKimi 钉）。
-func TestCheckUpdateManualChannel(t *testing.T) {
+// TestCheckUpdateGitTagsChannel：zcode 源码 tag 检测（负责人问询轮：CLI 为自建
+// 打包，官方仅桌面安装包——检测对齐 git ls-remote 最新 semver tag，更新保持
+// manual）。三形态：(1) 版本方案不可比（安装 0.16.9 桌面内核版方案 vs 上游
+// 3.x）——不标红、note 说明方案差异；(2) 同 major 系可比——正常判有更新；
+// (3) 更新执行 → ErrNoUpdateChannel（自建产物 Mosaic 不做替换）。
+func TestCheckUpdateGitTagsChannel(t *testing.T) {
+	tags := "7e7bd17  refs/tags/v3.14.3\n" +
+		"9ab8a64  refs/tags/v3.15.1\n" +
+		"abcdef0  refs/tags/nightly\n" +
+		"1234567  refs/tags/v3.9.0\n"
+	newRunner := func() *fakeRunner {
+		runner := newFakeRunner()
+		runner.runs["native||bash -lc git ls-remote --tags --refs https://github.com/zai-org/ZCode.git"] = tags
+		return runner
+	}
+
+	// (1) 不可比：0.16.9（0 系）vs 3.15.1（3 系）
 	reg, _ := updateTestRegistry(t)
 	reg.exes = []Executable{{
 		ID: "z_2", Adapter: "zcode", Runtime: "native",
 		Path: "/home/u/.zcode/bin/zcode", Version: "0.16.9", Enabled: true,
 	}}
-	runner := newFakeRunner()
-	check, err := reg.CheckUpdate(context.Background(), "z_2", runner)
+	check, err := reg.CheckUpdate(context.Background(), "z_2", newRunner())
 	if err != nil {
 		t.Fatalf("check: %v", err)
 	}
-	if check.CanCheck || check.CanUpdate || check.Channel != "manual" {
-		t.Fatalf("manual 通道字段不符：%+v", check)
+	if !check.CanCheck || check.CanUpdate || check.Channel != "git-tags" {
+		t.Fatalf("git-tags 通道字段不符：%+v", check)
 	}
-	if !check.UpToDate || check.Note == "" {
-		t.Fatalf("manual 不标红且 note 携指引：%+v", check)
+	if check.Latest != "3.15.1" {
+		t.Fatalf("应取最大 semver tag（非字典序、非 semver tag 忽略）：%+v", check)
+	}
+	if check.Comparable || !check.UpToDate {
+		t.Fatalf("跨版本方案不可比——不判更新不标红：%+v", check)
+	}
+	if !strings.Contains(check.Note, "不可比") || !strings.Contains(check.Note, "自建") {
+		t.Fatalf("note 应说明方案差异与自建指引：%+v", check)
+	}
+
+	// (2) 可比：3.14.3 vs 3.15.1 → 有更新
+	reg2, _ := updateTestRegistry(t)
+	reg2.exes = []Executable{{
+		ID: "z_3", Adapter: "zcode", Runtime: "native",
+		Path: "/home/u/.zcode/bin/zcode", Version: "3.14.3", Enabled: true,
+	}}
+	check2, _ := reg2.CheckUpdate(context.Background(), "z_3", newRunner())
+	if !check2.Comparable || check2.UpToDate {
+		t.Fatalf("同 major 系应可比且判有更新：%+v", check2)
+	}
+
+	// (3) 更新执行：自建产物无自动通道
+	if _, err := reg2.RunUpdate(context.Background(), "z_3", newRunner()); !errors.Is(err, ErrNoUpdateChannel) {
+		t.Fatalf("自建打包应 ErrNoUpdateChannel：%v", err)
 	}
 }
 

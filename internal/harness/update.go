@@ -28,12 +28,18 @@ import (
 	goruntime "runtime"
 )
 
-// ErrNoUpdateChannel 该家族无自动更新通道（kimi/zcode manual 形态）。
-var ErrNoUpdateChannel = errors.New("harness: 该 CLI 无自动更新通道（官方安装器/桌面应用分发），请按指引手动更新")
+// ErrNoUpdateChannel 该家族无自动更新通道（自建打包/官方安装器/桌面应用分发）。
+var ErrNoUpdateChannel = errors.New("harness: 该 CLI 无自动更新通道（自建打包/官方安装器/桌面应用分发），请按指引手动更新")
 
 // updateChannelSpec 家族更新通道。
 type updateChannelSpec struct {
 	npmPackage string // npm 分发面（最新版查询 npm view；空 = 非 npm 分发）
+	// gitRepo 上游源码仓（owner/repo——最新版查询 git ls-remote --tags；自建
+	// 分发面的检测通道）。zcode 实证（2026-10-27 负责人问询轮）：官方 release
+	// 仅桌面安装包（mac dmg / win exe，v3.14.3），无 Linux CLI 产物——本机 CLI
+	// 为基于官方源码自建打包（负责人口径），检测面只能对齐源码 tag；更新面
+	// manual（自建产物 Mosaic 不做替换）。
+	gitRepo string
 	// selfUpdateArgs 官方自更新子命令（更新优先走它——原生安装位/官方安装器
 	// 分发不受本机 npm 管辖）：claude ["update"]；kimi ["upgrade","--yes"]
 	//（2026-10-27 验收反馈轮实证：kimi 无 npm 包 @kimi-code/cli 不存在，但
@@ -51,7 +57,8 @@ var updateChannels = map[string]updateChannelSpec{
 		manualNote:     "Kimi Code 官方安装器分发（~/.kimi-code/bin，无 npm 包）——无独立最新版查询面；「更新到最新」经 kimi upgrade 幂等执行（已是最新则无动作），登录态与配置保留",
 	},
 	"zcode": {
-		manualNote: "ZCode 桌面版请在应用内检查更新（自动升级）；独立 CLI（release tarball）请重跑官方安装脚本",
+		gitRepo:    "zai-org/ZCode",
+		manualNote: "ZCode CLI 为基于官方源码自建打包（官方仅发布桌面安装包，无 Linux CLI 产物）——请拉取上游源码走自有打包管线重装；桌面版请在应用内检查更新（自动升级）",
 	},
 }
 
@@ -61,6 +68,8 @@ func (s updateChannelSpec) channel() string {
 		return "self-update"
 	case s.npmPackage != "":
 		return "npm"
+	case s.gitRepo != "":
+		return "git-tags"
 	default:
 		return "manual"
 	}
@@ -73,11 +82,15 @@ type UpdateCheck struct {
 	CurrentSemver  string `json:"current_semver,omitempty"` // 原文中解析出的 x.y.z（解析不出为空）
 	Latest         string `json:"latest,omitempty"`         // 上游最新版（检测失败为空）
 	UpToDate       bool   `json:"up_to_date"`
-	CanCheck       bool   `json:"can_check"`  // 有 npm 分发面（可查最新版）
-	CanUpdate      bool   `json:"can_update"` // 有自动更新通道（npm / 自更新）
-	Channel        string `json:"channel"`    // npm | self-update | manual
-	Note           string `json:"note,omitempty"`
-	CheckedAt      string `json:"checked_at"` // RFC3339
+	// Comparable 版本方案可比（两侧 semver 同 major 系——zcode 实录：安装侧
+	// 0.16.9 是桌面内核版方案、上游源码 tag 3.x，跨方案比对必恒"有更新"误报）。
+	// 不可比时 up_to_date 恒 true（不标红），note 说明方案差异，仅展示 latest。
+	Comparable bool   `json:"comparable"`
+	CanCheck   bool   `json:"can_check"`  // 有检测面（npm 分发 / 源码 tag）
+	CanUpdate  bool   `json:"can_update"` // 有自动更新通道（npm / 自更新）
+	Channel    string `json:"channel"`    // npm | self-update | git-tags | manual
+	Note       string `json:"note,omitempty"`
+	CheckedAt  string `json:"checked_at"` // RFC3339
 }
 
 // UpdateRun 更新执行结果（POST update 响应体）。
@@ -101,8 +114,9 @@ func latestCacheKey(rt Runtime, distro, pkg string) string {
 	return string(rt) + "|" + distro + "|" + pkg
 }
 
-// CheckUpdate 对照上游最新版（结果缓存 30 分钟；npm view 网络往返经登录 shell——
-// 见包注释实证）。检测失败不缓存（网络瞬态不该钉死 30 分钟），Note 携原因。
+// CheckUpdate 对照上游最新版（结果缓存 30 分钟；npm view / git ls-remote 网络
+// 往返经登录 shell——见包注释实证）。检测失败不缓存（网络瞬态不该钉死 30
+// 分钟），Note 携原因。
 func (r *Registry) CheckUpdate(ctx context.Context, id string, runner Runner) (UpdateCheck, error) {
 	exe, err := r.executableOf(id)
 	if err != nil {
@@ -114,7 +128,7 @@ func (r *Registry) CheckUpdate(ctx context.Context, id string, runner Runner) (U
 		Adapter:        exe.Adapter,
 		CurrentVersion: exe.Version,
 		Channel:        spec.channel(),
-		CanCheck:       spec.npmPackage != "",
+		CanCheck:       spec.npmPackage != "" || spec.gitRepo != "",
 		CanUpdate:      len(spec.selfUpdateArgs) > 0 || spec.npmPackage != "",
 		CheckedAt:      now.UTC().Format(time.RFC3339),
 	}
@@ -131,28 +145,47 @@ func (r *Registry) CheckUpdate(ctx context.Context, id string, runner Runner) (U
 		return check, nil
 	}
 
-	key := latestCacheKey(Runtime(exe.Runtime), exe.Distro, spec.npmPackage)
+	// 检测面分发：npm 分发 → npm view；源码仓 → git ls-remote --tags。
+	var queryKey, queryCmd string
+	if spec.npmPackage != "" {
+		queryKey = spec.npmPackage
+		queryCmd = "view " + spec.npmPackage + " version"
+	} else {
+		queryKey = "git:" + spec.gitRepo
+		queryCmd = "ls-remote --tags --refs https://github.com/" + spec.gitRepo + ".git"
+	}
+
+	key := latestCacheKey(Runtime(exe.Runtime), exe.Distro, queryKey)
 	r.mu.Lock()
 	cached, ok := r.latestCache[key]
 	r.mu.Unlock()
 	if ok && now.Sub(cached.at) < updateCheckTTL {
 		check.Latest = cached.version
-		check.UpToDate = compareSemver(check.CurrentSemver, check.Latest) >= 0
+		check.UpToDate, check.Comparable = verdict(check.CurrentSemver, cached.version)
 		return check, nil
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	out, code, err := runner.Run(ctx, Runtime(exe.Runtime), exe.Distro,
-		npmArgs(Runtime(exe.Runtime), "view "+spec.npmPackage+" version"))
+		loginShellArgs(Runtime(exe.Runtime), toolForQuery(Runtime(exe.Runtime), queryCmd)))
 	if err != nil || code != 0 {
-		check.Note = fmt.Sprintf("最新版查询失败（npm view 退出码 %d）：%s", code, firstLine(out))
+		check.Note = fmt.Sprintf("最新版查询失败（退出码 %d）：%s", code, firstLine(out))
 		return check, nil // 环境态：返回可呈现的部分结果，不 5xx
 	}
-	latest := strings.TrimSpace(lastLine(out))
-	if !semverLike(latest) {
-		check.Note = "最新版查询输出不可解析：" + firstLine(out)
-		return check, nil
+	var latest string
+	if spec.npmPackage != "" {
+		latest = strings.TrimSpace(lastLine(out))
+		if !semverLike(latest) {
+			check.Note = "最新版查询输出不可解析：" + firstLine(out)
+			return check, nil
+		}
+	} else {
+		latest = latestGitTag(out)
+		if latest == "" {
+			check.Note = "源码 tag 查询无可解析版本（refs/tags 无 semver 形态 tag）"
+			return check, nil
+		}
 	}
 	r.mu.Lock()
 	if r.latestCache == nil {
@@ -161,8 +194,65 @@ func (r *Registry) CheckUpdate(ctx context.Context, id string, runner Runner) (U
 	r.latestCache[key] = cachedLatest{version: latest, at: now}
 	r.mu.Unlock()
 	check.Latest = latest
-	check.UpToDate = compareSemver(check.CurrentSemver, latest) >= 0
+	check.UpToDate, check.Comparable = verdict(check.CurrentSemver, latest)
+	if !check.Comparable {
+		scheme := ""
+		if check.CurrentSemver != "" {
+			scheme = "——安装侧 " + majorOf(check.CurrentSemver) + ".x 系 vs 上游 " + majorOf(latest) + ".x 系"
+		}
+		check.Note = strings.TrimSpace("上游源码最新 tag：" + latest +
+			"（版本方案不同" + scheme + "，不可比不判更新）。" + check.Note)
+	}
 	return check, nil
+}
+
+// toolForQuery 检测命令前缀：npm 面 `npm view ...`；git 面 `git ls-remote ...`
+// （Windows native 经 cmd /c 时前缀并入命令串）。
+func toolForQuery(rt Runtime, sub string) string {
+	if strings.HasPrefix(sub, "view ") {
+		return "npm " + sub
+	}
+	return "git " + sub
+}
+
+// verdict 版本判定：同 major 系才可比（comparable=true 时 up_to_date 为语义化
+// 比较结果；跨系不可比 → up_to_date=true 不标红，由调用方 note 说明）。
+func verdict(current, latest string) (upToDate, comparable bool) {
+	if current == "" || latest == "" || majorOf(current) != majorOf(latest) {
+		return true, false
+	}
+	return compareSemver(current, latest) >= 0, true
+}
+
+func majorOf(v string) string {
+	if i := strings.IndexByte(v, '.'); i > 0 {
+		return v[:i]
+	}
+	return v
+}
+
+// latestGitTag 解析 git ls-remote --tags --refs 输出：行尾 refs/tags/<tag>，
+// tag 剥 v 前缀后须为 semver 形态；取最大（semver 比较，非字典序）。
+// 实证输出形状（zai-org/ZCode，2026-10-27）：
+//
+//	7e7bd…  refs/tags/v3.14.3
+//	9ab8a…  refs/tags/v3.15.1
+func latestGitTag(out string) string {
+	best := ""
+	for _, line := range strings.Split(out, "\n") {
+		i := strings.LastIndex(line, "refs/tags/")
+		if i < 0 {
+			continue
+		}
+		tag := strings.TrimPrefix(line[i+len("refs/tags/"):], "v")
+		if !semverLike(tag) {
+			continue // 非 semver tag（rc/nightly/中文名等）不参与
+		}
+		if best == "" || compareSemver(tag, best) > 0 {
+			best = tag
+		}
+	}
+	return best
 }
 
 // RunUpdate 执行更新并回填注册表版本（扫描只在启动时跑——更新后的版本探测由
