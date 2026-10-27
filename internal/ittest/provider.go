@@ -55,6 +55,13 @@ var providerUnavailableMarkers = []string{
 	// 一类）。IT 登录门只查双凭证文件存在——凭证在而 provider 失效同态降级。
 	"model creation failed",
 	"no permission client configured",
+	// claude（2026-10-27 实证 2.1.172）：OAuth token 失效时 -p 以退出码 0 +
+	// result.is_error=true 报告 "Failed to authenticate. API Error: 401 OAuth
+	// access token is invalid."——IT 登录门只查 ~/.claude/.credentials.json 存在，
+	// 文件在而 token 已死，过期与未登录同态（鉴权不可用），按本包纪律降级跳过。
+	// 刷新端点同日 429 限流（环境态）：负责人重新 claude auth login 后自动回绿。
+	"failed to authenticate",
+	"oauth access token is invalid",
 }
 
 // ProviderUnavailable 报告 err 是否为供应商侧不可用（nil 恒 false）。

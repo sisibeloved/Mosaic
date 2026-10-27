@@ -407,3 +407,44 @@ func (f *fakeRunner) RunWithEnv(ctx context.Context, runtime Runtime, distro str
 	f.envCalls = append(f.envCalls, env)
 	return f.Run(ctx, runtime, distro, args)
 }
+
+// claude 凭证面（CredFiles 单面）：~/.claude/.credentials.json（claudeAiOauth）
+// 存在即 logged_in；缺失则 logged_out（实证 2026-10-27，claude 2.1.172——
+// WSL 原生安装位 ~/.local/bin；Windows 未登录态同构：仅 .claude 目录无凭证文件）。
+// 文件存在而 token 失效属环境态（适配器任务错误携 "Failed to authenticate"，
+// ittest 降级承接）——登录门只挡从未登录的确定态。
+func TestScanClaudeLoginViaCredFile(t *testing.T) {
+	newClaudeRunner := func() *fakeRunner {
+		runner := newFakeRunner()
+		runner.lookups["native||claude"] = "/home/u/.local/bin/claude"
+		runner.runs["native||/home/u/.local/bin/claude --version"] = "2.1.172 (Claude Code)\n"
+		runner.homes["native|"] = "/home/u"
+		return runner
+	}
+
+	// 凭证文件存在 → logged_in
+	reg, _ := tempRegistry(t)
+	runner := newClaudeRunner()
+	runner.exists["native||/home/u/.claude/.credentials.json"] = true
+	if err := reg.Scan(context.Background(), runner, BuiltinProbes, ScanOptions{}); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	cl := reg.List()[0]
+	if cl.Adapter != "claude" || cl.Login != LoginLoggedIn || cl.Version != "2.1.172 (Claude Code)" {
+		t.Fatalf("claude 发现/登录态不符：%+v", cl)
+	}
+
+	// 凭证缺失 → logged_out（启用门控拒绝）
+	reg, _ = tempRegistry(t)
+	runner = newClaudeRunner()
+	if err := reg.Scan(context.Background(), runner, BuiltinProbes, ScanOptions{}); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	cl = reg.List()[0]
+	if cl.Login != LoginLoggedOut {
+		t.Fatalf("无凭证应为 logged_out：%+v", cl)
+	}
+	if err := reg.SetEnabled(cl.ID, true); err == nil {
+		t.Fatal("未登录不得启用")
+	}
+}

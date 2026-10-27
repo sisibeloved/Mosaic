@@ -5,8 +5,8 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.90 |
-| 日期 | 2026-09-29 |
+| 版本 | v1.91 |
+| 日期 | 2026-10-27 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
 | 交付目标 | **个人完全可用的 App**：单用户本地运行，一等公民支持 Windows 与 macOS；不是验证性半成品 |
@@ -16,6 +16,7 @@
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v1.91 | 2026-10-27 | Mosaic 项目组 / ZCode | **0.4.0「Agent 兼容性扩充」交付（负责人指令："规划并实现0.4.0版本"）——Claude Code 原生适配器（第五家）+ 发现/登录探测扩面**。**(1) 真机实证钉死（claude 2.1.172，WSL openEuler 原生安装位 ~/.local/bin/claude；Windows 侧 2.1.258 未登录）**：`-p --output-format stream-json` 必须搭配 `--verbose`（缺省退出码 0、stdout 空、真因只在 stderr）；**退出码 0 ≠ 成功**——鉴权失败同样退出码 0，真因在 result 终止事件 is_error/api_error_status（成功判定必须查 result.is_error，与其余四家以非零退出码为主信号的口径不同）；提示词 stdin 是 -p 一等通道（空 stdin 报错反证）——无 argv 上限、无 sh $(cat) 代入、无 MaxPromptBytes 物理闸；CLI 对 401 内部重试 max_retries 10（api_retry 实证）。**(2) 适配器 internal/agent/adapter/claude**（kimi 的 dir-aware Execer + zcode 的 stdout/stderr 分流与矫正重试同构）：session_id 任意事件捕获 + --resume 恢复；--model 原生 flag（评估降档 EvalModel 优先）；--dangerously-skip-permissions YOLO 等价（v1.52 裁定口径）；env 白名单标准代理/CA 系 + ANTHROPIC_BASE_URL（路由非凭据；API key 类不透传 OQ-20）；Windows native 面 HOME/USERPROFILE 双锚。**(3) 探针/装配/前端**：BuiltinProbes 增 claude（CredFiles ~/.claude/.credentials.json 单面、KnownDirGlobs .local/bin + npm 全局面）；syncSeats 增 par_claude_* 座位（180s）；RuntimeOptsEditor placeholder（如 sonnet / opus）；adapterDefaultSpecs 增 claude（settings.json 顶层 model——为此扩 jsonTopLevelString，未配置回退空不虚构）。**(4) 测试**：UT 全套（fixtures 钉真机鉴权失败捕获 exec-authfail.jsonl + manifest 哈希门禁；成功形状文档 schema 内联——见 (6)）+ harness 探针/默认值/排序测试 + conformance 套件 + IT 真机三件套（环境态降级 skip 实证）+ ST 生产路径第五腿（本机桩闭环 6.57s，CI 桩腿同步）；ittest 增 claude 实证措辞（"failed to authenticate"/"oauth access token is invalid"）。**(5) 环境态实录（2026-10-27）**：WSL 侧 OAuth token 失效（credentials.json 在而 expiresAt 停在 2026-06-12，headless 不自动刷新；官方刷新端点 429 限流两试不破）——真机成功态捕获与 IT 全绿受阻，按 mcode 登录过期 v1.81 同例降级放行：负责人重新 `claude auth login` 后 IT 自动回绿、补成功态 fixtures 更新 manifest。**(6) 勾选补正**：M4-0「ZCode 适配器」条目补勾（v0.2.1 已双形态交付，headless 缺口 issue #29 已于 v1.81 解除——勾选框滞后于修订记录，本版对齐）。**(7) 定版**：CHANGELOG [Unreleased]→[0.4.0] - 2026-10-27；README 支持清单五家 + 当前版本推进 + 路线图摘除 0.4.0；版本字样同步（关于区/wails.json）→ 0.4.0 |
 | v1.90 | 2026-09-29 | Mosaic 项目组 / ZCode | **定版 v0.3.0（负责人指令："先把ROADMAP调整下，把协作表格往前挪，然后发布0.3.0版本吧"）——协作表格前移定版 + 多维表格导入收尾**。**(1) ROADMAP**：协作表格自 0.5.0 前移为 **0.3.0（本版交付）**，后续项顺延（0.4.0 Agent 兼容性扩充、0.5.0 对话优化、0.6.0 记忆增强、0.7.0 连接与生态、0.8.0 性能与稳定性、0.9.0 macOS 兼容、1.0.0 不变）；README 当前版本行与文档链陈旧字样（v0.1.0）同步。**(2) 飞书多维表格导入（RFC-0017 §13 补登）**：真实使用触发（负责人贴 /base/ 链接导入被拒）——真机实证 bitable 只认专属 scope（drive:drive 报 99991679，要求 bitable:app:readonly 等）；bitable v1 只读展平（数据表=工作表、字段=首行列头、记录=数据行，富字段取文本、日期 ms 纪元→UTC，限额 ≤50 表/≤200 列/≤4999 行）；FeishuScopes 增 bitable:app:readonly + 设置页一次性准备文案、回写目标守卫 bad_sheet_target、/wiki/ 链接定向提示；UT 三件（token 解析矩阵/展平映射矩阵含分页与过滤/回写守卫）。**(3) CHANGELOG**：[Unreleased] 八条 Added 定版 **[0.3.0] - 2026-09-29**，保留空 [Unreleased] 段。**(4) 版本字样**：wails.json productVersion + SPA 关于区 → 0.3.0。**(5) 发布链**：0.3.0 内容先行落库（111 文件，本窗口多轮交付合并一提交、明细以 v1.85–v1.89 补登为准）+ 定版 docs 提交 + tag v0.3.0 + GitHub Release 发布说明与 Windows 产物（wails 重建、版本元数据真机验证） |
 | v1.89 | 2026-09-29 | Mosaic 项目组 / ZCode | **RFC-0017 M3 原位回写与任务恢复落地（§12）**：值域差异覆写——等格跳过（datetime↔text 等价、CanonicalFormula 公式比对）、不清除远端多出格（计数报告）、结构不匹配整单拒绝；目标=历史导出记录（external_url 去重取最近，不建映射表）；异步分块（≤500 格/块，块间检查点落库 + 取消生效；202 + 单条轮询，进度=cells_written/total）；传输错→unknown 即停不盲续、业务错→partial、取消→canceled/partial（已写保留）；resume 校验本地版本未变 + 未写区域仍等于前态（≤256KiB 持久化；被第三方改动→409 sheet_transfer_target_changed）；HTTP by-id/{id} GET/cancel/resume（by-id 段避开 {provider} 通配冲突）；前端「更新已有目标」列表→diff 预览→进度条/取消/续跑。**真机 e2e（腾讯腿）全链 + 关键发现**：云端把单格区间规范化（写 SUM(B1:B1) 读回 SUM(B1)）→ 新增 sheet.CanonicalFormula（解析→渲染→塌缩；RE2 无反引用改回调比对）统一回写 diff/resume 前态/双家回读校验，消灭幽灵差异（二次预览零差异收敛验证）。测试：diff 矩阵/取消时序/unknown 停跑/resume 被改 409/幂等重放 + sqlite IT + httpapi UT 全绿 |
 | v1.88 | 2026-09-28 | Mosaic 项目组 / ZCode | **RFC-0017 M2 手动副本交换落地（§11）**：中立 CloudSnapshot/CloudCell 模型 + SheetProvider 可选端口（快照读/建副本/能力声明）；腾讯适配（URL→file_id 解码定案 D+base64 并 query_file_info 校验、include_formula 分块读、类型化分块写+回读比对）、飞书适配（三读合并判型：Unformatted×2 判日期格 + Formula 消歧文本转义格；写入 {"type":"text"} 防强转、布尔 =TRUE()、日期序列数+formatter 两步写）；交换服务预览（摘要+全量损失清单+snapshot_hash/版本锚点）→执行（幂等键重放、stale 409、崩溃收敛 unknown）；导入装配走 source=import 修订批（≤1000 格/批）+ 本地容量预检；sheet_transfers 表（未发布直接 DDL）；前端 SheetTransferDialog 三入口；已知缺口显式呈现（样式不迁移/合并仅报告/腾讯日期转文本/超精度双向转文本）。真机 e2e 双平台通过、测试表即测即删 |
@@ -287,7 +288,7 @@
 - [x] 备份/恢复一键化（副本即拷贝 + 校验）；自诊断报告（版本/环境/日志尾/指标快照打包）**（v1.59：VACUUM INTO 快照 + manifest 校验 + 两段式恢复（启动段换库 + restore-safety 回滚保护）+ 诊断 bundle 端点与设置页入口；ST 两段式端到端钉住）**
 - [x] 聊天交互补齐（负责人指令 2026-09-04；交互参考飞书 / Grok Bot / Hermes Agent）：**消息复制** ✅ v1.57；**消息引用回复** ✅ v1.57；**文件上传** ✅ v1.60（RFC-0013 两步上传/令牌单次消费/语境摘录注入/下载/级联清理；ST 全链钉住）
 - [x] Room 管理（增删改查，负责人指令 2026-09-04）**（v1.57 收口）**
-- [ ] ZCode 适配器（自 M5 提前，负责人指令 2026-09-04）：依赖 headless 缺口（issue #29）解除；未解除则能力降级可见、不阻塞 v1.0.0（保险条款随迁不变）
+- [x] ZCode 适配器（自 M5 提前，负责人指令 2026-09-04）：依赖 headless 缺口（issue #29）解除；未解除则能力降级可见、不阻塞 v1.0.0（保险条款随迁不变）**（v0.2.1 已交付 CLI + 桌面版双形态——headless 缺口于 v1.81 解除（上游开源 + 0.16.9 实证），适配器与桌面无感适配见 v1.82/v1.83 修订行；勾选框滞后于修订记录，v1.91 补勾对齐）**
 
 ### M4-1 执行生命周期与长任务回传
 

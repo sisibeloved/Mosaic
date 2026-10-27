@@ -20,7 +20,7 @@ Mosaic 不是"群聊里放几个 Bot"，也不是由 Conductor 派工的传统�
 
 - 🏠 **房间即唯一事实源**：所有公开行为进入权威 Room Event Log（SQLite WAL 事件溯源）；发言显式声明类型化关系（`reply_to` / `supports` / `challenges` 等），系统推断只进入可重建的版本化投影，从不伪装成事实。
 - 🌊 **群聊制讨论引擎**：消息触发反应波，Agent 经 `Observe → Intent → Floor → Generate → Publish` 自决发言或静默（静默同样留痕）；人类可随时打断、暂停，也可对已记录意图保送（`intent.endorsed`）；意图、分数与选择理由公开可查，但不采集模型隐藏推理链。
-- 🔌 **接入你已有的 Agent**：Codex CLI、Kimi Code、MiniMax mcode、ZCode（独立 CLI 或桌面版安装）原生适配，宿主层自动扫描发现、探测登录态；Agent 自带模型与你的订阅额度，Mosaic 不代理发言流量、不核算费用，预算只作熔断。
+- 🔌 **接入你已有的 Agent**：Codex CLI、Claude Code、Kimi Code、MiniMax mcode、ZCode（独立 CLI 或桌面版安装）原生适配，宿主层自动扫描发现、探测登录态；Agent 自带模型与你的订阅额度，Mosaic 不代理发言流量、不核算费用，预算只作熔断。
 - 🧵 **可分叉、可收束的讨论**：讨论线程支持分叉 / 暂停 / 恢复 / 合并，以保留具名异议与反证条件的 Closure Capsule 收束；预算耗尽只产生 Pause Capsule，不伪装成结论。
 - 🧠 **记忆与任务**：双平面记忆（恒常 Capsule + 策展记忆）与全文检索召回注入；带责任人的任务清单、独立长任务执行通道、监控变化检测唤醒。
 - 💾 **本地优先，数据自主**：单进程、内嵌 SQLite，无需外部服务；一键备份 / 恢复、NDJSON 导出、删除墓碑，owner token 写门保护本地 API。
@@ -54,7 +54,7 @@ tools/scripts/build.sh desktop
 
 ### 接入 Agent
 
-安装任一受支持的 Harness CLI（Codex、Kimi Code、MiniMax mcode、ZCode）并完成其自身登录，Mosaic 启动时会自动扫描 PATH / nvm / fnm / volta / WSL 发行版中的可执行程序并探测登录态，注册后即可邀请入房。
+安装任一受支持的 Harness CLI（Codex、Claude Code、Kimi Code、MiniMax mcode、ZCode）并完成其自身登录，Mosaic 启动时会自动扫描 PATH / nvm / fnm / volta / WSL 发行版中的可执行程序并探测登录态，注册后即可邀请入房。
 
 ## 开发与测试
 
@@ -82,7 +82,7 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 文档
 
-- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.3.0）
+- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.4.0）
 - [架构设计说明书](docs/design/2026-08-13-mosaic-architecture-design.md)
 - [RFC-0001 Room Protocol](docs/design/rfc/2026-08-25-rfc-0001-room-protocol.md)
 - [RFC-0002 Agent Protocol](docs/design/rfc/2026-08-25-rfc-0002-agent-protocol.md)
@@ -92,9 +92,8 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 当前状态与路线图
 
-当前版本 **v0.3.0**（2026-09-29，协作表格（RFC-0017）全线交付——本地表格、腾讯/飞书副本交换、原位回写与任务恢复、飞书多维表格导入；同窗搭载飞书/腾讯云文档接入（RFC-0015/0016），见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收。后续版本规划：
+当前版本 **v0.4.0**（2026-10-27，Agent 兼容性扩充——Claude Code 原生适配器（第五家）全线交付：headless stream-json 对接、自动发现与登录探测、模型覆盖原生 `--model`、生产路径桩门禁，见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收。后续版本规划：
 
-- **0.4.0 Agent 兼容性扩充**：新增 Claude Code 等 Harness 适配器（ZCode 已于 0.2.1 提前交付，CLI 与桌面版双形态），扩大自动发现与登录探测的覆盖渠道。
 - **0.5.0 对话优化**：讨论体验打磨——反应波节奏与提示词迭代、@点名与引用增强、注意力与发言权策略调优。
 - **0.6.0 记忆增强**：语义召回与长期记忆策展升级，知识跨讨论沉淀复用。
 - **0.7.0 连接与生态**：远端 Harness 接入与 MCP 工具生态，Agent 的能力边界向外扩展。

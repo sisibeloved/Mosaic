@@ -65,11 +65,16 @@ var codexEffortSet = map[string]bool{
 //     回退模型随 provider 配置而定（不虚构常量）。zcode 走默认分支"空候选 +
 //     自由输入"；模型覆盖由适配器侧 provider 配置 overlay 实现
 //     （ZCODE_PERSONAL_PROVIDER_CONFIG_FILE 重定向），与本默认值面正交。
+//   - claude 2.1.172（0.4.0 实证）：~/.claude/settings.json 顶层 "model"（JSON
+//     标量键——本表面为此扩 jsonTopLevelString）；未配置时 CLI 内置默认模型
+//     随版本轮换（别名 sonnet 指向最新 Sonnet，官方不发布稳定常量）——回退空，
+//     不虚构。模型覆盖走原生 --model flag（适配器 runtimeArgs），与本面正交。
 type adapterDefaultSpec struct {
 	configPath     string // 家目录下配置文件相对路径
 	tomlModelKey   string // TOML 顶层模型键
 	tomlEffortKey  string // TOML 顶层强度键（仅 codex）
 	yamlModelKey   string // YAML 顶层模型键（mcode）
+	jsonModelKey   string // JSON 顶层模型键（claude settings.json）
 	fallbackModel  string // 配置缺失回退（空 = CLI 内置预设未公布，不虚构）
 	fallbackEffort string
 }
@@ -78,6 +83,7 @@ var adapterDefaultSpecs = map[string]adapterDefaultSpec{
 	"codex":   {configPath: ".codex/config.toml", tomlModelKey: "model", tomlEffortKey: "model_reasoning_effort", fallbackEffort: "medium"},
 	"kimi":    {configPath: ".kimi-code/config.toml", tomlModelKey: "default_model", fallbackModel: "kimi-code/k3-256k"},
 	"minimax": {configPath: ".minimax/config.yaml", yamlModelKey: "defaultModel", fallbackModel: "minimax/MiniMax-M3"},
+	"claude":  {configPath: ".claude/settings.json", jsonModelKey: "model"},
 }
 
 // RuntimeOptionsOf 某实例的模型候选与强度档位：kimi 经 Runner 实查
@@ -147,9 +153,12 @@ func resolveDefaults(ctx context.Context, runner Runner, exe *Executable) (model
 	fromConfig := false
 	if home := runner.Home(ctx, Runtime(exe.Runtime), exe.Distro); home != "" {
 		if content, ok := runner.ReadFile(ctx, Runtime(exe.Runtime), exe.Distro, home+"/"+spec.configPath); ok {
-			if spec.yamlModelKey != "" {
+			switch {
+			case spec.yamlModelKey != "":
 				model = yamlTopLevelString(content, spec.yamlModelKey)
-			} else {
+			case spec.jsonModelKey != "":
+				model = jsonTopLevelString(content, spec.jsonModelKey)
+			default:
 				model = tomlTopLevelString(content, spec.tomlModelKey)
 				effort = tomlTopLevelString(content, spec.tomlEffortKey)
 			}
@@ -210,6 +219,17 @@ func yamlTopLevelString(content, key string) string {
 		}
 	}
 	return ""
+}
+
+// jsonTopLevelString 取 JSON 顶层标量键（claude settings.json 的 "model"——
+// 文档化顶层设置）。解析失败/类型不符返回空（损坏配置不虚构默认值）。
+func jsonTopLevelString(content, key string) string {
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(content), &doc); err != nil {
+		return ""
+	}
+	v, _ := doc[key].(string)
+	return v
 }
 
 // parseKimiModels 解析 `kimi provider list --json` 的 models 段（alias → 选项，

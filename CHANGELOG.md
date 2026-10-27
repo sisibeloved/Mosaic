@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-27
+
+路线图 0.4.0「Agent 兼容性扩充」交付：Claude Code 原生 Harness 适配器（第五家）+ 自动发现与登录探测覆盖扩充。
+
+### Added
+
+- 新增 Claude Code 原生 Harness 适配器（第五家）：对接 `claude -p --output-format stream-json --verbose --dangerously-skip-permissions`（实证 2.1.172 = WSL openEuler 原生安装位 `~/.local/bin/claude`；Windows 原生安装位 `%USERPROFILE%\.local\bin` 同构发现）。真机实证钉死三处 CLI 行为并内化为适配器设计：**(1)** `-p --output-format stream-json` 必须搭配 `--verbose`（缺省时退出码 0、stdout 空、真因只在 stderr）——argv 恒带，缺省形态不出现；**(2)** 退出码 0 ≠ 成功——鉴权失败（OAuth token 失效）同样以退出码 0 结束，真因在 result 终止事件 `is_error:true / api_error_status:401`，成功判定必须检查 `result.is_error`、退出码只兜底进程级失败（其余四家以非零退出码为主信号的口径在此不适用；零退出码且无流输出的用法类错误携 stderr 首行诊断）；**(3)** 提示词 stdin 是 `-p` 一等通道（空 stdin 报 "Input must be provided either through stdin or as a prompt argument" 反证）——无 argv 长度上限、无 sh `$(cat)` 代入（kimi/zcode 面的 MAX_ARG_STRLEN 边界不存在，亦无需 MaxPromptBytes 物理闸）。会话连续性：session_id（UUID）自任意流内事件捕获（`system/init` 起即携带）、后续任务 `--resume` 恢复；模型覆盖原生 `--model` flag（别名 sonnet/opus 或全名；评估降档 EvalModel 优先于 Model——zcode 需 provider 配置 overlay 的对应面在此直接生效）；权限面 `--dangerously-skip-permissions`（YOLO 等价，v1.52 裁定口径）；无 `--cwd`——工作目录经 Execer dir 通道（native 进程 cwd / WSL sh cd 包装，kimi 同构）；env 白名单：标准代理/CA 系 + `ANTHROPIC_BASE_URL`（网络路由配置非凭据，中转网关用户随宿主生效；ANTHROPIC_API_KEY/AUTH_TOKEN 属凭据不透传，OQ-20）；Windows native 面 HOME/USERPROFILE 双锚 + 系统必需键（Node os.homedir 走 USERPROFILE，zcode 桌面面同构）。网络注意（实证）：CLI 对 401 内部重试（`system/api_retry`，max_retries 10）——任务超时兜底，勿以短超时驱动。提示词与结果映射与其余四家逐字同源（含 doc_ops/sheet_ops 侧车、history_query 两段式、矫正重试、发布门委托）。
+- fixtures 钉 2.1.172 真机捕获（manifest 哈希门禁同制）：`exec-authfail.jsonl`——鉴权失败全程（hook 事件实录 → system/init（tools 清单）→ system/api_retry×2 → assistant(model=`<synthetic>`) → result is_error），一文件钉住 session 捕获/无关事件跳过/错误正文/失败轮 usage 全零四组语义。成功形状（assistant 文本块 + result.is_error=false + usage 非零）暂以 UT 内联文档 schema 钉住——捕获时 OAuth token 失效（刷新端点 429 限流，环境态），负责人重新 `claude auth login` 后补真机成功态捕获进 fixtures 并更新 manifest（IT 同步自动回绿）。
+- 自动发现与登录探测扩充：harness 探针新增 claude 条目——`claude --version` 实证 "2.1.172 (Claude Code)"；登录态以 `~/.claude/.credentials.json`（claudeAiOauth）存在性判定（Linux/WSL 与 Windows 均文件形态；macOS Keychain 形态不适用本仓平台面）；KnownDirGlobs 覆盖原生安装位 `.local/bin` 与 npm 全局面（nvm/fnm/volta/.npm-global——`@anthropic-ai/claude-code` 包）。已知限制如实登记：文件存在而 token 失效属环境态（适配器任务错误携 "Failed to authenticate"，ittest 降级承接，登录门只挡从未登录）；ANTHROPIC_API_KEY 纯 env 凭据形态文件面不可见——该形态用户无法过自动登录门（凭据留 CLI 侧纪律的代价，kimi/minimax 文件面同构），后续按需评估 env 探测面。
+- ittest 供应商侧不可用判定增 claude 实证措辞（"failed to authenticate" / "oauth access token is invalid"）——真机实录：IT 三件套在 token 失效环境态下降级跳过（携完整 401 诊断），负责人重新登录后自动回绿（mcode 登录过期 v1.81 同例）。
+- 设置页运行参数默认值面：adapterDefaultSpecs 增 claude（`~/.claude/settings.json` 顶层 `model`——为此扩 `jsonTopLevelString` JSON 标量键读取，配置优先；未配置回退空——CLI 内置默认模型随版本轮换、别名 sonnet 指向最新 Sonnet，官方无稳定常量，不虚构）。前端 RuntimeOptsEditor 增 claude 模型 placeholder（如 sonnet / opus）。
+- 生产路径 ST 第五腿（CI 桩门禁）：TestClaudeProductionPath_ST + CI 桩 CLI（stdin 读提示词、init/result 行流、is_error 判定同适配器）——真二进制 + 真适配器 + 真子进程 + 真发布门，本机桩跑通（par_claude 发布 6.57s）；真机 opt-in `MOSAIC_ST_CLAUDE`。
+
 ## [0.3.0] - 2026-09-29
 
 路线图「协作表格」前移定版（负责人指令：协作表格提前，发布 0.3.0）——RFC-0017 全线交付（M1 本地协作表格、M0 双平台真机实测、M2 手动副本交换、M3 原位回写与任务恢复、飞书多维表格只读导入），同窗搭载 RFC-0015/0016 云文档双平台接入与块模型元数据增补。

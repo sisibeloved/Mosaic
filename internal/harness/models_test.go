@@ -19,6 +19,7 @@ func runtimeTestRegistry(t *testing.T) *Registry {
 		{ID: "codex_1", Adapter: "codex", Runtime: "native", Path: "/bin/codex", Enabled: true},
 		{ID: "kimi_1", Adapter: "kimi", Runtime: "wsl", Distro: "d1", Path: "/home/u/.kimi-code/bin/kimi", Enabled: true},
 		{ID: "mcode_1", Adapter: "minimax", Runtime: "wsl", Distro: "d1", Path: "/home/u/.nvm/versions/node/v24/bin/mcode", Enabled: true},
+		{ID: "claude_1", Adapter: "claude", Runtime: "wsl", Distro: "d1", Path: "/home/u/.local/bin/claude", Enabled: true},
 	}
 	return reg
 }
@@ -28,9 +29,18 @@ func TestUpdateRuntime(t *testing.T) {
 	if err := reg.UpdateRuntime("codex_1", "gpt-5.6-sol", "xhigh"); err != nil {
 		t.Fatalf("更新失败: %v", err)
 	}
-	got := reg.List()
-	if got[0].Model != "gpt-5.6-sol" || got[0].ReasoningEffort != "xhigh" {
-		t.Fatalf("更新未生效: %+v", got[0])
+	// List 按适配器名排序（claude 先于 codex）——按 ID 定位断言
+	find := func(id string) Executable {
+		for _, e := range reg.List() {
+			if e.ID == id {
+				return e
+			}
+		}
+		t.Fatalf("实例 %s 不在列表", id)
+		return Executable{}
+	}
+	if got := find("codex_1"); got.Model != "gpt-5.6-sol" || got.ReasoningEffort != "xhigh" {
+		t.Fatalf("更新未生效: %+v", got)
 	}
 	// 非法档位
 	if err := reg.UpdateRuntime("codex_1", "m", "ultra"); err == nil {
@@ -40,9 +50,8 @@ func TestUpdateRuntime(t *testing.T) {
 	if err := reg.UpdateRuntime("codex_1", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	got = reg.List()
-	if got[0].Model != "" || got[0].ReasoningEffort != "" {
-		t.Fatalf("空串应清除覆盖: %+v", got[0])
+	if got := find("codex_1"); got.Model != "" || got.ReasoningEffort != "" {
+		t.Fatalf("空串应清除覆盖: %+v", got)
 	}
 	// 不存在
 	if err := reg.UpdateRuntime("nope", "m", ""); err == nil {
@@ -147,6 +156,14 @@ func TestRuntimeOptionsCodexAndMinimax(t *testing.T) {
 	if len(opts.Models) != 0 || len(opts.EffortLevels) != 0 || opts.Dynamic {
 		t.Fatalf("mcode 空面: %+v", opts)
 	}
+	// claude：无官方列表命令（空候选+自由输入），无强度面
+	opts, err = reg.RuntimeOptionsOf(context.Background(), "claude_1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(opts.Models) != 0 || len(opts.EffortLevels) != 0 || opts.Dynamic {
+		t.Fatalf("claude 空面: %+v", opts)
+	}
 	if _, err := reg.RuntimeOptionsOf(context.Background(), "nope", nil); err == nil {
 		t.Fatal("不存在实例应报错")
 	}
@@ -205,6 +222,21 @@ func TestRuntimeDefaultsFromConfig(t *testing.T) {
 	if opts.DefaultModel != "minimax/MiniMax-M3" || opts.DefaultSource != "config" {
 		t.Fatalf("mcode 配置默认值: %+v", opts)
 	}
+
+	// claude：settings.json 顶层 "model"（JSON 标量键——0.4.0 扩 jsonTopLevelString）
+	runner4 := &fakeRunner{
+		homes: map[string]string{"wsl|d1": "/home/u"},
+		files: map[string]string{
+			"/home/u/.claude/settings.json": `{"model": "claude-sonnet-4-5", "permissions": {"allow": []}}`,
+		},
+	}
+	opts, err = reg.RuntimeOptionsOf(context.Background(), "claude_1", runner4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.DefaultModel != "claude-sonnet-4-5" || opts.DefaultEffort != "" || opts.DefaultSource != "config" {
+		t.Fatalf("claude 配置默认值: %+v", opts)
+	}
 }
 
 func TestRuntimeDefaultsFallback(t *testing.T) {
@@ -229,6 +261,15 @@ func TestRuntimeDefaultsFallback(t *testing.T) {
 	}
 	if opts.DefaultModel != "kimi-code/k3-256k" || opts.DefaultSource != "builtin" {
 		t.Fatalf("kimi 回退默认值: %+v", opts)
+	}
+
+	// claude 无配置：模型 = CLI 内置预设（随版本轮换，官方未公布常量，不虚构）
+	opts, err = reg.RuntimeOptionsOf(context.Background(), "claude_1", runner2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.DefaultModel != "" || opts.DefaultEffort != "" || opts.DefaultSource != "" {
+		t.Fatalf("claude 无配置默认值应全空（内置预设不虚构）: %+v", opts)
 	}
 
 	// nil runner（无探测面）同样回退——确定量不依赖探测可用性

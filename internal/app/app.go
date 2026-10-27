@@ -26,6 +26,7 @@ import (
 
 	"github.com/sisibeloved/Mosaic/apps/web"
 	"github.com/sisibeloved/Mosaic/internal/agent"
+	"github.com/sisibeloved/Mosaic/internal/agent/adapter/claude"
 	"github.com/sisibeloved/Mosaic/internal/agent/adapter/codex"
 	"github.com/sisibeloved/Mosaic/internal/agent/adapter/kimi"
 	"github.com/sisibeloved/Mosaic/internal/agent/adapter/minimax"
@@ -550,6 +551,27 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 					seats = append(seats, room.AgentSeat{
 						ParticipantID: "par_zcode_" + exeKey,
 						Profile:       agent.Profile{ProfileID: profileID, Adapter: "zcode", DisplayName: "ZCode", Channel: channel},
+					})
+				case "claude":
+					// 0.4.0 Agent 兼容性扩充：第五个真实适配器（claude -p stream-json
+					// --verbose（实证必需）+ --resume 恢复 + --dangerously-skip-permissions
+					// YOLO 等价；提示词走 stdin 一等通道——无 argv 上限；模型覆盖原生
+					// --model flag；无 --cwd——工作目录经 Execer dir 传递）。
+					cfg := claude.Config{ClaudePath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir,
+						EvalModel: exe.EvalModel, Model: exe.Model}
+					if wslHome != "" {
+						cfg.WSLDistro = exe.Distro
+						cfg.WSLHome = wslHome
+					}
+					if err := registerAdapter(profileID,
+						strings.Join([]string{exe.Path, dir, exe.Distro, wslHome, exe.Model, exe.EvalModel}, "\x1f"),
+						func() error { return supervisor.RegisterFor(profileID, claude.New(cfg)) }); err != nil {
+						logger.Warn("claude adapter register failed", "profile", profileID, "err", err)
+						continue
+					}
+					seats = append(seats, room.AgentSeat{
+						ParticipantID: "par_claude_" + exeKey,
+						Profile:       agent.Profile{ProfileID: profileID, Adapter: "claude", DisplayName: "Claude", Channel: channel},
 					})
 				}
 			}

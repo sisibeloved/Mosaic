@@ -175,4 +175,30 @@ var BuiltinProbes = []ProbeSpec{
 			},
 		},
 	},
+	{
+		// 实证 2026-10-27（claude 2.1.172，WSL openEuler 原生安装位
+		// ~/.local/bin/claude；Windows 原生安装位 %USERPROFILE%\.local\bin 同构）：
+		// claude --version → "2.1.172 (Claude Code)"；无 login status 式命令子面
+		//（auth status 是 JSON 状态查询，登录判定以凭证文件为准），登录态以
+		// ~/.claude/.credentials.json（claudeAiOauth）存在性判定——Linux/WSL 与
+		// Windows 均文件形态（macOS Keychain 形态不适用于本仓平台面）。npm 包
+		// @anthropic-ai/claude-code 全局安装落于 nvm/fnm/volta 版本 bin（glob 覆盖）。
+		// 注意（实证同日）：文件存在而 OAuth token 失效属环境态——适配器任务错误
+		// 携 "Failed to authenticate"，ittest 降级判定承接，登录门只挡从未登录。
+		// ANTHROPIC_API_KEY（纯 env 凭据）文件面不可见：该形态用户无法过自动登录
+		// 门——登记为已知限制（凭据留 CLI 侧纪律的代价，与 kimi/minimax 文件面
+		// 同构），后续按需评估 env 探测面。
+		Adapter:     "claude",
+		Binary:      "claude",
+		VersionArgs: []string{"--version"},
+		CredFiles:   []string{".claude/.credentials.json"},
+		KnownDirGlobs: []string{
+			".local/bin",
+			".nvm/versions/node/*/bin",
+			".fnm/node-versions/*/installation/bin",
+			".local/share/fnm/aliases/default/bin",
+			".volta/bin",
+			".npm-global/bin",
+		},
+	},
 }

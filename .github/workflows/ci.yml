@@ -130,6 +130,28 @@ jobs:
           STUB
           chmod +x "$stub_dir/zcode"
           MOSAIC_ST_ZCODE_STUB="$stub_dir/zcode" go test -race -tags st ./cmd/mosaic-server/ -run TestZcodeProductionPath_ST -v
+      # 0.4.0 Agent 兼容性扩充：生产 claude 路径同制门禁（真二进制+真适配器+真子进程+真发布门）。
+      - name: Production claude path ST (stub CLI)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          stub_dir="$(mktemp -d)"
+          cat > "$stub_dir/claude" <<'STUB'
+          #!/usr/bin/env bash
+          # claude 桩：仅实现 -p --output-format stream-json 的最小行流契约
+          #（提示词走 stdin——-p 一等通道，实证 2.1.172；行流形状钉 fixtures：
+          # 事件自 system/init 起携 session_id + 顶格 {"type":"result"} 终止行，
+          # 成功判定看 is_error 而非退出码——CLI 对鉴权失败也退出码 0）。
+          prompt="$(cat)"
+          printf '%s\n' '{"type":"system","subtype":"init","session_id":"uuid-stub-1","tools":[]}'
+          if printf '%s' "$prompt" | grep -q '"scores"'; then
+            resp='{\"action\":\"speak\",\"type\":\"answer\",\"public_rationale\":\"stub intent\",\"scores\":{\"relevance\":0.9,\"novelty\":0.5,\"urgency\":0.7,\"confidence\":0.8}}'
+          else
+            resp='{\"body\":\"stub 回答：1+1=2\",\"declared_relations\":[]}'
+          fi
+          printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"$resp\",\"session_id\":\"uuid-stub-1\",\"usage\":{\"input_tokens\":12,\"output_tokens\":5}}"
+          STUB
+          chmod +x "$stub_dir/claude"
+          MOSAIC_ST_CLAUDE_STUB="$stub_dir/claude" go test -race -tags st ./cmd/mosaic-server/ -run TestClaudeProductionPath_ST -v
       - name: Build mosaic-server
         run: go build ./cmd/mosaic-server
       - name: Cross-compile gate (darwin amd64/arm64 + windows amd64)

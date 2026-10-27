@@ -1,0 +1,8 @@
+{
+  "cli_version": "claude 2.1.172 (Claude Code)",
+  "captured_at": "2026-10-27",
+  "note": "claude -p --output-format stream-json --verbose --dangerously-skip-permissions 事件流（真机捕获：WSL openEuler 原生安装位 ~/.local/bin/claude，提示词经 stdin）。捕获时登录态过期（OAuth token 失效，刷新端点 429 限流——环境态）——本文件钉住的是鉴权失败全程的关键形态：退出码 0 而 result 终止事件 is_error=true / api_error_status=401（成功判定必须查 result.is_error，退出码不可信）；system/init（session_id 自此可见）、system/api_retry×2（CLI 对 401 内部重试 max_retries 10）、assistant(model=\"<synthetic>\") 转录与 result 错误正文。首两对 hook_started/hook_response 事件为本机 SessionStart 钩子实录——解析口径跳过无关事件由其钉住。成功形状（assistant 文本块 + result.is_error=false + usage 非零）暂以 UT 内联文档 schema 钉住；负责人重新 claude auth login 后应补真机成功态捕获进本目录并更新本 manifest。事件 schema 无上游稳定性承诺——conformance 以本 manifest 钉住捕获版本与文件哈希，重捕获必须更新本文件（fixture_gate 测试机器可检，漂移即红）。",
+  "files": {
+    "exec-authfail.jsonl": "sha256:d700a05c9a4cfae75062fb35a5cb3ed3d87e7a0fe010105facd54b602f5d81bb"
+  }
+}
