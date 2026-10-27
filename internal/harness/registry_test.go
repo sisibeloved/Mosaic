@@ -448,3 +448,82 @@ func TestScanClaudeLoginViaCredFile(t *testing.T) {
 		t.Fatal("未登录不得启用")
 	}
 }
+
+// TestDedupSameScope（0.4.1 验收反馈②）：等价重复安装去重——同
+// (adapter, runtime, distro, 渠道类) 且同版本且均未启用才去重（保首个）；版本
+// 不同/已启用/手动登记/跨渠道/跨 scope 一律保留。
+func TestDedupSameScope(t *testing.T) {
+	na := func(id, path, version string, enabled bool) Executable {
+		return Executable{ID: id, Adapter: "claude", Runtime: "native", Path: path,
+			Version: version, Source: SourceAuto, Enabled: enabled, Login: LoginLoggedIn}
+	}
+
+	// 场景一：同版本双装均未启用（claude 实录：.local/bin 原生位 + nvm npm 位）
+	// → 保首个 + 注记
+	reg, _ := tempRegistry(t)
+	reg.exes = []Executable{
+		na("cl_local", "/home/u/.local/bin/claude", "2.1.172", false),
+		na("cl_nvm", "/home/u/.nvm/versions/node/v24/bin/claude", "2.1.172", false),
+		{ID: "cx_1", Adapter: "codex", Runtime: "native", Path: "/home/u/bin/codex", Source: SourceAuto},
+	}
+	reg.dedupScopeLocked()
+	if len(reg.exes) != 2 || reg.exes[0].ID != "cl_local" {
+		t.Fatalf("同版本双装应保首个：%+v", reg.exes)
+	}
+	if notes := reg.DrainNotes(); len(notes) != 1 || !strings.Contains(notes[0], "versions/node") {
+		t.Fatalf("去重应留注记：%v", notes)
+	}
+
+	// 场景二：版本不同（升级过渡/多版本管理）→ 并存
+	reg2, _ := tempRegistry(t)
+	reg2.exes = []Executable{
+		na("cl_local", "/home/u/.local/bin/claude", "2.1.172", false),
+		na("cl_nvm", "/home/u/.nvm/versions/node/v24/bin/claude", "2.1.311", false),
+	}
+	reg2.dedupScopeLocked()
+	if len(reg2.exes) != 2 {
+		t.Fatalf("版本不同的并存应保留：%+v", reg2.exes)
+	}
+	if notes := reg2.DrainNotes(); len(notes) != 0 {
+		t.Fatalf("不应有去重注记：%v", notes)
+	}
+
+	// 场景三：已启用项同版本也不并入 + 手动登记免疫 + 跨渠道（app vs cli）与
+	// 跨 scope（wsl）不受影响
+	reg3, _ := tempRegistry(t)
+	reg3.exes = []Executable{
+		na("cl_local", "/home/u/.local/bin/claude", "2.1.172", true),
+		na("cl_nvm", "/home/u/.nvm/versions/node/v24/bin/claude", "2.1.172", false),
+		{ID: "cl_manual", Adapter: "claude", Runtime: "native", Path: "/opt/claude", Version: "2.1.172", Source: "manual"},
+		{ID: "cl_app", Adapter: "claude", Runtime: "native", Path: "C:/Programs/Claude/claude.exe", Version: "2.1.172", Source: SourceAuto, Channel: "app:claude-desktop"},
+		{ID: "cl_wsl", Adapter: "claude", Runtime: "wsl", Distro: "Ubuntu", Path: "/home/w/.local/bin/claude", Version: "2.1.172", Source: SourceAuto},
+	}
+	reg3.dedupScopeLocked()
+	if len(reg3.exes) != 4 {
+		t.Fatalf("启用/手动/跨渠道/跨 scope 保留，仅未启用等价项去重：%+v", reg3.exes)
+	}
+	for _, e := range reg3.exes {
+		if e.ID == "cl_nvm" {
+			t.Fatalf("启用者的等价未启用副本应去重：%+v", reg3.exes)
+		}
+	}
+}
+
+// TestSanitizeVersion（0.4.1 验收反馈②附带）：损坏 shim 的探测输出（当前目录
+// 路径）不得充当版本；真版本串不受影响。
+func TestSanitizeVersion(t *testing.T) {
+	cases := map[string]string{
+		"0.7.0":                              "0.7.0",
+		"2.1.172 (Claude Code)":              "2.1.172 (Claude Code)",
+		"codex-cli 0.153.4":                  "codex-cli 0.153.4",
+		`\wsl.localhost\openEuler-24.03\opt`: "", // Windows claude.cmd 探测实录
+		"/home/u/x":                          "",
+		"no digits here":                     "",
+		"":                                   "",
+	}
+	for in, want := range cases {
+		if got := sanitizeVersion(in); got != want {
+			t.Fatalf("sanitizeVersion(%q) = %q，期望 %q", in, got, want)
+		}
+	}
+}

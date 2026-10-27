@@ -43,6 +43,10 @@ export function UpdateEditor({ exe, onUpdated }: { exe: Executable; onUpdated: (
   };
 
   const hasUpdate = check && check.latest && !check.up_to_date;
+  // 已知最新（can_check 且比对为最新）→ 更新按钮禁用（0.4.1 验收反馈①：mcode
+  // 已最新不可点）。无检测面的家族（kimi 官方安装器自更新）不知最新态——按钮
+  // 保持可用，title 说明幂等升级语义。
+  const knownCurrent = !!check && check.can_check && check.up_to_date;
 
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -58,7 +62,7 @@ export function UpdateEditor({ exe, onUpdated }: { exe: Executable; onUpdated: (
         <>
           {check.up_to_date ? (
             <span className="text-[11px] text-faint">
-              {check.latest ? `已是最新（${check.latest}）` : "—"}
+              {check.latest ? `已是最新（${check.latest}）` : check.note ? "" : "—"}
             </span>
           ) : hasUpdate ? (
             <span className="rounded-md bg-[color-mix(in_srgb,var(--warn)_14%,transparent)] px-1.5 py-px text-[11px] text-warn">
@@ -68,8 +72,14 @@ export function UpdateEditor({ exe, onUpdated }: { exe: Executable; onUpdated: (
           {check.can_update && (
             <button
               type="button"
-              disabled={updating}
-              title={hasUpdate ? undefined : "当前已是最新或检测失败——仍可强制重装最新版"}
+              disabled={updating || knownCurrent}
+              title={
+                knownCurrent
+                  ? "已是最新版本"
+                  : check.can_check
+                    ? "检测失败或未知——重装最新版（幂等）"
+                    : "该 CLI 无独立检测面——更新命令幂等执行，已是最新则无动作"
+              }
               onClick={() => void runUpdate()}
               className="rounded-lg bg-accent-soft px-2 py-0.5 text-[11px] text-accent transition-opacity hover:opacity-85 disabled:opacity-40"
             >

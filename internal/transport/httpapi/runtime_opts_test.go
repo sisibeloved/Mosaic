@@ -192,9 +192,10 @@ func TestUpdateRunEndpoint(t *testing.T) {
 
 func TestUpdateRunEndpointManualChannel(t *testing.T) {
 	ts, _ := runtimeTestServer(t)
-	// 手动登记 kimi（miniRunner 探测全通过：凭证文件面 Exists=true）
+	// 手动登记 zcode（manual 更新通道——kimi 验收反馈③后已有官方自更新通道，
+	// manual 只剩 zcode）
 	resp, err := http.Post(ts.URL+"/v1/harness/executables", "application/json",
-		strings.NewReader(`{"adapter":"kimi","runtime":"native","path":"/opt/tools/kimi"}`))
+		strings.NewReader(`{"adapter":"zcode","runtime":"native","path":"/opt/tools/zcode"}`))
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -208,16 +209,16 @@ func TestUpdateRunEndpointManualChannel(t *testing.T) {
 	}
 	_ = json.NewDecoder(list.Body).Decode(&doc)
 	list.Body.Close()
-	var kimiID string
+	var zcodeID string
 	for _, exe := range doc.Executables {
-		if exe.Adapter == "kimi" {
-			kimiID = exe.ID
+		if exe.Adapter == "zcode" {
+			zcodeID = exe.ID
 		}
 	}
-	if kimiID == "" {
-		t.Fatal("kimi 未登记")
+	if zcodeID == "" {
+		t.Fatal("zcode 未登记")
 	}
-	resp2, _ := http.Post(ts.URL+"/v1/harness/executables/"+url.PathEscape(kimiID)+"/update", "", nil)
+	resp2, _ := http.Post(ts.URL+"/v1/harness/executables/"+url.PathEscape(zcodeID)+"/update", "", nil)
 	resp2.Body.Close()
 	if resp2.StatusCode != http.StatusConflict {
 		t.Fatalf("manual 家族应 409 no_update_channel = %d", resp2.StatusCode)

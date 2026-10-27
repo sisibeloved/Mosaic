@@ -245,12 +245,12 @@ func probeExecutable(ctx context.Context, r Runner, spec ProbeSpec, runtime Runt
 		if bundle != "" {
 			args := append([]string{path, bundle}, spec.VersionArgs...)
 			if out, _, err := r.RunWithEnv(vctx, runtime, distro, []string{"ELECTRON_RUN_AS_NODE=1"}, args); err == nil {
-				exe.Version = firstLine(out)
+				exe.Version = sanitizeVersion(firstLine(out))
 			}
 		} else {
 			args := append([]string{path}, spec.VersionArgs...)
 			if out, _, err := r.RunWithDir(vctx, runtime, distro, binDir, args); err == nil {
-				exe.Version = firstLine(out)
+				exe.Version = sanitizeVersion(firstLine(out))
 			}
 		}
 	}
@@ -451,7 +451,78 @@ func (r *Registry) Scan(ctx context.Context, runner Runner, probes []ProbeSpec, 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.rebindVanishedLocked(ctx, runner, discovered)
+	r.dedupScopeLocked() // 重绑承接之后：等价重复安装才清理，不与身份迁移抢序
 	return r.saveLocked()
+}
+
+// dedupScopeLocked 等价重复安装去重（0.4.1 验收反馈："有多个 claude"——WSL 实录
+// claude@.local/bin 与 claude@nvm 同版本并存：同 HOME 即同配置同凭证，是同一个
+// CLI 的双安装噪声，非独立实例）。去重面刻意收窄（v1.9"多实例不折叠"与 C 轨
+// 2026-08-31 裁定的语义保留——见 m44_rebind/registry_multiinstance 测试）：
+// 仅当 (adapter, runtime, distro, 渠道类) 相同且**版本相同**且**均未启用**才去重
+// （保登记序首个——发现序 = PATH 命中 > KnownDirGlob 序）。版本不同的并存
+// （升级过渡/多版本管理）、跨渠道（codex App vs CLI、zcode 桌面 vs CLI）、跨
+// 运行面（native vs WSL）、手动登记、已启用项一律不受影响。被去重项删除留注记
+// （DrainNotes 消费——装配层日志可见）。
+func (r *Registry) dedupScopeLocked() {
+	classOf := func(ch string) string {
+		if i := strings.IndexByte(ch, ':'); i > 0 {
+			return ch[:i]
+		}
+		return ch
+	}
+	type key struct{ adapter, runtime, distro, class string }
+	// 已见 (scope, 渠道类, 版本) → 首个路径。已启用项计入已见集（启用者在席时，
+	// 等价的未启用副本同样是冗余），但自身永不移除。
+	firstOf := map[key]map[string]string{}
+	for _, e := range r.exes {
+		if e.Source != SourceAuto {
+			continue
+		}
+		k := key{e.Adapter, e.Runtime, e.Distro, classOf(e.Channel)}
+		vers := firstOf[k]
+		if vers == nil {
+			vers = map[string]string{}
+			firstOf[k] = vers
+		}
+		if _, dup := vers[e.Version]; !dup {
+			vers[e.Version] = e.Path
+		}
+	}
+	keep := r.exes[:0]
+	for _, e := range r.exes {
+		if e.Source != SourceAuto || e.Enabled {
+			keep = append(keep, e) // 手动登记/已启用项永不并入（活座位不静默撤）
+			continue
+		}
+		k := key{e.Adapter, e.Runtime, e.Distro, classOf(e.Channel)}
+		first := firstOf[k][e.Version]
+		if first == e.Path {
+			keep = append(keep, e)
+			continue
+		}
+		r.notes = append(r.notes, fmt.Sprintf(
+			"等价重复安装去重：%s 保留 %s，移除 %s（同渠道同版本双安装；版本不同的并存/手动登记不受影响）",
+			e.Adapter, first, e.Path))
+	}
+	r.exes = keep
+}
+
+// sanitizeVersion 版本探测输出清洗（0.4.1 验收反馈：Windows 侧 claude.cmd 的
+// --version 输出是当前目录路径——损坏的 shim 探测面）。形状不像版本的输出置空：
+// 含路径分隔符 / 超长 / 无数字。真版本串（"0.7.0" / "2.1.172 (Claude Code)" /
+// "codex-cli 0.153.4"）必含数字且短。
+func sanitizeVersion(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || len(s) > 64 || strings.ContainsAny(s, `/\`) {
+		return ""
+	}
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			return s
+		}
+	}
+	return ""
 }
 
 // rebindVanishedLocked 消失重绑（ADR-0013）：本次未发现的 auto 项，

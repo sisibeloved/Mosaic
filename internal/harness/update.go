@@ -34,16 +34,21 @@ var ErrNoUpdateChannel = errors.New("harness: 该 CLI 无自动更新通道（�
 // updateChannelSpec 家族更新通道。
 type updateChannelSpec struct {
 	npmPackage string // npm 分发面（最新版查询 npm view；空 = 非 npm 分发）
-	selfUpdate bool   // 官方自更新子命令（claude update）——更新优先走它
-	manualNote string // manual 通道指引（can_update=false 时 UI 呈现）
+	// selfUpdateArgs 官方自更新子命令（更新优先走它——原生安装位/官方安装器
+	// 分发不受本机 npm 管辖）：claude ["update"]；kimi ["upgrade","--yes"]
+	//（2026-10-27 验收反馈轮实证：kimi 无 npm 包 @kimi-code/cli 不存在，但
+	// 官方子命令 upgrade|update 在席，-y 免确认无头执行）。
+	selfUpdateArgs []string
+	manualNote     string // 无检测面/无自动通道时的指引（check note 呈现）
 }
 
 var updateChannels = map[string]updateChannelSpec{
-	"claude":  {npmPackage: "@anthropic-ai/claude-code", selfUpdate: true},
+	"claude":  {npmPackage: "@anthropic-ai/claude-code", selfUpdateArgs: []string{"update"}},
 	"codex":   {npmPackage: "@openai/codex"},
 	"minimax": {npmPackage: "@minimax-ai/code"},
 	"kimi": {
-		manualNote: "Kimi Code 由官方安装器分发（~/.kimi-code/bin）：请用官方安装命令重装最新版，登录态与配置保留",
+		selfUpdateArgs: []string{"upgrade", "--yes"},
+		manualNote:     "Kimi Code 官方安装器分发（~/.kimi-code/bin，无 npm 包）——无独立最新版查询面；「更新到最新」经 kimi upgrade 幂等执行（已是最新则无动作），登录态与配置保留",
 	},
 	"zcode": {
 		manualNote: "ZCode 桌面版请在应用内检查更新（自动升级）；独立 CLI（release tarball）请重跑官方安装脚本",
@@ -52,7 +57,7 @@ var updateChannels = map[string]updateChannelSpec{
 
 func (s updateChannelSpec) channel() string {
 	switch {
-	case s.selfUpdate:
+	case len(s.selfUpdateArgs) > 0:
 		return "self-update"
 	case s.npmPackage != "":
 		return "npm"
@@ -110,7 +115,7 @@ func (r *Registry) CheckUpdate(ctx context.Context, id string, runner Runner) (U
 		CurrentVersion: exe.Version,
 		Channel:        spec.channel(),
 		CanCheck:       spec.npmPackage != "",
-		CanUpdate:      spec.selfUpdate || spec.npmPackage != "",
+		CanUpdate:      len(spec.selfUpdateArgs) > 0 || spec.npmPackage != "",
 		CheckedAt:      now.UTC().Format(time.RFC3339),
 	}
 	check.CurrentSemver = extractSemver(exe.Version)
@@ -172,12 +177,13 @@ func (r *Registry) RunUpdate(ctx context.Context, id string, runner Runner) (Upd
 		return UpdateRun{}, errors.New("harness: 无探测执行面（ProbeRunner 未配置）")
 	}
 	spec := updateChannels[exe.Adapter]
-	if spec.selfUpdate {
-		// 官方自更新（claude update）：登录 shell 包装（与用户终端同环境）。
+	if len(spec.selfUpdateArgs) > 0 {
+		// 官方自更新（claude update / kimi upgrade --yes）：登录 shell 包装
+		//（与用户终端同环境）。
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
 		out, code, err := runner.Run(ctx, Runtime(exe.Runtime), exe.Distro,
-			loginShellArgs(Runtime(exe.Runtime), shellQuote(exe.Path)+" update"))
+			loginShellArgs(Runtime(exe.Runtime), shellQuote(exe.Path)+" "+strings.Join(spec.selfUpdateArgs, " ")))
 		return r.collectUpdate(ctx, runner, exe, out, code, err)
 	}
 	if spec.npmPackage != "" {

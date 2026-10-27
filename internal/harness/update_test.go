@@ -17,7 +17,8 @@ func updateTestRegistry(t *testing.T) (*Registry, string) {
 	return reg, path
 }
 
-// TestUpdateChannelSpecs：五家族通道分类（实证 2026-10-27 分发面）。
+// TestUpdateChannelSpecs：五家族通道分类（实证 2026-10-27 分发面；kimi 验收
+// 反馈轮改道官方自更新——无 npm 包但 upgrade 子命令在席，-y 免确认）。
 func TestUpdateChannelSpecs(t *testing.T) {
 	cases := map[string]struct {
 		channel   string
@@ -27,7 +28,7 @@ func TestUpdateChannelSpecs(t *testing.T) {
 		"claude":  {"self-update", true, true},
 		"codex":   {"npm", true, true},
 		"minimax": {"npm", true, true},
-		"kimi":    {"manual", false, false},
+		"kimi":    {"self-update", false, true},
 		"zcode":   {"manual", false, false},
 	}
 	for adapter, want := range cases {
@@ -35,11 +36,20 @@ func TestUpdateChannelSpecs(t *testing.T) {
 		if spec.channel() != want.channel {
 			t.Fatalf("%s channel = %s，期望 %s", adapter, spec.channel(), want.channel)
 		}
+		if got := len(spec.selfUpdateArgs) > 0 || spec.npmPackage != ""; got != want.canUpdate {
+			t.Fatalf("%s canUpdate = %v，期望 %v", adapter, got, want.canUpdate)
+		}
+		if got := spec.npmPackage != ""; got != want.canCheck {
+			t.Fatalf("%s canCheck = %v，期望 %v", adapter, got, want.canCheck)
+		}
 	}
 	if updateChannels["claude"].npmPackage != "@anthropic-ai/claude-code" ||
 		updateChannels["codex"].npmPackage != "@openai/codex" ||
 		updateChannels["minimax"].npmPackage != "@minimax-ai/code" {
 		t.Fatal("npm 分发面包名与实证不符")
+	}
+	if !reflect.DeepEqual(updateChannels["kimi"].selfUpdateArgs, []string{"upgrade", "--yes"}) {
+		t.Fatal("kimi 自更新子命令应为 upgrade --yes")
 	}
 }
 
@@ -110,16 +120,17 @@ func TestCheckUpdateLatestAndCache(t *testing.T) {
 	}
 }
 
-// TestCheckUpdateManualChannel：kimi 非 npm 分发——无检测面不标红、note 携指引、
-// 不发起任何 runner 调用。
+// TestCheckUpdateManualChannel：zcode 非 npm 分发且无自更新子命令——无检测面
+// 不标红、note 携指引、不发起任何 runner 调用（kimi 验收反馈③改道官方自更新后
+// manual 只剩 zcode；kimi 通道由 TestRunUpdateSelfUpdateKimi 钉）。
 func TestCheckUpdateManualChannel(t *testing.T) {
 	reg, _ := updateTestRegistry(t)
 	reg.exes = []Executable{{
-		ID: "k_1", Adapter: "kimi", Runtime: "native",
-		Path: "/home/u/.kimi-code/bin/kimi", Version: "0.39.1", Enabled: true,
+		ID: "z_2", Adapter: "zcode", Runtime: "native",
+		Path: "/home/u/.zcode/bin/zcode", Version: "0.16.9", Enabled: true,
 	}}
 	runner := newFakeRunner()
-	check, err := reg.CheckUpdate(context.Background(), "k_1", runner)
+	check, err := reg.CheckUpdate(context.Background(), "z_2", runner)
 	if err != nil {
 		t.Fatalf("check: %v", err)
 	}
@@ -261,5 +272,34 @@ func TestRefreshVersionNotFound(t *testing.T) {
 	reg, _ := updateTestRegistry(t)
 	if err := reg.RefreshVersion("nope", "1.0.0"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("应 ErrNotFound：%v", err)
+	}
+}
+
+// TestRunUpdateSelfUpdateKimi：kimi 官方自更新子命令（upgrade --yes——验收反馈③
+// 实证：无 npm 包、upgrade|update 子命令在席、-y 免确认）；检测面缺席如实呈现
+// （can_check=false + note 说明幂等升级语义），更新按钮语义由 UI 承接。
+func TestRunUpdateSelfUpdateKimi(t *testing.T) {
+	reg, _ := updateTestRegistry(t)
+	reg.exes = []Executable{{
+		ID: "k_2", Adapter: "kimi", Runtime: "native",
+		Path: "/home/u/.kimi-code/bin/kimi", Version: "2.1.1", Enabled: true,
+	}}
+	runner := newFakeRunner()
+	runner.runs["native||bash -lc "+shellQuote("/home/u/.kimi-code/bin/kimi")+" upgrade --yes"] = "已升级到 2.2.0\n"
+	runner.runs["native||/home/u/.kimi-code/bin/kimi --version"] = "2.2.0\n"
+
+	check, err := reg.CheckUpdate(context.Background(), "k_2", runner)
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if check.CanCheck || !check.CanUpdate || check.Channel != "self-update" || check.Note == "" {
+		t.Fatalf("kimi 检测面缺席应如实呈现：%+v", check)
+	}
+	res, err := reg.RunUpdate(context.Background(), "k_2", runner)
+	if err != nil {
+		t.Fatalf("run update: %v", err)
+	}
+	if res.NewVersion != "2.2.0" {
+		t.Fatalf("更新结果不符：%+v", res)
 	}
 }

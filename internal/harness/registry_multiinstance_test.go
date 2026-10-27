@@ -14,15 +14,22 @@ func TestScanEnumeratesAllInstances(t *testing.T) {
 	reg, _ := tempRegistry(t)
 	runner := newFakeRunner()
 	runner.homes["native|"] = "/home/u"
-	// PATH 一份 + nvm 一份 + volta 一份（同 adapter 三实例，配置/会话各自独立）
+	// PATH 一份 + nvm 一份 + volta 一份（同 adapter 三实例，配置/会话各自独立）。
+	// 版本各异——0.4.1 裁定：同渠道同版本的等价双装会被 dedupScopeLocked 去重
+	//（claude 双装实录），差异化安装才是多实例枚举的本意；等价去重由
+	// TestDedupSameScope 钉住。
 	runner.lookups["native||codex"] = "/usr/local/bin/codex"
 	nvmDir := "/home/u/.nvm/versions/node/v24.14.1/bin"
 	runner.globs["/home/u/.nvm/versions/node/*/bin"] = []string{nvmDir}
 	runner.globs["/home/u/.volta/bin"] = []string{"/home/u/.volta/bin"}
-	for _, p := range []string{"/usr/local/bin/codex", nvmDir + "/codex", "/home/u/.volta/bin/codex"} {
-		runner.exists["native||"+p] = true
-		runner.runs["native||"+p+" --version"] = "codex-cli 0.149.1\n"
-		runner.runs["native||"+p+" login status"] = "Logged in using ChatGPT\n"
+	for _, pv := range []struct{ p, v string }{
+		{"/usr/local/bin/codex", "codex-cli 0.149.1"},
+		{nvmDir + "/codex", "codex-cli 0.150.0"},
+		{"/home/u/.volta/bin/codex", "codex-cli 0.151.0"},
+	} {
+		runner.exists["native||"+pv.p] = true
+		runner.runs["native||"+pv.p+" --version"] = pv.v + "\n"
+		runner.runs["native||"+pv.p+" login status"] = "Logged in using ChatGPT\n"
 	}
 
 	if err := reg.Scan(context.Background(), runner, BuiltinProbes, ScanOptions{}); err != nil {
@@ -188,16 +195,21 @@ func TestListSortedByAdapterPriorityPath(t *testing.T) {
 	reg, _ := tempRegistry(t)
 	runner := newFakeRunner()
 	runner.homes["native|"] = "/home/u"
-	// codex cli 两份 + codex app 一份 + kimi 一份
+	// codex cli 两份（版本各异——同版本等价双装会被 0.4.1 去重收窄）+ codex app
+	// 一份（渠道类不同，与 cli 版本相同也不受影响）+ kimi 一份
 	runner.lookups["native||codex"] = "/usr/local/bin/codex"
 	runner.globs["/home/u/.volta/bin"] = []string{"/home/u/.volta/bin"}
 	runner.lookups["native||kimi"] = "/home/u/.kimi-code/bin/kimi"
 	appDir := `C:/Program Files/WindowsApps/OpenAI.Codex_26.820.9563.0_x64__2p2nqsd0c76g0/app/resources`
 	runner.globs[`C:/Program Files/WindowsApps/OpenAI.Codex_*/app/resources`] = []string{appDir}
-	for _, p := range []string{"/usr/local/bin/codex", "/home/u/.volta/bin/codex", appDir + "/codex.exe"} {
-		runner.exists["native||"+p] = true
-		runner.runs["native||"+p+" --version"] = "codex-cli 0.149.1\n"
-		runner.runs["native||"+p+" login status"] = "Logged in using ChatGPT\n"
+	for _, pv := range []struct{ p, v string }{
+		{"/usr/local/bin/codex", "codex-cli 0.149.1"},
+		{"/home/u/.volta/bin/codex", "codex-cli 0.150.0"},
+		{appDir + "/codex.exe", "codex-cli 0.149.1"},
+	} {
+		runner.exists["native||"+pv.p] = true
+		runner.runs["native||"+pv.p+" --version"] = pv.v + "\n"
+		runner.runs["native||"+pv.p+" login status"] = "Logged in using ChatGPT\n"
 	}
 	runner.runs["native||/home/u/.kimi-code/bin/kimi --version"] = "0.39.1\n"
 	runner.exists["native||/home/u/.kimi-code/credentials/kimi-code.json"] = true
