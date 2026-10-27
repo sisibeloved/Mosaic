@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, type BackupSummary, type Executable, type MonitorView, type SettingsDoc } from "../api/client";
 import { AppLogo } from "../components/AppLogo";
 import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
+import { UpdateEditor } from "../components/UpdateEditor";
 import { useDevMode } from "../state/dev";
 import { refreshAgentSeats } from "../state/rooms";
 import { useTheme } from "../state/theme";
@@ -493,6 +494,9 @@ export function SettingsPage() {
                         </div>
                         {/* v1.48 运行参数：模型覆盖与思考强度（kimi 实查候选；codex 五档强度） */}
                         <RuntimeOptsEditor exe={exe} />
+                        {/* 0.4.1 版本检测与更新：npm 分发面实查最新版；claude 官方自更新；
+                            kimi/zcode manual 指引（更新后版本回填注册表） */}
+                        <UpdateEditor exe={exe} onUpdated={() => void refreshExecutables()} />
                       </li>
                     );
                   })}

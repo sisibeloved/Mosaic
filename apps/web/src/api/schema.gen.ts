@@ -1072,6 +1072,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/harness/executables/{id}/update-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Agent CLI 版本检测（0.4.1——对照上游最新版）
+         * @description npm 分发面家族（claude/codex/minimax）经登录 shell 实查 `npm view
+         *     <pkg> version`（结果缓存 30 分钟；bash -lc 形态实证：绝对路径 npm 缺
+         *     node、sh -lc 解析到 Windows 互操作 npm）。kimi/zcode 非 npm 分发：
+         *     can_check=false，channel=manual，note 携手动更新指引。检测失败（网络
+         *     瞬态）返回 200 + note 携原因（不缓存失败）。
+         */
+        get: operations["getHarnessExecutableUpdateCheck"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/harness/executables/{id}/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 更新 Agent CLI 到最新版（0.4.1；同步执行，分钟级）
+         * @description claude 走官方自更新子命令（`claude update`——原生安装位不受 npm 管辖）；
+         *     codex/minimax 走 `npm install -g <pkg>@latest`（登录 shell 形态，与用户
+         *     终端同环境）；kimi/zcode 无自动通道（409 no_update_channel，note 携
+         *     指引）。完成后重探版本并回填注册表（扫描只在启动时跑——版本刷新由本
+         *     端点显式触发）。同步执行（npm install 分钟级），客户端须容忍长等待。
+         */
+        post: operations["runHarnessExecutableUpdate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2067,6 +2115,40 @@ export interface components {
              * @enum {string}
              */
             default_source?: "config" | "builtin" | "";
+        };
+        /** @description Agent CLI 版本检测（0.4.1）：注册表探测版本对照上游最新版（npm 分发面经登录 shell 实查，缓存 30 分钟）。 */
+        HarnessUpdateCheck: {
+            adapter: string;
+            /** @description 注册表探测原文（如 "2.1.172 (Claude Code)"） */
+            current_version: string;
+            /** @description 原文中解析出的 x.y.z（解析不出为空） */
+            current_semver?: string;
+            /** @description 上游最新版（检测失败为空） */
+            latest?: string;
+            /** @description current_semver ≥ latest（无检测面的 manual 家族恒 true——不标红） */
+            up_to_date: boolean;
+            /** @description 有 npm 分发面（可查最新版） */
+            can_check: boolean;
+            /** @description 有自动更新通道（npm / 官方自更新） */
+            can_update: boolean;
+            /**
+             * @description 更新通道
+             * @enum {string}
+             */
+            channel: "npm" | "self-update" | "manual";
+            /** @description manual 指引 / 检测失败原因 */
+            note?: string;
+            /** Format: date-time */
+            checked_at: string;
+        };
+        /** @description 更新执行结果（0.4.1）：完成后重探版本并回填注册表。 */
+        HarnessUpdateRun: {
+            /** @constant */
+            status: "ok";
+            /** @description 更新后实测版本（--version 重探） */
+            new_version: string;
+            /** @description 更新命令输出尾（排障可见） */
+            output_tail?: string;
         };
         /** @description 任务清单项（M3-3 tasklist）：显式申报协议派生（mosaic-todo 围栏块，可带 @负责人 指派）+ 人工门控裁定（task.resolved）。 */
         TaskItem: {
@@ -4309,6 +4391,66 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            503: components["responses"]["HarnessUnavailable"];
+        };
+    };
+    getHarnessExecutableUpdateCheck: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 注册表唯一 ID（含路径，URL 编码传递） */
+                id: components["parameters"]["ExecutableID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 版本检测结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HarnessUpdateCheck"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["HarnessUnavailable"];
+        };
+    };
+    runHarnessExecutableUpdate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 注册表唯一 ID（含路径，URL 编码传递） */
+                id: components["parameters"]["ExecutableID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 更新完成（new_version 为更新后实测版本） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HarnessUpdateRun"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            /** @description no_update_channel（该家族无自动更新通道） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             503: components["responses"]["HarnessUnavailable"];
         };
     };

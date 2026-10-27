@@ -602,6 +602,56 @@ func (s *server) GetHarnessExecutableModels(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, opts)
 }
 
+// GetHarnessExecutableUpdateCheck GET /v1/harness/executables/{id}/update-check：
+// Agent CLI 版本检测（0.4.1）——注册表探测版本对照上游最新版（npm view 经登录
+// shell 实查，缓存 30 分钟）。检测失败返回 200 + note（环境态不 5xx）。
+func (s *server) GetHarnessExecutableUpdateCheck(w http.ResponseWriter, r *http.Request, id apigen.ExecutableID) {
+	if s.deps.Harness == nil {
+		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")
+		return
+	}
+	check, err := s.deps.Harness.CheckUpdate(r.Context(), id, s.deps.ProbeRunner)
+	if err != nil {
+		if errors.Is(err, harness.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		s.writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, check)
+}
+
+// RunHarnessExecutableUpdate POST /v1/harness/executables/{id}/update：更新 CLI
+// 到最新版（0.4.1）。同步执行（npm install 分钟级）；完成后重探版本并回填
+// 注册表。kimi/zcode 无自动通道 → 409 no_update_channel（note 携指引）。
+func (s *server) RunHarnessExecutableUpdate(w http.ResponseWriter, r *http.Request, id apigen.ExecutableID) {
+	if s.deps.Harness == nil {
+		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")
+		return
+	}
+	if !s.guardWrite(w, r, false) { // 空 body：只做跨源门（enable/disable 同口径）
+		return
+	}
+	if s.deps.ProbeRunner == nil {
+		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "无探测执行面（ProbeRunner 未配置）")
+		return
+	}
+	res, err := s.deps.Harness.RunUpdate(r.Context(), id, s.deps.ProbeRunner)
+	if err != nil {
+		switch {
+		case errors.Is(err, harness.ErrNotFound):
+			writeError(w, http.StatusNotFound, "not_found", err.Error())
+		case errors.Is(err, harness.ErrNoUpdateChannel):
+			writeError(w, http.StatusConflict, "no_update_channel", err.Error())
+		default:
+			s.writeDomainError(w, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 func (s *server) setEnabled(w http.ResponseWriter, r *http.Request, id string, enabled bool) {
 	if s.deps.Harness == nil {
 		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")

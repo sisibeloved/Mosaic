@@ -299,6 +299,8 @@ type Registry struct {
 	path  string
 	exes  []Executable
 	notes []string // 最近一次扫描的重绑/清理注记（DrainNotes 消费——装配层日志用）
+	// latestCache npm 最新版查询缓存（0.4.1 版本检测；懒初始化，见 update.go）。
+	latestCache map[string]cachedLatest
 }
 
 // DrainNotes 取走并清空最近一次扫描的身份迁移注记。

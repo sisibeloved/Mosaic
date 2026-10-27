@@ -1545,6 +1545,56 @@ paths:
                 $ref: "#/components/schemas/RuntimeOptions"
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/HarnessUnavailable" }
+  /v1/harness/executables/{id}/update-check:
+    get:
+      operationId: getHarnessExecutableUpdateCheck
+      summary: Agent CLI 版本检测（0.4.1——对照上游最新版）
+      description: |
+        npm 分发面家族（claude/codex/minimax）经登录 shell 实查 `npm view
+        <pkg> version`（结果缓存 30 分钟；bash -lc 形态实证：绝对路径 npm 缺
+        node、sh -lc 解析到 Windows 互操作 npm）。kimi/zcode 非 npm 分发：
+        can_check=false，channel=manual，note 携手动更新指引。检测失败（网络
+        瞬态）返回 200 + note 携原因（不缓存失败）。
+      parameters:
+        - $ref: "#/components/parameters/ExecutableID"
+      responses:
+        "200":
+          description: 版本检测结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HarnessUpdateCheck"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/HarnessUnavailable" }
+  /v1/harness/executables/{id}/update:
+    post:
+      operationId: runHarnessExecutableUpdate
+      summary: 更新 Agent CLI 到最新版（0.4.1；同步执行，分钟级）
+      description: |
+        claude 走官方自更新子命令（`claude update`——原生安装位不受 npm 管辖）；
+        codex/minimax 走 `npm install -g <pkg>@latest`（登录 shell 形态，与用户
+        终端同环境）；kimi/zcode 无自动通道（409 no_update_channel，note 携
+        指引）。完成后重探版本并回填注册表（扫描只在启动时跑——版本刷新由本
+        端点显式触发）。同步执行（npm install 分钟级），客户端须容忍长等待。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ExecutableID"
+      responses:
+        "200":
+          description: 更新完成（new_version 为更新后实测版本）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HarnessUpdateRun"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: no_update_channel（该家族无自动更新通道）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503": { $ref: "#/components/responses/HarnessUnavailable" }
 components:
   securitySchemes:
     OwnerToken:
@@ -2831,6 +2881,29 @@ components:
         default_model: { type: string, description: "不覆盖时的 CLI 默认模型（配置文件值优先；空 = CLI 内置预设未公布）" }
         default_effort: { type: string, description: "不覆盖时的 CLI 默认思考强度（codex 官方默认 medium）" }
         default_source: { type: string, enum: [config, builtin, ""], description: "默认值来源——config=CLI 配置文件；builtin=官方文档/出厂回退" }
+    HarnessUpdateCheck:
+      type: object
+      required: [adapter, current_version, up_to_date, can_check, can_update, channel, checked_at]
+      description: Agent CLI 版本检测（0.4.1）：注册表探测版本对照上游最新版（npm 分发面经登录 shell 实查，缓存 30 分钟）。
+      properties:
+        adapter: { type: string }
+        current_version: { type: string, description: 注册表探测原文（如 "2.1.172 (Claude Code)"） }
+        current_semver: { type: string, description: 原文中解析出的 x.y.z（解析不出为空） }
+        latest: { type: string, description: 上游最新版（检测失败为空） }
+        up_to_date: { type: boolean, description: "current_semver ≥ latest（无检测面的 manual 家族恒 true——不标红）" }
+        can_check: { type: boolean, description: 有 npm 分发面（可查最新版） }
+        can_update: { type: boolean, description: 有自动更新通道（npm / 官方自更新） }
+        channel: { type: string, enum: [npm, self-update, manual], description: 更新通道 }
+        note: { type: string, description: "manual 指引 / 检测失败原因" }
+        checked_at: { type: string, format: date-time }
+    HarnessUpdateRun:
+      type: object
+      required: [status, new_version]
+      description: 更新执行结果（0.4.1）：完成后重探版本并回填注册表。
+      properties:
+        status: { type: string, const: ok }
+        new_version: { type: string, description: 更新后实测版本（--version 重探） }
+        output_tail: { type: string, description: 更新命令输出尾（排障可见） }
     TaskItem:
       type: object
       required: [task_id, owner, requester, text, source_event_id, declared_at, declared_seq, waves_since, overdue, status]

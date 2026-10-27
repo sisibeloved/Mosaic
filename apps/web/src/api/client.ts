@@ -13,6 +13,8 @@ export type ManualExecutableRequest = Schemas["ManualExecutableRequest"];
 export type TaskItem = Schemas["TaskItem"];
 export type SearchHit = Schemas["SearchHit"];
 export type RuntimeOptions = Schemas["RuntimeOptions"];
+export type HarnessUpdateCheck = Schemas["HarnessUpdateCheck"];
+export type HarnessUpdateRun = Schemas["HarnessUpdateRun"];
 export type MemoryCapsule = NonNullable<NonNullable<components["schemas"]["MemoryView"]>["capsules"]>[number];
 export type CuratedEntry = NonNullable<NonNullable<components["schemas"]["MemoryView"]>["curated"]>[number];
 export type CuratedBudget = NonNullable<NonNullable<components["schemas"]["MemoryView"]>["curated_budget"]>;
@@ -457,6 +459,16 @@ export const api = {
   /** v1.48 模型候选与强度档位（kimi 实查；codex 五档强度；mcode 空面）。 */
   executableModels(id: string): Promise<RuntimeOptions> {
     return request(`/v1/harness/executables/${encodeURIComponent(id)}/models`);
+  },
+  /** 0.4.1 版本检测：对照上游最新版（npm 分发面经登录 shell 实查，缓存 30 分钟）。 */
+  executableUpdateCheck(id: string): Promise<HarnessUpdateCheck> {
+    return request(`/v1/harness/executables/${encodeURIComponent(id)}/update-check`);
+  },
+  /** 0.4.1 更新 CLI 到最新版（同步分钟级；kimi/zcode 无自动通道 → 409 no_update_channel）。 */
+  executableUpdate(id: string): Promise<HarnessUpdateRun> {
+    return request(`/v1/harness/executables/${encodeURIComponent(id)}/update`, {
+      method: "POST",
+    });
   },
   debugState(roomID: string): Promise<unknown> {
     return request(`/v1/debug/rooms/${encodeURIComponent(roomID)}/state`);

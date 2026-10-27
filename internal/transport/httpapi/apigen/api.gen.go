@@ -414,6 +414,42 @@ func (e ExternalRefKind) Valid() bool {
 	}
 }
 
+// Defines values for HarnessUpdateCheckChannel.
+const (
+	Manual     HarnessUpdateCheckChannel = "manual"
+	Npm        HarnessUpdateCheckChannel = "npm"
+	SelfUpdate HarnessUpdateCheckChannel = "self-update"
+)
+
+// Valid indicates whether the value is a known member of the HarnessUpdateCheckChannel enum.
+func (e HarnessUpdateCheckChannel) Valid() bool {
+	switch e {
+	case Manual:
+		return true
+	case Npm:
+		return true
+	case SelfUpdate:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for HarnessUpdateRunStatus.
+const (
+	HarnessUpdateRunStatusOk HarnessUpdateRunStatus = "ok"
+)
+
+// Valid indicates whether the value is a known member of the HarnessUpdateRunStatus enum.
+func (e HarnessUpdateRunStatus) Valid() bool {
+	switch e {
+	case HarnessUpdateRunStatusOk:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for MemoryViewCapsulesClosureType.
 const (
 	MemoryViewCapsulesClosureTypeBoundedDisagreement MemoryViewCapsulesClosureType = "bounded_disagreement"
@@ -983,13 +1019,13 @@ func (e TaskItemStatus) Valid() bool {
 
 // Defines values for GetHealthz200JSONResponseBodyStatus.
 const (
-	Ok GetHealthz200JSONResponseBodyStatus = "ok"
+	GetHealthz200JSONResponseBodyStatusOk GetHealthz200JSONResponseBodyStatus = "ok"
 )
 
 // Valid indicates whether the value is a known member of the GetHealthz200JSONResponseBodyStatus enum.
 func (e GetHealthz200JSONResponseBodyStatus) Valid() bool {
 	switch e {
-	case Ok:
+	case GetHealthz200JSONResponseBodyStatusOk:
 		return true
 	default:
 		return false
@@ -1722,6 +1758,52 @@ type FeishuCallbackRequest struct {
 	// Code 授权码（浏览器跳转地址栏 ?code= 的值；单次有效）
 	Code string `json:"code"`
 }
+
+// HarnessUpdateCheck Agent CLI 版本检测（0.4.1）：注册表探测版本对照上游最新版（npm 分发面经登录 shell 实查，缓存 30 分钟）。
+type HarnessUpdateCheck struct {
+	Adapter string `json:"adapter"`
+
+	// CanCheck 有 npm 分发面（可查最新版）
+	CanCheck bool `json:"can_check"`
+
+	// CanUpdate 有自动更新通道（npm / 官方自更新）
+	CanUpdate bool `json:"can_update"`
+
+	// Channel 更新通道
+	Channel   HarnessUpdateCheckChannel `json:"channel"`
+	CheckedAt time.Time                 `json:"checked_at"`
+
+	// CurrentSemver 原文中解析出的 x.y.z（解析不出为空）
+	CurrentSemver *string `json:"current_semver,omitempty"`
+
+	// CurrentVersion 注册表探测原文（如 "2.1.172 (Claude Code)"）
+	CurrentVersion string `json:"current_version"`
+
+	// Latest 上游最新版（检测失败为空）
+	Latest *string `json:"latest,omitempty"`
+
+	// Note manual 指引 / 检测失败原因
+	Note *string `json:"note,omitempty"`
+
+	// UpToDate current_semver ≥ latest（无检测面的 manual 家族恒 true——不标红）
+	UpToDate bool `json:"up_to_date"`
+}
+
+// HarnessUpdateCheckChannel 更新通道
+type HarnessUpdateCheckChannel string
+
+// HarnessUpdateRun 更新执行结果（0.4.1）：完成后重探版本并回填注册表。
+type HarnessUpdateRun struct {
+	// NewVersion 更新后实测版本（--version 重探）
+	NewVersion string `json:"new_version"`
+
+	// OutputTail 更新命令输出尾（排障可见）
+	OutputTail *string                `json:"output_tail,omitempty"`
+	Status     HarnessUpdateRunStatus `json:"status"`
+}
+
+// HarnessUpdateRunStatus defines model for HarnessUpdateRun.Status.
+type HarnessUpdateRunStatus string
 
 // ManualExecutableRequest defines model for ManualExecutableRequest.
 type ManualExecutableRequest struct {
@@ -2820,6 +2902,12 @@ type ServerInterface interface {
 	// GetHarnessExecutableModels 模型候选与思考强度档位（v1.48）
 	// (GET /v1/harness/executables/{id}/models)
 	GetHarnessExecutableModels(w http.ResponseWriter, r *http.Request, id ExecutableID)
+	// RunHarnessExecutableUpdate 更新 Agent CLI 到最新版（0.4.1；同步执行，分钟级）
+	// (POST /v1/harness/executables/{id}/update)
+	RunHarnessExecutableUpdate(w http.ResponseWriter, r *http.Request, id ExecutableID)
+	// GetHarnessExecutableUpdateCheck Agent CLI 版本检测（0.4.1——对照上游最新版）
+	// (GET /v1/harness/executables/{id}/update-check)
+	GetHarnessExecutableUpdateCheck(w http.ResponseWriter, r *http.Request, id ExecutableID)
 	// ListMonitors 监控源列表（含运行态水位）
 	// (GET /v1/monitors)
 	ListMonitors(w http.ResponseWriter, r *http.Request)
@@ -3811,6 +3899,58 @@ func (siw *ServerInterfaceWrapper) GetHarnessExecutableModels(w http.ResponseWri
 	handler.ServeHTTP(w, r)
 }
 
+// RunHarnessExecutableUpdate operation middleware
+func (siw *ServerInterfaceWrapper) RunHarnessExecutableUpdate(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id ExecutableID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RunHarnessExecutableUpdate(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetHarnessExecutableUpdateCheck operation middleware
+func (siw *ServerInterfaceWrapper) GetHarnessExecutableUpdateCheck(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id ExecutableID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetHarnessExecutableUpdateCheck(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListMonitors operation middleware
 func (siw *ServerInterfaceWrapper) ListMonitors(w http.ResponseWriter, r *http.Request) {
 
@@ -4565,6 +4705,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/disable", wrapper.DisableHarnessExecutable)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/v1/harness/executables/{id}", wrapper.UpdateHarnessExecutable)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables/{id}/models", wrapper.GetHarnessExecutableModels)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables/{id}/update-check", wrapper.GetHarnessExecutableUpdateCheck)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/update", wrapper.RunHarnessExecutableUpdate)
 
 	return m
 }

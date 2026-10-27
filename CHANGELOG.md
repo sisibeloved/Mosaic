@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增 Agent CLI 版本检测与更新（0.4.1，负责人指令 2026-10-27："本机使用的 CLI 通常不是最新的"——原 0.7.0 连接与生态项前移）：设置页实例行「检查更新 / 更新到最新」。通道按家族分发面实证（2026-10-27 本机）：**claude** 官方自更新子命令 `claude update|upgrade`（原生安装位 ~/.local/bin 不受 npm 管辖，npm i -g 更新不到它——自更新优先）；**codex/minimax** npm 分发面（`@openai/codex` / `@minimax-ai/code`）走 `npm install -g <pkg>@latest`；**kimi/zcode** 非 npm 分发（官方安装器/桌面应用）→ 无自动通道，409 no_update_channel + note 携手动指引（如实呈现不虚构按钮）。最新版查询 `npm view <pkg> version` 结果缓存 30 分钟（镜像源首查慢启动实测 ~10s，失败不缓存）；异构版本原文（"2.1.172 (Claude Code)" / "codex-cli 0.153.4"）抽 semver 后语义化比较。npm 调用形态实证钉死：一律 `bash -lc` 登录 shell（绝对路径 npm 缺 node——shebang `/usr/bin/env node` 需 nvm PATH；`sh -lc` 会解析到 Windows 互操作 npm——dash 登录不读 bash 的 nvm 注入）；Windows native 面走 `cmd /c`。更新完成后重探 `--version` 并回填注册表持久化（扫描只在启动时跑，版本刷新由端点显式触发），同步执行（npm install 分钟级，UI 呈"更新中…"）。HTTP 增 `GET /v1/harness/executables/{id}/update-check` 与 `POST .../update`（写门：Origin/Content-Type/OwnerToken 三层 + 跨运行面执行——WSL 安装的 CLI 在其发行版内更新）；OpenAPI/apigen/TS 三链同步。真机端到端冒烟（WSL 真实环境）：claude 2.1.172→2.1.311 与 codex 0.153.4→0.164.0 检出有更新、minimax 0.7.0 比对为最新、kimi/zcode manual 指引呈现。
+
 ## [0.4.0] - 2026-10-27
 
 路线图 0.4.0「Agent 兼容性扩充」交付：Claude Code 原生 Harness 适配器（第五家）+ 自动发现与登录探测覆盖扩充。

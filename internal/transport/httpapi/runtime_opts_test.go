@@ -121,3 +121,105 @@ func TestRuntimeModelsEndpoint(t *testing.T) {
 		t.Fatalf("不存在 = %d", resp404.StatusCode)
 	}
 }
+
+// 0.4.1 版本检测与更新端点接线：GET update-check（miniRunner 输出非 semver →
+// 200 + note 面如实现）；POST update（同步收口 + 版本回填注册表）；kimi manual
+// 家族 409 no_update_channel；不存在 404。
+func TestUpdateCheckEndpoint(t *testing.T) {
+	ts, id := runtimeTestServer(t)
+	base := ts.URL + "/v1/harness/executables/" + url.PathEscape(id)
+
+	resp, err := http.Get(base + "/update-check")
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("check status = %d", resp.StatusCode)
+	}
+	var check harness.UpdateCheck
+	if err := json.NewDecoder(resp.Body).Decode(&check); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if check.Adapter != "codex" || check.Channel != "npm" || !check.CanCheck || !check.CanUpdate {
+		t.Fatalf("codex 检测字段不符：%+v", check)
+	}
+	// miniRunner 固定输出非 semver——不可解析面如实呈现（latest 空 + note）
+	if check.Latest != "" || check.Note == "" {
+		t.Fatalf("查询输出不可解析应携 note 不带 latest：%+v", check)
+	}
+
+	// 不存在 → 404
+	resp2, _ := http.Get(ts.URL + "/v1/harness/executables/nope/update-check")
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Fatalf("不存在 = %d", resp2.StatusCode)
+	}
+}
+
+func TestUpdateRunEndpoint(t *testing.T) {
+	ts, id := runtimeTestServer(t)
+	base := ts.URL + "/v1/harness/executables/" + url.PathEscape(id)
+
+	resp, err := http.Post(base+"/update", "", nil)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update status = %d", resp.StatusCode)
+	}
+	var run harness.UpdateRun
+	if err := json.NewDecoder(resp.Body).Decode(&run); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if run.Status != "ok" || run.NewVersion == "" {
+		t.Fatalf("更新结果不符：%+v", run)
+	}
+	// 版本回填注册表（列表透出新版本）
+	list, _ := http.Get(ts.URL + "/v1/harness/executables")
+	var doc struct {
+		Executables []harness.Executable `json:"executables"`
+	}
+	_ = json.NewDecoder(list.Body).Decode(&doc)
+	list.Body.Close()
+	for _, exe := range doc.Executables {
+		if exe.ID == id && exe.Version != run.NewVersion {
+			t.Fatalf("列表版本未回填：%q vs %q", exe.Version, run.NewVersion)
+		}
+	}
+}
+
+func TestUpdateRunEndpointManualChannel(t *testing.T) {
+	ts, _ := runtimeTestServer(t)
+	// 手动登记 kimi（miniRunner 探测全通过：凭证文件面 Exists=true）
+	resp, err := http.Post(ts.URL+"/v1/harness/executables", "application/json",
+		strings.NewReader(`{"adapter":"kimi","runtime":"native","path":"/opt/tools/kimi"}`))
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("add status = %d", resp.StatusCode)
+	}
+	list, _ := http.Get(ts.URL + "/v1/harness/executables")
+	var doc struct {
+		Executables []harness.Executable `json:"executables"`
+	}
+	_ = json.NewDecoder(list.Body).Decode(&doc)
+	list.Body.Close()
+	var kimiID string
+	for _, exe := range doc.Executables {
+		if exe.Adapter == "kimi" {
+			kimiID = exe.ID
+		}
+	}
+	if kimiID == "" {
+		t.Fatal("kimi 未登记")
+	}
+	resp2, _ := http.Post(ts.URL+"/v1/harness/executables/"+url.PathEscape(kimiID)+"/update", "", nil)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusConflict {
+		t.Fatalf("manual 家族应 409 no_update_channel = %d", resp2.StatusCode)
+	}
+}
