@@ -2,6 +2,8 @@
 
 **状态 (Status):** Draft
 
+> 演进提案（2026-10-28）：[RFC-0018](2026-10-28-rfc-0018-personal-agent-swarm.md) §2.2 / §7–8 提议在房间共享记忆之外增加跨房间 Agent、职责与事务记忆，并由 Mosaic 保存语义 Session 和可移植 Checkpoint。该提案尚未生效；本 RFC §7.4 的既有责任边界继续描述现行实现，批准新方案时须同步修订。
+
 **作者 (Authors):** Mosaic 项目组 / ZCode
 
 **创建日期 (Created):** 2026-08-25

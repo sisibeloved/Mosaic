@@ -2,6 +2,8 @@
 
 **状态 (Status):** Approved（2026-08-25 项目负责人确认；首轮审校修订 v0.5 后批准）
 
+> 演进提案（2026-10-28）：[RFC-0018](2026-10-28-rfc-0018-personal-agent-swarm.md) §2.2 / §9–11 提议增加独立 Mission 执行、受限 Agent 委派、作用域 Session 与 Runtime 能力协商。本文现有协议仍为当前依据；新命令与执行类型须经批准、Schema 更新和适配器验收后启用。
+
 **作者 (Authors):** Mosaic 项目组 / ZCode
 
 **创建日期 (Created):** 2026-08-25

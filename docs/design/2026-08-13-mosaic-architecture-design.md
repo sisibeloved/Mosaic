@@ -36,6 +36,8 @@
 | v0.9 | 2026-08-25 | Mosaic 项目组 / ZCode | RFC-0001/0002 首轮审校对齐：消息事件统一为 message.posted（actor.kind 区分）；对外续传/快照改 opaque 视图游标（全局 seq 仅内部，随 RFC-0001 v0.4，落地细节回填待 RFC Approved）；Agent 接入改分级晋级表述（RFC-0002 v0.5）；ADR-0006/0007 状态随 RFC 评审改为 Proposed |
 | v1.0 | 2026-09-16 | Mosaic 项目组 / Kimi Code | RFC-0014 / ADR-0014：协作文档落地——文档作为全局资产（飞书形态）成为第二权威事实源，per-doc 事件流与房间日志并存（同一 SQLite 库），"Room Event Log 唯一权威"表述相应修订；RFC-0009 Artifact 治理的首个落地子集（仅文档，表格后置） |
 
+> 演进提案登记（2026-10-28）：[RFC-0018：长期 Agent、Slot 与圆桌到 Swarm 的协作闭环](rfc/2026-10-28-rfc-0018-personal-agent-swarm.md) 为 Draft，定义跨房间的身份、职责、事务、记忆与 Runtime 边界。其 §2.2 列明对本架构及现行协议的拟议修订；尚未替代本文基线，也不表示功能已实现。
+
 ### 0.4 Keywords 关键词
 
 Mosaic、Multi-Agent Social Runtime、Shared Cognitive Space、Room Protocol、Room Kernel、Participant、Attention、TurnIntent、Floor、Conversation Graph、Epistemic Projection、Evidence Debt、Closure Capsule、Context Receipt、Event Sourcing、Dialogue Structure Projection、Closure Round、Reveal Policy、Directed Exchange、Homogeneity Detection、History Query。

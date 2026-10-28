@@ -5,8 +5,8 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v1.98 |
-| 日期 | 2026-10-27 |
+| 版本 | v1.99 |
+| 日期 | 2026-10-28 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
 | 交付目标 | **个人完全可用的 App**：单用户本地运行，一等公民支持 Windows 与 macOS；不是验证性半成品 |
@@ -16,6 +16,7 @@
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v1.99 | 2026-10-28 | Mosaic 项目组 / Codex | 登记 [RFC-0018：长期 Agent、Slot 与圆桌到 Swarm 的协作闭环](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（Draft，v0.2 审校修订），涵盖生命周期、可迁移记忆与上下文、Runtime 及环境管理员；P0–P5 为提案内分阶段设计，尚未纳入已承诺交付范围或发行版本，现行里程碑和路线图不变。 |
 | v1.98 | 2026-10-28 | Mosaic 项目组 / ZCode | **定版 v0.4.1（负责人指令："好，发布0.4.1版本"）**。**(1) CHANGELOG**：[Unreleased]（Added 版本检测与更新 + Fixed 验收反馈三条）定版 **[0.4.1] - 2026-10-28**，保留空 [Unreleased] 段。**(2) README**：当前版本推进 v0.4.1（三通道全线 + 可视化描述）；路线图摘除 0.4.1。**(3) 版本字样**：wails.json productVersion + SPA 关于区 → 0.4.1。**(4) 发布链**：定版 docs 提交 + tag v0.4.1 + GitHub Release 发布说明 + Windows 产物（wails 重建）；CI 已于同日修复全绿（windows 腿老红清除，见 v1.97 (5)）——发布即干净基线 |
 | v1.97 | 2026-10-27 | Mosaic 项目组 / ZCode | **0.4.1 更新通道三分类重构（负责人裁定："现在是三种更新通道：1.第三方分发仓库，包括但不限于 npm 2.自更新，包括 claude、kimi、mcode 等，本质是一样的，只是各家提供的参数和输出各有差异 3.Mosaic 自带更新通道，主要是 zcode，依赖于我们的打包脚本。这三种得梳理清楚并落到文档中，包括代码实现也需要按这三种抽象，便于后续拓展到其它的 agent"）——ADR-0016 + 代码同构**。**(1) 实证补钉**：mcode 归 self-update——`mcode update` 子命令实证在席（"Check for and install a Minimax Code update"），npm 面降为检测面。**(2) 代码重构**：updateChannelSpec 四杂项（npm/selfUpdate/gitRepo/manualNote）→ familySpec 三选一（channel: registry|self-update|mosaic）+ packageRepo 仓库客户端抽象（latestCmd/installCmd/parseLatest，现役 npmRepo；brew/apt/pip 为兄弟实现）+ mosaic 更新脚本约定 `$HOME/.mosaic/update/<adapter>.sh`（buildUpdateCmd/CheckUpdate 按通道三分派；检测面与更新面正交；过程可视化管线通道无关）。**(3) 文档**：ADR-0016（三分类表/代码抽象/扩展指引四步/放弃方案——按实现细节命名的枚举废弃、脚本约定为用户侧契约不设配置面）；ADR 索引补 0015/0016（0015 此前漏登）；API 枚举收拢 registry|self-update|mosaic（三链重生成）。**(4) 验证**：harness UT（三通道分派/mosaic 脚本在位驱动+缺位拒退/zcode 通道改 mosaic 断言/npmArgs 移除后表单测试改 loginShellArgs）+ httpapi（codex 通道 registry/zcode mosaic 脚本受理 202+SSE 终态）全绿。**(5) CI windows 腿修复（2026-10-28，负责人指令"看看github上的CI为什么失败"）**：自 v0.3.0 起 windows-latest 恒红（macos/ubuntu 绿）——①harness 更新测试 runs 键写死 `bash -lc` 形态，windows 宿主 loginShellArgs 生成 `cmd /c` 不命中（键经 nativeRunKey(loginShellArgs) 构造跨平台化；模拟 windows 形态本地全绿验证）；②extdocs 凭证 0600 权限位断言——Windows 无 POSIX 权限语义（platform-notes W-6 先例，v0.3.0 起的老红），改仅 Unix 面断言 |
 | v1.96 | 2026-10-27 | Mosaic 项目组 / ZCode | **0.4.1 更新过程可视化（负责人指令："能否把更新过程可视化，使用诸如管道日志转发、打包日志同步等方式，确保现有的各种更新方式都是可视化的"）——异步任务 + SSE 逐行管道转发**。**(1) 执行面**：Runner 接口增 RunStream（stdout/stderr 双管道逐行扫描回调 + 累计合并返回；HostRunner 实现，fake/mini 桩同步）。**(2) 任务机**：Registry 增 StartUpdate（异步任务，同实例在途幂等；任务上下文独立于请求生命周期 background+5min）+ SubscribeUpdateEvents（订阅重放——重放与注册同临界区无丢失窗口；环形尾部 1000 行；慢消费者丢行不阻塞更新；终态关流）；RunUpdate 收敛 buildUpdateCmd 单源（同步原语保留）；任务日志首行呈现实际命令。**(3) HTTP/前端**：POST update 同步改 202 受理（started/running）；新增 GET update/stream SSE（重放+实时+15s 心跳，终态关流；只读观察面无写门——房间 SSE 读面同口径）；UpdateEditor 内联日志控制台（等宽逐行/命令行高亮/自动贴底/可收起/idle 瞬态重订）。**(4) 验证**：harness UT 两件 + httpapi 端点（202+SSE 全文断言+版本回填轮询）；**真机流式实录**：kimi 更新任务全链（202 → 命令呈现 → "already up to date (v2.3.3)" → 版本回探 → done 携 2.3.3——负责人验收时点按 kimi 更新已真实生效 2.1.1→2.3.3，幂等重跑如实报告）；四种通道（claude/npm/kimi/版本回探）同一管线 |
