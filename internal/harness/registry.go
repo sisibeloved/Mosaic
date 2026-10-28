@@ -107,6 +107,10 @@ type Runner interface {
 	// wsl 前包 env 命令。桌面渠道版本探测用（ZCode.exe 需 ELECTRON_RUN_AS_NODE=1
 	// 才以 node 语义执行 bundle 脚本——实证 2026-09-23）。
 	RunWithEnv(ctx context.Context, runtime Runtime, distro string, env []string, args []string) (stdout string, exitCode int, err error)
+	// RunStream 流式执行（0.4.1 更新过程可视化）：stdout/stderr 逐行经 onLine
+	// 管道转发（npm 下载进度、自更新输出实时可见），同时累计合并返回（与 Run
+	// 同口径）。onLine 会被两个读取协程调用，实现方自行串行化。
+	RunStream(ctx context.Context, runtime Runtime, distro string, args []string, onLine func(line string)) (stdout string, exitCode int, err error)
 	// ReadFile 读目标运行面的小文本文件（v1.49：CLI 配置的确定量默认值——模型/
 	// 思考强度；native 直读、wsl 经 cat）。ok=false = 不存在/不可读。只用于提取
 	// 目标键值，调用方不得回传或记录文件其余内容（配置文件可能含密钥）。
@@ -301,6 +305,8 @@ type Registry struct {
 	notes []string // 最近一次扫描的重绑/清理注记（DrainNotes 消费——装配层日志用）
 	// latestCache npm 最新版查询缓存（0.4.1 版本检测；懒初始化，见 update.go）。
 	latestCache map[string]cachedLatest
+	// updateJobs 更新任务表（0.4.1 过程可视化；键 = 实例 ID，懒初始化）。
+	updateJobs map[string]*updateJob
 }
 
 // DrainNotes 取走并清空最近一次扫描的身份迁移注记。

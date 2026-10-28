@@ -425,3 +425,96 @@ func TestZcodeFeedDownFallsBackToTags(t *testing.T) {
 		t.Fatalf("note 应标注回退来源与产品通道说明：%+v", check)
 	}
 }
+
+// TestStartUpdateStreamAndReplay（0.4.1 过程可视化）：异步任务 + 订阅重放 +
+// 终态关流 + 版本回填；同实例在途幂等（started=false）；无任务订阅 ok=false。
+func TestStartUpdateStreamAndReplay(t *testing.T) {
+	reg, path := updateTestRegistry(t)
+	reg.exes = []Executable{{
+		ID: "cx_s", Adapter: "codex", Runtime: "native",
+		Path: "/home/u/bin/codex", Version: "codex-cli 0.153.4", Enabled: true,
+	}}
+	runner := newFakeRunner()
+	runner.runs["native||bash -lc npm install -g @openai/codex@latest"] = "npm warn config\nadded 1 package in 3s\n"
+	runner.runs["native||/home/u/bin/codex --version"] = "codex-cli 0.164.0\n"
+
+	// 无任务订阅 → ok=false
+	if _, _, ok := reg.SubscribeUpdateEvents("cx_s"); ok {
+		t.Fatal("无任务不应可订阅")
+	}
+
+	started, err := reg.StartUpdate(context.Background(), "cx_s", runner)
+	if err != nil || !started {
+		t.Fatalf("启动失败：%v started=%v", err, started)
+	}
+	// 在途幂等：立即二启返回 started=false（mini 场景任务可能已完成——两种都接受，
+	// 但 done 前必为 false；此处断言不报错即可）
+	if _, err := reg.StartUpdate(context.Background(), "cx_s", runner); err != nil {
+		t.Fatalf("幂等二启不得报错：%v", err)
+	}
+
+	// 订阅（任务可能已完成——重放路径同样成立）：收齐过程行 + done 终态 + 关流
+	ch, cancel, ok := reg.SubscribeUpdateEvents("cx_s")
+	if !ok {
+		t.Fatal("任务在席应可订阅")
+	}
+	defer cancel()
+	var lines, done string
+	for ev := range ch {
+		switch ev.Kind {
+		case "line":
+			lines += ev.Line + "\n"
+		case "done":
+			done = ev.NewVersion
+		case "failed":
+			t.Fatalf("任务不应失败：%s", ev.Error)
+		}
+	}
+	if !strings.Contains(lines, "npm install -g @openai/codex@latest") ||
+		!strings.Contains(lines, "added 1 package") ||
+		!strings.Contains(lines, "已更新到 codex-cli 0.164.0") {
+		t.Fatalf("过程行应含命令呈现/子进程输出/结果行：\n%s", lines)
+	}
+	if done != "codex-cli 0.164.0" {
+		t.Fatalf("终态应携新版本：%q", done)
+	}
+	// 版本回填持久化
+	reloaded, err := LoadOrCreate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.List()[0].Version != "codex-cli 0.164.0" {
+		t.Fatalf("版本回填未持久化：%+v", reloaded.List()[0])
+	}
+}
+
+// TestStartUpdateFailureStreamsError：更新命令非零退出 → 过程行 + failed 终态。
+func TestStartUpdateFailureStreamsError(t *testing.T) {
+	reg, _ := updateTestRegistry(t)
+	reg.exes = []Executable{{
+		ID: "cx_f", Adapter: "codex", Runtime: "native",
+		Path: "/home/u/bin/codex", Version: "codex-cli 0.153.4", Enabled: true,
+	}}
+	runner := newFakeRunner()
+	runner.runs["native||bash -lc npm install -g @openai/codex@latest"] = "EACCES denied\x00EXIT:1"
+	if _, err := reg.StartUpdate(context.Background(), "cx_f", runner); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	ch, cancel, ok := reg.SubscribeUpdateEvents("cx_f")
+	if !ok {
+		t.Fatal("应可订阅")
+	}
+	defer cancel()
+	sawFailed := false
+	for ev := range ch {
+		if ev.Kind == "failed" {
+			sawFailed = true
+			if !strings.Contains(ev.Error, "EACCES") {
+				t.Fatalf("失败终态应携输出尾：%s", ev.Error)
+			}
+		}
+	}
+	if !sawFailed {
+		t.Fatal("应收到 failed 终态")
+	}
+}

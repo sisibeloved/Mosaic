@@ -1106,14 +1106,37 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 更新 Agent CLI 到最新版（0.4.1；同步执行，分钟级）
-         * @description claude 走官方自更新子命令（`claude update`——原生安装位不受 npm 管辖）；
-         *     codex/minimax 走 `npm install -g <pkg>@latest`（登录 shell 形态，与用户
-         *     终端同环境）；kimi/zcode 无自动通道（409 no_update_channel，note 携
-         *     指引）。完成后重探版本并回填注册表（扫描只在启动时跑——版本刷新由本
-         *     端点显式触发）。同步执行（npm install 分钟级），客户端须容忍长等待。
+         * 启动 Agent CLI 更新任务（0.4.1；异步——过程经 SSE 可视化）
+         * @description claude 走官方自更新子命令（`claude update`）；codex/minimax 走
+         *     `npm install -g <pkg>@latest`（登录 shell 形态）；kimi 走 `kimi upgrade
+         *     --yes`；zcode 无自动通道（409 no_update_channel）。异步受理即返 202
+         *     （started=本次启动 / running=同实例任务在途幂等）；子进程输出逐行经
+         *     GET .../update/stream SSE 转发；完成后版本重探并回填注册表。
          */
         post: operations["runHarnessExecutableUpdate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/harness/executables/{id}/update/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 更新任务过程日志 SSE（0.4.1 可视化）
+         * @description 连接即重放已积累行，随后实时逐行转发子进程输出（stdout/stderr 管道
+         *     转发——npm 下载进度/自更新输出实时可见）；终态（done 携 new_version /
+         *     failed 携 error）后关流；无任务发 idle 即关。只读观察面无写门（启动
+         *     更新仍走 owner 门控的 POST）；15s 注释心跳防中间层缓冲。
+         */
+        get: operations["getHarnessExecutableUpdateStream"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4433,13 +4456,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 更新完成（new_version 为更新后实测版本） */
-            200: {
+            /** @description 已受理（异步任务；过程经 update/stream SSE 可视化） */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HarnessUpdateRun"];
+                    "application/json": {
+                        /** @enum {string} */
+                        status: "started" | "running";
+                    };
                 };
             };
             401: components["responses"]["Unauthorized"];
@@ -4451,6 +4477,30 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["HarnessUnavailable"];
+        };
+    };
+    getHarnessExecutableUpdateStream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 注册表唯一 ID（含路径，URL 编码传递） */
+                id: components["parameters"]["ExecutableID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 事件流（text/event-stream；data 为 {kind:line|done|failed|idle, line?, new_version?, error?} JSON） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
                 };
             };
             503: components["responses"]["HarnessUnavailable"];

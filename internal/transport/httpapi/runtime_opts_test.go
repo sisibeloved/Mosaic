@@ -5,11 +5,13 @@ package httpapi
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/harness"
 )
@@ -161,33 +163,67 @@ func TestUpdateRunEndpoint(t *testing.T) {
 	ts, id := runtimeTestServer(t)
 	base := ts.URL + "/v1/harness/executables/" + url.PathEscape(id)
 
+	// 异步受理：202 + started
 	resp, err := http.Post(base+"/update", "", nil)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("update status = %d", resp.StatusCode)
+	var startDoc struct {
+		Status string `json:"status"`
 	}
-	var run harness.UpdateRun
-	if err := json.NewDecoder(resp.Body).Decode(&run); err != nil {
-		t.Fatalf("decode: %v", err)
+	_ = json.NewDecoder(resp.Body).Decode(&startDoc)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted || (startDoc.Status != "started" && startDoc.Status != "running") {
+		t.Fatalf("update 受理 = %d %+v", resp.StatusCode, startDoc)
 	}
-	if run.Status != "ok" || run.NewVersion == "" {
-		t.Fatalf("更新结果不符：%+v", run)
+
+	// 过程日志 SSE：重放 + 实时直至终态（miniRunner 秒回——done 后服务端关流，
+	// 客户端读到 EOF）
+	sreq, _ := http.NewRequest(http.MethodGet, base+"/update/stream", nil)
+	sresp, err := (&http.Client{}).Do(sreq)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
 	}
-	// 版本回填注册表（列表透出新版本）
-	list, _ := http.Get(ts.URL + "/v1/harness/executables")
-	var doc struct {
-		Executables []harness.Executable `json:"executables"`
+	body, _ := io.ReadAll(sresp.Body)
+	sresp.Body.Close()
+	if sresp.StatusCode != http.StatusOK || sresp.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("stream 受理 = %d %s", sresp.StatusCode, sresp.Header.Get("Content-Type"))
 	}
-	_ = json.NewDecoder(list.Body).Decode(&doc)
-	list.Body.Close()
-	for _, exe := range doc.Executables {
-		if exe.ID == id && exe.Version != run.NewVersion {
-			t.Fatalf("列表版本未回填：%q vs %q", exe.Version, run.NewVersion)
+	text := string(body)
+	if !strings.Contains(text, "\"kind\":\"line\"") || !strings.Contains(text, "\"kind\":\"done\"") {
+		t.Fatalf("SSE 应含过程行与终态：%s", truncateFor(text, 200))
+	}
+
+	// 版本回填注册表（异步任务完成后；轮询容限）
+	var updated string
+	for i := 0; i < 50; i++ {
+		list, _ := http.Get(ts.URL + "/v1/harness/executables")
+		var doc struct {
+			Executables []harness.Executable `json:"executables"`
 		}
+		_ = json.NewDecoder(list.Body).Decode(&doc)
+		list.Body.Close()
+		for _, exe := range doc.Executables {
+			if exe.ID == id && exe.Version != "" {
+				updated = exe.Version
+			}
+		}
+		if updated != "" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
+	if updated == "" {
+		t.Fatal("更新后版本未回填注册表")
+	}
+}
+
+func truncateFor(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 func TestUpdateRunEndpointManualChannel(t *testing.T) {

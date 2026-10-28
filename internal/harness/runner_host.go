@@ -4,16 +4,19 @@
 package harness
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+	"sync"
 	"unicode/utf16"
 
 	"github.com/sisibeloved/Mosaic/internal/winhide"
@@ -54,6 +57,55 @@ func (h *HostRunner) Run(ctx context.Context, runtime Runtime, distro string, ar
 		return decodeOutput(runtime, buf.Bytes()), -1, err
 	}
 	return decodeOutput(runtime, buf.Bytes()), 0, nil
+}
+
+// RunStream 流式执行（0.4.1 更新过程可视化）：stdout/stderr 各起管道逐行扫描，
+// onLine 串行化后回调（顺序 = 行到达序，两流间无全局序保证——与终端交错呈现
+// 同观感），累计合并随返回。WaitDelay 兜底半关管道的残余输出。
+func (h *HostRunner) RunStream(ctx context.Context, runtime Runtime, distro string, args []string, onLine func(line string)) (string, int, error) {
+	cmd := h.command(ctx, runtime, distro, args)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", -1, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return "", -1, err
+	}
+	if err := cmd.Start(); err != nil {
+		return "", -1, err
+	}
+	var mu sync.Mutex
+	var acc bytes.Buffer
+	emit := func(r io.Reader) {
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			mu.Lock()
+			acc.WriteString(sc.Text())
+			acc.WriteByte('\n')
+			line := sc.Text()
+			mu.Unlock()
+			if onLine != nil {
+				onLine(line)
+			}
+		}
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); emit(stdout) }()
+	go func() { defer wg.Done(); emit(stderr) }()
+	wg.Wait()
+	werr := cmd.Wait()
+	// wsl.exe 的 UTF-16 输出解码与 Run 同口径（wsl 面两管道合流后再解）。
+	combined := decodeOutput(runtime, acc.Bytes())
+	if werr != nil {
+		if ee, ok := werr.(*exec.ExitError); ok {
+			return combined, ee.ExitCode(), nil
+		}
+		return combined, -1, werr
+	}
+	return combined, 0, nil
 }
 
 // LookPath 解析二进制：native 先 exec.LookPath，未命中再走登录 shell PATH 兜底

@@ -438,21 +438,6 @@ func (e HarnessUpdateCheckChannel) Valid() bool {
 	}
 }
 
-// Defines values for HarnessUpdateRunStatus.
-const (
-	HarnessUpdateRunStatusOk HarnessUpdateRunStatus = "ok"
-)
-
-// Valid indicates whether the value is a known member of the HarnessUpdateRunStatus enum.
-func (e HarnessUpdateRunStatus) Valid() bool {
-	switch e {
-	case HarnessUpdateRunStatusOk:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for MemoryViewCapsulesClosureType.
 const (
 	MemoryViewCapsulesClosureTypeBoundedDisagreement MemoryViewCapsulesClosureType = "bounded_disagreement"
@@ -1022,13 +1007,13 @@ func (e TaskItemStatus) Valid() bool {
 
 // Defines values for GetHealthz200JSONResponseBodyStatus.
 const (
-	GetHealthz200JSONResponseBodyStatusOk GetHealthz200JSONResponseBodyStatus = "ok"
+	Ok GetHealthz200JSONResponseBodyStatus = "ok"
 )
 
 // Valid indicates whether the value is a known member of the GetHealthz200JSONResponseBodyStatus enum.
 func (e GetHealthz200JSONResponseBodyStatus) Valid() bool {
 	switch e {
-	case GetHealthz200JSONResponseBodyStatusOk:
+	case Ok:
 		return true
 	default:
 		return false
@@ -1200,6 +1185,24 @@ const (
 func (e EnableHarnessExecutable200JSONResponseBodyEnabled) Valid() bool {
 	switch e {
 	case EnableHarnessExecutable200JSONResponseBodyEnabledTrue:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RunHarnessExecutableUpdate202JSONResponseBodyStatus.
+const (
+	RunHarnessExecutableUpdate202JSONResponseBodyStatusRunning RunHarnessExecutableUpdate202JSONResponseBodyStatus = "running"
+	RunHarnessExecutableUpdate202JSONResponseBodyStatusStarted RunHarnessExecutableUpdate202JSONResponseBodyStatus = "started"
+)
+
+// Valid indicates whether the value is a known member of the RunHarnessExecutableUpdate202JSONResponseBodyStatus enum.
+func (e RunHarnessExecutableUpdate202JSONResponseBodyStatus) Valid() bool {
+	switch e {
+	case RunHarnessExecutableUpdate202JSONResponseBodyStatusRunning:
+		return true
+	case RunHarnessExecutableUpdate202JSONResponseBodyStatusStarted:
 		return true
 	default:
 		return false
@@ -1797,19 +1800,6 @@ type HarnessUpdateCheck struct {
 
 // HarnessUpdateCheckChannel 检测/更新通道（releases = 自建分发：产品更新源优先、源码 tag 回退）
 type HarnessUpdateCheckChannel string
-
-// HarnessUpdateRun 更新执行结果（0.4.1）：完成后重探版本并回填注册表。
-type HarnessUpdateRun struct {
-	// NewVersion 更新后实测版本（--version 重探）
-	NewVersion string `json:"new_version"`
-
-	// OutputTail 更新命令输出尾（排障可见）
-	OutputTail *string                `json:"output_tail,omitempty"`
-	Status     HarnessUpdateRunStatus `json:"status"`
-}
-
-// HarnessUpdateRunStatus defines model for HarnessUpdateRun.Status.
-type HarnessUpdateRunStatus string
 
 // ManualExecutableRequest defines model for ManualExecutableRequest.
 type ManualExecutableRequest struct {
@@ -2711,6 +2701,9 @@ type DisableHarnessExecutable200JSONResponseBodyEnabled bool
 // EnableHarnessExecutable200JSONResponseBodyEnabled defines parameters for EnableHarnessExecutable.
 type EnableHarnessExecutable200JSONResponseBodyEnabled bool
 
+// RunHarnessExecutableUpdate202JSONResponseBodyStatus defines parameters for RunHarnessExecutableUpdate.
+type RunHarnessExecutableUpdate202JSONResponseBodyStatus string
+
 // UploadRoomAttachmentMultipartBody defines parameters for UploadRoomAttachment.
 type UploadRoomAttachmentMultipartBody struct {
 	File openapi_types.File `json:"file"`
@@ -2908,12 +2901,15 @@ type ServerInterface interface {
 	// GetHarnessExecutableModels 模型候选与思考强度档位（v1.48）
 	// (GET /v1/harness/executables/{id}/models)
 	GetHarnessExecutableModels(w http.ResponseWriter, r *http.Request, id ExecutableID)
-	// RunHarnessExecutableUpdate 更新 Agent CLI 到最新版（0.4.1；同步执行，分钟级）
+	// RunHarnessExecutableUpdate 启动 Agent CLI 更新任务（0.4.1；异步——过程经 SSE 可视化）
 	// (POST /v1/harness/executables/{id}/update)
 	RunHarnessExecutableUpdate(w http.ResponseWriter, r *http.Request, id ExecutableID)
 	// GetHarnessExecutableUpdateCheck Agent CLI 版本检测（0.4.1——对照上游最新版）
 	// (GET /v1/harness/executables/{id}/update-check)
 	GetHarnessExecutableUpdateCheck(w http.ResponseWriter, r *http.Request, id ExecutableID)
+	// GetHarnessExecutableUpdateStream 更新任务过程日志 SSE（0.4.1 可视化）
+	// (GET /v1/harness/executables/{id}/update/stream)
+	GetHarnessExecutableUpdateStream(w http.ResponseWriter, r *http.Request, id ExecutableID)
 	// ListMonitors 监控源列表（含运行态水位）
 	// (GET /v1/monitors)
 	ListMonitors(w http.ResponseWriter, r *http.Request)
@@ -3957,6 +3953,32 @@ func (siw *ServerInterfaceWrapper) GetHarnessExecutableUpdateCheck(w http.Respon
 	handler.ServeHTTP(w, r)
 }
 
+// GetHarnessExecutableUpdateStream operation middleware
+func (siw *ServerInterfaceWrapper) GetHarnessExecutableUpdateStream(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id ExecutableID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetHarnessExecutableUpdateStream(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListMonitors operation middleware
 func (siw *ServerInterfaceWrapper) ListMonitors(w http.ResponseWriter, r *http.Request) {
 
@@ -4713,6 +4735,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables/{id}/models", wrapper.GetHarnessExecutableModels)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables/{id}/update-check", wrapper.GetHarnessExecutableUpdateCheck)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/update", wrapper.RunHarnessExecutableUpdate)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables/{id}/update/stream", wrapper.GetHarnessExecutableUpdateStream)
 
 	return m
 }

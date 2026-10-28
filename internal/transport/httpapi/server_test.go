@@ -794,3 +794,15 @@ func TestWriteOriginAuthorityGuard(t *testing.T) {
 		t.Fatalf("同 authority 的回环 Origin 应放行（got %d）", code)
 	}
 }
+
+func (miniRunner) RunStream(ctx context.Context, runtime harness.Runtime, distro string, args []string, onLine func(string)) (string, int, error) {
+	out, code, err := miniRunner{}.Run(ctx, runtime, distro, args)
+	if onLine != nil {
+		for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+			if line != "" {
+				onLine(line)
+			}
+		}
+	}
+	return out, code, err
+}

@@ -622,9 +622,10 @@ func (s *server) GetHarnessExecutableUpdateCheck(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, check)
 }
 
-// RunHarnessExecutableUpdate POST /v1/harness/executables/{id}/update：更新 CLI
-// 到最新版（0.4.1）。同步执行（npm install 分钟级）；完成后重探版本并回填
-// 注册表。kimi/zcode 无自动通道 → 409 no_update_channel（note 携指引）。
+// RunHarnessExecutableUpdate POST /v1/harness/executables/{id}/update：启动
+// 更新任务（0.4.1 过程可视化）：异步执行，202 受理即返（started=本次启动 /
+// running=同实例任务在途幂等），过程日志经 GET .../update/stream SSE 逐行转发。
+// kimi/zcode 无自动通道 → 409 no_update_channel（note 携指引）。
 func (s *server) RunHarnessExecutableUpdate(w http.ResponseWriter, r *http.Request, id apigen.ExecutableID) {
 	if s.deps.Harness == nil {
 		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")
@@ -637,7 +638,7 @@ func (s *server) RunHarnessExecutableUpdate(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "无探测执行面（ProbeRunner 未配置）")
 		return
 	}
-	res, err := s.deps.Harness.RunUpdate(r.Context(), id, s.deps.ProbeRunner)
+	started, err := s.deps.Harness.StartUpdate(r.Context(), id, s.deps.ProbeRunner)
 	if err != nil {
 		switch {
 		case errors.Is(err, harness.ErrNotFound):
@@ -649,7 +650,64 @@ func (s *server) RunHarnessExecutableUpdate(w http.ResponseWriter, r *http.Reque
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, res)
+	status := "running"
+	if started {
+		status = "started"
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"status": status})
+}
+
+// GetHarnessExecutableUpdateStream GET /v1/harness/executables/{id}/update/stream：
+// 更新任务过程日志 SSE（0.4.1 可视化）——连接即重放已积累行，随后实时逐行转发
+// （子进程 stdout/stderr 管道转发），终态（done/failed）后关流。只读观察面：
+// 无写门（与房间 SSE 读面同口径；启动更新仍走 owner 门控的 POST）。无任务时
+// 发 idle 事件即关。15s 注释心跳防中间层缓冲。
+func (s *server) GetHarnessExecutableUpdateStream(w http.ResponseWriter, r *http.Request, id apigen.ExecutableID) {
+	if s.deps.Harness == nil {
+		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "no_streaming", "响应不支持流式")
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	send := func(ev harness.UpdateEvent) {
+		fmt.Fprintf(w, "data: %s\n\n", mustMarshalJSON(ev))
+		flusher.Flush()
+	}
+	events, cancel, ok := s.deps.Harness.SubscribeUpdateEvents(id)
+	if !ok {
+		send(harness.UpdateEvent{Kind: "idle"})
+		return
+	}
+	defer cancel()
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-heartbeat.C:
+			fmt.Fprint(w, ": ping\n\n")
+			flusher.Flush()
+		case ev, open := <-events:
+			if !open {
+				return
+			}
+			send(ev)
+			if ev.Kind == "done" || ev.Kind == "failed" {
+				return
+			}
+		}
+	}
 }
 
 func (s *server) setEnabled(w http.ResponseWriter, r *http.Request, id string, enabled bool) {

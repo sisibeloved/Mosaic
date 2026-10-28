@@ -27,6 +27,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	goruntime "runtime"
@@ -361,9 +362,9 @@ func latestGitTag(out string) string {
 	return best
 }
 
-// RunUpdate 执行更新并回填注册表版本（扫描只在启动时跑——更新后的版本探测由
-// 本方法显式触发，RefreshVersion 持久化）。更新中不持锁（npm i -g 可达分钟级）。
-// 无自动通道（manual）返回 ErrNoUpdateChannel（HTTP 409 面）。
+// RunUpdate 执行更新并回填注册表版本（同步原语——UT/简单调用面；产品面的
+// 过程可视化走 StartUpdate 流式任务）。无自动通道（manual）返回
+// ErrNoUpdateChannel（HTTP 409 面）。
 func (r *Registry) RunUpdate(ctx context.Context, id string, runner Runner) (UpdateRun, error) {
 	exe, err := r.executableOf(id)
 	if err != nil {
@@ -372,24 +373,14 @@ func (r *Registry) RunUpdate(ctx context.Context, id string, runner Runner) (Upd
 	if runner == nil {
 		return UpdateRun{}, errors.New("harness: 无探测执行面（ProbeRunner 未配置）")
 	}
-	spec := updateChannels[exe.Adapter]
-	if len(spec.selfUpdateArgs) > 0 {
-		// 官方自更新（claude update / kimi upgrade --yes）：登录 shell 包装
-		//（与用户终端同环境）。
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-		defer cancel()
-		out, code, err := runner.Run(ctx, Runtime(exe.Runtime), exe.Distro,
-			loginShellArgs(Runtime(exe.Runtime), shellQuote(exe.Path)+" "+strings.Join(spec.selfUpdateArgs, " ")))
-		return r.collectUpdate(ctx, runner, exe, out, code, err)
+	argv := buildUpdateCmd(exe)
+	if argv == nil {
+		return UpdateRun{}, fmt.Errorf("%w：%s", ErrNoUpdateChannel, updateChannels[exe.Adapter].manualNote)
 	}
-	if spec.npmPackage != "" {
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-		defer cancel()
-		out, code, err := runner.Run(ctx, Runtime(exe.Runtime), exe.Distro,
-			npmArgs(Runtime(exe.Runtime), "install -g "+spec.npmPackage+"@latest"))
-		return r.collectUpdate(ctx, runner, exe, out, code, err)
-	}
-	return UpdateRun{}, fmt.Errorf("%w：%s", ErrNoUpdateChannel, spec.manualNote)
+	ctx, cancel := context.WithTimeout(ctx, updateJobTimeout)
+	defer cancel()
+	out, code, err := runner.Run(ctx, Runtime(exe.Runtime), exe.Distro, argv)
+	return r.collectUpdate(ctx, runner, exe, out, code, err)
 }
 
 // collectUpdate 更新命令收口：失败显式报错（携输出尾）；成功重探版本并持久化。
@@ -520,4 +511,190 @@ func lastLines(s string, n int) string {
 		lines = lines[len(lines)-n:]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// ---- 更新任务（0.4.1 过程可视化）：异步执行 + 逐行管道转发 + 订阅重放 ----
+
+// UpdateEvent 更新任务事件（SSE data 载荷）。
+type UpdateEvent struct {
+	Kind       string `json:"kind"` // line（过程日志行）| done（成功终态）| failed（失败终态）
+	Line       string `json:"line,omitempty"`
+	NewVersion string `json:"new_version,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// updateLogCap 过程日志行上限（npm install 噪声可上千行——环形保留尾部，
+// 重放有界）。订阅通道缓冲与之对齐（慢消费者丢行不阻塞更新进程；终态前
+// 消费者断开由 unsubscribe 回收）。
+const (
+	updateLogCap     = 1000
+	updateSubBuffer  = 1024
+	updateJobTimeout = 5 * time.Minute
+)
+
+type updateJob struct {
+	mu    sync.Mutex
+	lines []string
+	done  bool
+	final UpdateEvent
+	subs  map[chan UpdateEvent]struct{}
+}
+
+func (j *updateJob) emit(line string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.done {
+		return
+	}
+	j.lines = append(j.lines, line)
+	if len(j.lines) > updateLogCap {
+		j.lines = j.lines[len(j.lines)-updateLogCap:]
+	}
+	ev := UpdateEvent{Kind: "line", Line: line}
+	for ch := range j.subs {
+		select {
+		case ch <- ev:
+		default: // 慢消费者丢行不阻塞更新（终态事件必达——量级 ≤ 缓冲）
+		}
+	}
+}
+
+func (j *updateJob) finish(ev UpdateEvent) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.done {
+		return
+	}
+	j.done = true
+	j.final = ev
+	for ch := range j.subs {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
+	for ch := range j.subs {
+		close(ch)
+	}
+	j.subs = map[chan UpdateEvent]struct{}{}
+}
+
+// StartUpdate 异步启动更新任务（过程经 SubscribeUpdateEvents 逐行可视化）。
+// 同实例互斥：任务在途返回 started=false（幂等，不报错）；任务历史保留至下次
+// 启动（重放用）。任务上下文独立于请求生命周期（background + 5 分钟上限）。
+func (r *Registry) StartUpdate(_ context.Context, id string, runner Runner) (bool, error) {
+	exe, err := r.executableOf(id)
+	if err != nil {
+		return false, err
+	}
+	if runner == nil {
+		return false, errors.New("harness: 无探测执行面（ProbeRunner 未配置）")
+	}
+	argv := buildUpdateCmd(exe)
+	if argv == nil {
+		return false, fmt.Errorf("%w：%s", ErrNoUpdateChannel, updateChannels[exe.Adapter].manualNote)
+	}
+	r.mu.Lock()
+	if job, ok := r.updateJobs[id]; ok && !job.done {
+		r.mu.Unlock()
+		return false, nil // 在途幂等
+	}
+	job := &updateJob{subs: map[chan UpdateEvent]struct{}{}}
+	if r.updateJobs == nil {
+		r.updateJobs = map[string]*updateJob{}
+	}
+	r.updateJobs[id] = job
+	r.mu.Unlock()
+	go r.runUpdateJob(exe, argv, job, runner)
+	return true, nil
+}
+
+// buildUpdateCmd 按通道构造更新命令 argv（登录 shell 包装，与 RunUpdate 同源）。
+func buildUpdateCmd(exe Executable) []string {
+	spec := updateChannels[exe.Adapter]
+	rt := Runtime(exe.Runtime)
+	switch {
+	case len(spec.selfUpdateArgs) > 0:
+		return loginShellArgs(rt, shellQuote(exe.Path)+" "+strings.Join(spec.selfUpdateArgs, " "))
+	case spec.npmPackage != "":
+		return npmArgs(rt, "install -g "+spec.npmPackage+"@latest")
+	}
+	return nil
+}
+
+// displayCmd 过程日志里的命令呈现（(argv 还原可读形态——bash -lc '...' 取 -c 串）。
+func displayCmd(argv []string) string {
+	if len(argv) >= 3 && argv[0] == "bash" && argv[1] == "-lc" {
+		return "$ " + argv[2]
+	}
+	if len(argv) >= 3 && argv[0] == "cmd" && argv[1] == "/c" {
+		return "> " + argv[2]
+	}
+	return "$ " + strings.Join(argv, " ")
+}
+
+// runUpdateJob 任务主体：命令行呈现 → 流式执行（逐行转发）→ 版本回探 → 终态。
+func (r *Registry) runUpdateJob(exe Executable, argv []string, job *updateJob, runner Runner) {
+	ctx, cancel := context.WithTimeout(context.Background(), updateJobTimeout)
+	defer cancel()
+	job.emit(displayCmd(argv))
+	out, code, err := runner.RunStream(ctx, Runtime(exe.Runtime), exe.Distro, argv, job.emit)
+	if err != nil {
+		job.finish(UpdateEvent{Kind: "failed", Error: fmt.Sprintf("更新命令执行失败：%v", err)})
+		return
+	}
+	if code != 0 {
+		job.finish(UpdateEvent{Kind: "failed", Error: fmt.Sprintf("更新命令退出码 %d：%s", code, lastLines(out, 3))})
+		return
+	}
+	job.emit("$ " + exe.Path + " --version   （版本回探）")
+	vctx, vcancel := context.WithTimeout(ctx, 30*time.Second)
+	defer vcancel()
+	vout, vcode, verr := runner.Run(vctx, Runtime(exe.Runtime), exe.Distro, []string{exe.Path, "--version"})
+	if verr != nil || vcode != 0 {
+		job.finish(UpdateEvent{Kind: "failed", Error: fmt.Sprintf("更新后版本探测失败（退出码 %d）：%s", vcode, firstLine(vout))})
+		return
+	}
+	version := strings.TrimSpace(firstLine(vout))
+	if err := r.RefreshVersion(exe.ID, version); err != nil {
+		job.finish(UpdateEvent{Kind: "failed", Error: err.Error()})
+		return
+	}
+	job.emit("已更新到 " + version)
+	job.finish(UpdateEvent{Kind: "done", NewVersion: version})
+}
+
+// SubscribeUpdateEvents 订阅任务事件：先重放已积累行（快照一致——与 emit
+// 同锁下注入通道），再实时；终态事件后通道关闭。无任务（从未启动）返回
+// ok=false。cancel 必须调用（回收订阅）。
+func (r *Registry) SubscribeUpdateEvents(id string) (<-chan UpdateEvent, func(), bool) {
+	r.mu.Lock()
+	job, ok := r.updateJobs[id]
+	r.mu.Unlock()
+	if !ok {
+		return nil, nil, false
+	}
+	ch := make(chan UpdateEvent, updateSubBuffer)
+	job.mu.Lock()
+	// 重放与注册同临界区：快照后新行必然经通道，无丢失窗口。
+	for _, line := range job.lines {
+		ch <- UpdateEvent{Kind: "line", Line: line}
+	}
+	if job.done {
+		ch <- job.final
+		close(ch)
+		job.mu.Unlock()
+		return ch, func() {}, true
+	}
+	job.subs[ch] = struct{}{}
+	job.mu.Unlock()
+	cancel := func() {
+		job.mu.Lock()
+		if _, ok := job.subs[ch]; ok {
+			delete(job.subs, ch)
+			close(ch)
+		}
+		job.mu.Unlock()
+	}
+	return ch, cancel, true
 }

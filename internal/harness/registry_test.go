@@ -527,3 +527,16 @@ func TestSanitizeVersion(t *testing.T) {
 		}
 	}
 }
+
+// RunStream 流式面（0.4.1 更新可视化）：runs 预置输出按行回调，累计返回同 Run。
+func (f *fakeRunner) RunStream(ctx context.Context, runtime Runtime, distro string, args []string, onLine func(string)) (string, int, error) {
+	out, code, err := f.Run(ctx, runtime, distro, args)
+	if onLine != nil {
+		for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+			if line != "" {
+				onLine(line)
+			}
+		}
+	}
+	return out, code, err
+}

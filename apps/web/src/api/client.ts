@@ -464,8 +464,8 @@ export const api = {
   executableUpdateCheck(id: string): Promise<HarnessUpdateCheck> {
     return request(`/v1/harness/executables/${encodeURIComponent(id)}/update-check`);
   },
-  /** 0.4.1 更新 CLI 到最新版（同步分钟级；kimi/zcode 无自动通道 → 409 no_update_channel）。 */
-  executableUpdate(id: string): Promise<HarnessUpdateRun> {
+  /** 0.4.1 启动 CLI 更新任务（202 异步受理；过程经 .../update/stream SSE 可视化）。 */
+  executableUpdate(id: string): Promise<{ status: string }> {
     return request(`/v1/harness/executables/${encodeURIComponent(id)}/update`, {
       method: "POST",
     });
