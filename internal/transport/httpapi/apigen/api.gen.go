@@ -416,20 +416,17 @@ func (e ExternalRefKind) Valid() bool {
 
 // Defines values for HarnessUpdateCheckChannel.
 const (
-	Manual     HarnessUpdateCheckChannel = "manual"
-	Npm        HarnessUpdateCheckChannel = "npm"
-	Releases   HarnessUpdateCheckChannel = "releases"
+	Mosaic     HarnessUpdateCheckChannel = "mosaic"
+	Registry   HarnessUpdateCheckChannel = "registry"
 	SelfUpdate HarnessUpdateCheckChannel = "self-update"
 )
 
 // Valid indicates whether the value is a known member of the HarnessUpdateCheckChannel enum.
 func (e HarnessUpdateCheckChannel) Valid() bool {
 	switch e {
-	case Manual:
+	case Mosaic:
 		return true
-	case Npm:
-		return true
-	case Releases:
+	case Registry:
 		return true
 	case SelfUpdate:
 		return true
@@ -1765,7 +1762,7 @@ type FeishuCallbackRequest struct {
 	Code string `json:"code"`
 }
 
-// HarnessUpdateCheck Agent CLI 版本检测（0.4.1）：注册表探测版本对照上游最新版（npm 分发面经登录 shell 实查 npm view；自建分发面对齐源码 tag 经 git ls-remote——均缓存 30 分钟）。
+// HarnessUpdateCheck Agent CLI 版本检测（0.4.1）：注册表探测版本对照上游最新版（按 ADR-0016 三通道分派检测面——registry/self-update 经仓库客户端（npm view）；mosaic 对齐自建 releases 信号（产品更新源 feed 优先、源码 tag 回退）；均缓存 30 分钟）。
 type HarnessUpdateCheck struct {
 	Adapter string `json:"adapter"`
 
@@ -1775,7 +1772,7 @@ type HarnessUpdateCheck struct {
 	// CanUpdate 有自动更新通道（npm / 官方自更新）
 	CanUpdate bool `json:"can_update"`
 
-	// Channel 检测/更新通道（releases = 自建分发：产品更新源优先、源码 tag 回退）
+	// Channel 更新通道三分类（ADR-0016）：registry=第三方分发仓库（现役 npm）；self-update=官方自更新子命令（检测可借仓库面）；mosaic=Mosaic 自带通道（自建打包脚本 ~/.mosaic/update/<adapter>.sh，检测对齐自建 releases 信号）
 	Channel   HarnessUpdateCheckChannel `json:"channel"`
 	CheckedAt time.Time                 `json:"checked_at"`
 
@@ -1798,7 +1795,7 @@ type HarnessUpdateCheck struct {
 	UpToDate bool `json:"up_to_date"`
 }
 
-// HarnessUpdateCheckChannel 检测/更新通道（releases = 自建分发：产品更新源优先、源码 tag 回退）
+// HarnessUpdateCheckChannel 更新通道三分类（ADR-0016）：registry=第三方分发仓库（现役 npm）；self-update=官方自更新子命令（检测可借仓库面）；mosaic=Mosaic 自带通道（自建打包脚本 ~/.mosaic/update/<adapter>.sh，检测对齐自建 releases 信号）
 type HarnessUpdateCheckChannel string
 
 // ManualExecutableRequest defines model for ManualExecutableRequest.

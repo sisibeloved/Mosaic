@@ -143,7 +143,7 @@ func TestUpdateCheckEndpoint(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&check); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if check.Adapter != "codex" || check.Channel != "npm" || !check.CanCheck || !check.CanUpdate {
+	if check.Adapter != "codex" || check.Channel != "registry" || !check.CanCheck || !check.CanUpdate {
 		t.Fatalf("codex 检测字段不符：%+v", check)
 	}
 	// miniRunner 固定输出非 semver——不可解析面如实呈现（latest 空 + note）
@@ -226,10 +226,10 @@ func truncateFor(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
-func TestUpdateRunEndpointManualChannel(t *testing.T) {
+func TestUpdateRunEndpointMosaicScript(t *testing.T) {
 	ts, _ := runtimeTestServer(t)
-	// 手动登记 zcode（manual 更新通道——kimi 验收反馈③后已有官方自更新通道，
-	// manual 只剩 zcode）
+	// 手动登记 zcode（mosaic 通道——miniRunner Home=/home/u 且 Exists 恒真：
+	// 约定脚本 ~/.mosaic/update/zcode.sh 视为在位，更新任务受理并经脚本面收口）
 	resp, err := http.Post(ts.URL+"/v1/harness/executables", "application/json",
 		strings.NewReader(`{"adapter":"zcode","runtime":"native","path":"/opt/tools/zcode"}`))
 	if err != nil {
@@ -254,9 +254,24 @@ func TestUpdateRunEndpointManualChannel(t *testing.T) {
 	if zcodeID == "" {
 		t.Fatal("zcode 未登记")
 	}
-	resp2, _ := http.Post(ts.URL+"/v1/harness/executables/"+url.PathEscape(zcodeID)+"/update", "", nil)
+	base := ts.URL + "/v1/harness/executables/" + url.PathEscape(zcodeID)
+	resp2, err := http.Post(base+"/update", "", nil)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
 	resp2.Body.Close()
-	if resp2.StatusCode != http.StatusConflict {
-		t.Fatalf("manual 家族应 409 no_update_channel = %d", resp2.StatusCode)
+	if resp2.StatusCode != http.StatusAccepted {
+		t.Fatalf("mosaic 脚本在位应受理（202）= %d", resp2.StatusCode)
+	}
+	// 过程流收口（miniRunner 秒回——done 后关流读到 EOF）
+	sreq, _ := http.NewRequest(http.MethodGet, base+"/update/stream", nil)
+	sresp, err := (&http.Client{}).Do(sreq)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	body, _ := io.ReadAll(sresp.Body)
+	sresp.Body.Close()
+	if !strings.Contains(string(body), "\"kind\":\"done\"") {
+		t.Fatalf("SSE 应含终态：%s", truncateFor(string(body), 200))
 	}
 }

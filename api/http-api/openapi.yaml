@@ -2905,7 +2905,7 @@ components:
     HarnessUpdateCheck:
       type: object
       required: [adapter, current_version, up_to_date, comparable, can_check, can_update, channel, checked_at]
-      description: Agent CLI 版本检测（0.4.1）：注册表探测版本对照上游最新版（npm 分发面经登录 shell 实查 npm view；自建分发面对齐源码 tag 经 git ls-remote——均缓存 30 分钟）。
+      description: Agent CLI 版本检测（0.4.1）：注册表探测版本对照上游最新版（按 ADR-0016 三通道分派检测面——registry/self-update 经仓库客户端（npm view）；mosaic 对齐自建 releases 信号（产品更新源 feed 优先、源码 tag 回退）；均缓存 30 分钟）。
       properties:
         adapter: { type: string }
         current_version: { type: string, description: 注册表探测原文（如 "2.1.172 (Claude Code)"） }
@@ -2915,7 +2915,7 @@ components:
         comparable: { type: boolean, description: "版本方案可比（两侧 semver 同 major 系——zcode 实录：安装侧 0.16.9 桌面内核版方案 vs 上游 3.x，跨系比对必恒误报）" }
         can_check: { type: boolean, description: 有检测面（npm 分发 / 源码 tag） }
         can_update: { type: boolean, description: 有自动更新通道（npm / 官方自更新） }
-        channel: { type: string, enum: [npm, self-update, releases, manual], description: 检测/更新通道（releases = 自建分发：产品更新源优先、源码 tag 回退） }
+        channel: { type: string, enum: [registry, self-update, mosaic], description: "更新通道三分类（ADR-0016）：registry=第三方分发仓库（现役 npm）；self-update=官方自更新子命令（检测可借仓库面）；mosaic=Mosaic 自带通道（自建打包脚本 ~/.mosaic/update/<adapter>.sh，检测对齐自建 releases 信号）" }
         note: { type: string, description: "manual 指引 / 不可比说明 / 检测失败原因" }
         checked_at: { type: string, format: date-time }
     HarnessUpdateRun:

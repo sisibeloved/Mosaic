@@ -1,19 +1,25 @@
 // 0.4.1 Agent 版本检测与更新（负责人指令 2026-10-27："本机使用的 CLI 通常不是
-// 最新的"——原 0.7.0 生态项前移）。通道按家族分发面实证（2026-10-27 本机）：
-//   - claude：npm 分发面 @anthropic-ai/claude-code（2.1.172 实装 vs 最新 2.1.311
-//     实测即过期佐证）；官方自更新子命令 `claude update|upgrade`（help 实证
-//     "Check for updates and install if available"）——更新优先走自更新（原生
-//     安装位 ~/.local/bin 不受 npm 管辖，npm i -g 更新不到它）。
-//   - codex：npm @openai/codex（0.153.4 实装）；无自更新子命令——npm i -g。
-//   - minimax：npm @minimax-ai/code（0.7.0 实装）；无自更新子命令——npm i -g。
-//   - kimi：官方安装器分发（~/.kimi-code/bin，非 npm）——manual 指引。
-//   - zcode：桌面版应用内自更新 / CLI 官方 release 重装——manual 指引。
+// 最新的"——原 0.7.0 生态项前移）。更新通道三分类（ADR-0016，负责人裁定
+// 2026-10-27："现在是三种更新通道：第三方分发仓库 / 自更新 / Mosaic 自带更新
+// 通道"——代码与文档同构，便于后续拓展到其它 agent）：
+//  1. registry    第三方分发仓库：检测（最新版）与更新（安装）都走仓库客户端。
+//     现役 npm（codex）；扩展 = 新增 packageRepo 实现（brew/apt/pip…），家族
+//     配置换绑即可。
+//  2. self-update 官方自更新：CLI 自带升级子命令——各家参数/输出有差异
+//     （claude update / kimi upgrade --yes / mcode update，机制同一：执行即自
+//     完成）。检测面可借其仓库分发查最新版（claude/mcode 有 npm 面），无仓库
+//     面的如实呈现"无独立查询面"（kimi）。
+//  3. mosaic     Mosaic 自带更新通道：自建分发 CLI（zcode——基于官方源码自有
+//     打包脚本），更新由 Mosaic 驱动用户提供的脚本（约定
+//     $HOME/.mosaic/update/<adapter>.sh，须可执行；过程日志与其他通道同一可
+//     视化管线），检测面对齐自建 releases 信号（产品更新源 feed 优先、源码
+//     tag 回退）。
 //
 // npm 调用形态（实证钉死）：绝对路径直跑 npm 失败（shebang `/usr/bin/env node`
 // 需登录 shell 的 nvm PATH）；`sh -lc` 会解析到 Windows 互操作 npm
 // （/mnt/d/.../nodejs/npm——dash 登录不读 bash 的 nvm 注入）。一律 `bash -lc`
 // （登录环境与人类用户终端一致：nvm 前置、npmrc 镜像生效）；Windows native 面
-// 走 `cmd /c npm …`（npm.cmd）。
+// 走 `cmd /c`（npm.cmd）。
 package harness
 
 import (
@@ -36,47 +42,73 @@ import (
 // ErrNoUpdateChannel 该家族无自动更新通道（自建打包/官方安装器/桌面应用分发）。
 var ErrNoUpdateChannel = errors.New("harness: 该 CLI 无自动更新通道（自建打包/官方安装器/桌面应用分发），请按指引手动更新")
 
-// updateChannelSpec 家族更新通道。
-type updateChannelSpec struct {
-	npmPackage string // npm 分发面（最新版查询 npm view；空 = 非 npm 分发）
-	// gitRepo 上游源码仓（owner/repo——最新版查询 git ls-remote --tags；自建
-	// 分发面的检测通道）。zcode 实证（2026-10-27 负责人问询轮）：官方 release
-	// 仅桌面安装包（mac dmg / win exe，v3.14.3），无 Linux CLI 产物——本机 CLI
-	// 为基于官方源码自建打包（负责人口径），检测面只能对齐源码 tag；更新面
-	// manual（自建产物 Mosaic 不做替换）。
-	gitRepo string
-	// selfUpdateArgs 官方自更新子命令（更新优先走它——原生安装位/官方安装器
-	// 分发不受本机 npm 管辖）：claude ["update"]；kimi ["upgrade","--yes"]
-	//（2026-10-27 验收反馈轮实证：kimi 无 npm 包 @kimi-code/cli 不存在，但
-	// 官方子命令 upgrade|update 在席，-y 免确认无头执行）。
-	selfUpdateArgs []string
-	manualNote     string // 无检测面/无自动通道时的指引（check note 呈现）
+// packageRepo 第三方分发仓库客户端抽象（registry 通道的执行面；现役 npm，
+// 扩展 = 新仓库实现三方法即可被家族配置换绑——brew/apt/pip 等，命令形态封装
+// 在实现内，通道类型与其余面不变）。
+type packageRepo interface {
+	latestCmd(pkg string) string   // 最新版查询命令（登录 shell 内执行）
+	installCmd(pkg string) string  // 安装/更新命令（登录 shell 内执行）
+	parseLatest(out string) string // 查询输出 → 版本串（不可解析返回空）
 }
 
-var updateChannels = map[string]updateChannelSpec{
-	"claude":  {npmPackage: "@anthropic-ai/claude-code", selfUpdateArgs: []string{"update"}},
-	"codex":   {npmPackage: "@openai/codex"},
-	"minimax": {npmPackage: "@minimax-ai/code"},
+// npmRepo npm 仓库（镜像源/代理随登录 shell 环境——包注释实证）。
+type npmRepo struct{}
+
+func (npmRepo) latestCmd(pkg string) string  { return "npm view " + pkg + " version" }
+func (npmRepo) installCmd(pkg string) string { return "npm install -g " + pkg + "@latest" }
+func (npmRepo) parseLatest(out string) string {
+	v := strings.TrimSpace(lastLine(out))
+	if semverLike(v) {
+		return v
+	}
+	return ""
+}
+
+// familySpec 家族通道配置（ADR-0016 三选一：registry | self-update | mosaic）。
+type familySpec struct {
+	channel  string      // 更新机制类型
+	repo     packageRepo // 仓库面：registry 通道的检测+安装；self-update 通道可兼作检测面
+	pkg      string      // 仓库包名
+	selfArgs []string    // self-update 通道：升级子命令（跟在可执行后的 argv 后缀）
+	gitRepo  string      // mosaic 通道：自建 releases 信号仓（owner/repo）
+	note     string      // 无检测面/无自动面时的指引（check note 呈现）
+}
+
+// updateFamilies 家族通道分派（实证 2026-10-27；mcode 归 self-update——
+// 负责人裁定口径 + `mcode update` 子命令实证 "Check for and install a
+// Minimax Code update"，npm 面仅作检测）。
+var updateFamilies = map[string]familySpec{
+	"codex": {channel: "registry", repo: npmRepo{}, pkg: "@openai/codex"},
+	"claude": {
+		channel: "self-update", repo: npmRepo{}, pkg: "@anthropic-ai/claude-code",
+		selfArgs: []string{"update"},
+		note:     "原生安装位（~/.local/bin）不受 npm 管辖——更新走官方自更新（claude update）；检测借 npm 分发面查最新版",
+	},
+	"minimax": {
+		channel: "self-update", repo: npmRepo{}, pkg: "@minimax-ai/code",
+		selfArgs: []string{"update"},
+		note:     "更新走官方自更新子命令（mcode update）；检测借 npm 分发面查最新版",
+	},
 	"kimi": {
-		selfUpdateArgs: []string{"upgrade", "--yes"},
-		manualNote:     "Kimi Code 官方安装器分发（~/.kimi-code/bin，无 npm 包）——无独立最新版查询面；「更新到最新」经 kimi upgrade 幂等执行（已是最新则无动作），登录态与配置保留",
+		channel:  "self-update",
+		selfArgs: []string{"upgrade", "--yes"},
+		note:     "Kimi Code 官方安装器分发（无 npm 包）——无独立最新版查询面；「更新到最新」经 kimi upgrade 幂等执行（已是最新则无动作），登录态与配置保留",
 	},
 	"zcode": {
-		gitRepo:    "zai-org/ZCode",
-		manualNote: "ZCode CLI 为基于官方源码自建打包（官方仅发布桌面安装包，无 Linux CLI 产物）——请拉取上游源码走自有打包管线重装；桌面版请在应用内检查更新（自动升级）",
+		channel: "mosaic",
+		gitRepo: "zai-org/ZCode",
+		note:    "Mosaic 自带更新通道（自建打包分发）：放置可执行更新脚本 ~/.mosaic/update/zcode.sh（拉上游源码 + 自有打包管线 + 安装）即可被「更新到最新」驱动，过程日志与其他通道同一可视化管线；脚本缺位时请手动执行自有管线，桌面版在应用内自更新",
 	},
 }
 
-func (s updateChannelSpec) channel() string {
-	switch {
-	case len(s.selfUpdateArgs) > 0:
-		return "self-update"
-	case s.npmPackage != "":
-		return "npm"
-	case s.gitRepo != "":
-		return "releases"
+// hasCheckFace 检测面在位（与更新面正交）：registry/self-update 看仓库绑定；
+// mosaic 的自建 releases 信号面（feed→tag）恒在。
+func (s familySpec) hasCheckFace() bool {
+	switch s.channel {
+	case "registry", "self-update":
+		return s.repo != nil && s.pkg != ""
 	default:
-		return "manual"
+		return true
 	}
 }
 
@@ -93,7 +125,7 @@ type UpdateCheck struct {
 	Comparable bool   `json:"comparable"`
 	CanCheck   bool   `json:"can_check"`  // 有检测面（npm 分发 / 源码 tag）
 	CanUpdate  bool   `json:"can_update"` // 有自动更新通道（npm / 自更新）
-	Channel    string `json:"channel"`    // npm | self-update | releases | manual
+	Channel    string `json:"channel"`    // registry | self-update | mosaic（ADR-0016 三分类）
 	Note       string `json:"note,omitempty"`
 	CheckedAt  string `json:"checked_at"` // RFC3339
 }
@@ -127,19 +159,25 @@ func (r *Registry) CheckUpdate(ctx context.Context, id string, runner Runner) (U
 	if err != nil {
 		return UpdateCheck{}, err
 	}
-	spec := updateChannels[exe.Adapter]
+	spec := updateFamilies[exe.Adapter]
 	now := time.Now()
 	check := UpdateCheck{
 		Adapter:        exe.Adapter,
 		CurrentVersion: exe.Version,
-		Channel:        spec.channel(),
-		CanCheck:       spec.npmPackage != "" || spec.gitRepo != "",
-		CanUpdate:      len(spec.selfUpdateArgs) > 0 || spec.npmPackage != "",
+		Channel:        spec.channel,
+		CanCheck:       spec.hasCheckFace(),
+		CanUpdate:      spec.channel == "registry" || spec.channel == "self-update",
 		CheckedAt:      now.UTC().Format(time.RFC3339),
 	}
 	check.CurrentSemver = extractSemver(exe.Version)
-	if spec.manualNote != "" {
-		check.Note = spec.manualNote
+	if spec.note != "" {
+		check.Note = spec.note
+	}
+	if spec.channel == "mosaic" && runner != nil {
+		// mosaic 更新面 = 约定脚本在位（检测面独立于脚本）。
+		if _, ok := mosaicUpdateScript(ctx, runner, exe); ok {
+			check.CanUpdate = true
+		}
 	}
 	if !check.CanCheck {
 		check.UpToDate = true // 无检测面不标红（manual 通道由 Note 指引）
@@ -150,12 +188,13 @@ func (r *Registry) CheckUpdate(ctx context.Context, id string, runner Runner) (U
 		return check, nil
 	}
 
-	// 检测面分发：npm 分发 → npm view；源码仓家族（zcode）→ 桌面产品更新源
-	// 优先（app-update.yml 声明的自建 feed），不可达回退 git ls-remote --tags。
+	// 检测面按通道分派：registry / self-update（有仓库绑定时）→ 仓库客户端；
+	// mosaic → 自建 releases 信号（桌面产品更新源 feed 优先，不可达回退
+	// git ls-remote --tags）。
 	latest, srcNote := "", ""
 	var cacheKey string
-	if spec.npmPackage != "" {
-		cacheKey = latestCacheKey(Runtime(exe.Runtime), exe.Distro, spec.npmPackage)
+	if spec.repo != nil && spec.pkg != "" {
+		cacheKey = latestCacheKey(Runtime(exe.Runtime), exe.Distro, spec.pkg)
 		r.mu.Lock()
 		cached, ok := r.latestCache[cacheKey]
 		r.mu.Unlock()
@@ -167,17 +206,16 @@ func (r *Registry) CheckUpdate(ctx context.Context, id string, runner Runner) (U
 		qctx, qcancel := context.WithTimeout(ctx, 60*time.Second)
 		defer qcancel()
 		out, code, err := runner.Run(qctx, Runtime(exe.Runtime), exe.Distro,
-			loginShellArgs(Runtime(exe.Runtime), "npm view "+spec.npmPackage+" version"))
+			loginShellArgs(Runtime(exe.Runtime), spec.repo.latestCmd(spec.pkg)))
 		if err != nil || code != 0 {
-			check.Note = fmt.Sprintf("最新版查询失败（npm view 退出码 %d）：%s", code, firstLine(out))
+			check.Note = fmt.Sprintf("最新版查询失败（退出码 %d）：%s", code, firstLine(out))
 			return check, nil // 环境态：返回可呈现的部分结果，不 5xx
 		}
-		latest = strings.TrimSpace(lastLine(out))
-		if !semverLike(latest) {
+		latest = spec.repo.parseLatest(out)
+		if latest == "" {
 			check.Note = "最新版查询输出不可解析：" + firstLine(out)
 			return check, nil
 		}
-		srcNote = ""
 	} else {
 		var qerr error
 		latest, cacheKey, srcNote, qerr = r.gitRepoLatest(ctx, runner, exe, spec, now)
@@ -207,7 +245,7 @@ func (r *Registry) CheckUpdate(ctx context.Context, id string, runner Runner) (U
 	return check, nil
 }
 
-// gitRepoLatest 自建分发家族（zcode）的版本信号：两层取优。
+// gitRepoLatest mosaic 通道（自建分发家族，zcode）的版本信号：两层取优。
 //   - 优先：桌面产品更新源——注册表内同家族桌面渠道（app:zcode-desktop，native
 //     Windows 安装）声明的 <install>/resources/app-update.yml 的 url（electron-
 //     updater generic feed），GET <url>/latest.yml 取 version。负责人问询轮实证
@@ -219,7 +257,7 @@ func (r *Registry) CheckUpdate(ctx context.Context, id string, runner Runner) (U
 //     通道可能领先）。
 //
 // 返回 (latest, 缓存键, 信号来源说明, error)。缓存命中直接返回（来源沿用）。
-func (r *Registry) gitRepoLatest(ctx context.Context, runner Runner, exe Executable, spec updateChannelSpec, now time.Time) (latest, cacheKey, srcNote string, err error) {
+func (r *Registry) gitRepoLatest(ctx context.Context, runner Runner, exe Executable, spec familySpec, now time.Time) (latest, cacheKey, srcNote string, err error) {
 	// 第一层：桌面 feed。
 	if url, ok := r.desktopFeedURL(); ok {
 		cacheKey = latestCacheKey(RuntimeNative, "", "feed:"+url)
@@ -373,9 +411,9 @@ func (r *Registry) RunUpdate(ctx context.Context, id string, runner Runner) (Upd
 	if runner == nil {
 		return UpdateRun{}, errors.New("harness: 无探测执行面（ProbeRunner 未配置）")
 	}
-	argv := buildUpdateCmd(exe)
+	argv := buildUpdateCmd(ctx, runner, exe)
 	if argv == nil {
-		return UpdateRun{}, fmt.Errorf("%w：%s", ErrNoUpdateChannel, updateChannels[exe.Adapter].manualNote)
+		return UpdateRun{}, fmt.Errorf("%w：%s", ErrNoUpdateChannel, updateFamilies[exe.Adapter].note)
 	}
 	ctx, cancel := context.WithTimeout(ctx, updateJobTimeout)
 	defer cancel()
@@ -432,13 +470,6 @@ func (r *Registry) executableOf(id string) (Executable, error) {
 		}
 	}
 	return Executable{}, ErrNotFound
-}
-
-// npmArgs npm 调用 argv（按运行面）：WSL/Linux/macOS 走 bash -lc（登录 shell 的
-// nvm PATH 与 npmrc 镜像——包注释实证：绝对路径 npm 缺 node、sh -lc 解析到
-// Windows 互操作 npm）；Windows native 走 cmd /c（npm.cmd）。
-func npmArgs(rt Runtime, sub string) []string {
-	return loginShellArgs(rt, "npm "+sub)
 }
 
 func loginShellArgs(rt Runtime, cmd string) []string {
@@ -582,7 +613,7 @@ func (j *updateJob) finish(ev UpdateEvent) {
 // StartUpdate 异步启动更新任务（过程经 SubscribeUpdateEvents 逐行可视化）。
 // 同实例互斥：任务在途返回 started=false（幂等，不报错）；任务历史保留至下次
 // 启动（重放用）。任务上下文独立于请求生命周期（background + 5 分钟上限）。
-func (r *Registry) StartUpdate(_ context.Context, id string, runner Runner) (bool, error) {
+func (r *Registry) StartUpdate(ctx context.Context, id string, runner Runner) (bool, error) {
 	exe, err := r.executableOf(id)
 	if err != nil {
 		return false, err
@@ -590,9 +621,9 @@ func (r *Registry) StartUpdate(_ context.Context, id string, runner Runner) (boo
 	if runner == nil {
 		return false, errors.New("harness: 无探测执行面（ProbeRunner 未配置）")
 	}
-	argv := buildUpdateCmd(exe)
+	argv := buildUpdateCmd(ctx, runner, exe)
 	if argv == nil {
-		return false, fmt.Errorf("%w：%s", ErrNoUpdateChannel, updateChannels[exe.Adapter].manualNote)
+		return false, fmt.Errorf("%w：%s", ErrNoUpdateChannel, updateFamilies[exe.Adapter].note)
 	}
 	r.mu.Lock()
 	if job, ok := r.updateJobs[id]; ok && !job.done {
@@ -609,17 +640,34 @@ func (r *Registry) StartUpdate(_ context.Context, id string, runner Runner) (boo
 	return true, nil
 }
 
-// buildUpdateCmd 按通道构造更新命令 argv（登录 shell 包装，与 RunUpdate 同源）。
-func buildUpdateCmd(exe Executable) []string {
-	spec := updateChannels[exe.Adapter]
+// buildUpdateCmd 按通道（ADR-0016）构造更新命令 argv（登录 shell 包装）：
+// registry → 仓库安装命令；self-update → 可执行 + 家族子命令；mosaic →
+// 约定脚本 $HOME/.mosaic/update/<adapter>.sh（缺位返回 nil = 无自动更新面）。
+func buildUpdateCmd(ctx context.Context, runner Runner, exe Executable) []string {
+	spec := updateFamilies[exe.Adapter]
 	rt := Runtime(exe.Runtime)
-	switch {
-	case len(spec.selfUpdateArgs) > 0:
-		return loginShellArgs(rt, shellQuote(exe.Path)+" "+strings.Join(spec.selfUpdateArgs, " "))
-	case spec.npmPackage != "":
-		return npmArgs(rt, "install -g "+spec.npmPackage+"@latest")
+	switch spec.channel {
+	case "self-update":
+		return loginShellArgs(rt, shellQuote(exe.Path)+" "+strings.Join(spec.selfArgs, " "))
+	case "registry":
+		return loginShellArgs(rt, spec.repo.installCmd(spec.pkg))
+	case "mosaic":
+		if script, ok := mosaicUpdateScript(ctx, runner, exe); ok {
+			return loginShellArgs(rt, shellQuote(script))
+		}
 	}
 	return nil
+}
+
+// mosaicUpdateScript mosaic 通道更新脚本约定位：$HOME/.mosaic/update/<adapter>.sh
+// （存在性探测；可执行性由执行面裁决——不可执行则任务失败面如实呈现）。
+func mosaicUpdateScript(ctx context.Context, runner Runner, exe Executable) (string, bool) {
+	home := runner.Home(ctx, Runtime(exe.Runtime), exe.Distro)
+	if home == "" {
+		return "", false
+	}
+	script := strings.TrimSuffix(home, "/") + "/.mosaic/update/" + exe.Adapter + ".sh"
+	return script, runner.Exists(ctx, Runtime(exe.Runtime), exe.Distro, script)
 }
 
 // displayCmd 过程日志里的命令呈现（(argv 还原可读形态——bash -lc '...' 取 -c 串）。

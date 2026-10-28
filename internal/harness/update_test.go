@@ -21,43 +21,83 @@ func updateTestRegistry(t *testing.T) (*Registry, string) {
 	return reg, path
 }
 
-// TestUpdateChannelSpecs：五家族通道分类（实证 2026-10-27 分发面；kimi 验收
-// 反馈轮改道官方自更新；zcode 负责人问询轮改道源码 tag 检测——官方无 Linux
-// CLI 产物、本机为自建打包，检测对齐 git tag、更新保持 manual）。
+// TestUpdateChannelSpecs：三通道分派（ADR-0016，负责人裁定 2026-10-27——
+// registry / self-update / mosaic；mcode 归 self-update：`mcode update` 子命令
+// 实证在席，npm 面仅作检测）。
 func TestUpdateChannelSpecs(t *testing.T) {
 	cases := map[string]struct {
 		channel   string
 		canCheck  bool
-		canUpdate bool
+		canUpdate bool // mosaic 默认无脚本 → false（脚本在位由 TestRunUpdateMosaicScript 钉）
 	}{
+		"codex":   {"registry", true, true},
 		"claude":  {"self-update", true, true},
-		"codex":   {"npm", true, true},
-		"minimax": {"npm", true, true},
+		"minimax": {"self-update", true, true},
 		"kimi":    {"self-update", false, true},
-		"zcode":   {"releases", true, false},
+		"zcode":   {"mosaic", true, false},
 	}
 	for adapter, want := range cases {
-		spec := updateChannels[adapter]
-		if spec.channel() != want.channel {
-			t.Fatalf("%s channel = %s，期望 %s", adapter, spec.channel(), want.channel)
+		spec := updateFamilies[adapter]
+		if spec.channel != want.channel {
+			t.Fatalf("%s channel = %s，期望 %s", adapter, spec.channel, want.channel)
 		}
-		if got := len(spec.selfUpdateArgs) > 0 || spec.npmPackage != ""; got != want.canUpdate {
-			t.Fatalf("%s canUpdate = %v，期望 %v", adapter, got, want.canUpdate)
+		if spec.hasCheckFace() != want.canCheck {
+			t.Fatalf("%s canCheck = %v，期望 %v", adapter, spec.hasCheckFace(), want.canCheck)
 		}
-		if got := spec.npmPackage != "" || spec.gitRepo != ""; got != want.canCheck {
-			t.Fatalf("%s canCheck = %v，期望 %v", adapter, got, want.canCheck)
+		auto := spec.channel == "registry" || spec.channel == "self-update"
+		if auto != want.canUpdate {
+			t.Fatalf("%s canUpdate = %v，期望 %v", adapter, auto, want.canUpdate)
 		}
 	}
-	if updateChannels["claude"].npmPackage != "@anthropic-ai/claude-code" ||
-		updateChannels["codex"].npmPackage != "@openai/codex" ||
-		updateChannels["minimax"].npmPackage != "@minimax-ai/code" {
-		t.Fatal("npm 分发面包名与实证不符")
+	if _, ok := updateFamilies["codex"].repo.(npmRepo); !ok {
+		t.Fatal("registry 通道应绑定仓库客户端")
 	}
-	if updateChannels["zcode"].gitRepo != "zai-org/ZCode" {
-		t.Fatal("zcode 源码仓应为 zai-org/ZCode")
+	if !reflect.DeepEqual(updateFamilies["kimi"].selfArgs, []string{"upgrade", "--yes"}) ||
+		!reflect.DeepEqual(updateFamilies["minimax"].selfArgs, []string{"update"}) ||
+		!reflect.DeepEqual(updateFamilies["claude"].selfArgs, []string{"update"}) {
+		t.Fatal("self-update 子命令与实证不符")
 	}
-	if !reflect.DeepEqual(updateChannels["kimi"].selfUpdateArgs, []string{"upgrade", "--yes"}) {
-		t.Fatal("kimi 自更新子命令应为 upgrade --yes")
+	if updateFamilies["zcode"].gitRepo != "zai-org/ZCode" {
+		t.Fatal("mosaic 通道信号仓应为 zai-org/ZCode")
+	}
+}
+
+// TestRunUpdateMosaicScript：mosaic 通道脚本在位（$HOME/.mosaic/update/<adapter>.sh）
+// → 更新经登录 shell 驱动脚本 + 版本回探回填；脚本缺位 → ErrNoUpdateChannel。
+func TestRunUpdateMosaicScript(t *testing.T) {
+	reg, path := updateTestRegistry(t)
+	reg.exes = []Executable{{
+		ID: "z_m", Adapter: "zcode", Runtime: "native",
+		Path: "/home/u/.local/bin/zcode", Version: "0.16.9", Enabled: true,
+	}}
+	runner := newFakeRunner()
+	runner.homes["native|"] = "/home/u"
+	runner.exists["native||/home/u/.mosaic/update/zcode.sh"] = true
+	runner.runs["native||bash -lc "+shellQuote("/home/u/.mosaic/update/zcode.sh")] = "拉取上游源码…重打包完成\n"
+	runner.runs["native||/home/u/.local/bin/zcode --version"] = "3.15.1\n"
+
+	res, err := reg.RunUpdate(context.Background(), "z_m", runner)
+	if err != nil {
+		t.Fatalf("run update: %v", err)
+	}
+	if res.NewVersion != "3.15.1" {
+		t.Fatalf("更新结果不符：%+v", res)
+	}
+	reloaded, _ := LoadOrCreate(path)
+	if reloaded.List()[0].Version != "3.15.1" {
+		t.Fatalf("版本回填未持久化：%+v", reloaded.List()[0])
+	}
+
+	// 脚本缺位 → 无自动更新面（409 面）
+	reg2, _ := updateTestRegistry(t)
+	reg2.exes = []Executable{{
+		ID: "z_m2", Adapter: "zcode", Runtime: "native",
+		Path: "/home/u/.local/bin/zcode", Version: "0.16.9", Enabled: true,
+	}}
+	runner2 := newFakeRunner()
+	runner2.homes["native|"] = "/home/u" // 无 exists 登记 → 脚本不在位
+	if _, err := reg2.RunUpdate(context.Background(), "z_m2", runner2); !errors.Is(err, ErrNoUpdateChannel) {
+		t.Fatalf("脚本缺位应 ErrNoUpdateChannel：%v", err)
 	}
 }
 
@@ -154,7 +194,7 @@ func TestCheckUpdateGitTagsChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("check: %v", err)
 	}
-	if !check.CanCheck || check.CanUpdate || check.Channel != "releases" {
+	if !check.CanCheck || check.CanUpdate || check.Channel != "mosaic" {
 		t.Fatalf("releases 通道字段不符：%+v", check)
 	}
 	if check.Latest != "3.15.1" {
@@ -303,7 +343,7 @@ func TestLoginShellArgsForms(t *testing.T) {
 	orig := goruntimeOS
 	defer func() { goruntimeOS = orig }()
 	goruntimeOS = "windows"
-	got := npmArgs(RuntimeNative, "view x version")
+	got := loginShellArgs(RuntimeNative, "npm view x version")
 	if !reflect.DeepEqual(got, []string{"cmd", "/c", "npm view x version"}) {
 		t.Fatalf("Windows native 形态：%v", got)
 	}

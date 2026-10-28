@@ -2139,7 +2139,7 @@ export interface components {
              */
             default_source?: "config" | "builtin" | "";
         };
-        /** @description Agent CLI 版本检测（0.4.1）：注册表探测版本对照上游最新版（npm 分发面经登录 shell 实查 npm view；自建分发面对齐源码 tag 经 git ls-remote——均缓存 30 分钟）。 */
+        /** @description Agent CLI 版本检测（0.4.1）：注册表探测版本对照上游最新版（按 ADR-0016 三通道分派检测面——registry/self-update 经仓库客户端（npm view）；mosaic 对齐自建 releases 信号（产品更新源 feed 优先、源码 tag 回退）；均缓存 30 分钟）。 */
         HarnessUpdateCheck: {
             adapter: string;
             /** @description 注册表探测原文（如 "2.1.172 (Claude Code)"） */
@@ -2157,10 +2157,10 @@ export interface components {
             /** @description 有自动更新通道（npm / 官方自更新） */
             can_update: boolean;
             /**
-             * @description 检测/更新通道（releases = 自建分发：产品更新源优先、源码 tag 回退）
+             * @description 更新通道三分类（ADR-0016）：registry=第三方分发仓库（现役 npm）；self-update=官方自更新子命令（检测可借仓库面）；mosaic=Mosaic 自带通道（自建打包脚本 ~/.mosaic/update/<adapter>.sh，检测对齐自建 releases 信号）
              * @enum {string}
              */
-            channel: "npm" | "self-update" | "releases" | "manual";
+            channel: "registry" | "self-update" | "mosaic";
             /** @description manual 指引 / 不可比说明 / 检测失败原因 */
             note?: string;
             /** Format: date-time */
