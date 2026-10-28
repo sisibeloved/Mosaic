@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -49,9 +50,12 @@ func TestManagerPerProviderRoundTrip(t *testing.T) {
 	if tc.Token != "tok" {
 		t.Fatal("tencent 凭据被 feishu 写入破坏")
 	}
-	// 0600
-	if fi, _ := os.Stat(filepath.Join(dir, "extdocs", ProviderFeishu+".json")); fi.Mode().Perm() != 0o600 {
-		t.Fatalf("权限 = %v", fi.Mode().Perm())
+	// 0600（仅 Unix 面——platform-notes W-6：Windows 无 POSIX 权限语义，写位
+	// 断言在 windows 宿主恒为 -rw-rw-rw-，CI windows 腿因此红过，2026-10-28）
+	if goruntime.GOOS != "windows" {
+		if fi, _ := os.Stat(filepath.Join(dir, "extdocs", ProviderFeishu+".json")); fi.Mode().Perm() != 0o600 {
+			t.Fatalf("权限 = %v", fi.Mode().Perm())
+		}
 	}
 	// 清除
 	if err := m.Clear(ProviderFeishu); err != nil {

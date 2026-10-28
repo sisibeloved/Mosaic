@@ -15,6 +15,12 @@ import (
 	"testing"
 )
 
+// nativeRunKey 测试桩 runs 键：经 loginShellArgs 构造（跨平台形态——Windows
+// 宿主为 cmd /c；CI windows 腿曾因键写死 bash -lc 形态不命中而红，2026-10-28）。
+func nativeRunKey(cmd string) string {
+	return "native||" + strings.Join(loginShellArgs(RuntimeNative, cmd), " ")
+}
+
 func updateTestRegistry(t *testing.T) (*Registry, string) {
 	t.Helper()
 	reg, path := tempRegistry(t)
@@ -73,7 +79,7 @@ func TestRunUpdateMosaicScript(t *testing.T) {
 	runner := newFakeRunner()
 	runner.homes["native|"] = "/home/u"
 	runner.exists["native||/home/u/.mosaic/update/zcode.sh"] = true
-	runner.runs["native||bash -lc "+shellQuote("/home/u/.mosaic/update/zcode.sh")] = "拉取上游源码…重打包完成\n"
+	runner.runs[nativeRunKey(shellQuote("/home/u/.mosaic/update/zcode.sh"))] = "拉取上游源码…重打包完成\n"
 	runner.runs["native||/home/u/.local/bin/zcode --version"] = "3.15.1\n"
 
 	res, err := reg.RunUpdate(context.Background(), "z_m", runner)
@@ -145,7 +151,7 @@ func TestCheckUpdateLatestAndCache(t *testing.T) {
 		Path: "/home/u/.local/bin/claude", Version: "2.1.172 (Claude Code)", Enabled: true,
 	}}
 	runner := newFakeRunner()
-	runner.runs["native||bash -lc npm view @anthropic-ai/claude-code version"] = "2.1.311\n"
+	runner.runs[nativeRunKey("npm view @anthropic-ai/claude-code version")] = "2.1.311\n"
 
 	check, err := reg.CheckUpdate(context.Background(), "cl_1", runner)
 	if err != nil {
@@ -158,7 +164,7 @@ func TestCheckUpdateLatestAndCache(t *testing.T) {
 		t.Fatalf("检测字段不符：%+v", check)
 	}
 	// 缓存命中：撤掉 runs 供给，二次查询仍取缓存值。
-	delete(runner.runs, "native||bash -lc npm view @anthropic-ai/claude-code version")
+	delete(runner.runs, nativeRunKey("npm view @anthropic-ai/claude-code version"))
 	check2, err := reg.CheckUpdate(context.Background(), "cl_1", runner)
 	if err != nil {
 		t.Fatalf("check2: %v", err)
@@ -180,7 +186,7 @@ func TestCheckUpdateGitTagsChannel(t *testing.T) {
 		"1234567  refs/tags/v3.9.0\n"
 	newRunner := func() *fakeRunner {
 		runner := newFakeRunner()
-		runner.runs["native||bash -lc git ls-remote --tags --refs https://github.com/zai-org/ZCode.git"] = tags
+		runner.runs[nativeRunKey("git ls-remote --tags --refs https://github.com/zai-org/ZCode.git")] = tags
 		return runner
 	}
 
@@ -233,7 +239,7 @@ func TestCheckUpdateFailureNotCached(t *testing.T) {
 		Path: "/home/u/bin/codex", Version: "codex-cli 0.153.4", Enabled: true,
 	}}
 	runner := newFakeRunner()
-	runner.runs["native||bash -lc npm view @openai/codex version"] = "network error\x00EXIT:1"
+	runner.runs[nativeRunKey("npm view @openai/codex version")] = "network error\x00EXIT:1"
 	check, err := reg.CheckUpdate(context.Background(), "cx_1", runner)
 	if err != nil {
 		t.Fatalf("check: %v", err)
@@ -241,7 +247,7 @@ func TestCheckUpdateFailureNotCached(t *testing.T) {
 	if check.Latest != "" || check.UpToDate || !strings.Contains(check.Note, "失败") {
 		t.Fatalf("失败面应携 note 不带最新版：%+v", check)
 	}
-	runner.runs["native||bash -lc npm view @openai/codex version"] = "0.160.0\n"
+	runner.runs[nativeRunKey("npm view @openai/codex version")] = "0.160.0\n"
 	check2, _ := reg.CheckUpdate(context.Background(), "cx_1", runner)
 	if check2.Latest != "0.160.0" || check2.UpToDate {
 		t.Fatalf("失败不缓存——恢复后即取最新：%+v", check2)
@@ -257,7 +263,7 @@ func TestRunUpdateSelfUpdateClaude(t *testing.T) {
 		Path: "/home/u/.local/bin/claude", Version: "2.1.172 (Claude Code)", Enabled: true,
 	}}
 	runner := newFakeRunner()
-	runner.runs["native||bash -lc "+shellQuote("/home/u/.local/bin/claude")+" update"] = "Updated to 2.1.311\n"
+	runner.runs[nativeRunKey(shellQuote("/home/u/.local/bin/claude")+" update")] = "Updated to 2.1.311\n"
 	runner.runs["native||/home/u/.local/bin/claude --version"] = "2.1.311 (Claude Code)\n"
 
 	res, err := reg.RunUpdate(context.Background(), "cl_2", runner)
@@ -286,7 +292,7 @@ func TestRunUpdateNPMChannel(t *testing.T) {
 		Path: "/home/u/bin/codex", Version: "codex-cli 0.153.4", Enabled: true,
 	}}
 	runner := newFakeRunner()
-	runner.runs["native||bash -lc npm install -g @openai/codex@latest"] = "added 1 package\n"
+	runner.runs[nativeRunKey("npm install -g @openai/codex@latest")] = "added 1 package\n"
 	runner.runs["native||/home/u/bin/codex --version"] = "codex-cli 0.160.0\n"
 
 	res, err := reg.RunUpdate(context.Background(), "cx_2", runner)
@@ -327,7 +333,7 @@ func TestRunUpdateCommandFailure(t *testing.T) {
 		Path: "/home/u/bin/codex", Version: "codex-cli 0.153.4", Enabled: true,
 	}}
 	runner := newFakeRunner()
-	runner.runs["native||bash -lc npm install -g @openai/codex@latest"] = "EACCES permission denied\x00EXIT:1"
+	runner.runs[nativeRunKey("npm install -g @openai/codex@latest")] = "EACCES permission denied\x00EXIT:1"
 	_, err := reg.RunUpdate(context.Background(), "cx_3", runner)
 	if err == nil || !strings.Contains(err.Error(), "EACCES") {
 		t.Fatalf("更新失败应携输出尾：%v", err)
@@ -367,7 +373,7 @@ func TestRunUpdateSelfUpdateKimi(t *testing.T) {
 		Path: "/home/u/.kimi-code/bin/kimi", Version: "2.1.1", Enabled: true,
 	}}
 	runner := newFakeRunner()
-	runner.runs["native||bash -lc "+shellQuote("/home/u/.kimi-code/bin/kimi")+" upgrade --yes"] = "已升级到 2.2.0\n"
+	runner.runs[nativeRunKey(shellQuote("/home/u/.kimi-code/bin/kimi")+" upgrade --yes")] = "已升级到 2.2.0\n"
 	runner.runs["native||/home/u/.kimi-code/bin/kimi --version"] = "2.2.0\n"
 
 	check, err := reg.CheckUpdate(context.Background(), "k_2", runner)
@@ -452,7 +458,7 @@ func TestZcodeFeedDownFallsBackToTags(t *testing.T) {
 			Version: "0.16.9", Source: SourceAuto, Channel: "app:zcode-desktop"},
 	}
 	runner := newFakeRunner()
-	runner.runs["native||bash -lc git ls-remote --tags --refs https://github.com/zai-org/ZCode.git"] =
+	runner.runs[nativeRunKey("git ls-remote --tags --refs https://github.com/zai-org/ZCode.git")] =
 		"abc1234  refs/tags/v3.15.1\n"
 	check, err := reg.CheckUpdate(context.Background(), "z_cli2", runner)
 	if err != nil {
@@ -475,7 +481,7 @@ func TestStartUpdateStreamAndReplay(t *testing.T) {
 		Path: "/home/u/bin/codex", Version: "codex-cli 0.153.4", Enabled: true,
 	}}
 	runner := newFakeRunner()
-	runner.runs["native||bash -lc npm install -g @openai/codex@latest"] = "npm warn config\nadded 1 package in 3s\n"
+	runner.runs[nativeRunKey("npm install -g @openai/codex@latest")] = "npm warn config\nadded 1 package in 3s\n"
 	runner.runs["native||/home/u/bin/codex --version"] = "codex-cli 0.164.0\n"
 
 	// 无任务订阅 → ok=false
@@ -536,7 +542,7 @@ func TestStartUpdateFailureStreamsError(t *testing.T) {
 		Path: "/home/u/bin/codex", Version: "codex-cli 0.153.4", Enabled: true,
 	}}
 	runner := newFakeRunner()
-	runner.runs["native||bash -lc npm install -g @openai/codex@latest"] = "EACCES denied\x00EXIT:1"
+	runner.runs[nativeRunKey("npm install -g @openai/codex@latest")] = "EACCES denied\x00EXIT:1"
 	if _, err := reg.StartUpdate(context.Background(), "cx_f", runner); err != nil {
 		t.Fatalf("start: %v", err)
 	}
