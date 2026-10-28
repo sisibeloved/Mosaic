@@ -82,7 +82,7 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 文档
 
-- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.4.0）
+- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.4.1）
 - [架构设计说明书](docs/design/2026-08-13-mosaic-architecture-design.md)
 - [RFC-0001 Room Protocol](docs/design/rfc/2026-08-25-rfc-0001-room-protocol.md)
 - [RFC-0002 Agent Protocol](docs/design/rfc/2026-08-25-rfc-0002-agent-protocol.md)
@@ -92,9 +92,7 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 当前状态与路线图
 
-当前版本 **v0.4.0**（2026-10-27，Agent 兼容性扩充——Claude Code 原生适配器（第五家）全线交付：headless stream-json 对接、自动发现与登录探测、模型覆盖原生 `--model`、生产路径桩门禁，见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收。后续版本规划：
-
-- **0.4.1 Agent 版本检测与更新**：各 CLI 对照上游最新版（npm 分发面实查 + claude/kimi 官方自更新 + zcode 源码 tag 对齐），设置页一键检查与更新——原 0.7.0 生态项前移（本机 CLI 落后上游是常态）。
+当前版本 **v0.4.1**（2026-10-28，Agent 版本检测与更新——三种更新通道（ADR-0016：第三方分发仓库 / 官方自更新 / Mosaic 自带脚本通道）全线落地，设置页一键检查与更新、更新过程日志实时可视化，见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收。后续版本规划：
 - **0.5.0 对话优化**：讨论体验打磨——反应波节奏与提示词迭代、@点名与引用增强、注意力与发言权策略调优。
 - **0.6.0 记忆增强**：语义召回与长期记忆策展升级，知识跨讨论沉淀复用。
 - **0.7.0 连接与生态**：远端 Harness 接入与 MCP 工具生态，Agent 的能力边界向外扩展（版本检测与更新已前移至 0.4.1）。
