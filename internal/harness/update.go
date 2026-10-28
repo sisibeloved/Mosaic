@@ -20,6 +20,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -69,7 +73,7 @@ func (s updateChannelSpec) channel() string {
 	case s.npmPackage != "":
 		return "npm"
 	case s.gitRepo != "":
-		return "git-tags"
+		return "releases"
 	default:
 		return "manual"
 	}
@@ -88,7 +92,7 @@ type UpdateCheck struct {
 	Comparable bool   `json:"comparable"`
 	CanCheck   bool   `json:"can_check"`  // 有检测面（npm 分发 / 源码 tag）
 	CanUpdate  bool   `json:"can_update"` // 有自动更新通道（npm / 自更新）
-	Channel    string `json:"channel"`    // npm | self-update | git-tags | manual
+	Channel    string `json:"channel"`    // npm | self-update | releases | manual
 	Note       string `json:"note,omitempty"`
 	CheckedAt  string `json:"checked_at"` // RFC3339
 }
@@ -145,45 +149,39 @@ func (r *Registry) CheckUpdate(ctx context.Context, id string, runner Runner) (U
 		return check, nil
 	}
 
-	// 检测面分发：npm 分发 → npm view；源码仓 → git ls-remote --tags。
-	var queryKey, queryCmd string
+	// 检测面分发：npm 分发 → npm view；源码仓家族（zcode）→ 桌面产品更新源
+	// 优先（app-update.yml 声明的自建 feed），不可达回退 git ls-remote --tags。
+	latest, srcNote := "", ""
+	var cacheKey string
 	if spec.npmPackage != "" {
-		queryKey = spec.npmPackage
-		queryCmd = "view " + spec.npmPackage + " version"
-	} else {
-		queryKey = "git:" + spec.gitRepo
-		queryCmd = "ls-remote --tags --refs https://github.com/" + spec.gitRepo + ".git"
-	}
-
-	key := latestCacheKey(Runtime(exe.Runtime), exe.Distro, queryKey)
-	r.mu.Lock()
-	cached, ok := r.latestCache[key]
-	r.mu.Unlock()
-	if ok && now.Sub(cached.at) < updateCheckTTL {
-		check.Latest = cached.version
-		check.UpToDate, check.Comparable = verdict(check.CurrentSemver, cached.version)
-		return check, nil
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-	out, code, err := runner.Run(ctx, Runtime(exe.Runtime), exe.Distro,
-		loginShellArgs(Runtime(exe.Runtime), toolForQuery(Runtime(exe.Runtime), queryCmd)))
-	if err != nil || code != 0 {
-		check.Note = fmt.Sprintf("最新版查询失败（退出码 %d）：%s", code, firstLine(out))
-		return check, nil // 环境态：返回可呈现的部分结果，不 5xx
-	}
-	var latest string
-	if spec.npmPackage != "" {
+		cacheKey = latestCacheKey(Runtime(exe.Runtime), exe.Distro, spec.npmPackage)
+		r.mu.Lock()
+		cached, ok := r.latestCache[cacheKey]
+		r.mu.Unlock()
+		if ok && now.Sub(cached.at) < updateCheckTTL {
+			check.Latest = cached.version
+			check.UpToDate, check.Comparable = verdict(check.CurrentSemver, cached.version)
+			return check, nil
+		}
+		qctx, qcancel := context.WithTimeout(ctx, 60*time.Second)
+		defer qcancel()
+		out, code, err := runner.Run(qctx, Runtime(exe.Runtime), exe.Distro,
+			loginShellArgs(Runtime(exe.Runtime), "npm view "+spec.npmPackage+" version"))
+		if err != nil || code != 0 {
+			check.Note = fmt.Sprintf("最新版查询失败（npm view 退出码 %d）：%s", code, firstLine(out))
+			return check, nil // 环境态：返回可呈现的部分结果，不 5xx
+		}
 		latest = strings.TrimSpace(lastLine(out))
 		if !semverLike(latest) {
 			check.Note = "最新版查询输出不可解析：" + firstLine(out)
 			return check, nil
 		}
+		srcNote = ""
 	} else {
-		latest = latestGitTag(out)
-		if latest == "" {
-			check.Note = "源码 tag 查询无可解析版本（refs/tags 无 semver 形态 tag）"
+		var qerr error
+		latest, cacheKey, srcNote, qerr = r.gitRepoLatest(ctx, runner, exe, spec, now)
+		if qerr != nil {
+			check.Note = qerr.Error()
 			return check, nil
 		}
 	}
@@ -191,7 +189,7 @@ func (r *Registry) CheckUpdate(ctx context.Context, id string, runner Runner) (U
 	if r.latestCache == nil {
 		r.latestCache = map[string]cachedLatest{}
 	}
-	r.latestCache[key] = cachedLatest{version: latest, at: now}
+	r.latestCache[cacheKey] = cachedLatest{version: latest, at: now}
 	r.mu.Unlock()
 	check.Latest = latest
 	check.UpToDate, check.Comparable = verdict(check.CurrentSemver, latest)
@@ -200,20 +198,128 @@ func (r *Registry) CheckUpdate(ctx context.Context, id string, runner Runner) (U
 		if check.CurrentSemver != "" {
 			scheme = "——安装侧 " + majorOf(check.CurrentSemver) + ".x 系 vs 上游 " + majorOf(latest) + ".x 系"
 		}
-		check.Note = strings.TrimSpace("上游源码最新 tag：" + latest +
+		check.Note = strings.TrimSpace("上游最新（" + strings.TrimSpace(srcNote) + "）：" + latest +
 			"（版本方案不同" + scheme + "，不可比不判更新）。" + check.Note)
+	} else if srcNote != "" {
+		check.Note = strings.TrimSpace("版本信号来源：" + srcNote + "。" + check.Note)
 	}
 	return check, nil
 }
 
-// toolForQuery 检测命令前缀：npm 面 `npm view ...`；git 面 `git ls-remote ...`
-// （Windows native 经 cmd /c 时前缀并入命令串）。
-func toolForQuery(rt Runtime, sub string) string {
-	if strings.HasPrefix(sub, "view ") {
-		return "npm " + sub
+// gitRepoLatest 自建分发家族（zcode）的版本信号：两层取优。
+//   - 优先：桌面产品更新源——注册表内同家族桌面渠道（app:zcode-desktop，native
+//     Windows 安装）声明的 <install>/resources/app-update.yml 的 url（electron-
+//     updater generic feed），GET <url>/latest.yml 取 version。负责人问询轮实证
+//     （2026-10-27）：本机桌面已 3.16.3 而开源仓库 releases 仅 v3.14.3 / tags
+//     仅 v3.15.1——产品通道领先于 OSS 元数据，源码 tag 单独作 latest 会拿"历史
+//     数据"。feed 是自建 infra（实录 http://localhost:8081，离线常态）——不可
+//     达时如实回退。
+//   - 回退：git ls-remote --tags 最新 semver tag，信号来源在 note 标注（产品
+//     通道可能领先）。
+//
+// 返回 (latest, 缓存键, 信号来源说明, error)。缓存命中直接返回（来源沿用）。
+func (r *Registry) gitRepoLatest(ctx context.Context, runner Runner, exe Executable, spec updateChannelSpec, now time.Time) (latest, cacheKey, srcNote string, err error) {
+	// 第一层：桌面 feed。
+	if url, ok := r.desktopFeedURL(); ok {
+		cacheKey = latestCacheKey(RuntimeNative, "", "feed:"+url)
+		r.mu.Lock()
+		cached, hit := r.latestCache[cacheKey]
+		r.mu.Unlock()
+		if hit && now.Sub(cached.at) < updateCheckTTL {
+			return cached.version, cacheKey, "产品更新源（桌面 app-update.yml → " + url + "，缓存）", nil
+		}
+		if v, ferr := fetchFeedVersion(ctx, url); ferr == nil {
+			return v, cacheKey, "产品更新源（桌面 app-update.yml → " + url + "）", nil
+		}
+		// feed 不可达：回退源码 tag，note 说明产品通道情况。
+		srcNote = "开源仓库源码 tag——产品更新源（" + url + "）当前不可达，自建分发通道可能领先此值"
+	} else {
+		srcNote = "开源仓库源码 tag（未发现桌面版安装，产品更新源不可知）"
 	}
-	return "git " + sub
+
+	// 第二层：git tags（缓存键切回 tag 面——feed 键只缓存 feed 结果，不混装）。
+	key := latestCacheKey(Runtime(exe.Runtime), exe.Distro, "git:"+spec.gitRepo)
+	cacheKey = key
+	r.mu.Lock()
+	cached, hit := r.latestCache[key]
+	r.mu.Unlock()
+	if hit && now.Sub(cached.at) < updateCheckTTL {
+		return cached.version, key, srcNote, nil
+	}
+	qctx, qcancel := context.WithTimeout(ctx, 60*time.Second)
+	defer qcancel()
+	out, code, rerr := runner.Run(qctx, Runtime(exe.Runtime), exe.Distro,
+		loginShellArgs(Runtime(exe.Runtime), "git ls-remote --tags --refs https://github.com/"+spec.gitRepo+".git"))
+	if rerr != nil || code != 0 {
+		return "", key, "", fmt.Errorf("最新版查询失败（git ls-remote 退出码 %d）：%s", code, firstLine(out))
+	}
+	latest = latestGitTag(out)
+	if latest == "" {
+		return "", key, "", errors.New("源码 tag 查询无可解析版本（refs/tags 无 semver 形态 tag）")
+	}
+	return latest, key, srcNote, nil
 }
+
+// desktopFeedURL 定位桌面渠道安装声明的更新源：app:zcode-desktop 注册项安装
+// 目录下 resources/app-update.yml 的 `url:` 行（electron-builder 产物，实录
+// "provider: generic / url: http://localhost:8081"）。文件读取走宿主 os 包
+// （native Windows 安装路径；服务端不在 Windows 宿主时读不到即跳过——如实）。
+func (r *Registry) desktopFeedURL() (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.exes {
+		if e.Adapter != "zcode" || e.Channel != ChannelAppZcodeDesktop || e.Runtime != string(RuntimeNative) {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(filepath.Dir(e.Path), "resources", "app-update.yml"))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			line = strings.TrimSpace(line)
+			if v, ok := strings.CutPrefix(line, "url:"); ok {
+				if u := strings.TrimSpace(v); u != "" {
+					return u, true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+// fetchFeedVersion GET <feed>/latest.yml 取 version 行（electron-updater 清单，
+// 实录形状 "version: 3.16.3"）。直连不套 env 代理（自建 feed 常为回环/内网
+// 地址），5s 超时。
+func fetchFeedVersion(ctx context.Context, feedURL string) (string, error) {
+	qctx, qcancel := context.WithTimeout(ctx, 5*time.Second)
+	defer qcancel()
+	req, err := http.NewRequestWithContext(qctx, http.MethodGet, strings.TrimRight(feedURL, "/")+"/latest.yml", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := feedHTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("feed HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "version:"); ok {
+			if ver := strings.TrimSpace(v); semverLike(ver) {
+				return ver, nil
+			}
+		}
+	}
+	return "", errors.New("latest.yml 无可解析 version 行")
+}
+
+var feedHTTPClient = &http.Client{Transport: &http.Transport{Proxy: nil}}
 
 // verdict 版本判定：同 major 系才可比（comparable=true 时 up_to_date 为语义化
 // 比较结果；跨系不可比 → up_to_date=true 不标红，由调用方 note 说明）。

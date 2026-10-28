@@ -416,20 +416,20 @@ func (e ExternalRefKind) Valid() bool {
 
 // Defines values for HarnessUpdateCheckChannel.
 const (
-	GitTags    HarnessUpdateCheckChannel = "git-tags"
 	Manual     HarnessUpdateCheckChannel = "manual"
 	Npm        HarnessUpdateCheckChannel = "npm"
+	Releases   HarnessUpdateCheckChannel = "releases"
 	SelfUpdate HarnessUpdateCheckChannel = "self-update"
 )
 
 // Valid indicates whether the value is a known member of the HarnessUpdateCheckChannel enum.
 func (e HarnessUpdateCheckChannel) Valid() bool {
 	switch e {
-	case GitTags:
-		return true
 	case Manual:
 		return true
 	case Npm:
+		return true
+	case Releases:
 		return true
 	case SelfUpdate:
 		return true
@@ -1772,11 +1772,11 @@ type HarnessUpdateCheck struct {
 	// CanUpdate 有自动更新通道（npm / 官方自更新）
 	CanUpdate bool `json:"can_update"`
 
-	// Channel 检测/更新通道
+	// Channel 检测/更新通道（releases = 自建分发：产品更新源优先、源码 tag 回退）
 	Channel   HarnessUpdateCheckChannel `json:"channel"`
 	CheckedAt time.Time                 `json:"checked_at"`
 
-	// Comparable 版本方案可比（两侧 semver 同 major 系——zcode 实录：安装侧 0.16.9 桌面内核版方案 vs 上游源码 tag 3.x，跨系比对必恒误报）
+	// Comparable 版本方案可比（两侧 semver 同 major 系——zcode 实录：安装侧 0.16.9 桌面内核版方案 vs 上游 3.x，跨系比对必恒误报）
 	Comparable bool `json:"comparable"`
 
 	// CurrentSemver 原文中解析出的 x.y.z（解析不出为空）
@@ -1795,7 +1795,7 @@ type HarnessUpdateCheck struct {
 	UpToDate bool `json:"up_to_date"`
 }
 
-// HarnessUpdateCheckChannel 检测/更新通道
+// HarnessUpdateCheckChannel 检测/更新通道（releases = 自建分发：产品更新源优先、源码 tag 回退）
 type HarnessUpdateCheckChannel string
 
 // HarnessUpdateRun 更新执行结果（0.4.1）：完成后重探版本并回填注册表。

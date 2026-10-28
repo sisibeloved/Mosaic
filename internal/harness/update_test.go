@@ -6,6 +6,10 @@ package harness
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -30,7 +34,7 @@ func TestUpdateChannelSpecs(t *testing.T) {
 		"codex":   {"npm", true, true},
 		"minimax": {"npm", true, true},
 		"kimi":    {"self-update", false, true},
-		"zcode":   {"git-tags", true, false},
+		"zcode":   {"releases", true, false},
 	}
 	for adapter, want := range cases {
 		spec := updateChannels[adapter]
@@ -150,8 +154,8 @@ func TestCheckUpdateGitTagsChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("check: %v", err)
 	}
-	if !check.CanCheck || check.CanUpdate || check.Channel != "git-tags" {
-		t.Fatalf("git-tags 通道字段不符：%+v", check)
+	if !check.CanCheck || check.CanUpdate || check.Channel != "releases" {
+		t.Fatalf("releases 通道字段不符：%+v", check)
 	}
 	if check.Latest != "3.15.1" {
 		t.Fatalf("应取最大 semver tag（非字典序、非 semver tag 忽略）：%+v", check)
@@ -339,5 +343,85 @@ func TestRunUpdateSelfUpdateKimi(t *testing.T) {
 	}
 	if res.NewVersion != "2.2.0" {
 		t.Fatalf("更新结果不符：%+v", res)
+	}
+}
+
+// TestZcodeFeedPreferredOverTags：桌面产品更新源（app-update.yml → latest.yml）
+// 优先于源码 tag——负责人问询轮实录：桌面已 3.16.3（自建 feed 分发）而 OSS
+// tag 仅 v3.15.1，feed 在线时 latest 必须取产品通道值，且不发起 git 查询。
+func TestZcodeFeedPreferredOverTags(t *testing.T) {
+	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/latest.yml") {
+			_, _ = w.Write([]byte("version: 3.16.3\npath: ZCode-3.16.3-win-x64.exe\nsha512: x\n"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer feed.Close()
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "resources"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	appUpdate := "provider: generic\nuseMultipleRangeRequest: false\nurl: " + feed.URL + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "resources", "app-update.yml"), []byte(appUpdate), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reg, _ := updateTestRegistry(t)
+	reg.exes = []Executable{
+		{ID: "z_cli", Adapter: "zcode", Runtime: "native", Path: "/home/u/.local/bin/zcode",
+			Version: "0.16.9", Source: SourceAuto, Enabled: true},
+		{ID: "z_app", Adapter: "zcode", Runtime: "native", Path: filepath.Join(dir, "ZCode.exe"),
+			Version: "0.16.9", Source: SourceAuto, Channel: "app:zcode-desktop"},
+	}
+	runner := newFakeRunner() // 无 git 供给：feed 命中则根本不应走到 git 查询
+	check, err := reg.CheckUpdate(context.Background(), "z_cli", runner)
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if check.Latest != "3.16.3" {
+		t.Fatalf("feed 在线时 latest 应取产品通道值：%+v", check)
+	}
+	if !strings.Contains(check.Note, "产品更新源") {
+		t.Fatalf("note 应标注信号来源为产品更新源：%+v", check)
+	}
+	if check.Comparable || !check.UpToDate {
+		t.Fatalf("0.x vs 3.x 仍不可比不标红：%+v", check)
+	}
+}
+
+// TestZcodeFeedDownFallsBackToTags：feed 不可达（自建 infra 离线常态）→ 回退
+// 源码 tag，note 如实标注信号来源与产品通道可能领先的说明。
+func TestZcodeFeedDownFallsBackToTags(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "resources"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// 端口几乎必然无人监听（1 号端口无服务）——feed 连接失败面
+	appUpdate := "provider: generic\nurl: http://127.0.0.1:1/\n"
+	if err := os.WriteFile(filepath.Join(dir, "resources", "app-update.yml"), []byte(appUpdate), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reg, _ := updateTestRegistry(t)
+	reg.exes = []Executable{
+		{ID: "z_cli2", Adapter: "zcode", Runtime: "native", Path: "/home/u/.local/bin/zcode",
+			Version: "0.16.9", Source: SourceAuto, Enabled: true},
+		{ID: "z_app2", Adapter: "zcode", Runtime: "native", Path: filepath.Join(dir, "ZCode.exe"),
+			Version: "0.16.9", Source: SourceAuto, Channel: "app:zcode-desktop"},
+	}
+	runner := newFakeRunner()
+	runner.runs["native||bash -lc git ls-remote --tags --refs https://github.com/zai-org/ZCode.git"] =
+		"abc1234  refs/tags/v3.15.1\n"
+	check, err := reg.CheckUpdate(context.Background(), "z_cli2", runner)
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if check.Latest != "3.15.1" {
+		t.Fatalf("feed 离线应回退源码 tag：%+v", check)
+	}
+	if !strings.Contains(check.Note, "不可达") || !strings.Contains(check.Note, "开源仓库源码 tag") {
+		t.Fatalf("note 应标注回退来源与产品通道说明：%+v", check)
 	}
 }

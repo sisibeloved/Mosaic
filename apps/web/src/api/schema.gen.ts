@@ -2127,17 +2127,17 @@ export interface components {
             latest?: string;
             /** @description comparable 时为语义化比较结果；不可比（版本方案不同）或无检测面恒 true——不标红 */
             up_to_date: boolean;
-            /** @description 版本方案可比（两侧 semver 同 major 系——zcode 实录：安装侧 0.16.9 桌面内核版方案 vs 上游源码 tag 3.x，跨系比对必恒误报） */
+            /** @description 版本方案可比（两侧 semver 同 major 系——zcode 实录：安装侧 0.16.9 桌面内核版方案 vs 上游 3.x，跨系比对必恒误报） */
             comparable: boolean;
             /** @description 有检测面（npm 分发 / 源码 tag） */
             can_check: boolean;
             /** @description 有自动更新通道（npm / 官方自更新） */
             can_update: boolean;
             /**
-             * @description 检测/更新通道
+             * @description 检测/更新通道（releases = 自建分发：产品更新源优先、源码 tag 回退）
              * @enum {string}
              */
-            channel: "npm" | "self-update" | "git-tags" | "manual";
+            channel: "npm" | "self-update" | "releases" | "manual";
             /** @description manual 指引 / 不可比说明 / 检测失败原因 */
             note?: string;
             /** Format: date-time */
