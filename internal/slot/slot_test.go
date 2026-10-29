@@ -193,6 +193,12 @@ func TestValidationFamily(t *testing.T) {
 		{"运行时工作区非法", "slot.a", func(c *SpecContent) {
 			c.Runtime = &RuntimeRequirements{WorkspaceAccess: "write_all"}
 		}},
+		{"运行时工作区空串（审校 P2#3）", "slot.a", func(c *SpecContent) {
+			c.Runtime = &RuntimeRequirements{WorkspaceAccess: ""}
+		}},
+		{"运行时工作区缺失零值（审校 P2#3）", "slot.a", func(c *SpecContent) {
+			c.Runtime = &RuntimeRequirements{Required: []string{"execute"}}
+		}},
 		{"交接件非法字符", "slot.a", func(c *SpecContent) {
 			c.Handoff = &HandoffRequirements{Required: []string{"bad key!"}}
 		}},

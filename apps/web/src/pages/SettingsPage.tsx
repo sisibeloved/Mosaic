@@ -50,7 +50,11 @@ export function SettingsPage() {
     { mode: "create", id: "", name: "", responsibility: "", deliverables: "", reqTools: "", optTools: "" },
   );
   const slotSeq = useRef(0);
-  const slotDetailRev = useRef(0);
+  // 修订基线（审校 P1）：startRevise 抓取的完整最新模板——追加提交时未编辑段
+  // （skills/context/delegation/runtime/handoff）原样带入，表单仅覆盖可编辑字段
+  const [slotBaseline, setSlotBaseline] = useState<SlotSpecView | null>(null);
+  // 修订加载请求序号（审校 P2#6）：新建/取消/切换修订使在途响应失效，不覆盖草稿
+  const reviseSeq = useRef(0);
   const [slotVersionsRev, setSlotVersionsRev] = useState(0);
   const [form, setForm] = useState({ adapter: "", runtime: "native", distro: "", path: "", version: "", channel: "" });
   const [formMsg, setFormMsg] = useState<string | null>(null);
@@ -389,14 +393,34 @@ export function SettingsPage() {
   const splitList = (s: string): string[] =>
     s.split(/[,，\n]/).map((x) => x.trim()).filter(Boolean);
 
-  const slotContentOf = (): SlotSpecContent => ({
-    name: slotForm.name.trim(),
-    responsibility: slotForm.responsibility.trim(),
-    deliverables: splitList(slotForm.deliverables),
-    ...(slotForm.reqTools.trim() || slotForm.optTools.trim()
-      ? { tools: { required: splitList(slotForm.reqTools), optional: splitList(slotForm.optTools) } }
-      : {}),
-  });
+  // 交付规范仅按行拆（审校 P2#2）：逗号是条目内容的一部分——按逗号拆会把
+  // 一项拆成多项（超限失败或改变条目含义）；与表单"每行一项"说明一致
+  const splitLines = (s: string): string[] =>
+    s.split("\n").map((x) => x.trim()).filter(Boolean);
+
+  const slotContentOf = (): SlotSpecContent => {
+    const edited: SlotSpecContent = {
+      name: slotForm.name.trim(),
+      responsibility: slotForm.responsibility.trim(),
+      deliverables: splitLines(slotForm.deliverables),
+      ...(slotForm.reqTools.trim() || slotForm.optTools.trim()
+        ? { tools: { required: splitList(slotForm.reqTools), optional: splitList(slotForm.optTools) } }
+        : {}),
+    };
+    if (slotForm.mode !== "append" || !slotBaseline) return edited; // 新建：仅表单字段
+    // 修订（审校 P1）：完整基线兜底——表单未覆盖的段（skills/context/delegation/
+    // runtime/handoff）原样带入，仅改名称时其余配置逐字保留；工具段表单为空 =
+    // 未编辑，带基线（清空工具请走 API——最小表单不支持该编辑）
+    return {
+      ...edited,
+      ...(slotBaseline.skills?.length ? { skills: slotBaseline.skills } : {}),
+      ...(slotBaseline.context ? { context: slotBaseline.context } : {}),
+      ...(slotBaseline.delegation ? { delegation: slotBaseline.delegation } : {}),
+      ...(slotBaseline.runtime ? { runtime: slotBaseline.runtime } : {}),
+      ...(slotBaseline.handoff ? { handoff: slotBaseline.handoff } : {}),
+      tools: edited.tools ?? slotBaseline.tools ?? undefined,
+    };
+  };
 
   const submitSlot = async () => {
     setSlotBusy(true);
@@ -410,7 +434,9 @@ export function SettingsPage() {
         setSlotMsg(`已追加 ${slotForm.id} version=${v.version}`);
       }
       setSlotFormOpen(false);
-      setSlotVersionsRev(slotDetailRev.current += 1); // 版本明细失效重读
+      reviseSeq.current++; // 提交后使在途修订加载失效（审校 P2#6）
+      setSlotBaseline(null);
+      setSlotVersionsRev((r) => r + 1); // 版本明细失效重读（审校 P2#4）
       await refreshSlotSpecs();
     } catch (e) {
       setSlotMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
@@ -419,11 +445,16 @@ export function SettingsPage() {
     }
   };
 
-  // startRevise 以最新版本预填表单，进入追加模式（修订即追加不可变版本）
+  // startRevise 以最新版本预填表单，进入追加模式（修订即追加不可变版本）。
+  // 请求序号守卫（审校 P2#6）：等待期间用户若新建/取消/切换模板，本响应作废——
+  // 不覆盖草稿、不切回追加模式。
   const startRevise = async (id: string) => {
     setSlotMsg(null);
+    const cur = ++reviseSeq.current;
     try {
       const latest = await api.getSlotSpec(id);
+      if (reviseSeq.current !== cur) return;
+      setSlotBaseline(latest); // 完整基线（审校 P1）
       setSlotForm({
         mode: "append",
         id,
@@ -435,7 +466,7 @@ export function SettingsPage() {
       });
       setSlotFormOpen(true);
     } catch (e) {
-      setSlotMsg(e instanceof Error ? e.message : String(e));
+      if (reviseSeq.current === cur) setSlotMsg(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -841,6 +872,8 @@ export function SettingsPage() {
                 <button
                   type="button"
                   onClick={() => {
+                    reviseSeq.current++; // 在途修订加载作废（审校 P2#6）
+                    setSlotBaseline(null);
                     setSlotForm({ mode: "create", id: "", name: "", responsibility: "", deliverables: "", reqTools: "", optTools: "" });
                     setSlotFormOpen((o) => !o);
                     setSlotMsg(null);
@@ -925,6 +958,8 @@ export function SettingsPage() {
                         <button
                           type="button"
                           onClick={() => {
+                            reviseSeq.current++;
+                            setSlotBaseline(null);
                             setSlotFormOpen(false);
                             setSlotForm({ mode: "create", id: "", name: "", responsibility: "", deliverables: "", reqTools: "", optTools: "" });
                           }}
@@ -1641,25 +1676,46 @@ function eventSummary(ev: AgentEvent): string {
   return `status_changed ${p.from ?? "?"} → ${p.to ?? "?"}${p.reason ? `（${p.reason}）` : ""}`;
 }
 
-/** 职责模板版本明细（懒加载：首次展开才拉取；rev 为修订号——追加版本后
- * 递增使缓存失效并重读，ADR-0019）。 */
+/** 职责模板版本明细（ADR-0019）：展开或修订号变化即读取——读取直接依赖
+ * (open, rev)（审校 P2#4：刷新标记变化必触发重读，不依赖缓存空值比较）；
+ * 请求序号拒迟到响应；失败只记错误态不缓存空结果，重试入口显式（审校 P2#5）。 */
 function SlotVersionsDetails({ slotSpecID, rev }: { slotSpecID: string; rev: number }) {
   const [versions, setVersions] = useState<SlotSpecView[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const seq = useRef(0);
   useEffect(() => {
-    setVersions(null);
-  }, [rev]);
-  useEffect(() => {
-    if (!open || versions !== null) return;
+    if (!open) return;
+    const cur = ++seq.current;
+    setError(null);
     void api
       .listSlotSpecVersions(slotSpecID)
-      .then(({ versions: vs }) => setVersions(vs))
-      .catch(() => setVersions([]));
-  }, [open, versions, slotSpecID]);
+      .then(({ versions: vs }) => {
+        if (seq.current !== cur) return; // 迟到响应丢弃（审校 P2#4）
+        setVersions(vs);
+      })
+      .catch((e) => {
+        if (seq.current !== cur) return;
+        // 失败不缓存空结果（审校 P2#5）——保持 versions 现值，显式错误态 + 重试
+        setError(e instanceof Error ? e.message : String(e));
+      });
+  }, [open, rev, slotSpecID, attempt]);
   return (
     <details onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
       <summary className="cursor-pointer select-none text-[11px] text-faint">版本历史</summary>
-      {versions === null ? (
+      {error !== null ? (
+        <div className="mt-1 flex items-center gap-2">
+          <p className="text-[11px] text-danger">读取失败：{error}</p>
+          <button
+            type="button"
+            onClick={() => setAttempt((a) => a + 1)}
+            className="rounded bg-surface-3 px-1.5 py-px text-[10px] text-dim"
+          >
+            重试
+          </button>
+        </div>
+      ) : versions === null ? (
         <p className="mt-1 text-[11px] text-faint">加载中…</p>
       ) : versions.length === 0 ? (
         <p className="mt-1 text-[11px] text-faint">暂无版本。</p>

@@ -208,6 +208,27 @@ func TestSlotSpecsEndpoints(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("bad id: status=%d", resp.StatusCode)
 	}
+
+	// 空 runtime 段拒绝（审校 P2#3）：workspace_access 缺失/空串经零值到达
+	// 服务层，必须 400 不得落库——创建与追加两条路径同口径
+	for _, badRuntime := range []string{
+		`{"slot_spec_id":"slot.rt1","name":"x","responsibility":"y","deliverables":["z"],"runtime":{"required":["execute"]}}`,
+		`{"slot_spec_id":"slot.rt2","name":"x","responsibility":"y","deliverables":["z"],"runtime":{"required":[],"workspace_access":""}}`,
+	} {
+		resp = postSlot(t, ts.URL+"/v1/slots/specs", badRuntime)
+		_ = json.NewDecoder(resp.Body).Decode(&errDoc)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest || errDoc.Error.Code != "invalid_spec" {
+			t.Fatalf("空 runtime 建谱系: status=%d code=%q", resp.StatusCode, errDoc.Error.Code)
+		}
+	}
+	resp = postSlot(t, ts.URL+"/v1/slots/specs/slot.gate/versions",
+		`{"name":"x","responsibility":"y","deliverables":["z"],"runtime":{"required":[]}}`)
+	_ = json.NewDecoder(resp.Body).Decode(&errDoc)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || errDoc.Error.Code != "invalid_spec" {
+		t.Fatalf("空 runtime 追加: status=%d code=%q", resp.StatusCode, errDoc.Error.Code)
+	}
 }
 
 // TestSlotWriteGates 写门：跨源 Origin 403、非 JSON 415；读面不受门影响。

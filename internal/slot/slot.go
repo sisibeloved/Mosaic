@@ -223,9 +223,11 @@ func validateContent(c SpecContent) error {
 			return err
 		}
 		switch c.Runtime.WorkspaceAccess {
-		case "", "none", "read", "read_write":
+		case "none", "read", "read_write":
 		default:
-			return fmt.Errorf("%w: runtime.workspace_access 非法（%s）", ErrInvalidSpec, c.Runtime.WorkspaceAccess)
+			// 空串同拒（审校 P2#3）：契约枚举三值封闭，runtime 段一旦出现，
+			// workspace_access 必须显式取值——缺失经零值到达此处，不得落库
+			return fmt.Errorf("%w: runtime.workspace_access 须 none|read|read_write（%q）", ErrInvalidSpec, c.Runtime.WorkspaceAccess)
 		}
 	}
 	if c.Handoff != nil {
