@@ -28,6 +28,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
 	"github.com/sisibeloved/Mosaic/internal/settings"
+	"github.com/sisibeloved/Mosaic/internal/slot"
 	"github.com/sisibeloved/Mosaic/internal/transport/httpapi/apigen"
 	"github.com/sisibeloved/Mosaic/internal/transport/sse"
 )
@@ -43,7 +44,9 @@ type Deps struct {
 	ProbeRunner harness.Runner // 手动登记时的探测执行面（nil 时禁止手动登记）
 	// Identity 独立 Agent 身份域（RFC-0018 / ADR-0017，0.5.0；nil 时身份端点 503）。
 	Identity *personalagent.Service
-	Logger   *slog.Logger
+	// Slots 职责模板域（RFC-0018 §5 / ADR-0019，0.5.2；nil 时职责端点 503）。
+	Slots  *slot.Service
+	Logger *slog.Logger
 	// 开发者模式（M1 v1.8）：Dev 开启才注册 /v1/debug 只读端点与 UI 调试面板。
 	Dev    bool
 	Budget contextx.Limits         // 预算上限（状态端点的水位/梯度计算基准）
@@ -1183,4 +1186,184 @@ func SeatStatusConsumer(hub *sse.Hub) room.SeatStatusSink {
 		}
 		hub.Publish(roomID, sse.ViewEvent{Cursor: "", Type: "seat.status", Data: data})
 	}
+}
+
+// ---- 职责模板面（RFC-0018 §5 / ADR-0019，0.5.2；apigen.ServerInterface）----
+
+// ListSlotSpecs 谱系列表（只读）。
+func (s *server) ListSlotSpecs(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	sums, err := s.deps.Slots.List(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "slot_read_failed", err.Error())
+		return
+	}
+	if sums == nil {
+		sums = []slot.SpecSummary{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"specs": sums})
+}
+
+// CreateSlotSpec 建谱系（首版 version=1）；谱系已存在 409 spec_exists。
+func (s *server) CreateSlotSpec(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.SlotSpecCreate
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	spec, err := s.deps.Slots.Create(r.Context(), req.SlotSpecId, specContentOf(req.Name, req.Responsibility, req.Deliverables, req.Skills, req.Tools, req.Context, req.Delegation, req.Runtime, req.Handoff))
+	if err != nil {
+		writeSlotError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, spec)
+}
+
+// GetSlotSpecLatest 最新版本全量内容。
+func (s *server) GetSlotSpecLatest(w http.ResponseWriter, r *http.Request, slotSpecID string) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	spec, ok, err := s.deps.Slots.Latest(r.Context(), slotSpecID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "slot_read_failed", err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "spec_not_found", "职责模板谱系不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, spec)
+}
+
+// ListSlotSpecVersions 全版本升序（含内容）。
+func (s *server) ListSlotSpecVersions(w http.ResponseWriter, r *http.Request, slotSpecID string) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	versions, ok, err := s.deps.Slots.Versions(r.Context(), slotSpecID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "slot_read_failed", err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "spec_not_found", "职责模板谱系不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"versions": versions})
+}
+
+// AppendSlotSpecVersion 追加下一不可变版本（version=latest+1）。
+func (s *server) AppendSlotSpecVersion(w http.ResponseWriter, r *http.Request, slotSpecID string) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.SlotSpecContent
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	spec, err := s.deps.Slots.AppendVersion(r.Context(), slotSpecID,
+		specContentOf(req.Name, req.Responsibility, req.Deliverables, req.Skills, req.Tools, req.Context, req.Delegation, req.Runtime, req.Handoff))
+	if err != nil {
+		writeSlotError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, spec)
+}
+
+// writeSlotError 职责域错误映射。
+func writeSlotError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, slot.ErrInvalidSpec):
+		writeError(w, http.StatusBadRequest, "invalid_spec", err.Error())
+	case errors.Is(err, slot.ErrSpecExists):
+		writeError(w, http.StatusConflict, "spec_exists", err.Error())
+	case errors.Is(err, slot.ErrNotFound):
+		writeError(w, http.StatusNotFound, "spec_not_found", err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "slot_write_failed", err.Error())
+	}
+}
+
+// specContentOf apigen 请求体 → 域内容（字段平铺的两请求体共用）。
+func specContentOf(name, responsibility string, deliverables []string,
+	skills *[]apigen.SkillRef, tools, ctxList *apigen.CapabilityList,
+	delegation *apigen.DelegationPolicy, runtime *apigen.RuntimeRequirements,
+	handoff *apigen.HandoffRequirements) slot.SpecContent {
+	c := slot.SpecContent{
+		Name: name, Responsibility: responsibility, Deliverables: deliverables,
+	}
+	if skills != nil {
+		for _, sk := range *skills {
+			c.Skills = append(c.Skills, slot.SkillRef{Ref: sk.Ref, Version: sk.Version})
+		}
+	}
+	c.Tools = capsOf(tools)
+	c.Context = capsOf(ctxList)
+	if delegation != nil {
+		d := &slot.DelegationPolicy{MaxDepth: delegation.MaxDepth, Allowed: []string{}}
+		for _, a := range delegation.Allowed {
+			d.Allowed = append(d.Allowed, string(a))
+		}
+		c.Delegation = d
+	}
+	if runtime != nil {
+		rt := &slot.RuntimeRequirements{WorkspaceAccess: string(runtime.WorkspaceAccess), Required: []string{}}
+		for _, n := range runtime.Required {
+			rt.Required = append(rt.Required, n)
+		}
+		c.Runtime = rt
+	}
+	if handoff != nil {
+		h := &slot.HandoffRequirements{Required: []string{}}
+		for _, n := range handoff.Required {
+			h.Required = append(h.Required, n)
+		}
+		c.Handoff = h
+	}
+	return c
+}
+
+// capsOf 能力分层转换（nil 透传——缺省段不落库）。
+func capsOf(cl *apigen.CapabilityList) *slot.CapabilityList {
+	if cl == nil {
+		return nil
+	}
+	out := &slot.CapabilityList{Required: []string{}, Optional: []string{}}
+	out.Required = append(out.Required, cl.Required...)
+	out.Optional = append(out.Optional, cl.Optional...)
+	return out
 }

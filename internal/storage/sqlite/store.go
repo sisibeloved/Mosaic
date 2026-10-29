@@ -22,6 +22,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
+	"github.com/sisibeloved/Mosaic/internal/slot"
 
 	_ "modernc.org/sqlite"
 )
@@ -220,6 +221,22 @@ SELECT a.agent_id, 'created',
                     WHERE e.agent_id = a.agent_id AND e.event_type = 'created')
  ORDER BY a.rowid;
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (8, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+
+-- v9（RFC-0018 §5.1 / ADR-0019，0.5.2）：职责模板。slot_specs 为不可变版本行
+-- ——(slot_spec_id, version) 主键，修订即追加新版本，无 UPDATE/DELETE 路径
+-- （版本行本身即不可变历史，不另设事件流）。content_json 为完整内容（权威
+-- 事实；name 冗余列便于谱系列表直查）。新域首表，无存量回填。
+CREATE TABLE IF NOT EXISTS slot_specs (
+  slot_spec_id    TEXT NOT NULL,
+  version         INTEGER NOT NULL,
+  schema_version  INTEGER NOT NULL,
+  name            TEXT NOT NULL,
+  responsibility  TEXT NOT NULL,
+  content_json    TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  PRIMARY KEY (slot_spec_id, version)
+);
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (9, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 `
 
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
@@ -2054,4 +2071,160 @@ func (s *Store) AliasesOf(ctx context.Context, agentID string) ([]personalagent.
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// ---- 职责模板域（RFC-0018 §5.1 / ADR-0019，0.5.2；v9 表，端口实现）----
+
+const slotSpecCols = `slot_spec_id, version, schema_version, name, responsibility, content_json, created_at`
+
+func scanSlotSpec(row interface{ Scan(...any) error }) (slot.SlotSpec, error) {
+	var s slot.SlotSpec
+	var content string
+	if err := row.Scan(&s.SlotSpecID, &s.Version, &s.SchemaVersion, &s.Name, &s.Responsibility, &content, &s.CreatedAt); err != nil {
+		return slot.SlotSpec{}, err
+	}
+	if err := json.Unmarshal([]byte(content), &s.SpecContent); err != nil {
+		return slot.SlotSpec{}, fmt.Errorf("sqlite: slot content unmarshal: %w", err)
+	}
+	return s, nil
+}
+
+// CreateSpec 建谱系（首版）：谱系已存在 ErrSpecExists（行级探测在 BEGIN
+// IMMEDIATE 临界区内——并发同建恰一胜者）。
+func (s *Store) CreateSpec(ctx context.Context, spec slot.SlotSpec) (slot.SlotSpec, error) {
+	raw, err := json.Marshal(spec.SpecContent)
+	if err != nil {
+		return slot.SlotSpec{}, fmt.Errorf("sqlite: slot content marshal: %w", err)
+	}
+	err = s.identityWriteTx(ctx, func(q identityExec) error {
+		var exists int
+		if err := q.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM slot_specs WHERE slot_spec_id = ?)`, spec.SlotSpecID).
+			Scan(&exists); err != nil {
+			return fmt.Errorf("sqlite: slot spec probe: %w", err)
+		}
+		if exists == 1 {
+			return slot.ErrSpecExists
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO slot_specs (`+slotSpecCols+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			spec.SlotSpecID, spec.Version, spec.SchemaVersion, spec.Name,
+			spec.Responsibility, string(raw), spec.CreatedAt); err != nil {
+			return fmt.Errorf("sqlite: create slot spec: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return slot.SlotSpec{}, err
+	}
+	return spec, nil
+}
+
+// AppendSpecVersion 追加下一不可变版本：latest+1 取号在 BEGIN IMMEDIATE
+// 临界区内（并发追加串行化为连续版本，无空洞无重复）。
+func (s *Store) AppendVersion(ctx context.Context, slotSpecID string, content slot.SpecContent, now string) (slot.SlotSpec, error) {
+	raw, err := json.Marshal(content)
+	if err != nil {
+		return slot.SlotSpec{}, fmt.Errorf("sqlite: slot content marshal: %w", err)
+	}
+	out := slot.SlotSpec{}
+	err = s.identityWriteTx(ctx, func(q identityExec) error {
+		var latest int
+		err := q.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(version), 0) FROM slot_specs WHERE slot_spec_id = ?`, slotSpecID).
+			Scan(&latest)
+		if err != nil {
+			return fmt.Errorf("sqlite: slot latest: %w", err)
+		}
+		if latest == 0 {
+			return slot.ErrNotFound
+		}
+		out = slot.SlotSpec{
+			SlotSpecID: slotSpecID, Version: latest + 1, SchemaVersion: slot.SchemaVersion,
+			SpecContent: content, CreatedAt: now,
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO slot_specs (`+slotSpecCols+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			out.SlotSpecID, out.Version, out.SchemaVersion, out.Name,
+			out.Responsibility, string(raw), out.CreatedAt); err != nil {
+			return fmt.Errorf("sqlite: append slot version: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return slot.SlotSpec{}, err
+	}
+	return out, nil
+}
+
+// ListSummaries 谱系摘要（首版创建序）。
+func (s *Store) ListSummaries(ctx context.Context) ([]slot.SpecSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT slot_spec_id,
+       (SELECT name FROM slot_specs t WHERE t.slot_spec_id = s.slot_spec_id ORDER BY version DESC LIMIT 1),
+       MAX(version) AS latest_version,
+       COUNT(*) AS version_count,
+       MIN(created_at) AS created_at,
+       MAX(created_at) AS updated_at
+  FROM slot_specs s
+ GROUP BY slot_spec_id
+ ORDER BY MIN(rowid)`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: slot summaries: %w", err)
+	}
+	defer rows.Close()
+	out := []slot.SpecSummary{}
+	for rows.Next() {
+		var sum slot.SpecSummary
+		if err := rows.Scan(&sum.SlotSpecID, &sum.Name, &sum.LatestVersion,
+			&sum.VersionCount, &sum.CreatedAt, &sum.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("sqlite: scan slot summary: %w", err)
+		}
+		out = append(out, sum)
+	}
+	return out, rows.Err()
+}
+
+// Latest 最新版本；谱系未知 ok=false。
+func (s *Store) Latest(ctx context.Context, slotSpecID string) (slot.SlotSpec, bool, error) {
+	var s0 slot.SlotSpec
+	var content string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT `+slotSpecCols+` FROM slot_specs WHERE slot_spec_id = ? ORDER BY version DESC LIMIT 1`, slotSpecID).
+		Scan(&s0.SlotSpecID, &s0.Version, &s0.SchemaVersion, &s0.Name, &s0.Responsibility, &content, &s0.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return slot.SlotSpec{}, false, nil
+	}
+	if err != nil {
+		return slot.SlotSpec{}, false, fmt.Errorf("sqlite: slot latest: %w", err)
+	}
+	if err := json.Unmarshal([]byte(content), &s0.SpecContent); err != nil {
+		return slot.SlotSpec{}, false, fmt.Errorf("sqlite: slot content unmarshal: %w", err)
+	}
+	return s0, true, nil
+}
+
+// Versions 全版本升序；谱系未知 ok=false。
+func (s *Store) Versions(ctx context.Context, slotSpecID string) ([]slot.SlotSpec, bool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+slotSpecCols+` FROM slot_specs WHERE slot_spec_id = ? ORDER BY version`, slotSpecID)
+	if err != nil {
+		return nil, false, fmt.Errorf("sqlite: slot versions: %w", err)
+	}
+	defer rows.Close()
+	out := []slot.SlotSpec{}
+	for rows.Next() {
+		spec, err := scanSlotSpec(rows)
+		if err != nil {
+			return nil, false, fmt.Errorf("sqlite: scan slot spec: %w", err)
+		}
+		out = append(out, spec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(out) == 0 {
+		return nil, false, nil
+	}
+	return out, true, nil
 }

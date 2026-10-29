@@ -111,6 +111,24 @@ func (e ContextPanoramaNearWindowActorKind) Valid() bool {
 	}
 }
 
+// Defines values for DelegationPolicyAllowed.
+const (
+	EphemeralWorker DelegationPolicyAllowed = "ephemeral_worker"
+	ExistingAgent   DelegationPolicyAllowed = "existing_agent"
+)
+
+// Valid indicates whether the value is a known member of the DelegationPolicyAllowed enum.
+func (e DelegationPolicyAllowed) Valid() bool {
+	switch e {
+	case EphemeralWorker:
+		return true
+	case ExistingAgent:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DocBlockType.
 const (
 	Code      DocBlockType = "code"
@@ -705,6 +723,27 @@ func (e RuntimeOptionsDefaultSource) Valid() bool {
 	case RuntimeOptionsDefaultSourceConfig:
 		return true
 	case RuntimeOptionsDefaultSourceEmpty:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RuntimeRequirementsWorkspaceAccess.
+const (
+	None      RuntimeRequirementsWorkspaceAccess = "none"
+	Read      RuntimeRequirementsWorkspaceAccess = "read"
+	ReadWrite RuntimeRequirementsWorkspaceAccess = "read_write"
+)
+
+// Valid indicates whether the value is a known member of the RuntimeRequirementsWorkspaceAccess enum.
+func (e RuntimeRequirementsWorkspaceAccess) Valid() bool {
+	switch e {
+	case None:
+		return true
+	case Read:
+		return true
+	case ReadWrite:
 		return true
 	default:
 		return false
@@ -1344,6 +1383,12 @@ type BackupSummary struct {
 	SizeBytes int64     `json:"size_bytes"`
 }
 
+// CapabilityList 能力/上下文域要求分层——required 缺失即 blocked、optional 缺失按声明降级（AT-07 准入预埋）；两者不得相交。
+type CapabilityList struct {
+	Optional []string `json:"optional"`
+	Required []string `json:"required"`
+}
+
 // ClosureSummary defines model for ClosureSummary.
 type ClosureSummary struct {
 	ClosureId   string                     `json:"closure_id"`
@@ -1456,6 +1501,17 @@ type ContextPanoramaCapsulesClosureType string
 
 // ContextPanoramaNearWindowActorKind defines model for ContextPanorama.NearWindow.ActorKind.
 type ContextPanoramaNearWindowActorKind string
+
+// DelegationPolicy 委派策略；缺省语义 = 不允许委派（安全缺省）。
+type DelegationPolicy struct {
+	Allowed []DelegationPolicyAllowed `json:"allowed"`
+
+	// MaxDepth 0 = 不再委派
+	MaxDepth int `json:"max_depth"`
+}
+
+// DelegationPolicyAllowed defines model for DelegationPolicy.Allowed.
+type DelegationPolicyAllowed string
 
 // DevNote defines model for DevNote.
 type DevNote struct {
@@ -1844,6 +1900,11 @@ type FeishuAuthorizeInfo struct {
 type FeishuCallbackRequest struct {
 	// Code 授权码（浏览器跳转地址栏 ?code= 的值；单次有效）
 	Code string `json:"code"`
+}
+
+// HandoffRequirements 交接必备件（换人/升级排空后切换的前提清单）。
+type HandoffRequirements struct {
+	Required []string `json:"required"`
 }
 
 // HarnessUpdateCheck Agent CLI 版本检测（0.4.1）：注册表探测版本对照上游最新版（按 ADR-0016 三通道分派检测面——registry/self-update 经仓库客户端（npm view）；mosaic 对齐自建 releases 信号（产品更新源 feed 优先、源码 tag 回退）；均缓存 30 分钟）。
@@ -2249,6 +2310,15 @@ type RuntimeOptions struct {
 // RuntimeOptionsDefaultSource 默认值来源——config=CLI 配置文件；builtin=官方文档/出厂回退
 type RuntimeOptionsDefaultSource string
 
+// RuntimeRequirements 运行能力要求（能力名，非安装路径——实际连接由 Binding 解析）。
+type RuntimeRequirements struct {
+	Required        []string                           `json:"required"`
+	WorkspaceAccess RuntimeRequirementsWorkspaceAccess `json:"workspace_access"`
+}
+
+// RuntimeRequirementsWorkspaceAccess defines model for RuntimeRequirements.WorkspaceAccess.
+type RuntimeRequirementsWorkspaceAccess string
+
 // RuntimeUpdateRequest 运行参数更新体（全量替换；空串 = 清除覆盖回 CLI 默认）。
 type RuntimeUpdateRequest struct {
 	// Model 模型覆盖（codex/kimi 走 -m；mcode 走 --model provider/model）
@@ -2586,6 +2656,106 @@ type SheetTransferUpdatePreviewRequest struct {
 
 	// SheetNames 可选工作表过滤（按名；空 = 全部）
 	SheetNames *[]string `json:"sheet_names,omitempty"`
+}
+
+// SkillRef 版本化工作方法引用（仅引用——可审查，不含可执行体）。
+type SkillRef struct {
+	// Ref 引用键（如 workspace/skills/evidence-review）
+	Ref     string `json:"ref"`
+	Version int    `json:"version"`
+}
+
+// SlotSpecContent SlotSpec 内容（RFC-0018 §5.1 正式定形，ADR-0019 / 0.5.2）。必填：名称、
+// 职责陈述、交付规范；其余可选——缺省 delegation = 不允许委派。
+type SlotSpecContent struct {
+	// Context 能力/上下文域要求分层——required 缺失即 blocked、optional 缺失按声明降级（AT-07 准入预埋）；两者不得相交。
+	Context *CapabilityList `json:"context,omitempty"`
+
+	// Delegation 委派策略；缺省语义 = 不允许委派（安全缺省）。
+	Delegation *DelegationPolicy `json:"delegation,omitempty"`
+
+	// Deliverables 交付规范（可验收产物要求）
+	Deliverables []string `json:"deliverables"`
+
+	// Handoff 交接必备件（换人/升级排空后切换的前提清单）。
+	Handoff *HandoffRequirements `json:"handoff,omitempty"`
+	Name    string               `json:"name"`
+
+	// Responsibility 职责陈述
+	Responsibility string `json:"responsibility"`
+
+	// Runtime 运行能力要求（能力名，非安装路径——实际连接由 Binding 解析）。
+	Runtime *RuntimeRequirements `json:"runtime,omitempty"`
+	Skills  *[]SkillRef          `json:"skills,omitempty"`
+
+	// Tools 能力/上下文域要求分层——required 缺失即 blocked、optional 缺失按声明降级（AT-07 准入预埋）；两者不得相交。
+	Tools *CapabilityList `json:"tools,omitempty"`
+}
+
+// SlotSpecCreate 建谱系请求（首版 version=1）；slot_spec_id 用户选定且跨版本稳定。
+type SlotSpecCreate struct {
+	// Context 能力/上下文域要求分层——required 缺失即 blocked、optional 缺失按声明降级（AT-07 准入预埋）；两者不得相交。
+	Context *CapabilityList `json:"context,omitempty"`
+
+	// Delegation 委派策略；缺省语义 = 不允许委派（安全缺省）。
+	Delegation   *DelegationPolicy `json:"delegation,omitempty"`
+	Deliverables []string          `json:"deliverables"`
+
+	// Handoff 交接必备件（换人/升级排空后切换的前提清单）。
+	Handoff        *HandoffRequirements `json:"handoff,omitempty"`
+	Name           string               `json:"name"`
+	Responsibility string               `json:"responsibility"`
+
+	// Runtime 运行能力要求（能力名，非安装路径——实际连接由 Binding 解析）。
+	Runtime *RuntimeRequirements `json:"runtime,omitempty"`
+	Skills  *[]SkillRef          `json:"skills,omitempty"`
+
+	// SlotSpecId 谱系标识（如 slot.research-lead）
+	SlotSpecId string `json:"slot_spec_id"`
+
+	// Tools 能力/上下文域要求分层——required 缺失即 blocked、optional 缺失按声明降级（AT-07 准入预埋）；两者不得相交。
+	Tools *CapabilityList `json:"tools,omitempty"`
+}
+
+// SlotSpecSummary 谱系摘要（列表项）。
+type SlotSpecSummary struct {
+	// CreatedAt 首版创建时间
+	CreatedAt     time.Time `json:"created_at"`
+	LatestVersion int       `json:"latest_version"`
+
+	// Name 最新版本名称
+	Name       string `json:"name"`
+	SlotSpecId string `json:"slot_spec_id"`
+
+	// UpdatedAt 最新版本创建时间
+	UpdatedAt    time.Time `json:"updated_at"`
+	VersionCount int       `json:"version_count"`
+}
+
+// SlotSpecView 模板版本全量视图（不可变行）。
+type SlotSpecView struct {
+	// Context 能力/上下文域要求分层——required 缺失即 blocked、optional 缺失按声明降级（AT-07 准入预埋）；两者不得相交。
+	Context   *CapabilityList `json:"context,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+
+	// Delegation 委派策略；缺省语义 = 不允许委派（安全缺省）。
+	Delegation   *DelegationPolicy `json:"delegation,omitempty"`
+	Deliverables []string          `json:"deliverables"`
+
+	// Handoff 交接必备件（换人/升级排空后切换的前提清单）。
+	Handoff        *HandoffRequirements `json:"handoff,omitempty"`
+	Name           string               `json:"name"`
+	Responsibility string               `json:"responsibility"`
+
+	// Runtime 运行能力要求（能力名，非安装路径——实际连接由 Binding 解析）。
+	Runtime       *RuntimeRequirements `json:"runtime,omitempty"`
+	SchemaVersion int                  `json:"schema_version"`
+	Skills        *[]SkillRef          `json:"skills,omitempty"`
+	SlotSpecId    string               `json:"slot_spec_id"`
+
+	// Tools 能力/上下文域要求分层——required 缺失即 blocked、optional 缺失按声明降级（AT-07 准入预埋）；两者不得相交。
+	Tools   *CapabilityList `json:"tools,omitempty"`
+	Version int             `json:"version"`
 }
 
 // Snapshot defines model for Snapshot.
@@ -2947,6 +3117,12 @@ type UploadRoomAttachmentMultipartRequestBody UploadRoomAttachmentMultipartBody
 // SubmitRoomCommandJSONRequestBody defines body for SubmitRoomCommand for application/json ContentType.
 type SubmitRoomCommandJSONRequestBody = RoomCommand
 
+// CreateSlotSpecJSONRequestBody defines body for CreateSlotSpec for application/json ContentType.
+type CreateSlotSpecJSONRequestBody = SlotSpecCreate
+
+// AppendSlotSpecVersionJSONRequestBody defines body for AppendSlotSpecVersion for application/json ContentType.
+type AppendSlotSpecVersionJSONRequestBody = SlotSpecContent
+
 // RequestRestoreJSONRequestBody defines body for RequestRestore for application/json ContentType.
 type RequestRestoreJSONRequestBody RequestRestoreJSONBody
 
@@ -3138,6 +3314,21 @@ type ServerInterface interface {
 	// GetRoomSnapshot 快照（版本 + 水位 + 投影/算法版本 + Timeline 投影 + 房间名/参与者视图）
 	// (GET /v1/rooms/{room_id}/snapshot)
 	GetRoomSnapshot(w http.ResponseWriter, r *http.Request, roomId RoomID)
+	// ListSlotSpecs 职责模板谱系列表（0.5.2 / ADR-0019）
+	// (GET /v1/slots/specs)
+	ListSlotSpecs(w http.ResponseWriter, r *http.Request)
+	// CreateSlotSpec 建职责模板谱系（首版 version=1）
+	// (POST /v1/slots/specs)
+	CreateSlotSpec(w http.ResponseWriter, r *http.Request)
+	// GetSlotSpecLatest 职责模板最新版本（全量内容）
+	// (GET /v1/slots/specs/{slot_spec_id})
+	GetSlotSpecLatest(w http.ResponseWriter, r *http.Request, slotSpecId string)
+	// ListSlotSpecVersions 职责模板全版本（升序，含内容）
+	// (GET /v1/slots/specs/{slot_spec_id}/versions)
+	ListSlotSpecVersions(w http.ResponseWriter, r *http.Request, slotSpecId string)
+	// AppendSlotSpecVersion 追加下一不可变版本（version=latest+1）
+	// (POST /v1/slots/specs/{slot_spec_id}/versions)
+	AppendSlotSpecVersion(w http.ResponseWriter, r *http.Request, slotSpecId string)
 	// ListBackups 备份列表（新→旧）
 	// (GET /v1/system/backups)
 	ListBackups(w http.ResponseWriter, r *http.Request)
@@ -4750,6 +4941,112 @@ func (siw *ServerInterfaceWrapper) GetRoomSnapshot(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// ListSlotSpecs operation middleware
+func (siw *ServerInterfaceWrapper) ListSlotSpecs(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSlotSpecs(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateSlotSpec operation middleware
+func (siw *ServerInterfaceWrapper) CreateSlotSpec(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateSlotSpec(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSlotSpecLatest operation middleware
+func (siw *ServerInterfaceWrapper) GetSlotSpecLatest(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "slot_spec_id" -------------
+	var slotSpecId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "slot_spec_id", r.PathValue("slot_spec_id"), &slotSpecId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "slot_spec_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSlotSpecLatest(w, r, slotSpecId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListSlotSpecVersions operation middleware
+func (siw *ServerInterfaceWrapper) ListSlotSpecVersions(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "slot_spec_id" -------------
+	var slotSpecId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "slot_spec_id", r.PathValue("slot_spec_id"), &slotSpecId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "slot_spec_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSlotSpecVersions(w, r, slotSpecId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AppendSlotSpecVersion operation middleware
+func (siw *ServerInterfaceWrapper) AppendSlotSpecVersion(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "slot_spec_id" -------------
+	var slotSpecId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "slot_spec_id", r.PathValue("slot_spec_id"), &slotSpecId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "slot_spec_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AppendSlotSpecVersion(w, r, slotSpecId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListBackups operation middleware
 func (siw *ServerInterfaceWrapper) ListBackups(w http.ResponseWriter, r *http.Request) {
 
@@ -5012,6 +5309,11 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/identity/agents/{agent_id}", wrapper.GetIdentityAgent)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/identity/agents/{agent_id}/lifecycle", wrapper.TransitionAgentLifecycle)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/identity/agents/{agent_id}/events", wrapper.ListIdentityAgentEvents)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/specs", wrapper.ListSlotSpecs)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/slots/specs", wrapper.CreateSlotSpec)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/specs/{slot_spec_id}", wrapper.GetSlotSpecLatest)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/specs/{slot_spec_id}/versions", wrapper.ListSlotSpecVersions)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/slots/specs/{slot_spec_id}/versions", wrapper.AppendSlotSpecVersion)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/enable", wrapper.EnableHarnessExecutable)

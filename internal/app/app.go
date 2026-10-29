@@ -43,6 +43,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/room"
 	"github.com/sisibeloved/Mosaic/internal/settings"
+	"github.com/sisibeloved/Mosaic/internal/slot"
 	"github.com/sisibeloved/Mosaic/internal/storage/sqlite"
 	"github.com/sisibeloved/Mosaic/internal/transport/httpapi"
 	"github.com/sisibeloved/Mosaic/internal/transport/sse"
@@ -289,6 +290,8 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			logger.Warn("agent 身份别名冲突（不合并，待人工处置）", "detail", c)
 		}
 	}
+	// 职责模板域（RFC-0018 §5 / ADR-0019，0.5.2）：SQLite v9 表，不可变版本行。
+	slotSvc := slot.New(store, slot.WithNow(clock))
 	scanDone := make(chan struct{})
 	go func() {
 		defer close(scanDone)
@@ -336,6 +339,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Harness:          harnessRegistry,
 		ProbeRunner:      harness.NewHostRunner(),
 		Identity:         identitySvc,
+		Slots:            slotSvc,
 		Logger:           logger,
 		Dev:              opts.Dev,
 		Budget:           budgetLimits,

@@ -1065,6 +1065,71 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/slots/specs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 职责模板谱系列表（0.5.2 / ADR-0019）
+         * @description SlotSpec 版本化模板的谱系摘要（每 slot_spec_id 一行：最新版本、版本数、
+         *     名称与职责）。模板版本不可变——历史以追加新版本取代，永不删除。
+         */
+        get: operations["listSlotSpecs"];
+        put?: never;
+        /**
+         * 建职责模板谱系（首版 version=1）
+         * @description slot_spec_id 为用户选定的谱系标识（跨版本稳定，进配置与导出引用）；
+         *     已存在 → 409 spec_exists。内容校验失败 400 invalid_spec。
+         */
+        post: operations["createSlotSpec"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/slots/specs/{slot_spec_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 职责模板最新版本（全量内容） */
+        get: operations["getSlotSpecLatest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/slots/specs/{slot_spec_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 职责模板全版本（升序，含内容） */
+        get: operations["listSlotSpecVersions"];
+        put?: never;
+        /**
+         * 追加下一不可变版本（version=latest+1）
+         * @description 模板无更新路径——修订即追加新版本；旧版本内容永不改变（Binding 未来
+         *     固定版本引用的审计前提）。同内容追加仍生成新版本（快照语义）。
+         */
+        post: operations["appendSlotSpecVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/harness/executables": {
         parameters: {
             query?: never;
@@ -2265,6 +2330,99 @@ export interface components {
             payload: Record<string, never>;
             /** Format: date-time */
             occurred_at: string;
+        };
+        /** @description 版本化工作方法引用（仅引用——可审查，不含可执行体）。 */
+        SkillRef: {
+            /** @description 引用键（如 workspace/skills/evidence-review） */
+            ref: string;
+            version: number;
+        };
+        /** @description 能力/上下文域要求分层——required 缺失即 blocked、optional 缺失按声明降级（AT-07 准入预埋）；两者不得相交。 */
+        CapabilityList: {
+            required: string[];
+            optional: string[];
+        };
+        /** @description 委派策略；缺省语义 = 不允许委派（安全缺省）。 */
+        DelegationPolicy: {
+            allowed: ("existing_agent" | "ephemeral_worker")[];
+            /** @description 0 = 不再委派 */
+            max_depth: number;
+        };
+        /** @description 运行能力要求（能力名，非安装路径——实际连接由 Binding 解析）。 */
+        RuntimeRequirements: {
+            required: string[];
+            /** @enum {string} */
+            workspace_access: "none" | "read" | "read_write";
+        };
+        /** @description 交接必备件（换人/升级排空后切换的前提清单）。 */
+        HandoffRequirements: {
+            required: string[];
+        };
+        /**
+         * @description SlotSpec 内容（RFC-0018 §5.1 正式定形，ADR-0019 / 0.5.2）。必填：名称、
+         *     职责陈述、交付规范；其余可选——缺省 delegation = 不允许委派。
+         */
+        SlotSpecContent: {
+            name: string;
+            /** @description 职责陈述 */
+            responsibility: string;
+            /** @description 交付规范（可验收产物要求） */
+            deliverables: string[];
+            skills?: components["schemas"]["SkillRef"][];
+            tools?: components["schemas"]["CapabilityList"];
+            context?: components["schemas"]["CapabilityList"];
+            delegation?: components["schemas"]["DelegationPolicy"];
+            runtime?: components["schemas"]["RuntimeRequirements"];
+            handoff?: components["schemas"]["HandoffRequirements"];
+        };
+        /** @description 建谱系请求（首版 version=1）；slot_spec_id 用户选定且跨版本稳定。 */
+        SlotSpecCreate: {
+            /** @description 谱系标识（如 slot.research-lead） */
+            slot_spec_id: string;
+            name: string;
+            responsibility: string;
+            deliverables: string[];
+            skills?: components["schemas"]["SkillRef"][];
+            tools?: components["schemas"]["CapabilityList"];
+            context?: components["schemas"]["CapabilityList"];
+            delegation?: components["schemas"]["DelegationPolicy"];
+            runtime?: components["schemas"]["RuntimeRequirements"];
+            handoff?: components["schemas"]["HandoffRequirements"];
+        };
+        /** @description 模板版本全量视图（不可变行）。 */
+        SlotSpecView: {
+            slot_spec_id: string;
+            version: number;
+            schema_version: number;
+            name: string;
+            responsibility: string;
+            deliverables: string[];
+            skills?: components["schemas"]["SkillRef"][];
+            tools?: components["schemas"]["CapabilityList"];
+            context?: components["schemas"]["CapabilityList"];
+            delegation?: components["schemas"]["DelegationPolicy"];
+            runtime?: components["schemas"]["RuntimeRequirements"];
+            handoff?: components["schemas"]["HandoffRequirements"];
+            /** Format: date-time */
+            created_at: string;
+        };
+        /** @description 谱系摘要（列表项）。 */
+        SlotSpecSummary: {
+            slot_spec_id: string;
+            /** @description 最新版本名称 */
+            name: string;
+            latest_version: number;
+            version_count: number;
+            /**
+             * Format: date-time
+             * @description 首版创建时间
+             */
+            created_at: string;
+            /**
+             * Format: date-time
+             * @description 最新版本创建时间
+             */
+            updated_at: string;
         };
         ManualExecutableRequest: {
             adapter: string;
@@ -4568,6 +4726,213 @@ export interface operations {
                 };
             };
             503: components["responses"]["HarnessUnavailable"];
+        };
+    };
+    listSlotSpecs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 谱系列表（创建序） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        specs: components["schemas"]["SlotSpecSummary"][];
+                    };
+                };
+            };
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createSlotSpec: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlotSpecCreate"];
+            };
+        };
+        responses: {
+            /** @description 已创建（version=1） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlotSpecView"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            /** @description 谱系已存在（spec_exists） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getSlotSpecLatest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_spec_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 最新版本 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlotSpecView"];
+                };
+            };
+            /** @description 谱系不存在（spec_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listSlotSpecVersions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_spec_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 版本列表（version 升序） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        versions: components["schemas"]["SlotSpecView"][];
+                    };
+                };
+            };
+            /** @description 谱系不存在（spec_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    appendSlotSpecVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_spec_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlotSpecContent"];
+            };
+        };
+        responses: {
+            /** @description 已追加 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlotSpecView"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            /** @description 谱系不存在（spec_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     listHarnessExecutables: {

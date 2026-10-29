@@ -1538,6 +1538,155 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "503": { $ref: "#/components/responses/HarnessUnavailable" }
+  /v1/slots/specs:
+    get:
+      operationId: listSlotSpecs
+      summary: 职责模板谱系列表（0.5.2 / ADR-0019）
+      description: |
+        SlotSpec 版本化模板的谱系摘要（每 slot_spec_id 一行：最新版本、版本数、
+        名称与职责）。模板版本不可变——历史以追加新版本取代，永不删除。
+      responses:
+        "200":
+          description: 谱系列表（创建序）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [specs]
+                properties:
+                  specs:
+                    type: array
+                    items: { $ref: "#/components/schemas/SlotSpecSummary" }
+        "503":
+          description: 职责域未装配（slot_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      operationId: createSlotSpec
+      summary: 建职责模板谱系（首版 version=1）
+      description: |
+        slot_spec_id 为用户选定的谱系标识（跨版本稳定，进配置与导出引用）；
+        已存在 → 409 spec_exists。内容校验失败 400 invalid_spec。
+      security: [{ OwnerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SlotSpecCreate" }
+      responses:
+        "201":
+          description: 已创建（version=1）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SlotSpecView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: 谱系已存在（spec_exists）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: 职责域未装配（slot_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/slots/specs/{slot_spec_id}:
+    get:
+      operationId: getSlotSpecLatest
+      summary: 职责模板最新版本（全量内容）
+      parameters:
+        - name: slot_spec_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^slot\\.[a-z0-9][a-z0-9._-]{0,62}$" }
+      responses:
+        "200":
+          description: 最新版本
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SlotSpecView" }
+        "404":
+          description: 谱系不存在（spec_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: 职责域未装配（slot_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/slots/specs/{slot_spec_id}/versions:
+    get:
+      operationId: listSlotSpecVersions
+      summary: 职责模板全版本（升序，含内容）
+      parameters:
+        - name: slot_spec_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^slot\\.[a-z0-9][a-z0-9._-]{0,62}$" }
+      responses:
+        "200":
+          description: 版本列表（version 升序）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [versions]
+                properties:
+                  versions:
+                    type: array
+                    items: { $ref: "#/components/schemas/SlotSpecView" }
+        "404":
+          description: 谱系不存在（spec_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: 职责域未装配（slot_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      operationId: appendSlotSpecVersion
+      summary: 追加下一不可变版本（version=latest+1）
+      description: |
+        模板无更新路径——修订即追加新版本；旧版本内容永不改变（Binding 未来
+        固定版本引用的审计前提）。同内容追加仍生成新版本（快照语义）。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: slot_spec_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^slot\\.[a-z0-9][a-z0-9._-]{0,62}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SlotSpecContent" }
+      responses:
+        "201":
+          description: 已追加
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SlotSpecView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: 谱系不存在（spec_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: 职责域未装配（slot_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/harness/executables:
     get:
       operationId: listHarnessExecutables
@@ -3077,6 +3226,137 @@ components:
           type: object
           description: "事件体——created: {source, adapter, display_name}；status_changed: {from, to, reason}"
         occurred_at: { type: string, format: date-time }
+    SkillRef:
+      type: object
+      required: [ref, version]
+      additionalProperties: false
+      description: 版本化工作方法引用（仅引用——可审查，不含可执行体）。
+      properties:
+        ref: { type: string, pattern: "^[a-zA-Z0-9/_.-]{1,128}$", description: 引用键（如 workspace/skills/evidence-review） }
+        version: { type: integer, minimum: 1 }
+    CapabilityList:
+      type: object
+      required: [required, optional]
+      additionalProperties: false
+      description: 能力/上下文域要求分层——required 缺失即 blocked、optional 缺失按声明降级（AT-07 准入预埋）；两者不得相交。
+      properties:
+        required:
+          type: array
+          maxItems: 32
+          items: { type: string, pattern: "^[a-z0-9][a-z0-9._-]{0,63}$" }
+        optional:
+          type: array
+          maxItems: 32
+          items: { type: string, pattern: "^[a-z0-9][a-z0-9._-]{0,63}$" }
+    DelegationPolicy:
+      type: object
+      required: [allowed, max_depth]
+      additionalProperties: false
+      description: 委派策略；缺省语义 = 不允许委派（安全缺省）。
+      properties:
+        allowed:
+          type: array
+          maxItems: 2
+          items: { type: string, enum: [existing_agent, ephemeral_worker] }
+        max_depth: { type: integer, minimum: 0, maximum: 8, description: 0 = 不再委派 }
+    RuntimeRequirements:
+      type: object
+      required: [required, workspace_access]
+      additionalProperties: false
+      description: 运行能力要求（能力名，非安装路径——实际连接由 Binding 解析）。
+      properties:
+        required:
+          type: array
+          maxItems: 16
+          items: { type: string, pattern: "^[a-z0-9][a-z0-9._-]{0,63}$" }
+        workspace_access: { type: string, enum: [none, read, read_write] }
+    HandoffRequirements:
+      type: object
+      required: [required]
+      additionalProperties: false
+      description: 交接必备件（换人/升级排空后切换的前提清单）。
+      properties:
+        required:
+          type: array
+          maxItems: 16
+          items: { type: string, pattern: "^[a-z0-9][a-z0-9._-]{0,63}$" }
+    SlotSpecContent:
+      type: object
+      required: [name, responsibility, deliverables]
+      additionalProperties: false
+      description: |
+        SlotSpec 内容（RFC-0018 §5.1 正式定形，ADR-0019 / 0.5.2）。必填：名称、
+        职责陈述、交付规范；其余可选——缺省 delegation = 不允许委派。
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        responsibility: { type: string, minLength: 1, maxLength: 512, description: 职责陈述 }
+        deliverables:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 256 }
+          description: 交付规范（可验收产物要求）
+        skills:
+          type: array
+          maxItems: 16
+          items: { $ref: "#/components/schemas/SkillRef" }
+        tools: { $ref: "#/components/schemas/CapabilityList" }
+        context: { $ref: "#/components/schemas/CapabilityList" }
+        delegation: { $ref: "#/components/schemas/DelegationPolicy" }
+        runtime: { $ref: "#/components/schemas/RuntimeRequirements" }
+        handoff: { $ref: "#/components/schemas/HandoffRequirements" }
+    SlotSpecCreate:
+      type: object
+      required: [slot_spec_id, name, responsibility, deliverables]
+      additionalProperties: false
+      description: 建谱系请求（首版 version=1）；slot_spec_id 用户选定且跨版本稳定。
+      properties:
+        slot_spec_id: { type: string, pattern: "^slot\\.[a-z0-9][a-z0-9._-]{0,62}$", description: "谱系标识（如 slot.research-lead）" }
+        name: { type: string, minLength: 1, maxLength: 64 }
+        responsibility: { type: string, minLength: 1, maxLength: 512 }
+        deliverables:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 256 }
+        skills:
+          type: array
+          maxItems: 16
+          items: { $ref: "#/components/schemas/SkillRef" }
+        tools: { $ref: "#/components/schemas/CapabilityList" }
+        context: { $ref: "#/components/schemas/CapabilityList" }
+        delegation: { $ref: "#/components/schemas/DelegationPolicy" }
+        runtime: { $ref: "#/components/schemas/RuntimeRequirements" }
+        handoff: { $ref: "#/components/schemas/HandoffRequirements" }
+    SlotSpecView:
+      type: object
+      required: [slot_spec_id, version, schema_version, name, responsibility, deliverables, created_at]
+      description: 模板版本全量视图（不可变行）。
+      properties:
+        slot_spec_id: { type: string }
+        version: { type: integer, minimum: 1 }
+        schema_version: { type: integer }
+        name: { type: string }
+        responsibility: { type: string }
+        deliverables: { type: array, items: { type: string } }
+        skills: { type: array, items: { $ref: "#/components/schemas/SkillRef" } }
+        tools: { $ref: "#/components/schemas/CapabilityList" }
+        context: { $ref: "#/components/schemas/CapabilityList" }
+        delegation: { $ref: "#/components/schemas/DelegationPolicy" }
+        runtime: { $ref: "#/components/schemas/RuntimeRequirements" }
+        handoff: { $ref: "#/components/schemas/HandoffRequirements" }
+        created_at: { type: string, format: date-time }
+    SlotSpecSummary:
+      type: object
+      required: [slot_spec_id, name, latest_version, version_count, created_at, updated_at]
+      description: 谱系摘要（列表项）。
+      properties:
+        slot_spec_id: { type: string }
+        name: { type: string, description: 最新版本名称 }
+        latest_version: { type: integer, minimum: 1 }
+        version_count: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time, description: 首版创建时间 }
+        updated_at: { type: string, format: date-time, description: 最新版本创建时间 }
     ManualExecutableRequest:
       type: object
       required: [adapter, runtime, path]

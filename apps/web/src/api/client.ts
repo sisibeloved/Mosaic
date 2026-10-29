@@ -16,6 +16,12 @@ export type IdentityAgent = Schemas["IdentityAgent"];
 export type AgentLifecycleResult = Schemas["LifecycleResult"];
 export type AgentEvent = Schemas["AgentEvent"];
 export type AgentLifecycleAction = "suspend" | "resume" | "retire";
+
+/** 0.5.2 职责模板（ADR-0019，契约 api/http-api/openapi.yaml）。 */
+export type SlotSpecContent = Schemas["SlotSpecContent"];
+export type SlotSpecCreate = Schemas["SlotSpecCreate"];
+export type SlotSpecView = Schemas["SlotSpecView"];
+export type SlotSpecSummary = Schemas["SlotSpecSummary"];
 export type TaskItem = Schemas["TaskItem"];
 export type SearchHit = Schemas["SearchHit"];
 export type RuntimeOptions = Schemas["RuntimeOptions"];
@@ -453,6 +459,26 @@ export const api = {
   /** 0.5.1 生命周期事件流（ADR-0018）：升序审计面。 */
   identityAgentEvents(agentID: string): Promise<{ events: AgentEvent[] }> {
     return request<{ events: AgentEvent[] }>(`/v1/identity/agents/${encodeURIComponent(agentID)}/events`);
+  },
+  /** 0.5.2 职责模板谱系列表（ADR-0019）。 */
+  listSlotSpecs(): Promise<{ specs: SlotSpecSummary[] }> {
+    return request<{ specs: SlotSpecSummary[] }>("/v1/slots/specs");
+  },
+  /** 0.5.2 建职责模板谱系（首版 version=1）。 */
+  createSlotSpec(req: SlotSpecCreate): Promise<SlotSpecView> {
+    return post<SlotSpecView>("/v1/slots/specs", req);
+  },
+  /** 0.5.2 职责模板最新版本。 */
+  getSlotSpec(slotSpecID: string): Promise<SlotSpecView> {
+    return request(`/v1/slots/specs/${encodeURIComponent(slotSpecID)}`);
+  },
+  /** 0.5.2 职责模板全版本（升序，含内容）。 */
+  listSlotSpecVersions(slotSpecID: string): Promise<{ versions: SlotSpecView[] }> {
+    return request<{ versions: SlotSpecView[] }>(`/v1/slots/specs/${encodeURIComponent(slotSpecID)}/versions`);
+  },
+  /** 0.5.2 追加下一不可变版本。 */
+  appendSlotSpecVersion(slotSpecID: string, req: SlotSpecContent): Promise<SlotSpecView> {
+    return post<SlotSpecView>(`/v1/slots/specs/${encodeURIComponent(slotSpecID)}/versions`, req);
   },
   /** 0.5.1 生命周期转移（ADR-0018）：suspend/resume/retire（retire 经承诺门）。 */
   transitionAgent(agentID: string, action: AgentLifecycleAction, reason?: string): Promise<AgentLifecycleResult> {

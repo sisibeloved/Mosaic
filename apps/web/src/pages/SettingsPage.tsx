@@ -5,7 +5,7 @@
 // 分层规矩：房间讨论策略在房间内调（右侧信息面板）；本页子导航纯前端态（刷新回
 // 默认 Agent 区）。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type BackupSummary, type Executable, type IdentityAgent, type MonitorView, type SettingsDoc } from "../api/client";
+import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type BackupSummary, type Executable, type IdentityAgent, type MonitorView, type SettingsDoc, type SlotSpecContent, type SlotSpecSummary, type SlotSpecView } from "../api/client";
 import { AppLogo } from "../components/AppLogo";
 import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
 import { UpdateEditor } from "../components/UpdateEditor";
@@ -15,10 +15,11 @@ import { useTheme } from "../state/theme";
 import { adapterLabel, channelLabel } from "../lib/copy";
 import { absoluteTime, truncate } from "../lib/ui";
 
-type Section = "agent" | "automation" | "data" | "appearance" | "integration" | "general";
+type Section = "agent" | "slots" | "automation" | "data" | "appearance" | "integration" | "general";
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "agent", label: "Agent" },
+  { id: "slots", label: "职责" },
   { id: "automation", label: "自动化" },
   { id: "data", label: "数据" },
   { id: "appearance", label: "外观" },
@@ -39,6 +40,18 @@ export function SettingsPage() {
   const [identBusy, setIdentBusy] = useState<string | null>(null);
   // 生命周期事件缓存修订号：操作成功后递增，明细组件据此失效缓存（审校 P2#2）
   const [identRev, setIdentRev] = useState(0);
+  // 0.5.2 职责模板（ADR-0019）
+  const [slotSpecs, setSlotSpecs] = useState<SlotSpecSummary[] | null>(null);
+  const [slotMsg, setSlotMsg] = useState<string | null>(null);
+  const [slotBusy, setSlotBusy] = useState(false);
+  const [slotFormOpen, setSlotFormOpen] = useState(false);
+  // mode: create（建谱系）| append（追加版本，携带谱系 id）
+  const [slotForm, setSlotForm] = useState<{ mode: "create" | "append"; id: string; name: string; responsibility: string; deliverables: string; reqTools: string; optTools: string }>(
+    { mode: "create", id: "", name: "", responsibility: "", deliverables: "", reqTools: "", optTools: "" },
+  );
+  const slotSeq = useRef(0);
+  const slotDetailRev = useRef(0);
+  const [slotVersionsRev, setSlotVersionsRev] = useState(0);
   const [form, setForm] = useState({ adapter: "", runtime: "native", distro: "", path: "", version: "", channel: "" });
   const [formMsg, setFormMsg] = useState<string | null>(null);
   // M4-0 数据与诊断区
@@ -352,6 +365,77 @@ export function SettingsPage() {
       // 配合请求序号，旧慢响应无法覆盖新状态。
       await refreshIdentAgents();
       setIdentBusy(null);
+    }
+  };
+
+
+  // 0.5.2 职责模板（ADR-0019）：列表加载（请求序号拒旧响应——与身份区同纪律）
+  // 与建谱系/追加版本。
+  const refreshSlotSpecs = useCallback(async () => {
+    const seq = ++slotSeq.current;
+    try {
+      const { specs } = await api.listSlotSpecs();
+      if (slotSeq.current !== seq) return;
+      setSlotSpecs(specs);
+    } catch {
+      if (slotSeq.current === seq) setSlotSpecs(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshSlotSpecs();
+  }, [refreshSlotSpecs]);
+
+  const splitList = (s: string): string[] =>
+    s.split(/[,，\n]/).map((x) => x.trim()).filter(Boolean);
+
+  const slotContentOf = (): SlotSpecContent => ({
+    name: slotForm.name.trim(),
+    responsibility: slotForm.responsibility.trim(),
+    deliverables: splitList(slotForm.deliverables),
+    ...(slotForm.reqTools.trim() || slotForm.optTools.trim()
+      ? { tools: { required: splitList(slotForm.reqTools), optional: splitList(slotForm.optTools) } }
+      : {}),
+  });
+
+  const submitSlot = async () => {
+    setSlotBusy(true);
+    setSlotMsg(null);
+    try {
+      if (slotForm.mode === "create") {
+        await api.createSlotSpec({ slot_spec_id: slotForm.id.trim(), ...slotContentOf() });
+        setSlotMsg(`已建谱系 ${slotForm.id.trim()}（version=1）`);
+      } else {
+        const v = await api.appendSlotSpecVersion(slotForm.id, slotContentOf());
+        setSlotMsg(`已追加 ${slotForm.id} version=${v.version}`);
+      }
+      setSlotFormOpen(false);
+      setSlotVersionsRev(slotDetailRev.current += 1); // 版本明细失效重读
+      await refreshSlotSpecs();
+    } catch (e) {
+      setSlotMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
+    } finally {
+      setSlotBusy(false);
+    }
+  };
+
+  // startRevise 以最新版本预填表单，进入追加模式（修订即追加不可变版本）
+  const startRevise = async (id: string) => {
+    setSlotMsg(null);
+    try {
+      const latest = await api.getSlotSpec(id);
+      setSlotForm({
+        mode: "append",
+        id,
+        name: latest.name,
+        responsibility: latest.responsibility,
+        deliverables: latest.deliverables.join("\n"),
+        reqTools: latest.tools?.required?.join(", ") ?? "",
+        optTools: latest.tools?.optional?.join(", ") ?? "",
+      });
+      setSlotFormOpen(true);
+    } catch (e) {
+      setSlotMsg(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -740,6 +824,152 @@ export function SettingsPage() {
               )}
             </section>
             </>
+          )}
+
+
+          {section === "slots" && (
+            <section>
+              <h2 className="mb-1 text-sm font-medium">职责模板</h2>
+              <p className="mb-3 text-xs text-faint">
+                职责的版本化模板（RFC-0018 §5 / ADR-0019）：承担什么职责、需要什么能力、如何交付。
+                模板版本不可变——修订即追加新版本，历史永不清除；工具/上下文分必选与可选
+                （必选缺失将 blocked、可选缺失按声明降级，准入随 0.5.5 交付）。0.5.2 仅模板本身，
+                实例与任职随 0.5.3/0.5.4。
+              </p>
+              {slotMsg && <p className="mb-2 text-xs text-danger">{slotMsg}</p>}
+              <div className="mb-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSlotForm({ mode: "create", id: "", name: "", responsibility: "", deliverables: "", reqTools: "", optTools: "" });
+                    setSlotFormOpen((o) => !o);
+                    setSlotMsg(null);
+                  }}
+                  className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast transition-opacity hover:opacity-90"
+                >
+                  {slotFormOpen && slotForm.mode === "create" ? "收起" : "新建模板"}
+                </button>
+              </div>
+              {slotFormOpen && (
+                <div className="mb-4 rounded-xl border border-border p-3">
+                  <p className="mb-2 text-xs text-dim">
+                    {slotForm.mode === "create" ? "建谱系（首版 version=1）" : `修订 ${slotForm.id}（追加下一不可变版本）`}
+                  </p>
+                  <div className="flex flex-col gap-2">
+                    {slotForm.mode === "create" && (
+                      <label className="flex flex-col gap-1">
+                        <span className="text-faint">谱系标识（slot. 前缀小写，跨版本稳定，如 slot.research-lead）</span>
+                        <input
+                          value={slotForm.id}
+                          onChange={(e) => setSlotForm({ ...slotForm, id: e.target.value })}
+                          placeholder="slot.research-lead"
+                          className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
+                        />
+                      </label>
+                    )}
+                    <label className="flex flex-col gap-1">
+                      <span className="text-faint">名称</span>
+                      <input
+                        value={slotForm.name}
+                        onChange={(e) => setSlotForm({ ...slotForm, name: e.target.value })}
+                        className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm outline-none focus:border-accent"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-faint">职责陈述</span>
+                      <textarea
+                        value={slotForm.responsibility}
+                        onChange={(e) => setSlotForm({ ...slotForm, responsibility: e.target.value })}
+                        rows={2}
+                        className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm outline-none focus:border-accent"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-faint">交付规范（每行一项）</span>
+                      <textarea
+                        value={slotForm.deliverables}
+                        onChange={(e) => setSlotForm({ ...slotForm, deliverables: e.target.value })}
+                        rows={2}
+                        placeholder={"结论、来源与具名异议\n可验收产物清单"}
+                        className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm outline-none focus:border-accent"
+                      />
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-faint">必选工具（逗号分隔，如 documents.read）</span>
+                        <input
+                          value={slotForm.reqTools}
+                          onChange={(e) => setSlotForm({ ...slotForm, reqTools: e.target.value })}
+                          className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-faint">可选工具（缺失按声明降级）</span>
+                        <input
+                          value={slotForm.optTools}
+                          onChange={(e) => setSlotForm({ ...slotForm, optTools: e.target.value })}
+                          className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
+                        />
+                      </label>
+                    </div>
+                    <div className="mt-1 flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={slotBusy}
+                        onClick={() => void submitSlot()}
+                        className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast transition-opacity hover:opacity-90 disabled:opacity-40"
+                      >
+                        {slotBusy ? "提交中…" : slotForm.mode === "create" ? "创建" : "追加版本"}
+                      </button>
+                      {slotForm.mode === "append" && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSlotFormOpen(false);
+                            setSlotForm({ mode: "create", id: "", name: "", responsibility: "", deliverables: "", reqTools: "", optTools: "" });
+                          }}
+                          className="rounded-lg bg-surface-3 px-3 py-1.5 text-xs text-text"
+                        >
+                          取消修订
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {slotSpecs === null ? (
+                <p className="text-xs text-faint">加载中…</p>
+              ) : slotSpecs.length === 0 ? (
+                <p className="text-xs text-faint">尚无职责模板——新建后供 0.5.3+ 的职责实例与任职引用。</p>
+              ) : (
+                <ul className="divide-y divide-border rounded-xl border border-border">
+                  {slotSpecs.map((spec) => (
+                    <li key={spec.slot_spec_id} className="flex flex-col gap-1 px-3 py-2.5">
+                      <div className="flex items-center gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-1.5 text-sm">
+                            <span className="font-medium">{spec.name}</span>
+                            <ExeBadge>v{spec.latest_version}</ExeBadge>
+                            {spec.version_count > 1 && <ExeBadge>{spec.version_count} 版</ExeBadge>}
+                          </div>
+                          <p className="mt-0.5 truncate font-mono text-[11px] text-faint" title={spec.slot_spec_id}>
+                            {spec.slot_spec_id} · 修订于 {absoluteTime(spec.updated_at)}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void startRevise(spec.slot_spec_id)}
+                          className="shrink-0 rounded-lg bg-surface-3 px-2 py-1 text-xs text-text transition-opacity hover:opacity-85"
+                        >
+                          修订
+                        </button>
+                      </div>
+                      <SlotVersionsDetails slotSpecID={spec.slot_spec_id} rev={slotVersionsRev} />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
           )}
 
           {section === "automation" && (
@@ -1409,4 +1639,50 @@ function eventSummary(ev: AgentEvent): string {
   const p = (ev.payload ?? {}) as Record<string, string>;
   if (ev.event_type === "created") return `created（来源 ${p.source ?? "?"}）`;
   return `status_changed ${p.from ?? "?"} → ${p.to ?? "?"}${p.reason ? `（${p.reason}）` : ""}`;
+}
+
+/** 职责模板版本明细（懒加载：首次展开才拉取；rev 为修订号——追加版本后
+ * 递增使缓存失效并重读，ADR-0019）。 */
+function SlotVersionsDetails({ slotSpecID, rev }: { slotSpecID: string; rev: number }) {
+  const [versions, setVersions] = useState<SlotSpecView[] | null>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    setVersions(null);
+  }, [rev]);
+  useEffect(() => {
+    if (!open || versions !== null) return;
+    void api
+      .listSlotSpecVersions(slotSpecID)
+      .then(({ versions: vs }) => setVersions(vs))
+      .catch(() => setVersions([]));
+  }, [open, versions, slotSpecID]);
+  return (
+    <details onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+      <summary className="cursor-pointer select-none text-[11px] text-faint">版本历史</summary>
+      {versions === null ? (
+        <p className="mt-1 text-[11px] text-faint">加载中…</p>
+      ) : versions.length === 0 ? (
+        <p className="mt-1 text-[11px] text-faint">暂无版本。</p>
+      ) : (
+        <ul className="mt-1 flex flex-col gap-1">
+          {[...versions].reverse().map((v) => (
+            <li key={v.version} className="rounded-lg bg-surface-2 px-2 py-1.5 text-[11px]">
+              <div className="flex items-center gap-1.5">
+                <span className="font-medium">v{v.version}</span>
+                <span className="text-faint">{v.name}</span>
+                <span className="text-faint">{absoluteTime(v.created_at)}</span>
+              </div>
+              <p className="mt-0.5 text-dim">{v.responsibility}</p>
+              <p className="mt-0.5 text-faint">交付：{v.deliverables.join("；")}</p>
+              {v.tools && (v.tools.required.length > 0 || v.tools.optional.length > 0) && (
+                <p className="mt-0.5 font-mono text-[10px] text-faint">
+                  必选 {v.tools.required.join(", ") || "—"} · 可选 {v.tools.optional.join(", ") || "—"}
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </details>
+  );
 }
