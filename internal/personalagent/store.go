@@ -44,6 +44,10 @@ type Store interface {
 	// 更新 agents 投影并追加 status_changed 事件（from=实际来源）；ok=false
 	// = 状态不匹配（未动投影未落事件）；行缺失 ErrAgentNotFound。
 	TransitionAgent(ctx context.Context, agentID string, allowedFrom []string, to, reason, occurredAt string) (from string, ok bool, err error)
+	// RetireAgent 原子退役（审校 P2#4）：retiring 与 retired 两段事件及终态
+	// 同一事务一次提交——中断/失败整体回滚，不滞留 retiring。allowedFrom =
+	// {active, suspended}；已在 retiring 的重试走 TransitionAgent 补终段。
+	RetireAgent(ctx context.Context, agentID string, allowedFrom []string, reason, occurredAt string) (from string, ok bool, err error)
 	// AgentEvents 某 Agent 的事件流（seq 升序）。
 	AgentEvents(ctx context.Context, agentID string) ([]AgentEvent, error)
 }

@@ -126,35 +126,63 @@ func (m *MemStore) EnsureAgentWithAlias(_ context.Context, a Agent, kind AliasKi
 func (m *MemStore) TransitionAgent(_ context.Context, agentID string, allowedFrom []string, to, reason, occurredAt string) (string, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	idx := -1
-	for i, ex := range m.agents {
-		if ex.AgentID == agentID {
-			idx = i
-			break
-		}
-	}
+	idx := m.indexOfLocked(agentID)
 	if idx < 0 {
 		return "", false, ErrAgentNotFound
 	}
 	from := m.agents[idx].Status
-	allowed := false
-	for _, f := range allowedFrom {
-		if f == from {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
+	if !allowedIn(allowedFrom, from) {
 		return "", false, nil
 	}
 	m.agents[idx].Status = to
+	m.appendChangedLocked(agentID, from, to, reason, occurredAt)
+	return from, true, nil
+}
+
+// RetireAgent 原子退役（端口语义见 store.go；整体临界区——两段事件一次落）。
+func (m *MemStore) RetireAgent(_ context.Context, agentID string, allowedFrom []string, reason, occurredAt string) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx := m.indexOfLocked(agentID)
+	if idx < 0 {
+		return "", false, ErrAgentNotFound
+	}
+	from := m.agents[idx].Status
+	if !allowedIn(allowedFrom, from) {
+		return "", false, nil
+	}
+	m.appendChangedLocked(agentID, from, StatusRetiring, reason, occurredAt)
+	m.appendChangedLocked(agentID, StatusRetiring, StatusRetired, reason, occurredAt)
+	m.agents[idx].Status = StatusRetired
+	return from, true, nil
+}
+
+func (m *MemStore) indexOfLocked(agentID string) int {
+	for i, ex := range m.agents {
+		if ex.AgentID == agentID {
+			return i
+		}
+	}
+	return -1
+}
+
+func allowedIn(allowedFrom []string, status string) bool {
+	for _, f := range allowedFrom {
+		if f == status {
+			return true
+		}
+	}
+	return false
+}
+
+// appendChangedLocked status_changed 事件落流（调用方持锁）。
+func (m *MemStore) appendChangedLocked(agentID, from, to, reason, occurredAt string) {
 	payload, _ := json.Marshal(statusChangedPayload{From: from, To: to, Reason: reason})
 	m.seq++
 	m.events = append(m.events, AgentEvent{
 		Seq: m.seq, AgentID: agentID, EventType: EventStatusChanged,
 		Payload: payload, OccurredAt: occurredAt,
 	})
-	return from, true, nil
 }
 
 // AgentEvents 某 Agent 的事件流（seq 升序——全表 append 天然有序）。

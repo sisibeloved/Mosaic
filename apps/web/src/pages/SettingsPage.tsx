@@ -37,6 +37,8 @@ export function SettingsPage() {
   const [identAgents, setIdentAgents] = useState<IdentityAgent[] | null>(null);
   const [identMsg, setIdentMsg] = useState<string | null>(null);
   const [identBusy, setIdentBusy] = useState<string | null>(null);
+  // 生命周期事件缓存修订号：操作成功后递增，明细组件据此失效缓存（审校 P2#2）
+  const [identRev, setIdentRev] = useState(0);
   const [form, setForm] = useState({ adapter: "", runtime: "native", distro: "", path: "", version: "", channel: "" });
   const [formMsg, setFormMsg] = useState<string | null>(null);
   // M4-0 数据与诊断区
@@ -312,12 +314,17 @@ export function SettingsPage() {
 
   // 0.5.1 身份生命周期（ADR-0018）：身份列表加载（读取触发注册表→身份表惰性
   // 同步——与可执行项列表同口径）；转移后整表刷新。
+  // identSeq 请求序号（审校 P2#5）：并行读取时只放行最新一次响应落地——旧响应
+  // 到达即丢弃，杜绝把已显示的新状态覆盖回旧状态。
+  const identSeq = useRef(0);
   const refreshIdentAgents = useCallback(async () => {
+    const seq = ++identSeq.current;
     try {
       const { agents } = await api.identityAgents();
+      if (identSeq.current !== seq) return;
       setIdentAgents(agents);
     } catch {
-      setIdentAgents(null);
+      if (identSeq.current === seq) setIdentAgents(null);
     }
   }, []);
 
@@ -336,11 +343,15 @@ export function SettingsPage() {
       if (res.outstanding_commitments.length > 0) {
         setIdentMsg(`退役暂缓——未处置承诺：${res.outstanding_commitments.join("；")}`);
       }
+      // 操作成功：递增修订号，使已展开的事件明细缓存失效并重读（审校 P2#2）
+      setIdentRev((r) => r + 1);
     } catch (e) {
       setIdentMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
     } finally {
-      setIdentBusy(null);
+      // 操作锁保持到刷新完成（审校 P2#5）：不在刷新中途放开按钮，连续操作不交错；
+      // 配合请求序号，旧慢响应无法覆盖新状态。
       await refreshIdentAgents();
+      setIdentBusy(null);
     }
   };
 
@@ -420,6 +431,8 @@ export function SettingsPage() {
       await api.setEnabled(exe.id, !exe.enabled);
       await refreshExecutables();
       await refreshAgentSeats(); // 侧栏私聊组随启停即时增减（v1.74 联系人收敛）
+      // 启停改变身份视图的可执行引用（enabled）：同步刷新生命周期列表
+      await refreshIdentAgents();
     } catch (e) {
       setError(
         e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e),
@@ -451,6 +464,9 @@ export function SettingsPage() {
       setFormMsg("已登记");
       await refreshExecutables();
       await refreshAgentSeats();
+      // 登记即建身份（惰性同步在身份列表读取内发生）：刷新生命周期列表，
+      // 新身份立即可暂停/退役（审校 P2#3）
+      await refreshIdentAgents();
     } catch (e) {
       setFormMsg(
         e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e),
@@ -717,7 +733,7 @@ export function SettingsPage() {
                           )}
                         </div>
                       </div>
-                      <AgentEventsDetails agentID={ag.agent_id} />
+                      <AgentEventsDetails agentID={ag.agent_id} rev={identRev} />
                     </li>
                   ))}
                 </ul>
@@ -1353,10 +1369,15 @@ function LifecycleBtn({
   );
 }
 
-/** 生命周期事件流（懒加载：首次展开才拉取，ADR-0018 只读审计面）。 */
-function AgentEventsDetails({ agentID }: { agentID: string }) {
+/** 生命周期事件流（懒加载：首次展开才拉取，ADR-0018 只读审计面；rev 为生命
+ * 周期操作修订号——操作成功后递增使缓存失效，已展开明细立即重读，连续操作
+ * 每次都拿到最新事件史（审校 P2#2）。 */
+function AgentEventsDetails({ agentID, rev }: { agentID: string; rev: number }) {
   const [events, setEvents] = useState<AgentEvent[] | null>(null);
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    setEvents(null); // 缓存失效：下次展开或（已展开时）下方读取效应立即重拉
+  }, [rev]);
   useEffect(() => {
     if (!open || events !== null) return;
     void api

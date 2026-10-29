@@ -70,7 +70,17 @@ CREATE INDEX idx_agent_events_agent ON agent_events(agent_id, seq);
   事件同事务落库（要么两行、要么什么都不留）。由此不变量
   **"事件流 ⊇ 全部历史，agents 表可由流重建"**成立；不提供运行时重建
   入口（无消费场景；恢复演练随 0.10 备份域）。
-- 并发：SQLite 写经 BEGIN IMMEDIATE 串行；两路并发转移同一 Agent 恰一
+- **写临界区（v0.2 审校修订 #1）**：身份域全部写事务（建行/认领/转移/
+  退役）经 `BEGIN IMMEDIATE` 进入写锁后再读——WAL 下"deferred 事务先读
+  后写"会在并发提交后撞 `SQLITE_BUSY_SNAPSHOT`，把本应按 409 语义返回
+  的并发败者外泄成 500（100 次重复复现 5 次）。锁等待发生在 BEGIN 取锁
+  处，由 busy_timeout 承担（与房间 appendTx 同机制）。
+- **原子退役（v0.2 审校修订 #4）**：空承诺门的 retire 不再分
+  retiring / retired 两次提交——`RetireAgent` 在同一事务内落两段事件与
+  终态，中途取消/失败整体回滚，不滞留 retiring。承诺门前置判定（不依赖
+  retiring 态）；已处 retiring 的中断重试走单步 TransitionAgent 只补终段，
+  不重复记 retiring 事件。
+- 并发：SQLite 写经 BEGIN IMMEDIATE 串行化；两路并发转移同一 Agent 恰一
   胜者，败者按其读到的 from 拒绝（409）。
 
 ### 3. 同步与生命周期解耦（单向只增的延续）
@@ -145,3 +155,4 @@ to, reason, occurredAt) (from, ok, err)`（事务校验 + 投影 + 事件，ok=f
 | 版本 | 日期 | 说明 |
 |---|---|---|
 | v0.1 | 2026-10-29 | 初稿（随 0.5.1 实施） |
+| v0.2 | 2026-10-29 | 审校修订（1 P1 + 4 P2）：#1（P1）身份写事务族（Ensure/EnsureAgentWithAlias/Transition/Retire）改 BEGIN IMMEDIATE 临界区——读在写锁内，WAL 读后升级的 SQLITE_BUSY_SNAPSHOT 不再外泄 500，并发败者按 409 返回（HTTP 层 8 路并发实测恰一 200、其余 409、零 500；IT 100 次重复全绿）；#4 空承诺门 retire 改 RetireAgent 单事务一次提交（两段事件 + 终态，中断整体回滚不滞留 retiring；承诺门前置判定，retiring 重试只补终段）；#2 生命周期操作成功后按修订号使前端事件明细缓存失效并重读（已展开明细立即刷新，连续操作每次最新）；#3 手动登记/启停可执行项后前端同步刷新身份列表（新身份立即可暂停/退役）；#5 前端操作锁保持至列表刷新完成 + 请求序号拒绝过期响应（旧慢响应不得覆盖新状态） |

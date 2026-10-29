@@ -40,8 +40,11 @@ func (s *Service) Resume(ctx context.Context, agentID, reason string) (Lifecycle
 	return s.simpleTransition(ctx, agentID, []string{StatusSuspended}, StatusActive, reason)
 }
 
-// Retire active|suspended → retiring →（承诺门空）retired。已处 retiring 时
-// 不重复记 retiring 事件，只重过承诺门；retired 为终态全拒。
+// Retire active|suspended → retiring → retired。承诺门先行判定（0.5.1 恒空）：
+// 空集时 retiring 与 retired 两段事件及终态经 RetireAgent 同一事务一次提交
+// （审校 P2#4——中断/失败整体回滚，不滞留 retiring）；非空时停留 retiring 并
+// 返回未处置清单；已处 retiring 的重试只补终段事件，不重复记 retiring。
+// retired 为终态全拒。
 func (s *Service) Retire(ctx context.Context, agentID, reason string) (LifecycleResult, error) {
 	cur, ok, err := s.store.AgentByID(ctx, agentID)
 	if err != nil {
@@ -50,23 +53,8 @@ func (s *Service) Retire(ctx context.Context, agentID, reason string) (Lifecycle
 	if !ok {
 		return LifecycleResult{}, ErrAgentNotFound
 	}
-	switch cur.Status {
-	case StatusActive, StatusSuspended:
-		if _, done, err := s.store.TransitionAgent(ctx, agentID,
-			[]string{cur.Status}, StatusRetiring, reason, s.now()); err != nil {
-			return LifecycleResult{}, fmt.Errorf("personalagent: 入 retiring: %w", err)
-		} else if !done {
-			// 读后竞态：状态已被并发转移改写——按可见拒绝处理
-			return LifecycleResult{}, fmt.Errorf("%w: %s → retiring", ErrInvalidTransition, cur.Status)
-		}
-	case StatusRetiring:
-		// 已在 retiring：重过承诺门即可，不重复记事件
-	case StatusRetired:
-		return LifecycleResult{}, fmt.Errorf("%w: retired 为终态", ErrInvalidTransition)
-	default:
-		return LifecycleResult{}, fmt.Errorf("%w: 未知状态 %q", ErrInvalidTransition, cur.Status)
-	}
 
+	// 承诺门先行（判定不依赖 retiring 态；非空 = 停留 retiring）
 	outstanding := []string{}
 	if s.commitments != nil {
 		items, err := s.commitments.Outstanding(ctx, agentID)
@@ -77,13 +65,42 @@ func (s *Service) Retire(ctx context.Context, agentID, reason string) (Lifecycle
 			outstanding = items
 		}
 	}
-	if len(outstanding) == 0 {
-		if _, done, err := s.store.TransitionAgent(ctx, agentID,
-			[]string{StatusRetiring}, StatusRetired, reason, s.now()); err != nil {
-			return LifecycleResult{}, fmt.Errorf("personalagent: 完成 retired: %w", err)
-		} else if !done {
-			return LifecycleResult{}, fmt.Errorf("%w: retiring → retired", ErrInvalidTransition)
+
+	switch cur.Status {
+	case StatusActive, StatusSuspended:
+		if len(outstanding) == 0 {
+			// 两段事件 + 终态同一事务一次提交（审校 P2#4）
+			_, done, err := s.store.RetireAgent(ctx, agentID, []string{cur.Status}, reason, s.now())
+			if err != nil {
+				return LifecycleResult{}, fmt.Errorf("personalagent: 原子退役: %w", err)
+			}
+			if !done {
+				// 读后竞态：状态已被并发转移改写——按可见拒绝处理
+				return LifecycleResult{}, fmt.Errorf("%w: %s → retired", ErrInvalidTransition, cur.Status)
+			}
+		} else {
+			if _, done, err := s.store.TransitionAgent(ctx, agentID,
+				[]string{cur.Status}, StatusRetiring, reason, s.now()); err != nil {
+				return LifecycleResult{}, fmt.Errorf("personalagent: 入 retiring: %w", err)
+			} else if !done {
+				return LifecycleResult{}, fmt.Errorf("%w: %s → retiring", ErrInvalidTransition, cur.Status)
+			}
 		}
+	case StatusRetiring:
+		if len(outstanding) == 0 {
+			// 中断/承诺阻塞后的重试：只补 retiring → retired 终段
+			if _, done, err := s.store.TransitionAgent(ctx, agentID,
+				[]string{StatusRetiring}, StatusRetired, reason, s.now()); err != nil {
+				return LifecycleResult{}, fmt.Errorf("personalagent: 完成 retired: %w", err)
+			} else if !done {
+				return LifecycleResult{}, fmt.Errorf("%w: retiring → retired", ErrInvalidTransition)
+			}
+		}
+		// 非空：停留 retiring（不重复记事件）
+	case StatusRetired:
+		return LifecycleResult{}, fmt.Errorf("%w: retired 为终态", ErrInvalidTransition)
+	default:
+		return LifecycleResult{}, fmt.Errorf("%w: 未知状态 %q", ErrInvalidTransition, cur.Status)
 	}
 	return s.lifecycleResult(ctx, agentID, outstanding)
 }

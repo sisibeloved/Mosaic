@@ -434,3 +434,42 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestConcurrentRetireSingleWinner（审校 P1/P2#4 语义）：8 路并发 retire 同一
+// active Agent——恰一胜者（其余 invalid_transition 可见拒绝），事件恰两条
+// （retiring/retired），终态 retired。
+func TestConcurrentRetireSingleWinner(t *testing.T) {
+	svc, _, id := lifecycleFixture(t)
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	var wins atomic.Int64
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := svc.Retire(ctx, id, ""); err == nil {
+				wins.Add(1)
+			} else if !errors.Is(err, ErrInvalidTransition) {
+				t.Errorf("并发 retire err=%v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if wins.Load() != 1 {
+		t.Fatalf("胜者 %d 个, want 1", wins.Load())
+	}
+	view, _, _ := svc.Get(ctx, id)
+	if view.Status != StatusRetired {
+		t.Fatalf("终态 = %s, want retired", view.Status)
+	}
+	evs, _, _ := svc.Events(ctx, id)
+	changed := 0
+	for _, e := range evs {
+		if e.EventType == EventStatusChanged {
+			changed++
+		}
+	}
+	if changed != 2 {
+		t.Fatalf("status_changed 事件 %d 条, want 2（retiring+retired 各一）", changed)
+	}
+}

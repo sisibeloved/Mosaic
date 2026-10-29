@@ -278,3 +278,129 @@ func TestEnsureAgentAppendsCreatedEventIT(t *testing.T) {
 		}
 	}
 }
+
+// TestRetireAgentAtomicIT（审校 P2#4）：两段事件与终态同一事务——happy 路径
+// 恰两条 status_changed；预取消上下文整体回滚（不滞留 retiring、不留事件）；
+// 来源不匹配 ok=false 不落任何行。
+func TestRetireAgentAtomicIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	store.EnsureAgent(ctx, personalagent.Agent{
+		AgentID: "ag_ret_1", DisplayName: "Codex", Adapter: "codex",
+		Status: "active", Source: "migration", CreatedAt: "2026-10-29T10:00:00.000Z",
+	})
+
+	// 取消上下文：整体回滚
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := store.RetireAgent(canceled, "ag_ret_1",
+		[]string{personalagent.StatusActive, personalagent.StatusSuspended}, "", "t"); err == nil {
+		t.Fatal("取消上下文应返回错误")
+	}
+	a, _, _ := store.AgentByID(ctx, "ag_ret_1")
+	if a.Status != personalagent.StatusActive {
+		t.Fatalf("取消回滚后 status=%s, want active（不留 retiring）", a.Status)
+	}
+	evs, _ := store.AgentEvents(ctx, "ag_ret_1")
+	if len(evs) != 1 { // 仅 created
+		t.Fatalf("取消回滚后事件 %d 条, want 1", len(evs))
+	}
+
+	// happy：active → retired，恰 created + retiring + retired
+	from, ok, err := store.RetireAgent(ctx, "ag_ret_1",
+		[]string{personalagent.StatusActive, personalagent.StatusSuspended}, "清理", "2026-10-29T11:00:00.000Z")
+	if err != nil || !ok || from != personalagent.StatusActive {
+		t.Fatalf("retire: from=%s ok=%v err=%v", from, ok, err)
+	}
+	a, _, _ = store.AgentByID(ctx, "ag_ret_1")
+	if a.Status != personalagent.StatusRetired {
+		t.Fatalf("终态 = %s, want retired", a.Status)
+	}
+	evs, _ = store.AgentEvents(ctx, "ag_ret_1")
+	if len(evs) != 3 {
+		t.Fatalf("事件 %d 条, want 3（created+retiring+retired）", len(evs))
+	}
+	var p1, p2 struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	json.Unmarshal(evs[1].Payload, &p1)
+	json.Unmarshal(evs[2].Payload, &p2)
+	if p1.From != "active" || p1.To != "retiring" || p2.From != "retiring" || p2.To != "retired" {
+		t.Fatalf("两段事件语义错: %+v %+v", p1, p2)
+	}
+
+	// 来源不匹配（retired 不在 allowedFrom）：ok=false 不落事件
+	if _, ok, err := store.RetireAgent(ctx, "ag_ret_1",
+		[]string{personalagent.StatusActive}, "", "t"); err != nil || ok {
+		t.Fatalf("终态再 retire 应 ok=false: ok=%v err=%v", ok, err)
+	}
+	evs, _ = store.AgentEvents(ctx, "ag_ret_1")
+	if len(evs) != 3 {
+		t.Fatalf("非法 retire 落了事件: %d", len(evs))
+	}
+}
+
+// TestIdentityConcurrentMixedWritesIT（审校 P1 靶向）：并发转移/原子退役/别名
+// 写混合施压同库——任何非语义错误（SQLITE_BUSY 外泄等）即失败；各 Agent 恰一
+// 胜者、事件数恰定值。旧实现（deferred 事务读后升级）重复运行可复现 BUSY 500。
+func TestIdentityConcurrentMixedWritesIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	store.EnsureAgent(ctx, personalagent.Agent{
+		AgentID: "ag_mix_1", DisplayName: "Codex", Adapter: "codex",
+		Status: "active", Source: "migration", CreatedAt: "2026-10-29T10:00:00.000Z",
+	})
+	store.EnsureAgent(ctx, personalagent.Agent{
+		AgentID: "ag_mix_2", DisplayName: "Kimi", Adapter: "kimi",
+		Status: "active", Source: "migration", CreatedAt: "2026-10-29T10:00:01.000Z",
+	})
+
+	const n = 8
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(3)
+		go func() { // 转移 ag_mix_1：active → suspended
+			defer wg.Done()
+			if _, _, err := store.TransitionAgent(ctx, "ag_mix_1",
+				[]string{personalagent.StatusActive}, personalagent.StatusSuspended, "", "t"); err != nil {
+				t.Errorf("并发转移: %v", err)
+			}
+		}()
+		go func() { // 原子退役 ag_mix_2
+			defer wg.Done()
+			if _, _, err := store.RetireAgent(ctx, "ag_mix_2",
+				[]string{personalagent.StatusActive, personalagent.StatusSuspended}, "", "t"); err != nil {
+				t.Errorf("并发退役: %v", err)
+			}
+		}()
+		go func(i int) { // 同库别名写（附加写竞争面）
+			defer wg.Done()
+			if _, err := store.AddAlias(ctx, personalagent.AliasProfileID,
+				"prof_mix_"+strconv.Itoa(i), "ag_mix_1"); err != nil {
+				t.Errorf("并发别名: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	for _, tc := range []struct {
+		id, want string
+		changed  int
+	}{
+		{"ag_mix_1", personalagent.StatusSuspended, 1},
+		{"ag_mix_2", personalagent.StatusRetired, 2},
+	} {
+		a, ok, _ := store.AgentByID(ctx, tc.id)
+		if !ok || a.Status != tc.want {
+			t.Fatalf("%s 终态 = %s, want %s", tc.id, a.Status, tc.want)
+		}
+		var changed int
+		store.db.QueryRow(`SELECT COUNT(*) FROM agent_events WHERE agent_id=? AND event_type='status_changed'`, tc.id).Scan(&changed)
+		if changed != tc.changed {
+			t.Fatalf("%s status_changed 事件 %d 条, want %d", tc.id, changed, tc.changed)
+		}
+	}
+}
