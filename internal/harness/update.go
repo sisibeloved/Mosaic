@@ -590,6 +590,14 @@ func (j *updateJob) emit(line string) {
 	}
 }
 
+// isDone 加锁读取终态（job.mu 与 r.mu 两把锁——r.mu 临界区内不得裸读 j.done，
+// 否则与 finish() 的写入构成数据竞态；CI ubuntu 腿实证）。
+func (j *updateJob) isDone() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.done
+}
+
 func (j *updateJob) finish(ev UpdateEvent) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -626,7 +634,7 @@ func (r *Registry) StartUpdate(ctx context.Context, id string, runner Runner) (b
 		return false, fmt.Errorf("%w：%s", ErrNoUpdateChannel, updateFamilies[exe.Adapter].note)
 	}
 	r.mu.Lock()
-	if job, ok := r.updateJobs[id]; ok && !job.done {
+	if job, ok := r.updateJobs[id]; ok && !job.isDone() {
 		r.mu.Unlock()
 		return false, nil // 在途幂等
 	}
