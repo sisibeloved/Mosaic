@@ -217,7 +217,7 @@ func TestAgentIdentityLegacyUpgradeIT(t *testing.T) {
 	if outboxPending != 1 {
 		t.Fatalf("旧 outbox 积压应保留 1 条，得 %d", outboxPending)
 	}
-	// 迁移登记：1–5 与 7 各恰一条
+	// 迁移登记：1–5、7、8 各恰一条（v8 事件流随 0.5.1 加入升级面）
 	rows, err := store.db.Query(`SELECT version, COUNT(*) FROM migrations GROUP BY version ORDER BY version`)
 	if err != nil {
 		t.Fatalf("migrations: %v", err)
@@ -229,12 +229,12 @@ func TestAgentIdentityLegacyUpgradeIT(t *testing.T) {
 		got[v] = c
 	}
 	rows.Close()
-	for _, v := range []int{1, 2, 3, 4, 5, 7} {
+	for _, v := range []int{1, 2, 3, 4, 5, 7, 8} {
 		if got[v] != 1 {
 			t.Fatalf("迁移 version=%d 登记数 %d（要 1）；全量 %v", v, got[v], got)
 		}
 	}
-	if len(got) != 6 {
+	if len(got) != 7 {
 		t.Fatalf("迁移登记集合异常: %v", got)
 	}
 	store.Close()

@@ -20,10 +20,11 @@ type Registry interface {
 // 单向数据流：注册表是发现事实的来源，身份表是身份权威；身份表永不回写
 // 注册表的身份字段（bot_id 等），杜绝双权威（RFC-0018 §13.2.3）。
 type Service struct {
-	store      Store
-	reg        Registry
-	newAgentID func() string
-	now        func() string
+	store       Store
+	reg         Registry
+	newAgentID  func() string
+	now         func() string
+	commitments CommitmentChecker // 承诺门（ADR-0018；缺省 nil = 恒空集）
 }
 
 // Option 装配选项（测试注入确定性 ID/时钟；生产缺省随机 ID + 真实时钟）。

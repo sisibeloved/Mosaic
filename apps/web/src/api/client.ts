@@ -10,6 +10,12 @@ export type CommandResponse = Schemas["CommandResponse"];
 export type RoomSummary = Schemas["RoomSummary"];
 export type ParticipantView = Schemas["ParticipantView"];
 export type ManualExecutableRequest = Schemas["ManualExecutableRequest"];
+
+/** 0.5.1 身份生命周期（ADR-0018，契约 api/http-api/openapi.yaml）。 */
+export type IdentityAgent = Schemas["IdentityAgent"];
+export type AgentLifecycleResult = Schemas["LifecycleResult"];
+export type AgentEvent = Schemas["AgentEvent"];
+export type AgentLifecycleAction = "suspend" | "resume" | "retire";
 export type TaskItem = Schemas["TaskItem"];
 export type SearchHit = Schemas["SearchHit"];
 export type RuntimeOptions = Schemas["RuntimeOptions"];
@@ -439,6 +445,21 @@ export const api = {
   },
   executables(): Promise<{ executables: Executable[] }> {
     return request<{ executables: Executable[] }>("/v1/harness/executables");
+  },
+  /** 0.5.0 身份注册表（ADR-0017）：读取触发注册表→身份表惰性同步。 */
+  identityAgents(): Promise<{ agents: IdentityAgent[] }> {
+    return request<{ agents: IdentityAgent[] }>("/v1/identity/agents");
+  },
+  /** 0.5.1 生命周期事件流（ADR-0018）：升序审计面。 */
+  identityAgentEvents(agentID: string): Promise<{ events: AgentEvent[] }> {
+    return request<{ events: AgentEvent[] }>(`/v1/identity/agents/${encodeURIComponent(agentID)}/events`);
+  },
+  /** 0.5.1 生命周期转移（ADR-0018）：suspend/resume/retire（retire 经承诺门）。 */
+  transitionAgent(agentID: string, action: AgentLifecycleAction, reason?: string): Promise<AgentLifecycleResult> {
+    return post<AgentLifecycleResult>(`/v1/identity/agents/${encodeURIComponent(agentID)}/lifecycle`, {
+      action,
+      ...(reason ? { reason } : {}),
+    });
   },
   registerExecutable(req: ManualExecutableRequest): Promise<{ status: string }> {
     return post<{ status: string }>(`/v1/harness/executables`, req);

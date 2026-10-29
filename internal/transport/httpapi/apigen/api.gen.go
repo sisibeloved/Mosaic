@@ -15,6 +15,24 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for AgentEventEventType.
+const (
+	Created       AgentEventEventType = "created"
+	StatusChanged AgentEventEventType = "status_changed"
+)
+
+// Valid indicates whether the value is a known member of the AgentEventEventType enum.
+func (e AgentEventEventType) Valid() bool {
+	switch e {
+	case Created:
+		return true
+	case StatusChanged:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ClosureSummaryClosureType.
 const (
 	ClosureSummaryClosureTypeBoundedDisagreement ClosureSummaryClosureType = "bounded_disagreement"
@@ -429,6 +447,51 @@ func (e HarnessUpdateCheckChannel) Valid() bool {
 	case Registry:
 		return true
 	case SelfUpdate:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for IdentityAgentStatus.
+const (
+	IdentityAgentStatusActive    IdentityAgentStatus = "active"
+	IdentityAgentStatusRetired   IdentityAgentStatus = "retired"
+	IdentityAgentStatusRetiring  IdentityAgentStatus = "retiring"
+	IdentityAgentStatusSuspended IdentityAgentStatus = "suspended"
+)
+
+// Valid indicates whether the value is a known member of the IdentityAgentStatus enum.
+func (e IdentityAgentStatus) Valid() bool {
+	switch e {
+	case IdentityAgentStatusActive:
+		return true
+	case IdentityAgentStatusRetired:
+		return true
+	case IdentityAgentStatusRetiring:
+		return true
+	case IdentityAgentStatusSuspended:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LifecycleTransitionRequestAction.
+const (
+	Resume  LifecycleTransitionRequestAction = "resume"
+	Retire  LifecycleTransitionRequestAction = "retire"
+	Suspend LifecycleTransitionRequestAction = "suspend"
+)
+
+// Valid indicates whether the value is a known member of the LifecycleTransitionRequestAction enum.
+func (e LifecycleTransitionRequestAction) Valid() bool {
+	switch e {
+	case Resume:
+		return true
+	case Retire:
+		return true
+	case Suspend:
 		return true
 	default:
 		return false
@@ -1221,6 +1284,24 @@ func (e RequestRestoreJSONBodyConfirm) Valid() bool {
 	}
 }
 
+// AgentEvent agent_events 流事件（migration v8；seq 升序即流序）。
+type AgentEvent struct {
+	AgentId string `json:"agent_id"`
+
+	// EventType created 含 v7 存量回填
+	EventType  AgentEventEventType `json:"event_type"`
+	OccurredAt time.Time           `json:"occurred_at"`
+
+	// Payload 事件体——created: {source, adapter, display_name}；status_changed: {from, to, reason}
+	Payload map[string]interface{} `json:"payload"`
+
+	// Seq 全表单调流序
+	Seq int64 `json:"seq"`
+}
+
+// AgentEventEventType created 含 v7 存量回填
+type AgentEventEventType string
+
 // AttachedDoc 房间附着文档投影项（RFC-0014 §2.4；重复附着以最新事实覆盖 attached_by/attached_at，detach 出集）。
 type AttachedDoc struct {
 	AttachedAt time.Time `json:"attached_at"`
@@ -1801,9 +1882,9 @@ type HarnessUpdateCheck struct {
 // HarnessUpdateCheckChannel 更新通道三分类（ADR-0016）：registry=第三方分发仓库（现役 npm）；self-update=官方自更新子命令（检测可借仓库面）；mosaic=Mosaic 自带通道（自建打包脚本 ~/.mosaic/update/<adapter>.sh，检测对齐自建 releases 信号）
 type HarnessUpdateCheckChannel string
 
-// IdentityAgent 独立 Agent 身份（ADR-0017 / 0.5.0）——跨房间与部署位置的稳定主体；别名为旧 ID 的统一解析点。
+// IdentityAgent 独立 Agent 身份（ADR-0017 / 0.5.0；生命周期状态 ADR-0018 / 0.5.1）——跨房间与部署位置的稳定主体；别名为旧 ID 的统一解析点。
 type IdentityAgent struct {
-	// Adapter 来源 adapter 家族（codex | kimi | minimax | zcode | claude | …）
+	// Adapter 来源 adapter 家族（codex | kimi | minimax | zcode | claude | …；手动建可空）
 	Adapter string `json:"adapter"`
 
 	// AgentId ag_ 前缀稳定身份，生成即持久
@@ -1836,8 +1917,41 @@ type IdentityAgent struct {
 	// Source migration | manual
 	Source string `json:"source"`
 
-	// Status 0.5.0 恒 active；生命周期状态机随 0.5.1
-	Status string `json:"status"`
+	// Status 生命周期状态机（ADR-0018）：active ↔ suspended；active|suspended → retiring → retired（retired 唯一终态）。active 不代表正在运行。
+	Status IdentityAgentStatus `json:"status"`
+}
+
+// IdentityAgentStatus 生命周期状态机（ADR-0018）：active ↔ suspended；active|suspended → retiring → retired（retired 唯一终态）。active 不代表正在运行。
+type IdentityAgentStatus string
+
+// LifecycleResult 生命周期转移结果；outstanding_commitments 仅 retire 且承诺门非空时非空（Agent 停留 retiring）。
+type LifecycleResult struct {
+	// Agent 独立 Agent 身份（ADR-0017 / 0.5.0；生命周期状态 ADR-0018 / 0.5.1）——跨房间与部署位置的稳定主体；别名为旧 ID 的统一解析点。
+	Agent IdentityAgent `json:"agent"`
+
+	// OutstandingCommitments 未处置承诺清单（0.5.1 恒空——Mission/Binding/Goal 域随 0.5.2+/0.6 接入承诺门）
+	OutstandingCommitments []string `json:"outstanding_commitments"`
+}
+
+// LifecycleTransitionRequest 生命周期转移动作（ADR-0018 / 0.5.1）。
+type LifecycleTransitionRequest struct {
+	// Action suspend：active→suspended；resume：suspended→active；retire：active|suspended→retiring→（承诺门空）retired
+	Action LifecycleTransitionRequestAction `json:"action"`
+
+	// Reason 可选原因（记入 status_changed 事件 payload）
+	Reason *string `json:"reason,omitempty"`
+}
+
+// LifecycleTransitionRequestAction suspend：active→suspended；resume：suspended→active；retire：active|suspended→retiring→（承诺门空）retired
+type LifecycleTransitionRequestAction string
+
+// ManualAgentRequest 手动创建 Agent 身份请求体（ADR-0018 / 0.5.1；source=manual）。
+type ManualAgentRequest struct {
+	// Adapter 可选 adapter 家族标注（空 = 无 harness 挂靠；仅展示用，不参与身份等价）
+	Adapter *string `json:"adapter,omitempty"`
+
+	// DisplayName 展示名（必填）
+	DisplayName string `json:"display_name"`
 }
 
 // ManualExecutableRequest defines model for ManualExecutableRequest.
@@ -2815,6 +2929,12 @@ type AddHarnessExecutableJSONRequestBody = ManualExecutableRequest
 // UpdateHarnessExecutableJSONRequestBody defines body for UpdateHarnessExecutable for application/json ContentType.
 type UpdateHarnessExecutableJSONRequestBody = RuntimeUpdateRequest
 
+// CreateIdentityAgentJSONRequestBody defines body for CreateIdentityAgent for application/json ContentType.
+type CreateIdentityAgentJSONRequestBody = ManualAgentRequest
+
+// TransitionAgentLifecycleJSONRequestBody defines body for TransitionAgentLifecycle for application/json ContentType.
+type TransitionAgentLifecycleJSONRequestBody = LifecycleTransitionRequest
+
 // CreateMonitorJSONRequestBody defines body for CreateMonitor for application/json ContentType.
 type CreateMonitorJSONRequestBody = MonitorCreate
 
@@ -2952,9 +3072,18 @@ type ServerInterface interface {
 	// ListIdentityAgents 独立 Agent 身份注册表（0.5.0 / ADR-0017）
 	// (GET /v1/identity/agents)
 	ListIdentityAgents(w http.ResponseWriter, r *http.Request)
+	// CreateIdentityAgent 手动创建 Agent 身份（0.5.1 / ADR-0018）
+	// (POST /v1/identity/agents)
+	CreateIdentityAgent(w http.ResponseWriter, r *http.Request)
 	// GetIdentityAgent 单个 Agent 身份详情
 	// (GET /v1/identity/agents/{agent_id})
 	GetIdentityAgent(w http.ResponseWriter, r *http.Request, agentId string)
+	// ListIdentityAgentEvents Agent 生命周期事件流（只读审计面）
+	// (GET /v1/identity/agents/{agent_id}/events)
+	ListIdentityAgentEvents(w http.ResponseWriter, r *http.Request, agentId string)
+	// TransitionAgentLifecycle Agent 生命周期转移（0.5.1 / ADR-0018）
+	// (POST /v1/identity/agents/{agent_id}/lifecycle)
+	TransitionAgentLifecycle(w http.ResponseWriter, r *http.Request, agentId string)
 	// ListMonitors 监控源列表（含运行态水位）
 	// (GET /v1/monitors)
 	ListMonitors(w http.ResponseWriter, r *http.Request)
@@ -4038,6 +4167,20 @@ func (siw *ServerInterfaceWrapper) ListIdentityAgents(w http.ResponseWriter, r *
 	handler.ServeHTTP(w, r)
 }
 
+// CreateIdentityAgent operation middleware
+func (siw *ServerInterfaceWrapper) CreateIdentityAgent(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateIdentityAgent(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetIdentityAgent operation middleware
 func (siw *ServerInterfaceWrapper) GetIdentityAgent(w http.ResponseWriter, r *http.Request) {
 
@@ -4055,6 +4198,58 @@ func (siw *ServerInterfaceWrapper) GetIdentityAgent(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetIdentityAgent(w, r, agentId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListIdentityAgentEvents operation middleware
+func (siw *ServerInterfaceWrapper) ListIdentityAgentEvents(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "agent_id" -------------
+	var agentId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "agent_id", r.PathValue("agent_id"), &agentId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agent_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListIdentityAgentEvents(w, r, agentId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// TransitionAgentLifecycle operation middleware
+func (siw *ServerInterfaceWrapper) TransitionAgentLifecycle(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "agent_id" -------------
+	var agentId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "agent_id", r.PathValue("agent_id"), &agentId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agent_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.TransitionAgentLifecycle(w, r, agentId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4813,7 +5008,10 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/extdocs/sheet-transfers/by-id/{transfer_id}/resume", wrapper.ResumeSheetTransfer)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/owner/bootstrap", wrapper.GetOwnerBootstrap)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/identity/agents", wrapper.ListIdentityAgents)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/identity/agents", wrapper.CreateIdentityAgent)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/identity/agents/{agent_id}", wrapper.GetIdentityAgent)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/identity/agents/{agent_id}/lifecycle", wrapper.TransitionAgentLifecycle)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/identity/agents/{agent_id}/events", wrapper.ListIdentityAgentEvents)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/enable", wrapper.EnableHarnessExecutable)

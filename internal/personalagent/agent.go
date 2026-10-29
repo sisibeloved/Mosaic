@@ -7,6 +7,7 @@ package personalagent
 import (
 	crand "crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -32,12 +33,51 @@ const (
 	AliasParticipantID AliasKind = "participant_id" // par_<adapter>_<key>（房间名册）
 )
 
-// Agent 聚合快照（0.5.0 无状态转移；事件流与生命周期随 0.5.1）。
+// 生命周期状态（RFC-0018 §3.2 / ADR-0018）：
+// active ↔ suspended；active|suspended → retiring → retired（唯一终态）。
+// active 不代表正在运行——身份状态，不是进程状态。
+const (
+	StatusActive    = "active"
+	StatusSuspended = "suspended"
+	StatusRetiring  = "retiring"
+	StatusRetired   = "retired"
+)
+
+// 事件类型（agent_events 流，migration v8）。
+const (
+	EventCreated       = "created"        // 建行事实（含 v7 存量回填）
+	EventStatusChanged = "status_changed" // 生命周期转移
+)
+
+// AgentEvent 事件流事件（seq 全表单调升序 = 流序）。
+type AgentEvent struct {
+	Seq        int64           `json:"seq"`
+	AgentID    string          `json:"agent_id"`
+	EventType  string          `json:"event_type"`
+	Payload    json.RawMessage `json:"payload"`
+	OccurredAt string          `json:"occurred_at"`
+}
+
+// createdPayload EventCreated 事件体。
+type createdPayload struct {
+	Source      string `json:"source"`
+	Adapter     string `json:"adapter"`
+	DisplayName string `json:"display_name"`
+}
+
+// statusChangedPayload EventStatusChanged 事件体。
+type statusChangedPayload struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Reason string `json:"reason"`
+}
+
+// Agent 聚合投影（v8 起为 agent_events 流的投影——转移与事件同事务）。
 type Agent struct {
 	AgentID     string `json:"agent_id"`
 	DisplayName string `json:"display_name"`
 	Adapter     string `json:"adapter"`
-	Status      string `json:"status"` // 0.5.0 恒 active
+	Status      string `json:"status"` // 生命周期状态机（ADR-0018）
 	Source      string `json:"source"` // migration | manual
 	CreatedAt   string `json:"created_at"`
 }

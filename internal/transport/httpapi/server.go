@@ -513,6 +513,149 @@ func (s *server) GetIdentityAgent(w http.ResponseWriter, r *http.Request, agentI
 	writeJSON(w, http.StatusOK, view)
 }
 
+// CreateIdentityAgent 手动建身份（0.5.1 / ADR-0018；apigen.ServerInterface）。
+// source=manual、active 出生；为 0.5.2+ Slot 任职 / Worker 晋升预留主体。
+func (s *server) CreateIdentityAgent(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Identity == nil {
+		writeError(w, http.StatusServiceUnavailable, "identity_unavailable", "身份注册表未配置")
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.ManualAgentRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	adapter := ""
+	if req.Adapter != nil {
+		adapter = *req.Adapter
+	}
+	view, err := s.deps.Identity.CreateManual(r.Context(), req.DisplayName, adapter)
+	if err != nil {
+		if errors.Is(err, personalagent.ErrInvalidAgent) {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		s.writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, view)
+}
+
+// TransitionAgentLifecycle 生命周期转移（0.5.1 / ADR-0018）：
+// suspend / resume / retire；非法转移 409（不静默幂等），未知身份 404。
+func (s *server) TransitionAgentLifecycle(w http.ResponseWriter, r *http.Request, agentID string) {
+	if s.deps.Identity == nil {
+		writeError(w, http.StatusServiceUnavailable, "identity_unavailable", "身份注册表未配置")
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.LifecycleTransitionRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	reason := ""
+	if req.Reason != nil {
+		reason = *req.Reason
+	}
+	ctx := r.Context()
+	var res personalagent.LifecycleResult
+	var err error
+	switch req.Action {
+	case apigen.Suspend:
+		res, err = s.deps.Identity.Suspend(ctx, agentID, reason)
+	case apigen.Resume:
+		res, err = s.deps.Identity.Resume(ctx, agentID, reason)
+	case apigen.Retire:
+		res, err = s.deps.Identity.Retire(ctx, agentID, reason)
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_request", "action 须为 suspend | resume | retire")
+		return
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, personalagent.ErrAgentNotFound):
+			writeError(w, http.StatusNotFound, "identity_not_found", "Agent 身份不存在")
+		case errors.Is(err, personalagent.ErrInvalidTransition):
+			writeError(w, http.StatusConflict, "invalid_transition", err.Error())
+		default:
+			s.writeDomainError(w, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// ListIdentityAgentEvents 事件流只读审计面（0.5.1 / ADR-0018）。
+func (s *server) ListIdentityAgentEvents(w http.ResponseWriter, r *http.Request, agentID string) {
+	if s.deps.Identity == nil {
+		writeError(w, http.StatusServiceUnavailable, "identity_unavailable", "身份注册表未配置")
+		return
+	}
+	evs, ok, err := s.deps.Identity.Events(r.Context(), agentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "identity_read_failed", err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "identity_not_found", "Agent 身份不存在")
+		return
+	}
+	out := make([]apigen.AgentEvent, 0, len(evs))
+	for _, ev := range evs {
+		view, err := agentEventView(ev)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "identity_read_failed", err.Error())
+			return
+		}
+		out = append(out, view)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": out})
+}
+
+// agentEventView personalagent.AgentEvent → apigen.AgentEvent（payload 展开为
+// 对象、occurred_at 解析为时间戳——schema 形态）。
+func agentEventView(ev personalagent.AgentEvent) (apigen.AgentEvent, error) {
+	ts, err := time.Parse(time.RFC3339, ev.OccurredAt)
+	if err != nil {
+		return apigen.AgentEvent{}, fmt.Errorf("事件时间 %q: %w", ev.OccurredAt, err)
+	}
+	var payload map[string]interface{}
+	if len(ev.Payload) > 0 {
+		if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+			return apigen.AgentEvent{}, fmt.Errorf("事件 payload: %w", err)
+		}
+	}
+	return apigen.AgentEvent{
+		Seq:        ev.Seq,
+		AgentId:    ev.AgentID,
+		EventType:  apigen.AgentEventEventType(ev.EventType),
+		OccurredAt: ts,
+		Payload:    payload,
+	}, nil
+}
+
 func (s *server) ListHarnessExecutables(w http.ResponseWriter, r *http.Request) {
 	if s.deps.Harness == nil {
 		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")

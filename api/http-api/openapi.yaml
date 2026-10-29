@@ -1408,7 +1408,8 @@ paths:
         跨房间、跨可执行位置存在的长期 Agent 身份权威（SQLite agents/agent_aliases）。
         每项含旧 ID 别名（bot_id / profile_id / participant_id——存量房间事件与座位
         的统一解析点）与当前关联的可执行项引用（只读、现算）。读取前执行幂等同步
-        （注册表 → 身份表，只增不改）。0.5.0 无写面（生命周期随 0.5.1）。
+        （注册表 → 身份表，只增不改；不改变既有生命周期状态）。生命周期状态机与
+        写面随 0.5.1（ADR-0018）。
       responses:
         "200":
           description: Agent 身份列表
@@ -1421,6 +1422,29 @@ paths:
                   agents:
                     type: array
                     items: { $ref: "#/components/schemas/IdentityAgent" }
+        "503": { $ref: "#/components/responses/HarnessUnavailable" }
+    post:
+      operationId: createIdentityAgent
+      summary: 手动创建 Agent 身份（0.5.1 / ADR-0018）
+      description: |
+        source=manual、status=active，created 事件随建行同事务落库。为 0.5.2+
+        Slot 任职与 Worker 晋升预留主体；无别名（无 bot_id 可挂）。
+      security: [{ OwnerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ManualAgentRequest" }
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IdentityAgent" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "503": { $ref: "#/components/responses/HarnessUnavailable" }
   /v1/identity/agents/{agent_id}:
     get:
@@ -1437,6 +1461,77 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/IdentityAgent" }
+        "404":
+          description: 身份不存在（identity_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/HarnessUnavailable" }
+  /v1/identity/agents/{agent_id}/lifecycle:
+    post:
+      operationId: transitionAgentLifecycle
+      summary: Agent 生命周期转移（0.5.1 / ADR-0018）
+      description: |
+        状态机：active ↔ suspended；active|suspended → retiring →（承诺门空）
+        retired。retired 为唯一终态；非法转移 409 invalid_transition（含
+        当前态与期望态），重放须重取终态。retire 经承诺门（0.5.1 恒空集，
+        同调用完成 retiring→retired）；未处置承诺非空时停留 retiring 并在
+        outstanding_commitments 返回清单。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^ag_[0-9A-Za-z_-]+$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LifecycleTransitionRequest" }
+      responses:
+        "200":
+          description: 转移结果（含转移后身份与未处置承诺清单）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LifecycleResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: 身份不存在（identity_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 非法转移（invalid_transition——终态拒绝或当前态不匹配）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503": { $ref: "#/components/responses/HarnessUnavailable" }
+  /v1/identity/agents/{agent_id}/events:
+    get:
+      operationId: listIdentityAgentEvents
+      summary: Agent 生命周期事件流（只读审计面）
+      description: |
+        agent_events 流（migration v8）：created（含 v7 存量回填）与
+        status_changed 事件，seq 升序全量。投影 agents 表可由此重建。
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^ag_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 事件列表（升序）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentEvent" }
         "404":
           description: 身份不存在（identity_not_found）
           content:
@@ -2911,12 +3006,15 @@ components:
     IdentityAgent:
       type: object
       required: [agent_id, display_name, adapter, status, source, created_at, aliases, executables]
-      description: 独立 Agent 身份（ADR-0017 / 0.5.0）——跨房间与部署位置的稳定主体；别名为旧 ID 的统一解析点。
+      description: 独立 Agent 身份（ADR-0017 / 0.5.0；生命周期状态 ADR-0018 / 0.5.1）——跨房间与部署位置的稳定主体；别名为旧 ID 的统一解析点。
       properties:
         agent_id: { type: string, description: "ag_ 前缀稳定身份，生成即持久" }
         display_name: { type: string, description: 展示名（迁移来源 = adapter 家族名；未来可编辑） }
-        adapter: { type: string, description: 来源 adapter 家族（codex | kimi | minimax | zcode | claude | …） }
-        status: { type: string, description: "0.5.0 恒 active；生命周期状态机随 0.5.1" }
+        adapter: { type: string, description: 来源 adapter 家族（codex | kimi | minimax | zcode | claude | …；手动建可空） }
+        status:
+          type: string
+          enum: [active, suspended, retiring, retired]
+          description: 生命周期状态机（ADR-0018）：active ↔ suspended；active|suspended → retiring → retired（retired 唯一终态）。active 不代表正在运行。
         source: { type: string, description: migration | manual }
         created_at: { type: string, format: date-time }
         aliases:
@@ -2938,6 +3036,47 @@ components:
               distro: { type: string }
               channel: { type: string, description: 空值按 cli }
               enabled: { type: boolean }
+    ManualAgentRequest:
+      type: object
+      required: [display_name]
+      additionalProperties: false
+      description: 手动创建 Agent 身份请求体（ADR-0018 / 0.5.1；source=manual）。
+      properties:
+        display_name: { type: string, minLength: 1, maxLength: 64, description: 展示名（必填） }
+        adapter: { type: string, maxLength: 32, description: 可选 adapter 家族标注（空 = 无 harness 挂靠；仅展示用，不参与身份等价） }
+    LifecycleTransitionRequest:
+      type: object
+      required: [action]
+      additionalProperties: false
+      description: 生命周期转移动作（ADR-0018 / 0.5.1）。
+      properties:
+        action:
+          type: string
+          enum: [suspend, resume, retire]
+          description: suspend：active→suspended；resume：suspended→active；retire：active|suspended→retiring→（承诺门空）retired
+        reason: { type: string, maxLength: 200, description: 可选原因（记入 status_changed 事件 payload） }
+    LifecycleResult:
+      type: object
+      required: [agent, outstanding_commitments]
+      description: 生命周期转移结果；outstanding_commitments 仅 retire 且承诺门非空时非空（Agent 停留 retiring）。
+      properties:
+        agent: { $ref: "#/components/schemas/IdentityAgent" }
+        outstanding_commitments:
+          type: array
+          items: { type: string }
+          description: 未处置承诺清单（0.5.1 恒空——Mission/Binding/Goal 域随 0.5.2+/0.6 接入承诺门）
+    AgentEvent:
+      type: object
+      required: [seq, agent_id, event_type, payload, occurred_at]
+      description: agent_events 流事件（migration v8；seq 升序即流序）。
+      properties:
+        seq: { type: integer, format: int64, description: 全表单调流序 }
+        agent_id: { type: string }
+        event_type: { type: string, enum: [created, status_changed], description: created 含 v7 存量回填 }
+        payload:
+          type: object
+          description: "事件体——created: {source, adapter, display_name}；status_changed: {from, to, reason}"
+        occurred_at: { type: string, format: date-time }
     ManualExecutableRequest:
       type: object
       required: [adapter, runtime, path]

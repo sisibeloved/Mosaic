@@ -986,11 +986,17 @@ export interface paths {
          * @description 跨房间、跨可执行位置存在的长期 Agent 身份权威（SQLite agents/agent_aliases）。
          *     每项含旧 ID 别名（bot_id / profile_id / participant_id——存量房间事件与座位
          *     的统一解析点）与当前关联的可执行项引用（只读、现算）。读取前执行幂等同步
-         *     （注册表 → 身份表，只增不改）。0.5.0 无写面（生命周期随 0.5.1）。
+         *     （注册表 → 身份表，只增不改；不改变既有生命周期状态）。生命周期状态机与
+         *     写面随 0.5.1（ADR-0018）。
          */
         get: operations["listIdentityAgents"];
         put?: never;
-        post?: never;
+        /**
+         * 手动创建 Agent 身份（0.5.1 / ADR-0018）
+         * @description source=manual、status=active，created 事件随建行同事务落库。为 0.5.2+
+         *     Slot 任职与 Worker 晋升预留主体；无别名（无 bot_id 可挂）。
+         */
+        post: operations["createIdentityAgent"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1006,6 +1012,51 @@ export interface paths {
         };
         /** 单个 Agent 身份详情 */
         get: operations["getIdentityAgent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/identity/agents/{agent_id}/lifecycle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Agent 生命周期转移（0.5.1 / ADR-0018）
+         * @description 状态机：active ↔ suspended；active|suspended → retiring →（承诺门空）
+         *     retired。retired 为唯一终态；非法转移 409 invalid_transition（含
+         *     当前态与期望态），重放须重取终态。retire 经承诺门（0.5.1 恒空集，
+         *     同调用完成 retiring→retired）；未处置承诺非空时停留 retiring 并在
+         *     outstanding_commitments 返回清单。
+         */
+        post: operations["transitionAgentLifecycle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/identity/agents/{agent_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Agent 生命周期事件流（只读审计面）
+         * @description agent_events 流（migration v8）：created（含 v7 存量回填）与
+         *     status_changed 事件，seq 升序全量。投影 agents 表可由此重建。
+         */
+        get: operations["listIdentityAgentEvents"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2139,16 +2190,19 @@ export interface components {
             /** @description 思考强度（v1.48；仅 codex 有此面；空 = CLI 默认） */
             reasoning_effort?: string;
         };
-        /** @description 独立 Agent 身份（ADR-0017 / 0.5.0）——跨房间与部署位置的稳定主体；别名为旧 ID 的统一解析点。 */
+        /** @description 独立 Agent 身份（ADR-0017 / 0.5.0；生命周期状态 ADR-0018 / 0.5.1）——跨房间与部署位置的稳定主体；别名为旧 ID 的统一解析点。 */
         IdentityAgent: {
             /** @description ag_ 前缀稳定身份，生成即持久 */
             agent_id: string;
             /** @description 展示名（迁移来源 = adapter 家族名；未来可编辑） */
             display_name: string;
-            /** @description 来源 adapter 家族（codex | kimi | minimax | zcode | claude | …） */
+            /** @description 来源 adapter 家族（codex | kimi | minimax | zcode | claude | …；手动建可空） */
             adapter: string;
-            /** @description 0.5.0 恒 active；生命周期状态机随 0.5.1 */
-            status: string;
+            /**
+             * @description 生命周期状态机（ADR-0018）：active ↔ suspended；active|suspended → retiring → retired（retired 唯一终态）。active 不代表正在运行。
+             * @enum {string}
+             */
+            status: "active" | "suspended" | "retiring" | "retired";
             /** @description migration | manual */
             source: string;
             /** Format: date-time */
@@ -2170,6 +2224,47 @@ export interface components {
                 channel?: string;
                 enabled: boolean;
             }[];
+        };
+        /** @description 手动创建 Agent 身份请求体（ADR-0018 / 0.5.1；source=manual）。 */
+        ManualAgentRequest: {
+            /** @description 展示名（必填） */
+            display_name: string;
+            /** @description 可选 adapter 家族标注（空 = 无 harness 挂靠；仅展示用，不参与身份等价） */
+            adapter?: string;
+        };
+        /** @description 生命周期转移动作（ADR-0018 / 0.5.1）。 */
+        LifecycleTransitionRequest: {
+            /**
+             * @description suspend：active→suspended；resume：suspended→active；retire：active|suspended→retiring→（承诺门空）retired
+             * @enum {string}
+             */
+            action: "suspend" | "resume" | "retire";
+            /** @description 可选原因（记入 status_changed 事件 payload） */
+            reason?: string;
+        };
+        /** @description 生命周期转移结果；outstanding_commitments 仅 retire 且承诺门非空时非空（Agent 停留 retiring）。 */
+        LifecycleResult: {
+            agent: components["schemas"]["IdentityAgent"];
+            /** @description 未处置承诺清单（0.5.1 恒空——Mission/Binding/Goal 域随 0.5.2+/0.6 接入承诺门） */
+            outstanding_commitments: string[];
+        };
+        /** @description agent_events 流事件（migration v8；seq 升序即流序）。 */
+        AgentEvent: {
+            /**
+             * Format: int64
+             * @description 全表单调流序
+             */
+            seq: number;
+            agent_id: string;
+            /**
+             * @description created 含 v7 存量回填
+             * @enum {string}
+             */
+            event_type: "created" | "status_changed";
+            /** @description 事件体——created: {source, adapter, display_name}；status_changed: {from, to, reason} */
+            payload: Record<string, never>;
+            /** Format: date-time */
+            occurred_at: string;
         };
         ManualExecutableRequest: {
             adapter: string;
@@ -4332,6 +4427,35 @@ export interface operations {
             503: components["responses"]["HarnessUnavailable"];
         };
     };
+    createIdentityAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManualAgentRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityAgent"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            503: components["responses"]["HarnessUnavailable"];
+        };
+    };
     getIdentityAgent: {
         parameters: {
             query?: never;
@@ -4350,6 +4474,88 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IdentityAgent"];
+                };
+            };
+            /** @description 身份不存在（identity_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["HarnessUnavailable"];
+        };
+    };
+    transitionAgentLifecycle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LifecycleTransitionRequest"];
+            };
+        };
+        responses: {
+            /** @description 转移结果（含转移后身份与未处置承诺清单） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LifecycleResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            /** @description 身份不存在（identity_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 非法转移（invalid_transition——终态拒绝或当前态不匹配） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            415: components["responses"]["UnsupportedMediaType"];
+            503: components["responses"]["HarnessUnavailable"];
+        };
+    };
+    listIdentityAgentEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 事件列表（升序） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        events: components["schemas"]["AgentEvent"][];
+                    };
                 };
             };
             /** @description 身份不存在（identity_not_found） */

@@ -5,7 +5,7 @@
 // 分层规矩：房间讨论策略在房间内调（右侧信息面板）；本页子导航纯前端态（刷新回
 // 默认 Agent 区）。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, type BackupSummary, type Executable, type MonitorView, type SettingsDoc } from "../api/client";
+import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type BackupSummary, type Executable, type IdentityAgent, type MonitorView, type SettingsDoc } from "../api/client";
 import { AppLogo } from "../components/AppLogo";
 import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
 import { UpdateEditor } from "../components/UpdateEditor";
@@ -33,6 +33,10 @@ export function SettingsPage() {
   const [executables, setExecutables] = useState<Executable[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // 0.5.1 身份生命周期（ADR-0018）
+  const [identAgents, setIdentAgents] = useState<IdentityAgent[] | null>(null);
+  const [identMsg, setIdentMsg] = useState<string | null>(null);
+  const [identBusy, setIdentBusy] = useState<string | null>(null);
   const [form, setForm] = useState({ adapter: "", runtime: "native", distro: "", path: "", version: "", channel: "" });
   const [formMsg, setFormMsg] = useState<string | null>(null);
   // M4-0 数据与诊断区
@@ -306,6 +310,40 @@ export function SettingsPage() {
     void refreshExecutables();
   }, [refreshExecutables]);
 
+  // 0.5.1 身份生命周期（ADR-0018）：身份列表加载（读取触发注册表→身份表惰性
+  // 同步——与可执行项列表同口径）；转移后整表刷新。
+  const refreshIdentAgents = useCallback(async () => {
+    try {
+      const { agents } = await api.identityAgents();
+      setIdentAgents(agents);
+    } catch {
+      setIdentAgents(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshIdentAgents();
+  }, [refreshIdentAgents]);
+
+  const transitionAgent = async (id: string, action: AgentLifecycleAction) => {
+    if (action === "retire" && !window.confirm("退役为终态：该 Agent 不再参与后续委派（身份、历史与可执行项均保留）。确认退役？")) {
+      return;
+    }
+    setIdentBusy(`${id}:${action}`);
+    setIdentMsg(null);
+    try {
+      const res = await api.transitionAgent(id, action);
+      if (res.outstanding_commitments.length > 0) {
+        setIdentMsg(`退役暂缓——未处置承诺：${res.outstanding_commitments.join("；")}`);
+      }
+    } catch (e) {
+      setIdentMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
+    } finally {
+      setIdentBusy(null);
+      await refreshIdentAgents();
+    }
+  };
+
   // RFC-0016 外部云文档面：provider 状态加载（404 = 未装配）
   useEffect(() => {
     void refreshExtDocs();
@@ -445,6 +483,7 @@ export function SettingsPage() {
       <div className="min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-2xl flex-col gap-8 px-6 py-8">
           {section === "agent" && (
+            <>
             <section>
               <h2 className="mb-1 text-sm font-medium">Agent 实例</h2>
               <p className="mb-3 text-xs text-faint">
@@ -591,6 +630,100 @@ export function SettingsPage() {
                 <p className="mt-2 text-[11px] text-faint">登记时服务端会探测该路径（探测失败拒收）。</p>
               </details>
             </section>
+
+            <section className="mt-8">
+              <h2 className="mb-1 text-sm font-medium">Agent 身份与生命周期</h2>
+              <p className="mb-3 text-xs text-faint">
+                长期 Agent 的稳定身份（跨房间、跨部署位置，ADR-0017）。暂停 = 暂离后续委派；
+                退役 = 终态（身份与历史保留，可执行项照常）。每次转移记入事件流（ADR-0018）。
+              </p>
+              {identMsg && <p className="mb-2 text-xs text-danger">{identMsg}</p>}
+              {identAgents === null ? (
+                <p className="text-xs text-faint">加载中…</p>
+              ) : identAgents.length === 0 ? (
+                <p className="text-xs text-faint">尚无 Agent 身份——发现或手动登记可执行项后自动建立。</p>
+              ) : (
+                <ul className="divide-y divide-border rounded-xl border border-border">
+                  {identAgents.map((ag) => (
+                    <li key={ag.agent_id} className="flex flex-col gap-1 px-3 py-2.5">
+                      <div className="flex items-center gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-1.5 text-sm">
+                            <span className={`font-medium ${ag.status === "retired" ? "text-dim" : ""}`}>{ag.display_name}</span>
+                            {ag.adapter && <ExeBadge>{adapterLabel(ag.adapter)}</ExeBadge>}
+                            <ExeBadge tone={ag.status === "active" ? "ok" : ag.status === "retired" ? undefined : "warn"}>
+                              {agentStatusLabel(ag.status)}
+                            </ExeBadge>
+                            {ag.source === "manual" && <ExeBadge>手动建</ExeBadge>}
+                            <span
+                              className="font-mono text-[10px] text-faint"
+                              title={`稳定身份（ADR-0017）：${ag.agent_id}`}
+                            >
+                              {truncate(ag.agent_id, 16)}
+                            </span>
+                          </div>
+                          <p className="mt-0.5 text-[11px] text-faint">
+                            {ag.executables.length} 个可执行项挂靠 · 建立于 {absoluteTime(ag.created_at)}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          {ag.status === "active" && (
+                            <>
+                              <LifecycleBtn
+                                disabled={identBusy !== null}
+                                busy={identBusy === `${ag.agent_id}:suspend`}
+                                onClick={() => void transitionAgent(ag.agent_id, "suspend")}
+                              >
+                                暂停
+                              </LifecycleBtn>
+                              <LifecycleBtn
+                                danger
+                                disabled={identBusy !== null}
+                                busy={identBusy === `${ag.agent_id}:retire`}
+                                onClick={() => void transitionAgent(ag.agent_id, "retire")}
+                              >
+                                退役
+                              </LifecycleBtn>
+                            </>
+                          )}
+                          {ag.status === "suspended" && (
+                            <>
+                              <LifecycleBtn
+                                disabled={identBusy !== null}
+                                busy={identBusy === `${ag.agent_id}:resume`}
+                                onClick={() => void transitionAgent(ag.agent_id, "resume")}
+                              >
+                                恢复
+                              </LifecycleBtn>
+                              <LifecycleBtn
+                                danger
+                                disabled={identBusy !== null}
+                                busy={identBusy === `${ag.agent_id}:retire`}
+                                onClick={() => void transitionAgent(ag.agent_id, "retire")}
+                              >
+                                退役
+                              </LifecycleBtn>
+                            </>
+                          )}
+                          {ag.status === "retiring" && (
+                            <LifecycleBtn
+                              danger
+                              disabled={identBusy !== null}
+                              busy={identBusy === `${ag.agent_id}:retire`}
+                              onClick={() => void transitionAgent(ag.agent_id, "retire")}
+                            >
+                              重试退役
+                            </LifecycleBtn>
+                          )}
+                        </div>
+                      </div>
+                      <AgentEventsDetails agentID={ag.agent_id} />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+            </>
           )}
 
           {section === "automation" && (
@@ -1174,4 +1307,85 @@ function relativeTimeOf(iso: string): string {
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
   return `${Math.floor(diff / 86_400_000)} 天前`;
+}
+
+/** 生命周期状态徽标文案（ADR-0018 状态机）。 */
+function agentStatusLabel(status: string): string {
+  switch (status) {
+    case "active":
+      return "活跃";
+    case "suspended":
+      return "已暂停";
+    case "retiring":
+      return "退役中";
+    case "retired":
+      return "已退役";
+    default:
+      return status;
+  }
+}
+
+/** 生命周期动作按钮（暂停/恢复/退役）。 */
+function LifecycleBtn({
+  children,
+  onClick,
+  disabled,
+  busy,
+  danger,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  busy?: boolean;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded-lg px-2 py-1 text-xs transition-opacity hover:opacity-85 disabled:opacity-40 ${
+        danger ? "bg-surface-3 text-danger" : "bg-surface-3 text-text"
+      }`}
+    >
+      {busy ? "…" : children}
+    </button>
+  );
+}
+
+/** 生命周期事件流（懒加载：首次展开才拉取，ADR-0018 只读审计面）。 */
+function AgentEventsDetails({ agentID }: { agentID: string }) {
+  const [events, setEvents] = useState<AgentEvent[] | null>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open || events !== null) return;
+    void api
+      .identityAgentEvents(agentID)
+      .then(({ events: evs }) => setEvents(evs))
+      .catch(() => setEvents([]));
+  }, [open, events, agentID]);
+  return (
+    <details onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+      <summary className="cursor-pointer select-none text-[11px] text-faint">生命周期事件</summary>
+      {events === null ? (
+        <p className="mt-1 text-[11px] text-faint">加载中…</p>
+      ) : events.length === 0 ? (
+        <p className="mt-1 text-[11px] text-faint">暂无事件。</p>
+      ) : (
+        <ul className="mt-1 flex flex-col gap-0.5 font-mono text-[10px] text-faint">
+          {events.map((ev) => (
+            <li key={ev.seq}>
+              #{ev.seq} {absoluteTime(ev.occurred_at)} {eventSummary(ev)}
+            </li>
+          ))}
+        </ul>
+      )}
+    </details>
+  );
+}
+
+function eventSummary(ev: AgentEvent): string {
+  const p = (ev.payload ?? {}) as Record<string, string>;
+  if (ev.event_type === "created") return `created（来源 ${p.source ?? "?"}）`;
+  return `status_changed ${p.from ?? "?"} → ${p.to ?? "?"}${p.reason ? `（${p.reason}）` : ""}`;
 }

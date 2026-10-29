@@ -197,6 +197,29 @@ CREATE TABLE IF NOT EXISTS agent_aliases (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_aliases_agent ON agent_aliases(agent_id);
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (7, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+
+-- v8（RFC-0018 §3.2 / ADR-0018，0.5.1）：Agent 生命周期事件流（append-only）。
+-- agents 自 v8 起为投影——转移 = 单事务 [状态校验 → 更新投影 → 追加事件]，
+-- 事件流 ⊇ 全部历史，投影可由流重建。回填：v7 存量行按创建序（rowid）补
+-- created 事件（payload 对齐行值、occurred_at 取行内 created_at）；
+-- NOT EXISTS 守卫使回填幂等——新库空集、重开不重复。
+CREATE TABLE IF NOT EXISTS agent_events (
+  seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id    TEXT NOT NULL,
+  event_type  TEXT NOT NULL,
+  payload     TEXT NOT NULL,
+  occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_events_agent ON agent_events(agent_id, seq);
+INSERT INTO agent_events (agent_id, event_type, payload, occurred_at)
+SELECT a.agent_id, 'created',
+       json_object('source', a.source, 'adapter', a.adapter, 'display_name', a.display_name),
+       a.created_at
+  FROM agents a
+ WHERE NOT EXISTS (SELECT 1 FROM agent_events e
+                    WHERE e.agent_id = a.agent_id AND e.event_type = 'created')
+ ORDER BY a.rowid;
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (8, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 `
 
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
@@ -1681,27 +1704,58 @@ func (s *Store) ensureDocFTS(ctx context.Context) error {
 	return nil
 }
 
-// ---- Agent 身份域（RFC-0018 / ADR-0017，0.5.0；v7 表，端口实现）----
+// ---- Agent 身份域（RFC-0018 / ADR-0017，0.5.0；ADR-0018，0.5.1；端口实现）----
 
-// EnsureAgent 幂等建 Agent（按 agent_id；INSERT OR IGNORE——返回是否新建）。
+// appendAgentCreated 建 Agent 行的 created 事实落流（事务内调用）。
+func appendAgentCreated(ctx context.Context, tx *sql.Tx, a personalagent.Agent) error {
+	payload, err := json.Marshal(map[string]string{
+		"source": a.Source, "adapter": a.Adapter, "display_name": a.DisplayName,
+	})
+	if err != nil {
+		return fmt.Errorf("sqlite: created payload: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO agent_events (agent_id, event_type, payload, occurred_at) VALUES (?, 'created', ?, ?)`,
+		a.AgentID, string(payload), a.CreatedAt); err != nil {
+		return fmt.Errorf("sqlite: append created: %w", err)
+	}
+	return nil
+}
+
+// EnsureAgent 幂等建 Agent（按 agent_id）；新建时 created 事件同事务落库。
 func (s *Store) EnsureAgent(ctx context.Context, a personalagent.Agent) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("sqlite: ensure agent begin: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `
 INSERT OR IGNORE INTO agents (agent_id, display_name, adapter, status, source, created_at)
 VALUES (?, ?, ?, ?, ?, ?)`,
 		a.AgentID, a.DisplayName, a.Adapter, a.Status, a.Source, a.CreatedAt)
 	if err != nil {
+		_ = tx.Rollback()
 		return false, fmt.Errorf("sqlite: ensure agent: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
+		_ = tx.Rollback()
 		return false, fmt.Errorf("sqlite: ensure agent rows: %w", err)
+	}
+	if n > 0 {
+		if err := appendAgentCreated(ctx, tx, a); err != nil {
+			_ = tx.Rollback()
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("sqlite: ensure agent commit: %w", err)
 	}
 	return n > 0, nil
 }
 
-// EnsureAgentWithAlias 原子 get-or-create（审校 P1#1）：建 Agent 行与别名认领
-// 同一事务——别名已被占（含并发竞争）时回滚候选行并回读既有归属者；成功则
-// 两行同落。任一时点库内要么"整行落库"要么"什么都不留"，不存在孤立 Agent。
+// EnsureAgentWithAlias 原子 get-or-create（审校 P1#1）：建 Agent 行（含 created
+// 事件）与别名认领同一事务——别名已被占（含并发竞争）时回滚候选行并回读既有
+// 归属者；成功则三行同落。任一时点库内要么"整行落库"要么"什么都不留"。
 func (s *Store) EnsureAgentWithAlias(ctx context.Context, a personalagent.Agent, kind personalagent.AliasKind, value string) (string, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1719,12 +1773,20 @@ func (s *Store) EnsureAgentWithAlias(ctx context.Context, a personalagent.Agent,
 		_ = tx.Rollback()
 		return "", false, fmt.Errorf("sqlite: identity claim probe: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
+	res, err := tx.ExecContext(ctx, `
 INSERT OR IGNORE INTO agents (agent_id, display_name, adapter, status, source, created_at)
 VALUES (?, ?, ?, ?, ?, ?)`,
-		a.AgentID, a.DisplayName, a.Adapter, a.Status, a.Source, a.CreatedAt); err != nil {
+		a.AgentID, a.DisplayName, a.Adapter, a.Status, a.Source, a.CreatedAt)
+	if err != nil {
 		_ = tx.Rollback()
 		return "", false, fmt.Errorf("sqlite: identity claim agent: %w", err)
+	}
+	createdN, _ := res.RowsAffected()
+	if createdN > 0 { // 新建行才落 created 事实（同 agent_id 重放不重复记）
+		if err := appendAgentCreated(ctx, tx, a); err != nil {
+			_ = tx.Rollback()
+			return "", false, err
+		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := tx.ExecContext(ctx, `
@@ -1745,7 +1807,94 @@ INSERT INTO agent_aliases (alias_kind, alias_value, agent_id, created_at) VALUES
 	if err := tx.Commit(); err != nil {
 		return "", false, fmt.Errorf("sqlite: identity claim commit: %w", err)
 	}
-	return a.AgentID, true, nil
+	return a.AgentID, createdN > 0, nil
+}
+
+// AgentByID 单查 Agent 行。
+func (s *Store) AgentByID(ctx context.Context, agentID string) (personalagent.Agent, bool, error) {
+	var a personalagent.Agent
+	err := s.db.QueryRowContext(ctx,
+		`SELECT agent_id, display_name, adapter, status, source, created_at FROM agents WHERE agent_id = ?`, agentID).
+		Scan(&a.AgentID, &a.DisplayName, &a.Adapter, &a.Status, &a.Source, &a.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return personalagent.Agent{}, false, nil
+	}
+	if err != nil {
+		return personalagent.Agent{}, false, fmt.Errorf("sqlite: agent by id: %w", err)
+	}
+	return a, true, nil
+}
+
+// TransitionAgent 事务转移（ADR-0018 §2）：读状态（allowedFrom 校验）→ 更新
+// agents 投影 → 追加 status_changed 事件，同一事务；BEGIN IMMEDIATE 语义由
+// SQLite 写锁承担（个人版单进程并发写串行化）。行缺失 ErrAgentNotFound；
+// 状态不匹配 ok=false（未动投影未落事件）。
+func (s *Store) TransitionAgent(ctx context.Context, agentID string, allowedFrom []string, to, reason, occurredAt string) (string, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("sqlite: transition begin: %w", err)
+	}
+	var from string
+	err = tx.QueryRowContext(ctx, `SELECT status FROM agents WHERE agent_id = ?`, agentID).Scan(&from)
+	if errors.Is(err, sql.ErrNoRows) {
+		_ = tx.Rollback()
+		return "", false, personalagent.ErrAgentNotFound
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		return "", false, fmt.Errorf("sqlite: transition probe: %w", err)
+	}
+	allowed := false
+	for _, f := range allowedFrom {
+		if f == from {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		_ = tx.Rollback()
+		return "", false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE agents SET status = ? WHERE agent_id = ?`, to, agentID); err != nil {
+		_ = tx.Rollback()
+		return "", false, fmt.Errorf("sqlite: transition project: %w", err)
+	}
+	payload, err := json.Marshal(map[string]string{"from": from, "to": to, "reason": reason})
+	if err != nil {
+		_ = tx.Rollback()
+		return "", false, fmt.Errorf("sqlite: transition payload: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO agent_events (agent_id, event_type, payload, occurred_at) VALUES (?, 'status_changed', ?, ?)`,
+		agentID, string(payload), occurredAt); err != nil {
+		_ = tx.Rollback()
+		return "", false, fmt.Errorf("sqlite: transition event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", false, fmt.Errorf("sqlite: transition commit: %w", err)
+	}
+	return from, true, nil
+}
+
+// AgentEvents 某 Agent 的事件流（seq 升序）。
+func (s *Store) AgentEvents(ctx context.Context, agentID string) ([]personalagent.AgentEvent, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT seq, agent_id, event_type, payload, occurred_at FROM agent_events WHERE agent_id = ? ORDER BY seq`, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: agent events: %w", err)
+	}
+	defer rows.Close()
+	out := []personalagent.AgentEvent{}
+	for rows.Next() {
+		var ev personalagent.AgentEvent
+		var payload string
+		if err := rows.Scan(&ev.Seq, &ev.AgentID, &ev.EventType, &payload, &ev.OccurredAt); err != nil {
+			return nil, fmt.Errorf("sqlite: scan event: %w", err)
+		}
+		ev.Payload = json.RawMessage(payload)
+		out = append(out, ev)
+	}
+	return out, rows.Err()
 }
 
 // ListAgents 全量 Agent，按创建序（rowid = 首次同步的确定性顺序）。

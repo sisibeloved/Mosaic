@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.04 |
+| 版本 | v2.05 |
 | 日期 | 2026-10-29 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -177,6 +177,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.05 | 2026-10-29 | Mosaic 项目组 / ZCode | **0.5.1 开发（负责人指令："项目计划和设计补充了同步机制，关注下需求变更的内容和范围。还是设计和测试先行，开发0.5.1版本"）——Agent 生命周期状态机与事件流（ADR-0018）**。**需求变更核对**：v2.04 的同步机制变更（0.10 备份与多设备同步领域、对话优化顺移 0.11）不动 0.5–0.9 排期，0.5.1 范围 = 计划既定的 active/suspended/retiring/retired 状态机。**(1) 设计先行**：ADR-0018（状态机语义单源 + agent_events 事件流 + 承诺门端口 + 同步解耦三裁定）+ OpenAPI 契约冻结（三写读端点 + IdentityAgent.status 四值枚举，apigen/TS 双链重生成）。**(2) 实现**：SQLite migration v8（agent_events append-only 流；v7 存量开库幂等回填恰一条 created/Agent，重开不重复；agents 降为投影——转移 = 单事务[校验→投影→事件]，建行与 created 事件同事务）；Service suspend/resume/retire（retire 经 CommitmentChecker 承诺门，0.5.1 生产恒空即完，retiring 停留 + outstanding_commitments 返回留给 0.5.2+/0.6；retired 终态全拒、非法转移可见 409 不静默幂等）；同步只建不改（bot_id 重现不复活 retired/suspended，新 BotID 仍 active 出生）；写面 API 三端点过生产写门（Origin/CT/OwnerToken）；设置页"Agent 身份与生命周期"区（状态徽标 + 暂停/恢复/退役 + 事件懒加载明细）。**(3) 验证**：测试先行（UT 9 例 / SQLite IT 5 例含 v0.5.0 真旧库回填与 8 路并发恰一胜者 / 端点 3 例，先红后绿）；vet(it st) + -race 全量 + -tags it + -tags st + SPA tsc/build 绿；真机冒烟（真实 CLI 5 身份）全转移链 + 事件流 payload + 写门 401/403 + 重启退役不复活 ALL-PASS。CHANGELOG [Unreleased] 登记；定版与发布另行指令 |
 | v2.04 | 2026-10-29 | Mosaic 项目组 / Kimi | **按负责人裁定把同步机制纳入 1.0.0 前 Roadmap**：新增 **0.10 个人数据备份与多设备同步领域**；0.10.0–0.10.5 承接 RFC-0019 S1–S6，0.10.6–0.10.13 按单特性依次交付设备信任、增量交换、可恢复传输、自动同步与离线追赶、冲突收敛、删除传播、执行权防护及同步诊断。0.10.6 前必须另立并批准同步 RFC，不把 RFC-0019 的手动导入直接定时化。对话优化顺移至 **0.11**，仍为 1.0.0 前最后一个领域中版本；已发布 0.5.0 及 0.5–0.9 排期不变。 |
 | v2.02 | 2026-10-28 | Mosaic 项目组 / Codex | 登记 [RFC-0019：个人多设备全量加密备份、导入合并与进度反馈](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)（Draft）：按最新讨论明确全量导出、手动传输、用户自定口令、导入合并，补齐资源收集、进度窗口、冲突保留、中断恢复和容量预算。S1–S6 按单特性拆分，全部验收后才可称完整备份与合并；版本映射待裁定，不改变既有 0.7.5–0.7.7 的选择性 Agent Bundle 范围和已批准排期。 |
 | v2.03 | 2026-10-29 | Mosaic 项目组 / ZCode | **定版 v0.5.0（负责人指令："发布"）——0.5 领域线首发**。CHANGELOG [Unreleased]（Added 独立 Agent 身份注册表 + Fixed 审校四项与 CI 竞态附带项）定版 **[0.5.0] - 2026-10-29**，保留空 [Unreleased]；README 当前版本推进 v0.5.0、路线图 0.5 系列标注 0.5.0 已交付；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.5.0 + GitHub Release 发布说明与 Windows 产物（wails 按新版本字样重建）；CI 三平台绿基线（d6e5d56 已验，定版提交复验） |
