@@ -284,3 +284,133 @@ func TestSlotWriteGates(t *testing.T) {
 	}
 	get.Body.Close()
 }
+
+// TestSlotInstancesEndpoints 实例三端点：建（默认/显式标题 + 现势连接）、
+// 未知谱系 404、空标题 400、列表/详情/404、模板演进不回写实例标题。
+func TestSlotInstancesEndpoints(t *testing.T) {
+	ts := slotTestServer(t)
+
+	// 建谱系（供实例化）
+	resp := postSlot(t, ts.URL+"/v1/slots/specs", `{"slot_spec_id":"slot.duty","name":"值守","responsibility":"例行检查","deliverables":["日报"],"tools":{"required":["documents.read"],"optional":[]}}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("建谱系: %d", resp.StatusCode)
+	}
+
+	// 建实例（缺省标题）
+	resp = postSlot(t, ts.URL+"/v1/slots/instances", `{"slot_spec_id":"slot.duty"}`)
+	var inst struct {
+		SlotInstanceID     string `json:"slot_instance_id"`
+		SlotSpecID         string `json:"slot_spec_id"`
+		Scope              string `json:"scope"`
+		Title              string `json:"title"`
+		KnowledgeNamespace string `json:"knowledge_namespace"`
+		CreatedFromVersion int    `json:"created_from_version"`
+		Spec               struct {
+			Name          string `json:"name"`
+			LatestVersion int    `json:"latest_version"`
+		} `json:"spec"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&inst)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated || !strings.HasPrefix(inst.SlotInstanceID, "si_") ||
+		!strings.HasPrefix(inst.KnowledgeNamespace, "slotns_") {
+		t.Fatalf("建实例: status=%d %+v", resp.StatusCode, inst)
+	}
+	if inst.Title != "值守" || inst.CreatedFromVersion != 1 || inst.Scope != "workspace" ||
+		inst.Spec.Name != "值守" || inst.Spec.LatestVersion != 1 {
+		t.Fatalf("缺省形状: %+v", inst)
+	}
+
+	// 显式标题 + 未知谱系 404 + 空标题 400
+	resp = postSlot(t, ts.URL+"/v1/slots/instances", `{"slot_spec_id":"slot.duty","title":"夜间值守"}`)
+	var inst2 struct {
+		Title string `json:"title"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&inst2)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated || inst2.Title != "夜间值守" {
+		t.Fatalf("显式标题: status=%d %+v", resp.StatusCode, inst2)
+	}
+	resp = postSlot(t, ts.URL+"/v1/slots/instances", `{"slot_spec_id":"slot.missing"}`)
+	var errDoc struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&errDoc)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound || errDoc.Error.Code != "spec_not_found" {
+		t.Fatalf("未知谱系: status=%d code=%q", resp.StatusCode, errDoc.Error.Code)
+	}
+	resp = postSlot(t, ts.URL+"/v1/slots/instances", `{"slot_spec_id":"slot.duty","title":"  "}`)
+	_ = json.NewDecoder(resp.Body).Decode(&errDoc)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || errDoc.Error.Code != "invalid_instance" {
+		t.Fatalf("空标题: status=%d code=%q", resp.StatusCode, errDoc.Error.Code)
+	}
+
+	// 模板追加 v2（改名）：实例标题存档不变、现势连接演进
+	resp = postSlot(t, ts.URL+"/v1/slots/specs/slot.duty/versions", `{"name":"值守（修订）","responsibility":"例行","deliverables":["日报"]}`)
+	resp.Body.Close()
+	list, err := http.Get(ts.URL + "/v1/slots/instances")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var doc struct {
+		Instances []struct {
+			SlotInstanceID string `json:"slot_instance_id"`
+			Title          string `json:"title"`
+			Spec           struct {
+				Name          string `json:"name"`
+				LatestVersion int    `json:"latest_version"`
+			} `json:"spec"`
+		} `json:"instances"`
+	}
+	_ = json.NewDecoder(list.Body).Decode(&doc)
+	list.Body.Close()
+	if list.StatusCode != http.StatusOK || len(doc.Instances) != 2 {
+		t.Fatalf("列表: status=%d n=%d", list.StatusCode, len(doc.Instances))
+	}
+	first := doc.Instances[0]
+	if first.Title != "值守" || first.Spec.Name != "值守（修订）" || first.Spec.LatestVersion != 2 {
+		t.Fatalf("存档标题漂移或现势未演进: %+v", first)
+	}
+
+	// 详情 / 404
+	one, _ := http.Get(ts.URL + "/v1/slots/instances/" + inst.SlotInstanceID)
+	one.Body.Close()
+	if one.StatusCode != http.StatusOK {
+		t.Fatalf("详情: %d", one.StatusCode)
+	}
+	miss, _ := http.Get(ts.URL + "/v1/slots/instances/si_missing")
+	_ = json.NewDecoder(miss.Body).Decode(&errDoc)
+	miss.Body.Close()
+	if miss.StatusCode != http.StatusNotFound || errDoc.Error.Code != "instance_not_found" {
+		t.Fatalf("详情404: status=%d code=%q", miss.StatusCode, errDoc.Error.Code)
+	}
+
+	// 写门：跨源 403 / 非 JSON 415（读面无门）
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/slots/instances", strings.NewReader(`{"slot_spec_id":"slot.duty"}`))
+	req.Header.Set("Origin", "http://evil.example")
+	req.Header.Set("Content-Type", "application/json")
+	gate, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("跨源: %v", err)
+	}
+	_ = json.NewDecoder(gate.Body).Decode(&errDoc)
+	gate.Body.Close()
+	if gate.StatusCode != http.StatusForbidden || errDoc.Error.Code != "origin_rejected" {
+		t.Fatalf("跨源: status=%d code=%q", gate.StatusCode, errDoc.Error.Code)
+	}
+	req2, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/slots/instances", strings.NewReader("x"))
+	req2.Header.Set("Content-Type", "text/plain")
+	gate2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("文本: %v", err)
+	}
+	gate2.Body.Close()
+	if gate2.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("文本类型: status=%d", gate2.StatusCode)
+	}
+}

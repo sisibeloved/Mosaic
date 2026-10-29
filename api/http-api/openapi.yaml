@@ -1687,6 +1687,89 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /v1/slots/instances:
+    get:
+      operationId: listSlotInstances
+      summary: 职责实例列表（0.5.3 / ADR-0020）
+      description: |
+        SlotInstance 是某作用域内实际承担的一份具体职责：同一模板可实例化
+        多份，换人后实例保留。视图携带模板现势信息（spec.name/latest_version
+        现算）；实例自身字段（标题等）为创建时存档，不随模板演进回写。
+      responses:
+        "200":
+          description: 实例列表（创建序）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [instances]
+                properties:
+                  instances:
+                    type: array
+                    items: { $ref: "#/components/schemas/SlotInstanceView" }
+        "503":
+          description: 职责域未装配（slot_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      operationId: createSlotInstance
+      summary: 实例化职责（si_ 生成式 ID + slotns_ 知识命名空间）
+      description: |
+        引用模板谱系（不固定版本——Binding 才固定）；谱系未知 404
+        spec_not_found。knowledge_namespace 全局唯一、终身稳定、永不重派——
+        职责知识（0.7 分域记忆）挂该命名空间，不挂任职者私有库。
+      security: [{ OwnerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SlotInstanceCreate" }
+      responses:
+        "201":
+          description: 已实例化
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SlotInstanceView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: 模板谱系不存在（spec_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: 职责域未装配（slot_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/slots/instances/{slot_instance_id}:
+    get:
+      operationId: getSlotInstance
+      summary: 职责实例详情
+      parameters:
+        - name: slot_instance_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^si_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 实例详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SlotInstanceView" }
+        "404":
+          description: 实例不存在（instance_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: 职责域未装配（slot_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/harness/executables:
     get:
       operationId: listHarnessExecutables
@@ -3357,6 +3440,35 @@ components:
         version_count: { type: integer, minimum: 1 }
         created_at: { type: string, format: date-time, description: 首版创建时间 }
         updated_at: { type: string, format: date-time, description: 最新版本创建时间 }
+    SlotInstanceCreate:
+      type: object
+      required: [slot_spec_id]
+      additionalProperties: false
+      description: 实例化请求；title 缺省取模板最新版名称（创建时存档）。
+      properties:
+        slot_spec_id: { type: string, pattern: "^slot\\.[a-z0-9][a-z0-9._-]{0,62}$" }
+        title: { type: string, minLength: 1, maxLength: 64, description: 展示标题（可选） }
+    SlotInstanceView:
+      type: object
+      required: [slot_instance_id, slot_spec_id, scope, title, knowledge_namespace, created_from_version, created_at, spec]
+      description: |
+        职责实例（ADR-0020 / 0.5.3）。spec 为模板现势连接（现算）；实例自身
+        字段为创建时存档——模板后续演进不回写。
+      properties:
+        slot_instance_id: { type: string, description: "si_ 前缀生成式实例 ID" }
+        slot_spec_id: { type: string }
+        scope: { type: string, enum: [workspace], description: 作用域（goal/mission 随 0.6 扩展） }
+        title: { type: string, description: 展示标题（缺省 = 创建时模板名称存档） }
+        knowledge_namespace: { type: string, description: "slotns_ 前缀职责知识命名空间——全局唯一、终身稳定（0.7 MemoryItem.namespace 消费）" }
+        created_from_version: { type: integer, minimum: 1, description: 实例化时模板最新版本（审计事实，非钉住） }
+        created_at: { type: string, format: date-time }
+        spec:
+          type: object
+          required: [name, latest_version]
+          description: 模板现势（现算连接，随模板演进变化）
+          properties:
+            name: { type: string, description: 模板当前最新版名称 }
+            latest_version: { type: integer, minimum: 1 }
     ManualExecutableRequest:
       type: object
       required: [adapter, runtime, path]

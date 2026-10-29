@@ -5,7 +5,7 @@
 // 分层规矩：房间讨论策略在房间内调（右侧信息面板）；本页子导航纯前端态（刷新回
 // 默认 Agent 区）。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type BackupSummary, type Executable, type IdentityAgent, type MonitorView, type SettingsDoc, type SlotSpecContent, type SlotSpecSummary, type SlotSpecView } from "../api/client";
+import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type BackupSummary, type Executable, type IdentityAgent, type MonitorView, type SettingsDoc, type SlotSpecContent, type SlotSpecSummary, type SlotSpecView, type SlotInstanceView } from "../api/client";
 import { AppLogo } from "../components/AppLogo";
 import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
 import { UpdateEditor } from "../components/UpdateEditor";
@@ -56,6 +56,11 @@ export function SettingsPage() {
   // 修订加载请求序号（审校 P2#6）：新建/取消/切换修订使在途响应失效，不覆盖草稿
   const reviseSeq = useRef(0);
   const [slotVersionsRev, setSlotVersionsRev] = useState(0);
+  // 0.5.3 职责实例（ADR-0020）
+  const [slotInstances, setSlotInstances] = useState<SlotInstanceView[] | null>(null);
+  const instSeq = useRef(0);
+  const [instFormOpen, setInstFormOpen] = useState(false);
+  const [instForm, setInstForm] = useState({ specID: "", title: "" });
   const [form, setForm] = useState({ adapter: "", runtime: "native", distro: "", path: "", version: "", channel: "" });
   const [formMsg, setFormMsg] = useState<string | null>(null);
   // M4-0 数据与诊断区
@@ -467,6 +472,42 @@ export function SettingsPage() {
       setSlotFormOpen(true);
     } catch (e) {
       if (reviseSeq.current === cur) setSlotMsg(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+
+  // 0.5.3 职责实例（ADR-0020）：列表加载（请求序号拒旧响应）与实例化。
+  const refreshSlotInstances = useCallback(async () => {
+    const seq = ++instSeq.current;
+    try {
+      const { instances } = await api.listSlotInstances();
+      if (instSeq.current !== seq) return;
+      setSlotInstances(instances);
+    } catch {
+      if (instSeq.current === seq) setSlotInstances(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshSlotInstances();
+  }, [refreshSlotInstances]);
+
+  const submitInstance = async () => {
+    setSlotBusy(true);
+    setSlotMsg(null);
+    try {
+      const inst = await api.createSlotInstance({
+        slot_spec_id: instForm.specID,
+        ...(instForm.title.trim() ? { title: instForm.title.trim() } : {}),
+      });
+      setSlotMsg(`已实例化 ${inst.title}（${inst.slot_instance_id}）`);
+      setInstFormOpen(false);
+      setInstForm({ specID: "", title: "" });
+      await refreshSlotInstances();
+    } catch (e) {
+      setSlotMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
+    } finally {
+      setSlotBusy(false);
     }
   };
 
@@ -1000,6 +1041,82 @@ export function SettingsPage() {
                         </button>
                       </div>
                       <SlotVersionsDetails slotSpecID={spec.slot_spec_id} rev={slotVersionsRev} />
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <h3 className="mb-1 mt-6 text-sm font-medium">职责实例</h3>
+              <p className="mb-3 text-xs text-faint">
+                某作用域内实际承担的一份具体职责（ADR-0020）：同一模板可实例化多份，换人后实例保留
+                （任职随 0.5.4）。每个实例有独立的知识命名空间（slotns_）——职责知识挂实例，不挂任职者。
+              </p>
+              <div className="mb-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInstForm({ specID: slotSpecs?.[0]?.slot_spec_id ?? "", title: "" });
+                    setInstFormOpen((o) => !o);
+                    setSlotMsg(null);
+                  }}
+                  className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast transition-opacity hover:opacity-90"
+                >
+                  {instFormOpen ? "收起" : "实例化职责"}
+                </button>
+              </div>
+              {instFormOpen && (
+                <div className="mb-4 flex flex-wrap items-end gap-2 rounded-xl border border-border p-3">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-faint">模板</span>
+                    <select
+                      value={instForm.specID}
+                      onChange={(e) => setInstForm({ ...instForm, specID: e.target.value })}
+                      className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm outline-none focus:border-accent"
+                    >
+                      {(slotSpecs ?? []).map((s) => (
+                        <option key={s.slot_spec_id} value={s.slot_spec_id}>
+                          {s.name}（{s.slot_spec_id}）
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex flex-1 flex-col gap-1">
+                    <span className="text-faint">标题（可选，缺省取模板名）</span>
+                    <input
+                      value={instForm.title}
+                      onChange={(e) => setInstForm({ ...instForm, title: e.target.value })}
+                      className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm outline-none focus:border-accent"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    disabled={slotBusy || !instForm.specID}
+                    onClick={() => void submitInstance()}
+                    className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast transition-opacity hover:opacity-90 disabled:opacity-40"
+                  >
+                    {slotBusy ? "提交中…" : "创建实例"}
+                  </button>
+                </div>
+              )}
+              {slotInstances === null ? (
+                <p className="text-xs text-faint">加载中…</p>
+              ) : slotInstances.length === 0 ? (
+                <p className="text-xs text-faint">尚无职责实例——实例化后供 0.5.4 任职引用。</p>
+              ) : (
+                <ul className="divide-y divide-border rounded-xl border border-border">
+                  {slotInstances.map((inst) => (
+                    <li key={inst.slot_instance_id} className="flex flex-col gap-1 px-3 py-2.5">
+                      <div className="flex flex-wrap items-center gap-1.5 text-sm">
+                        <span className="font-medium">{inst.title}</span>
+                        <ExeBadge>{inst.spec.name} v{inst.spec.latest_version}</ExeBadge>
+                        <ExeBadge>自 v{inst.created_from_version} 实例化</ExeBadge>
+                      </div>
+                      <p
+                        className="truncate font-mono text-[11px] text-faint"
+                        title={`知识命名空间（职责知识挂此，不挂任职者）：${inst.knowledge_namespace}\n实例 ID：${inst.slot_instance_id}`}
+                      >
+                        {inst.knowledge_namespace} · {absoluteTime(inst.created_at)}
+                      </p>
                     </li>
                   ))}
                 </ul>

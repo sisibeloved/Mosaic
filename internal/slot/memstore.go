@@ -2,14 +2,16 @@ package slot
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
 // MemStore 职责模板内存实现（UT/端点测试件；语义与 SQLite 实现一致：
 // 版本不可变、追加互斥取号、创建序摘要）。
 type MemStore struct {
-	mu    sync.Mutex
-	specs []SlotSpec // 创建序（首版插入序）
+	mu        sync.Mutex
+	specs     []SlotSpec     // 创建序（首版插入序）
+	instances []SlotInstance // 创建序
 }
 
 func NewMemStore() *MemStore { return &MemStore{} }
@@ -98,4 +100,54 @@ func (m *MemStore) Versions(_ context.Context, slotSpecID string) ([]SlotSpec, b
 	}
 	// 插入序天然升序（版本号单调追加）
 	return out, out != nil, nil
+}
+
+// ---- SlotInstance（ADR-0020，0.5.3；MemStore 实现）----
+
+func (m *MemStore) CreateInstance(_ context.Context, inst SlotInstance) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, ex := range m.specs {
+		if ex.SlotSpecID == inst.SlotSpecID {
+			// 谱系存在（服务层已校验；此处兜底）——落实例并校命名空间唯一
+			for _, in := range m.instances {
+				if in.KnowledgeNamespace == inst.KnowledgeNamespace {
+					return fmt.Errorf("slot: 命名空间唯一约束（%s）", inst.KnowledgeNamespace)
+				}
+			}
+			m.instances = append(m.instances, inst)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (m *MemStore) ListInstances(_ context.Context) ([]SlotInstance, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]SlotInstance(nil), m.instances...), nil
+}
+
+func (m *MemStore) InstanceByID(_ context.Context, slotInstanceID string) (SlotInstance, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, in := range m.instances {
+		if in.SlotInstanceID == slotInstanceID {
+			return in, true, nil
+		}
+	}
+	return SlotInstance{}, false, nil
+}
+
+func (m *MemStore) LatestByLineage(_ context.Context) (map[string]InstanceSpecNow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[string]InstanceSpecNow{}
+	for _, ex := range m.specs {
+		now, ok := out[ex.SlotSpecID]
+		if !ok || ex.Version > now.LatestVersion {
+			out[ex.SlotSpecID] = InstanceSpecNow{Name: ex.Name, LatestVersion: ex.Version}
+		}
+	}
+	return out, nil
 }

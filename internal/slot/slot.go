@@ -7,10 +7,14 @@ package slot
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -101,12 +105,22 @@ type Store interface {
 	Latest(ctx context.Context, slotSpecID string) (SlotSpec, bool, error)
 	// Versions 全版本升序；谱系未知 ok=false。
 	Versions(ctx context.Context, slotSpecID string) ([]SlotSpec, bool, error)
+	// CreateInstance 建职责实例（knowledge_namespace 唯一约束兜底生成器碰撞）。
+	CreateInstance(ctx context.Context, inst SlotInstance) error
+	// ListInstances 实例全量（创建序）。
+	ListInstances(ctx context.Context) ([]SlotInstance, error)
+	// InstanceByID 单查实例；未知 ok=false。
+	InstanceByID(ctx context.Context, slotInstanceID string) (SlotInstance, bool, error)
+	// LatestByLineage 各谱系最新版聚合（实例列表的现势连接单源）。
+	LatestByLineage(ctx context.Context) (map[string]InstanceSpecNow, error)
 }
 
 // Service 职责模板服务：校验单源 + 版本化存取。
 type Service struct {
-	store Store
-	now   func() string
+	store         Store
+	now           func() string
+	newInstanceID func() string
+	newNamespace  func() string
 }
 
 // Option 装配选项（测试注入确定性时钟）。
@@ -117,12 +131,23 @@ func WithNow(f func() string) Option { return func(s *Service) { s.now = f } }
 
 // New 构造服务。
 func New(store Store, opts ...Option) *Service {
-	s := &Service{store: store, now: func() string { return nowUTC() }}
+	s := &Service{
+		store:         store,
+		now:           func() string { return nowUTC() },
+		newInstanceID: newInstanceID,
+		newNamespace:  newNamespace,
+	}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
 }
+
+// WithNewInstanceID 注入实例 ID 生成器（缺省：si_ + 时间有序 + 随机后缀）。
+func WithNewInstanceID(f func() string) Option { return func(s *Service) { s.newInstanceID = f } }
+
+// WithNewNamespace 注入知识命名空间生成器（缺省：slotns_ + 时间有序 + 随机）。
+func WithNewNamespace(f func() string) Option { return func(s *Service) { s.newNamespace = f } }
 
 // Create 建谱系（首版 version=1）。
 func (s *Service) Create(ctx context.Context, slotSpecID string, c SpecContent) (SlotSpec, error) {
@@ -308,4 +333,114 @@ func fillNames(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+// ---- SlotInstance 职责实例（RFC-0018 §3.1/§5.2 / ADR-0020，0.5.3）----
+
+// ErrInvalidInstance 实例参数不合法（标题校验）。
+var ErrInvalidInstance = errors.New("slot: 实例参数不合法")
+
+// SlotInstance 职责实例行：某作用域内实际承担的一份具体职责。
+// 引用模板谱系不固定版本（Binding 才固定）；实例跨任职保留（§3.1）。
+type SlotInstance struct {
+	SlotInstanceID     string `json:"slot_instance_id"`
+	SlotSpecID         string `json:"slot_spec_id"`
+	Scope              string `json:"scope"` // workspace（goal/mission 随 0.6）
+	Title              string `json:"title"` // 缺省 = 实例化时模板最新名存档
+	KnowledgeNamespace string `json:"knowledge_namespace"`
+	CreatedFromVersion int    `json:"created_from_version"` // 审计事实（非钉住）
+	CreatedAt          string `json:"created_at"`
+}
+
+// InstanceSpecNow 模板现势连接（现算——随模板演进；实例自身字段存档不受影响）。
+type InstanceSpecNow struct {
+	Name          string `json:"name"`
+	LatestVersion int    `json:"latest_version"`
+}
+
+// SlotInstanceView 实例视图（schema: SlotInstanceView）。
+type SlotInstanceView struct {
+	SlotInstance
+	Spec InstanceSpecNow `json:"spec"`
+}
+
+// newInstanceID 缺省实例 ID：si_ + 时间有序毫秒（36 进制）+ 随机后缀（ag_ 同族）。
+func newInstanceID() string {
+	var b [8]byte
+	_, _ = crand.Read(b[:])
+	return "si_" + strconv.FormatInt(time.Now().UnixMilli(), 36) + hex.EncodeToString(b[:])
+}
+
+// newNamespace 缺省知识命名空间：slotns_ + 时间有序 + 随机——全局唯一、
+// 终身稳定、永不重派（生成器碰撞由库级 UNIQUE 约束兜底）。
+func newNamespace() string {
+	var b [8]byte
+	_, _ = crand.Read(b[:])
+	return "slotns_" + strconv.FormatInt(time.Now().UnixMilli(), 36) + hex.EncodeToString(b[:])
+}
+
+// CreateInstance 实例化职责：谱系存在性校验 → 生成实例 ID 与知识命名空间；
+// 标题缺省取模板最新版名称存档（模板后续演进不回写）。
+func (s *Service) CreateInstance(ctx context.Context, slotSpecID, title string) (SlotInstanceView, error) {
+	// 显式提供但空白/超长 → 无效（"" = 未提供，走缺省——两态可区分）
+	if title != "" {
+		title = strings.TrimSpace(title)
+		if title == "" || utf8.RuneCountInString(title) > 64 {
+			return SlotInstanceView{}, fmt.Errorf("%w: title 须 1–64 字", ErrInvalidInstance)
+		}
+	}
+	latest, ok, err := s.store.Latest(ctx, slotSpecID)
+	if err != nil {
+		return SlotInstanceView{}, err
+	}
+	if !ok {
+		return SlotInstanceView{}, ErrNotFound
+	}
+	if title == "" {
+		title = latest.Name // 缺省 = 实例化时模板最新名存档
+	}
+	inst := SlotInstance{
+		SlotInstanceID:     s.newInstanceID(),
+		SlotSpecID:         slotSpecID,
+		Scope:              "workspace",
+		Title:              title,
+		KnowledgeNamespace: s.newNamespace(),
+		CreatedFromVersion: latest.Version,
+		CreatedAt:          s.now(),
+	}
+	if err := s.store.CreateInstance(ctx, inst); err != nil {
+		return SlotInstanceView{}, fmt.Errorf("slot: 建实例: %w", err)
+	}
+	return SlotInstanceView{SlotInstance: inst, Spec: InstanceSpecNow{Name: latest.Name, LatestVersion: latest.Version}}, nil
+}
+
+// ListInstances 实例列表（创建序），视图携带模板现势连接。
+func (s *Service) ListInstances(ctx context.Context) ([]SlotInstanceView, error) {
+	specs, err := s.store.LatestByLineage(ctx)
+	if err != nil {
+		return nil, err
+	}
+	instances, err := s.store.ListInstances(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SlotInstanceView, 0, len(instances))
+	for _, inst := range instances {
+		now := specs[inst.SlotSpecID] // 谱系被外部删除的病态场景留零值——不阻塞读面
+		out = append(out, SlotInstanceView{SlotInstance: inst, Spec: now})
+	}
+	return out, nil
+}
+
+// GetInstance 单查实例视图；未知 ok=false。
+func (s *Service) GetInstance(ctx context.Context, slotInstanceID string) (SlotInstanceView, bool, error) {
+	inst, ok, err := s.store.InstanceByID(ctx, slotInstanceID)
+	if err != nil || !ok {
+		return SlotInstanceView{}, false, err
+	}
+	var now InstanceSpecNow
+	if latest, ok, err := s.store.Latest(ctx, inst.SlotSpecID); err == nil && ok {
+		now = InstanceSpecNow{Name: latest.Name, LatestVersion: latest.Version}
+	}
+	return SlotInstanceView{SlotInstance: inst, Spec: now}, true, nil
 }

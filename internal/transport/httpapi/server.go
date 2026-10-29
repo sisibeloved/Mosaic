@@ -1367,3 +1367,81 @@ func capsOf(cl *apigen.CapabilityList) *slot.CapabilityList {
 	out.Optional = append(out.Optional, cl.Optional...)
 	return out
 }
+
+// ---- 职责实例面（RFC-0018 §3.1/§5.2 / ADR-0020，0.5.3）----
+
+// ListSlotInstances 实例列表（创建序，模板现势连接）。
+func (s *server) ListSlotInstances(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	instances, err := s.deps.Slots.ListInstances(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "slot_read_failed", err.Error())
+		return
+	}
+	if instances == nil {
+		instances = []slot.SlotInstanceView{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"instances": instances})
+}
+
+// CreateSlotInstance 实例化职责（si_ ID + slotns_ 命名空间）；谱系未知 404。
+func (s *server) CreateSlotInstance(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.SlotInstanceCreate
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	title := ""
+	if req.Title != nil {
+		title = *req.Title
+	}
+	inst, err := s.deps.Slots.CreateInstance(r.Context(), req.SlotSpecId, title)
+	if err != nil {
+		switch {
+		case errors.Is(err, slot.ErrInvalidInstance):
+			writeError(w, http.StatusBadRequest, "invalid_instance", err.Error())
+		case errors.Is(err, slot.ErrNotFound):
+			writeError(w, http.StatusNotFound, "spec_not_found", "职责模板谱系不存在")
+		default:
+			s.writeDomainError(w, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusCreated, inst)
+}
+
+// GetSlotInstance 实例详情 / 404。
+func (s *server) GetSlotInstance(w http.ResponseWriter, r *http.Request, slotInstanceID string) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	inst, ok, err := s.deps.Slots.GetInstance(r.Context(), slotInstanceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "slot_read_failed", err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "instance_not_found", "职责实例不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, inst)
+}

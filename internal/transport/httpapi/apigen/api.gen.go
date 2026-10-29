@@ -1059,6 +1059,21 @@ func (e SheetTransferUpdatePreviewDirection) Valid() bool {
 	}
 }
 
+// Defines values for SlotInstanceViewScope.
+const (
+	Workspace SlotInstanceViewScope = "workspace"
+)
+
+// Valid indicates whether the value is a known member of the SlotInstanceViewScope enum.
+func (e SlotInstanceViewScope) Valid() bool {
+	switch e {
+	case Workspace:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SnapshotThreadsState.
 const (
 	SnapshotThreadsStateActive SnapshotThreadsState = "active"
@@ -2665,6 +2680,47 @@ type SkillRef struct {
 	Version int    `json:"version"`
 }
 
+// SlotInstanceCreate 实例化请求；title 缺省取模板最新版名称（创建时存档）。
+type SlotInstanceCreate struct {
+	SlotSpecId string `json:"slot_spec_id"`
+
+	// Title 展示标题（可选）
+	Title *string `json:"title,omitempty"`
+}
+
+// SlotInstanceView 职责实例（ADR-0020 / 0.5.3）。spec 为模板现势连接（现算）；实例自身
+// 字段为创建时存档——模板后续演进不回写。
+type SlotInstanceView struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// CreatedFromVersion 实例化时模板最新版本（审计事实，非钉住）
+	CreatedFromVersion int `json:"created_from_version"`
+
+	// KnowledgeNamespace slotns_ 前缀职责知识命名空间——全局唯一、终身稳定（0.7 MemoryItem.namespace 消费）
+	KnowledgeNamespace string `json:"knowledge_namespace"`
+
+	// Scope 作用域（goal/mission 随 0.6 扩展）
+	Scope SlotInstanceViewScope `json:"scope"`
+
+	// SlotInstanceId si_ 前缀生成式实例 ID
+	SlotInstanceId string `json:"slot_instance_id"`
+	SlotSpecId     string `json:"slot_spec_id"`
+
+	// Spec 模板现势（现算连接，随模板演进变化）
+	Spec struct {
+		LatestVersion int `json:"latest_version"`
+
+		// Name 模板当前最新版名称
+		Name string `json:"name"`
+	} `json:"spec"`
+
+	// Title 展示标题（缺省 = 创建时模板名称存档）
+	Title string `json:"title"`
+}
+
+// SlotInstanceViewScope 作用域（goal/mission 随 0.6 扩展）
+type SlotInstanceViewScope string
+
 // SlotSpecContent SlotSpec 内容（RFC-0018 §5.1 正式定形，ADR-0019 / 0.5.2）。必填：名称、
 // 职责陈述、交付规范；其余可选——缺省 delegation = 不允许委派。
 type SlotSpecContent struct {
@@ -3117,6 +3173,9 @@ type UploadRoomAttachmentMultipartRequestBody UploadRoomAttachmentMultipartBody
 // SubmitRoomCommandJSONRequestBody defines body for SubmitRoomCommand for application/json ContentType.
 type SubmitRoomCommandJSONRequestBody = RoomCommand
 
+// CreateSlotInstanceJSONRequestBody defines body for CreateSlotInstance for application/json ContentType.
+type CreateSlotInstanceJSONRequestBody = SlotInstanceCreate
+
 // CreateSlotSpecJSONRequestBody defines body for CreateSlotSpec for application/json ContentType.
 type CreateSlotSpecJSONRequestBody = SlotSpecCreate
 
@@ -3314,6 +3373,15 @@ type ServerInterface interface {
 	// GetRoomSnapshot 快照（版本 + 水位 + 投影/算法版本 + Timeline 投影 + 房间名/参与者视图）
 	// (GET /v1/rooms/{room_id}/snapshot)
 	GetRoomSnapshot(w http.ResponseWriter, r *http.Request, roomId RoomID)
+	// ListSlotInstances 职责实例列表（0.5.3 / ADR-0020）
+	// (GET /v1/slots/instances)
+	ListSlotInstances(w http.ResponseWriter, r *http.Request)
+	// CreateSlotInstance 实例化职责（si_ 生成式 ID + slotns_ 知识命名空间）
+	// (POST /v1/slots/instances)
+	CreateSlotInstance(w http.ResponseWriter, r *http.Request)
+	// GetSlotInstance 职责实例详情
+	// (GET /v1/slots/instances/{slot_instance_id})
+	GetSlotInstance(w http.ResponseWriter, r *http.Request, slotInstanceId string)
 	// ListSlotSpecs 职责模板谱系列表（0.5.2 / ADR-0019）
 	// (GET /v1/slots/specs)
 	ListSlotSpecs(w http.ResponseWriter, r *http.Request)
@@ -4941,6 +5009,60 @@ func (siw *ServerInterfaceWrapper) GetRoomSnapshot(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// ListSlotInstances operation middleware
+func (siw *ServerInterfaceWrapper) ListSlotInstances(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSlotInstances(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateSlotInstance operation middleware
+func (siw *ServerInterfaceWrapper) CreateSlotInstance(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateSlotInstance(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSlotInstance operation middleware
+func (siw *ServerInterfaceWrapper) GetSlotInstance(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "slot_instance_id" -------------
+	var slotInstanceId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "slot_instance_id", r.PathValue("slot_instance_id"), &slotInstanceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "slot_instance_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSlotInstance(w, r, slotInstanceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListSlotSpecs operation middleware
 func (siw *ServerInterfaceWrapper) ListSlotSpecs(w http.ResponseWriter, r *http.Request) {
 
@@ -5314,6 +5436,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/specs/{slot_spec_id}", wrapper.GetSlotSpecLatest)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/specs/{slot_spec_id}/versions", wrapper.ListSlotSpecVersions)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/slots/specs/{slot_spec_id}/versions", wrapper.AppendSlotSpecVersion)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/instances", wrapper.ListSlotInstances)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/slots/instances", wrapper.CreateSlotInstance)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/instances/{slot_instance_id}", wrapper.GetSlotInstance)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/enable", wrapper.EnableHarnessExecutable)

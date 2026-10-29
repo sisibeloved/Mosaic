@@ -229,12 +229,12 @@ func TestAgentIdentityLegacyUpgradeIT(t *testing.T) {
 		got[v] = c
 	}
 	rows.Close()
-	for _, v := range []int{1, 2, 3, 4, 5, 7, 8, 9} {
+	for _, v := range []int{1, 2, 3, 4, 5, 7, 8, 9, 10} {
 		if got[v] != 1 {
 			t.Fatalf("迁移 version=%d 登记数 %d（要 1）；全量 %v", v, got[v], got)
 		}
 	}
-	if len(got) != 8 {
+	if len(got) != 9 {
 		t.Fatalf("迁移登记集合异常: %v", got)
 	}
 	store.Close()

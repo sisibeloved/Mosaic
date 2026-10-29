@@ -22,6 +22,8 @@ export type SlotSpecContent = Schemas["SlotSpecContent"];
 export type SlotSpecCreate = Schemas["SlotSpecCreate"];
 export type SlotSpecView = Schemas["SlotSpecView"];
 export type SlotSpecSummary = Schemas["SlotSpecSummary"];
+export type SlotInstanceCreate = Schemas["SlotInstanceCreate"];
+export type SlotInstanceView = Schemas["SlotInstanceView"];
 export type TaskItem = Schemas["TaskItem"];
 export type SearchHit = Schemas["SearchHit"];
 export type RuntimeOptions = Schemas["RuntimeOptions"];
@@ -479,6 +481,17 @@ export const api = {
   /** 0.5.2 追加下一不可变版本。 */
   appendSlotSpecVersion(slotSpecID: string, req: SlotSpecContent): Promise<SlotSpecView> {
     return post<SlotSpecView>(`/v1/slots/specs/${encodeURIComponent(slotSpecID)}/versions`, req);
+  },
+  /** 0.5.3 职责实例列表（模板现势连接）。 */
+  listSlotInstances(): Promise<{ instances: SlotInstanceView[] }> {
+    return request<{ instances: SlotInstanceView[] }>("/v1/slots/instances");
+  },
+  /** 0.5.3 实例化职责（si_ ID + slotns_ 知识命名空间）。 */
+  createSlotInstance(req: SlotInstanceCreate): Promise<SlotInstanceView> {
+    return post<SlotInstanceView>("/v1/slots/instances", req);
+  },
+  getSlotInstance(slotInstanceID: string): Promise<SlotInstanceView> {
+    return request(`/v1/slots/instances/${encodeURIComponent(slotInstanceID)}`);
   },
   /** 0.5.1 生命周期转移（ADR-0018）：suspend/resume/retire（retire 经承诺门）。 */
   transitionAgent(agentID: string, action: AgentLifecycleAction, reason?: string): Promise<AgentLifecycleResult> {

@@ -1130,6 +1130,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/slots/instances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 职责实例列表（0.5.3 / ADR-0020）
+         * @description SlotInstance 是某作用域内实际承担的一份具体职责：同一模板可实例化
+         *     多份，换人后实例保留。视图携带模板现势信息（spec.name/latest_version
+         *     现算）；实例自身字段（标题等）为创建时存档，不随模板演进回写。
+         */
+        get: operations["listSlotInstances"];
+        put?: never;
+        /**
+         * 实例化职责（si_ 生成式 ID + slotns_ 知识命名空间）
+         * @description 引用模板谱系（不固定版本——Binding 才固定）；谱系未知 404
+         *     spec_not_found。knowledge_namespace 全局唯一、终身稳定、永不重派——
+         *     职责知识（0.7 分域记忆）挂该命名空间，不挂任职者私有库。
+         */
+        post: operations["createSlotInstance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/slots/instances/{slot_instance_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 职责实例详情 */
+        get: operations["getSlotInstance"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/harness/executables": {
         parameters: {
             query?: never;
@@ -2423,6 +2468,40 @@ export interface components {
              * @description 最新版本创建时间
              */
             updated_at: string;
+        };
+        /** @description 实例化请求；title 缺省取模板最新版名称（创建时存档）。 */
+        SlotInstanceCreate: {
+            slot_spec_id: string;
+            /** @description 展示标题（可选） */
+            title?: string;
+        };
+        /**
+         * @description 职责实例（ADR-0020 / 0.5.3）。spec 为模板现势连接（现算）；实例自身
+         *     字段为创建时存档——模板后续演进不回写。
+         */
+        SlotInstanceView: {
+            /** @description si_ 前缀生成式实例 ID */
+            slot_instance_id: string;
+            slot_spec_id: string;
+            /**
+             * @description 作用域（goal/mission 随 0.6 扩展）
+             * @enum {string}
+             */
+            scope: "workspace";
+            /** @description 展示标题（缺省 = 创建时模板名称存档） */
+            title: string;
+            /** @description slotns_ 前缀职责知识命名空间——全局唯一、终身稳定（0.7 MemoryItem.namespace 消费） */
+            knowledge_namespace: string;
+            /** @description 实例化时模板最新版本（审计事实，非钉住） */
+            created_from_version: number;
+            /** Format: date-time */
+            created_at: string;
+            /** @description 模板现势（现算连接，随模板演进变化） */
+            spec: {
+                /** @description 模板当前最新版名称 */
+                name: string;
+                latest_version: number;
+            };
         };
         ManualExecutableRequest: {
             adapter: string;
@@ -4924,6 +5003,123 @@ export interface operations {
             };
             413: components["responses"]["TooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listSlotInstances: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 实例列表（创建序） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        instances: components["schemas"]["SlotInstanceView"][];
+                    };
+                };
+            };
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createSlotInstance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlotInstanceCreate"];
+            };
+        };
+        responses: {
+            /** @description 已实例化 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlotInstanceView"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            /** @description 模板谱系不存在（spec_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getSlotInstance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_instance_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 实例详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlotInstanceView"];
+                };
+            };
+            /** @description 实例不存在（instance_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description 职责域未装配（slot_unavailable） */
             503: {
                 headers: {

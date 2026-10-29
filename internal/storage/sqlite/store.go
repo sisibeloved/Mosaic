@@ -237,6 +237,22 @@ CREATE TABLE IF NOT EXISTS slot_specs (
   PRIMARY KEY (slot_spec_id, version)
 );
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (9, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+
+-- v10（RFC-0018 §3.1/§5.2 / ADR-0020，0.5.3）：职责实例。slot_instances 为
+-- 某作用域内实际承担的一份具体职责：引用模板谱系不固定版本（Binding 才
+-- 固定，随 0.5.4）；knowledge_namespace 全局唯一、终身稳定、永不重派——
+-- 职责知识（0.7 分域记忆）挂该命名空间，不挂任职者私有库。实例无状态机
+-- （RFC §3.2 未定义），无 UPDATE/DELETE 路径。
+CREATE TABLE IF NOT EXISTS slot_instances (
+  slot_instance_id    TEXT PRIMARY KEY,
+  slot_spec_id        TEXT NOT NULL,
+  scope               TEXT NOT NULL DEFAULT 'workspace',
+  title               TEXT NOT NULL,
+  knowledge_namespace TEXT NOT NULL UNIQUE,
+  created_from_version INTEGER NOT NULL,
+  created_at          TEXT NOT NULL
+);
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (10, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 `
 
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
@@ -2227,4 +2243,80 @@ func (s *Store) Versions(ctx context.Context, slotSpecID string) ([]slot.SlotSpe
 		return nil, false, nil
 	}
 	return out, true, nil
+}
+
+// ---- 职责实例域（RFC-0018 §3.1/§5.2 / ADR-0020，0.5.3；v10 表，端口实现）----
+
+// CreateInstance 建职责实例（knowledge_namespace UNIQUE 兜底生成器碰撞）。
+func (s *Store) CreateInstance(ctx context.Context, inst slot.SlotInstance) error {
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO slot_instances (slot_instance_id, slot_spec_id, scope, title, knowledge_namespace, created_from_version, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			inst.SlotInstanceID, inst.SlotSpecID, inst.Scope, inst.Title,
+			inst.KnowledgeNamespace, inst.CreatedFromVersion, inst.CreatedAt); err != nil {
+			return fmt.Errorf("sqlite: create slot instance: %w", err)
+		}
+		return nil
+	})
+	return err
+}
+
+// ListInstances 实例全量（创建序）。
+func (s *Store) ListInstances(ctx context.Context) ([]slot.SlotInstance, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT slot_instance_id, slot_spec_id, scope, title, knowledge_namespace, created_from_version, created_at
+  FROM slot_instances ORDER BY rowid`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list slot instances: %w", err)
+	}
+	defer rows.Close()
+	out := []slot.SlotInstance{}
+	for rows.Next() {
+		var in slot.SlotInstance
+		if err := rows.Scan(&in.SlotInstanceID, &in.SlotSpecID, &in.Scope, &in.Title,
+			&in.KnowledgeNamespace, &in.CreatedFromVersion, &in.CreatedAt); err != nil {
+			return nil, fmt.Errorf("sqlite: scan slot instance: %w", err)
+		}
+		out = append(out, in)
+	}
+	return out, rows.Err()
+}
+
+// InstanceByID 单查实例；未知 ok=false。
+func (s *Store) InstanceByID(ctx context.Context, slotInstanceID string) (slot.SlotInstance, bool, error) {
+	var in slot.SlotInstance
+	err := s.db.QueryRowContext(ctx, `
+SELECT slot_instance_id, slot_spec_id, scope, title, knowledge_namespace, created_from_version, created_at
+  FROM slot_instances WHERE slot_instance_id = ?`, slotInstanceID).
+		Scan(&in.SlotInstanceID, &in.SlotSpecID, &in.Scope, &in.Title,
+			&in.KnowledgeNamespace, &in.CreatedFromVersion, &in.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return slot.SlotInstance{}, false, nil
+	}
+	if err != nil {
+		return slot.SlotInstance{}, false, fmt.Errorf("sqlite: slot instance by id: %w", err)
+	}
+	return in, true, nil
+}
+
+// LatestByLineage 各谱系最新版聚合（实例列表的现势连接单源）。
+func (s *Store) LatestByLineage(ctx context.Context) (map[string]slot.InstanceSpecNow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT slot_spec_id, name, version FROM slot_specs
+ WHERE version = (SELECT MAX(version) FROM slot_specs t WHERE t.slot_spec_id = slot_specs.slot_spec_id)`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: slot latest by lineage: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]slot.InstanceSpecNow{}
+	for rows.Next() {
+		var id, name string
+		var version int
+		if err := rows.Scan(&id, &name, &version); err != nil {
+			return nil, fmt.Errorf("sqlite: scan latest by lineage: %w", err)
+		}
+		out[id] = slot.InstanceSpecNow{Name: name, LatestVersion: version}
+	}
+	return out, rows.Err()
 }
