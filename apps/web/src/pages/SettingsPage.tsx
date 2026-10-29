@@ -1275,7 +1275,7 @@ export function SettingsPage() {
                 <div className="flex items-center gap-4 rounded-xl border border-border px-4 py-4">
                   <AppLogo size={40} />
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium">Mosaic v0.5.0</p>
+                    <p className="text-sm font-medium">Mosaic v0.5.1</p>
                     <p className="text-xs text-faint">多智能体讨论室 · 本地单用户</p>
                   </div>
                   <a
