@@ -167,3 +167,97 @@ func TestConcurrentCreateInstances(t *testing.T) {
 }
 
 func hasPrefix(s, p string) bool { return len(s) >= len(p) && s[:len(p)] == p }
+
+// failingLatestStore 故障注入件（审校 P2#2）：模板现势读取失败——服务必须
+// 传播，不得伪装成功详情。
+type failingLatestStore struct {
+	Store
+	failLatest    bool // Latest 报错
+	failByLineage bool // LatestByLineage 报错
+}
+
+func (f *failingLatestStore) Latest(ctx context.Context, id string) (SlotSpec, bool, error) {
+	if f.failLatest {
+		return SlotSpec{}, false, errInjected
+	}
+	return f.Store.Latest(ctx, id)
+}
+
+func (f *failingLatestStore) LatestByLineage(ctx context.Context) (map[string]InstanceSpecNow, error) {
+	if f.failByLineage {
+		return nil, errInjected
+	}
+	return f.Store.LatestByLineage(ctx)
+}
+
+var errInjected = errors.New("注入故障")
+
+// TestInstanceSpecReadFailurePropagates 现势读取失败传播（审校 P2#2）：
+// 详情与列表都不得吞错返回 200/空名。
+func TestInstanceSpecReadFailurePropagates(t *testing.T) {
+	mem := NewMemStore()
+	base := New(mem, WithNow(fixedNow))
+	ctx := context.Background()
+	mustSpec(t, base, "slot.fault")
+	inst, err := base.CreateInstance(ctx, "slot.fault", "")
+	if err != nil {
+		t.Fatalf("建实例: %v", err)
+	}
+
+	svc := New(&failingLatestStore{Store: mem, failLatest: true}, WithNow(fixedNow))
+	if _, _, err := svc.GetInstance(ctx, inst.SlotInstanceID); !errors.Is(err, errInjected) {
+		t.Fatalf("详情应传播注入错误, got %v", err)
+	}
+	svc = New(&failingLatestStore{Store: mem, failByLineage: true}, WithNow(fixedNow))
+	if _, err := svc.ListInstances(ctx); !errors.Is(err, errInjected) {
+		t.Fatalf("列表应传播注入错误, got %v", err)
+	}
+}
+
+// TestListInstanceVersionInvariant 列表现势不变量（审校 P2#1）：latest ≥
+// created_from_version 且名称非空——防御钳制兜住病态快照。
+func TestListInstanceVersionInvariant(t *testing.T) {
+	mem := NewMemStore()
+	base := New(mem, WithNow(fixedNow))
+	ctx := context.Background()
+	mustSpec(t, base, "slot.inv")
+	c2 := validContent()
+	c2.Name = "第二版"
+	base.AppendVersion(ctx, "slot.inv", c2)             // v2
+	inst, _ := base.CreateInstance(ctx, "slot.inv", "") // from_version=2
+
+	// 病态注入：现势聚合只回 v1（模拟反序读取的陈旧快照）——钳制后不外显矛盾
+	svc := New(&staleLineageStore{Store: mem}, WithNow(fixedNow))
+	list, err := svc.ListInstances(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, v := range list {
+		if v.SlotInstanceID != inst.SlotInstanceID {
+			continue
+		}
+		if v.Spec.LatestVersion < v.CreatedFromVersion {
+			t.Fatalf("矛盾快照外显: %+v", v)
+		}
+	}
+}
+
+// staleLineageStore 现势聚合回退一版（陈旧快照注入）。
+type staleLineageStore struct {
+	Store
+}
+
+func (s *staleLineageStore) LatestByLineage(ctx context.Context) (map[string]InstanceSpecNow, error) {
+	out, err := s.Store.LatestByLineage(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for id, now := range out {
+		if now.LatestVersion > 1 {
+			now.LatestVersion-- // 陈旧一版
+			now.Name = now.Name + "-stale"
+		}
+		out[id] = now
+	}
+	return out, nil
+}

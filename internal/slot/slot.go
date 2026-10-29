@@ -415,18 +415,25 @@ func (s *Service) CreateInstance(ctx context.Context, slotSpecID, title string) 
 }
 
 // ListInstances 实例列表（创建序），视图携带模板现势连接。
+// 读取顺序（审校 P2#1）：先实例后模板——模板版本只追加，故后读的现势对
+// 先读的每个实例恒满足 latest ≥ created_from_version（先读模板的反序会在
+// 两读之间被并发创建/追加打出"空名/v0/自 v2 却最新 v1"的矛盾快照）。
 func (s *Service) ListInstances(ctx context.Context) ([]SlotInstanceView, error) {
-	specs, err := s.store.LatestByLineage(ctx)
+	instances, err := s.store.ListInstances(ctx)
 	if err != nil {
 		return nil, err
 	}
-	instances, err := s.store.ListInstances(ctx)
+	specs, err := s.store.LatestByLineage(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]SlotInstanceView, 0, len(instances))
 	for _, inst := range instances {
-		now := specs[inst.SlotSpecID] // 谱系被外部删除的病态场景留零值——不阻塞读面
+		now := specs[inst.SlotSpecID]
+		// 防御钳制：病态场景（谱系行缺失等不可路径）不外显矛盾版本
+		if now.LatestVersion < inst.CreatedFromVersion {
+			now.LatestVersion = inst.CreatedFromVersion
+		}
 		out = append(out, SlotInstanceView{SlotInstance: inst, Spec: now})
 	}
 	return out, nil
@@ -439,8 +446,15 @@ func (s *Service) GetInstance(ctx context.Context, slotInstanceID string) (SlotI
 		return SlotInstanceView{}, false, err
 	}
 	var now InstanceSpecNow
-	if latest, ok, err := s.store.Latest(ctx, inst.SlotSpecID); err == nil && ok {
+	latest, specOK, err := s.store.Latest(ctx, inst.SlotSpecID)
+	if err != nil {
+		return SlotInstanceView{}, false, fmt.Errorf("slot: 实例现势读取: %w", err) // 审校 P2#2：读取失败传播，不伪装成功详情
+	}
+	if specOK { // 谱系缺失（病态，无删除路径）留零值——与列表同口径
 		now = InstanceSpecNow{Name: latest.Name, LatestVersion: latest.Version}
+		if now.LatestVersion < inst.CreatedFromVersion {
+			now.LatestVersion = inst.CreatedFromVersion
+		}
 	}
 	return SlotInstanceView{SlotInstance: inst, Spec: now}, true, nil
 }

@@ -177,3 +177,62 @@ func intName(n int) string {
 	}
 	return string(b)
 }
+
+// TestSlotInstanceListInvariantUnderConcurrencyIT（审校 P2#1 靶向）：并发
+// 实例化 + 模板追加 + 列表读取交替施压——每次读取都满足 latest ≥
+// created_from_version 且名称非空（先读实例后读模板的顺序保证）。
+func TestSlotInstanceListInvariantUnderConcurrencyIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	store.CreateSpec(ctx, slot.SlotSpec{
+		SlotSpecID: "slot.inv", Version: 1, SchemaVersion: 1,
+		SpecContent: validSlotContent(), CreatedAt: "t",
+	})
+
+	var n sync.Mutex
+	counter := 0
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(3)
+		go func() { // 持续追加版本
+			defer wg.Done()
+			for j := 0; j < 5; j++ {
+				store.AppendVersion(ctx, "slot.inv", validSlotContent(), "t")
+			}
+		}()
+		go func() { // 持续实例化
+			defer wg.Done()
+			for j := 0; j < 5; j++ {
+				n.Lock()
+				counter++
+				k := counter
+				n.Unlock()
+				store.CreateInstance(ctx, slot.SlotInstance{
+					SlotInstanceID: "si_inv_" + intName(k), SlotSpecID: "slot.inv", Scope: "workspace",
+					Title: "实例", KnowledgeNamespace: "slotns_inv_" + intName(k),
+					CreatedFromVersion: 1, CreatedAt: "t",
+				})
+			}
+		}()
+		go func() { // 持续读取断言不变量
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				instances, _ := store.ListInstances(ctx)
+				specs, _ := store.LatestByLineage(ctx)
+				for _, inst := range instances {
+					now := specs[inst.SlotSpecID]
+					if now.Name == "" {
+						t.Errorf("空模板名: %+v", inst)
+					}
+					// 存储直读无钳制（服务层负责）；此处仅验证"先实例后模板"
+					// 的组合口径：现势不旧于创建版本
+					if now.LatestVersion < inst.CreatedFromVersion {
+						t.Errorf("矛盾快照: inst from v%d, spec latest v%d", inst.CreatedFromVersion, now.LatestVersion)
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}

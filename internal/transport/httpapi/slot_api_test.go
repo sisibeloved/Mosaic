@@ -414,3 +414,40 @@ func TestSlotInstancesEndpoints(t *testing.T) {
 		t.Fatalf("文本类型: status=%d", gate2.StatusCode)
 	}
 }
+
+// TestSlotInstanceExplicitEmptyTitle 显式空标题 400（审校 P2#3）：省略 → 缺省；
+// 空串/纯空白 → 400，不与省略合流。
+func TestSlotInstanceExplicitEmptyTitle(t *testing.T) {
+	ts := slotTestServer(t)
+	resp := postSlot(t, ts.URL+"/v1/slots/specs", `{"slot_spec_id":"slot.t3","name":"值守","responsibility":"r","deliverables":["d"]}`)
+	resp.Body.Close()
+
+	// 空串 → 400
+	resp = postSlot(t, ts.URL+"/v1/slots/instances", `{"slot_spec_id":"slot.t3","title":""}`)
+	var errDoc struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&errDoc)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || errDoc.Error.Code != "invalid_instance" {
+		t.Fatalf("空串标题: status=%d code=%q", resp.StatusCode, errDoc.Error.Code)
+	}
+	// 纯空白 → 400
+	resp = postSlot(t, ts.URL+"/v1/slots/instances", `{"slot_spec_id":"slot.t3","title":"  "}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("纯空白标题: status=%d", resp.StatusCode)
+	}
+	// 省略 → 201 缺省
+	resp = postSlot(t, ts.URL+"/v1/slots/instances", `{"slot_spec_id":"slot.t3"}`)
+	var inst struct {
+		Title string `json:"title"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&inst)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated || inst.Title != "值守" {
+		t.Fatalf("省略标题: status=%d title=%q", resp.StatusCode, inst.Title)
+	}
+}

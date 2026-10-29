@@ -1409,8 +1409,14 @@ func (s *server) CreateSlotInstance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
 		return
 	}
+	// 标题三态（审校 P2#3）：省略（nil）→ 缺省取模板名；显式空串/纯空白 →
+	// 400（契约：minLength 1——显式提供即须有效，不与省略合流）
 	title := ""
 	if req.Title != nil {
+		if strings.TrimSpace(*req.Title) == "" {
+			writeError(w, http.StatusBadRequest, "invalid_instance", "title 显式提供时须 1–64 字（省略则取模板名）")
+			return
+		}
 		title = *req.Title
 	}
 	inst, err := s.deps.Slots.CreateInstance(r.Context(), req.SlotSpecId, title)

@@ -56,8 +56,10 @@ export function SettingsPage() {
   // 修订加载请求序号（审校 P2#6）：新建/取消/切换修订使在途响应失效，不覆盖草稿
   const reviseSeq = useRef(0);
   const [slotVersionsRev, setSlotVersionsRev] = useState(0);
-  // 0.5.3 职责实例（ADR-0020）
+  // 0.5.3 职责实例（ADR-0020）；instError 读取失败态（保留已有列表，审校 P2#4）
   const [slotInstances, setSlotInstances] = useState<SlotInstanceView[] | null>(null);
+  const [instError, setInstError] = useState<string | null>(null);
+  const [instRetry, setInstRetry] = useState(0);
   const instSeq = useRef(0);
   const [instFormOpen, setInstFormOpen] = useState(false);
   const [instForm, setInstForm] = useState({ specID: "", title: "" });
@@ -443,6 +445,7 @@ export function SettingsPage() {
       setSlotBaseline(null);
       setSlotVersionsRev((r) => r + 1); // 版本明细失效重读（审校 P2#4）
       await refreshSlotSpecs();
+      await refreshSlotInstances(); // 实例现势连接同步刷新（审校 P2#5：存档字段不变，spec 现势跟进）
     } catch (e) {
       setSlotMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
     } finally {
@@ -483,14 +486,17 @@ export function SettingsPage() {
       const { instances } = await api.listSlotInstances();
       if (instSeq.current !== seq) return;
       setSlotInstances(instances);
-    } catch {
-      if (instSeq.current === seq) setSlotInstances(null);
+      setInstError(null);
+    } catch (e) {
+      if (instSeq.current !== seq) return;
+      // 失败不清空已有列表（审校 P2#4）——单列错误态，服务恢复后可重试
+      setInstError(e instanceof Error ? e.message : String(e));
     }
   }, []);
 
   useEffect(() => {
     void refreshSlotInstances();
-  }, [refreshSlotInstances]);
+  }, [refreshSlotInstances, instRetry]);
 
   const submitInstance = async () => {
     setSlotBusy(true);
@@ -1098,8 +1104,22 @@ export function SettingsPage() {
                   </button>
                 </div>
               )}
-              {slotInstances === null ? (
+              {instError !== null && (
+                <div className="mb-2 flex items-center gap-2">
+                  <p className="text-xs text-danger">实例列表读取失败：{instError}{slotInstances !== null ? "（下方为最近一次成功列表）" : ""}</p>
+                  <button
+                    type="button"
+                    onClick={() => setInstRetry((a) => a + 1)}
+                    className="rounded-lg bg-surface-3 px-2 py-1 text-xs text-dim"
+                  >
+                    重试
+                  </button>
+                </div>
+              )}
+              {slotInstances === null && instError === null ? (
                 <p className="text-xs text-faint">加载中…</p>
+              ) : slotInstances === null ? (
+                <p className="text-xs text-faint">列表暂不可用——重试成功后显示。</p>
               ) : slotInstances.length === 0 ? (
                 <p className="text-xs text-faint">尚无职责实例——实例化后供 0.5.4 任职引用。</p>
               ) : (
