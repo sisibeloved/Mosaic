@@ -2,13 +2,13 @@
 
 **状态 (Status):** Approved（2026-08-25 项目负责人确认；首轮审校修订 v0.5 后批准）
 
-> 演进提案（2026-10-28）：[RFC-0018](2026-10-28-rfc-0018-personal-agent-swarm.md) §2.2 / §9–11 提议增加独立 Mission 执行、受限 Agent 委派、作用域 Session 与 Runtime 能力协商。本文现有协议仍为当前依据；新命令与执行类型须经批准、Schema 更新和适配器验收后启用。
+> 演进提案已批准（2026-10-28）：[RFC-0018](2026-10-28-rfc-0018-personal-agent-swarm.md) §2.2 / §9–11 增加独立 Mission 执行、受限 Agent 委派、作用域 Session 与 Runtime 能力协商，已获负责人批准为基线；实施自 0.5.0（独立 Agent 身份）起按交付计划 v2.00 分阶段推进。本文现有协议继续描述讨论型任务；新命令与执行类型在各领域小版本落地时经 Schema 更新和适配器验收后启用（见修订记录 v0.6）。
 
 **作者 (Authors):** Mosaic 项目组 / ZCode
 
 **创建日期 (Created):** 2026-08-25
 
-**更新日期 (Updated):** 2026-08-25
+**更新日期 (Updated):** 2026-10-28（v0.6 RFC-0018 批准对齐）
 
 **相关 Issue/PR:** #TBD（RFC 入库时创建 tracking issue）
 
@@ -32,6 +32,7 @@
 | v0.3 | 2026-08-25 | Mosaic 项目组 / ZCode | 按评审修订：确立"Mosaic 自有 Harness 端口 + 适配器抽象"——本地进程原生适配为主要方向，ACP 降为可选适配器；结构化输出契约上移为端口级规范；历史回查通道归适配器实现（推荐本地 MCP server 形态）；grant epoch、进程监督、幂等语义保持不变 |
 | v0.4 | 2026-08-25 | Mosaic 项目组 / ZCode | 按调研结论修订：首批适配器定为 Codex / ZCode / Kimi Code CLI（OQ-03 组成部分）；新增 OS 适配要求（Windows 原生 / WSL / macOS）与各家 session / mode / provider / model 配置的 `adapter_options` 收敛；历史回查通道改为双轨（MCP 或结构化工具请求，由适配器按 agent 能力选择）；登记 ZCode headless 缺口风险；上游引用 Harness 调研报告 |
 | v0.5 | 2026-08-25 | Mosaic 项目组 / ZCode | 首轮审校修订（P0+P1+明确修订）：接入改为分级晋级（闭环梯队 = echo + native-codex + WSL/Linux 参考 OS，其余逐家以 spike + conformance 门禁晋级，ZCode 缺口不再阻塞主循环）；逻辑 Session 与进程寿命解耦；补 `attention_assessment` 结构化块；历史查询返回脱敏 HistoryItem 视图并绑定任务上下文与多维预算；`unavailable` 定为运维状态不进权威日志；新增 Worker 所有权 lease + fencing；本地进程强制 egress 边界；Profile 改双层管理（宿主登记可执行工件 + 租户选择配置）；DraftUpdate 安全子集；进程树资源与运行版本固定；失败事件语义统一；事实核验更新（app-server 官方 experimental 等） |
+| v0.6 | 2026-10-28 | Mosaic 项目组 / ZCode | RFC-0018 批准对齐（不改本文协议语义）：讨论型任务协议保持现状；执行任务类型、受限委派命令、作用域 Session 与 Runtime 能力协商为 RFC-0018 新增域，按交付计划 0.5（独立身份）/0.6（Mission 执行）起分阶段落地，落地时另行增补本文命令面与 Schema；Worker lease/fencing 语义由 RFC-0018 的 RuntimeLease 承接扩展 |
 
 # 1. 概述
 

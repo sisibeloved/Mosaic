@@ -86,7 +86,7 @@ docs/                     架构设计、RFC 与交付计划
 - [架构设计说明书](docs/design/2026-08-13-mosaic-architecture-design.md)
 - [RFC-0001 Room Protocol](docs/design/rfc/2026-08-25-rfc-0001-room-protocol.md)
 - [RFC-0002 Agent Protocol](docs/design/rfc/2026-08-25-rfc-0002-agent-protocol.md)
-- [RFC-0018 长期 Agent、Slot 与圆桌到 Swarm 的协作闭环](docs/design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（设计草案，含可迁移记忆、Runtime 与分阶段验收）
+- [RFC-0018 长期 Agent、Slot 与圆桌到 Swarm 的协作闭环](docs/design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（已批准设计，自 0.5.0 起分阶段实施）
 - [Harness 调研报告](docs/design/research/2026-08-25-harness-survey.md)
 - [交付与进度规划（个人版 v1.0）](docs/plan/2026-08-25-delivery-plan.md)
 - [设计文档索引](docs/design/README.md)（含 ADR 决策记录）

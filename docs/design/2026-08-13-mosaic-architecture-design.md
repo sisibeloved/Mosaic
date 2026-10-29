@@ -35,8 +35,9 @@
 | v0.8 | 2026-08-25 | Mosaic 项目组 / ZCode | RFC 系列全量草案（0001–0011）登记；OQ-04/05/06/07/10/11/12/13/14/15 挂接对应 RFC 裁决建议；技术类开放问题自此全部由 RFC 系列承接，仅余 OQ-01/02 项目治理项 |
 | v0.9 | 2026-08-25 | Mosaic 项目组 / ZCode | RFC-0001/0002 首轮审校对齐：消息事件统一为 message.posted（actor.kind 区分）；对外续传/快照改 opaque 视图游标（全局 seq 仅内部，随 RFC-0001 v0.4，落地细节回填待 RFC Approved）；Agent 接入改分级晋级表述（RFC-0002 v0.5）；ADR-0006/0007 状态随 RFC 评审改为 Proposed |
 | v1.0 | 2026-09-16 | Mosaic 项目组 / Kimi Code | RFC-0014 / ADR-0014：协作文档落地——文档作为全局资产（飞书形态）成为第二权威事实源，per-doc 事件流与房间日志并存（同一 SQLite 库），"Room Event Log 唯一权威"表述相应修订；RFC-0009 Artifact 治理的首个落地子集（仅文档，表格后置） |
+| v1.1 | 2026-10-28 | Mosaic 项目组 / ZCode | [RFC-0018](rfc/2026-10-28-rfc-0018-personal-agent-swarm.md) 获负责人批准：AR-003 增补 Mission 授权委派边界；§6.3/§6.4/§6.5 增补长期 Agent 域边界注（身份、会话与记忆分域）；Agent / Mission / Slot / Runtime 为新增领域对象，实施按交付计划 v2.00 自 0.5.0 起分阶段推进，各阶段落地时回填对应小节 |
 
-> 演进提案登记（2026-10-28）：[RFC-0018：长期 Agent、Slot 与圆桌到 Swarm 的协作闭环](rfc/2026-10-28-rfc-0018-personal-agent-swarm.md) 为 Draft，定义跨房间的身份、职责、事务、记忆与 Runtime 边界。其 §2.2 列明对本架构及现行协议的拟议修订；尚未替代本文基线，也不表示功能已实现。
+> 演进提案已批准（2026-10-28）：[RFC-0018：长期 Agent、Slot 与圆桌到 Swarm 的协作闭环](rfc/2026-10-28-rfc-0018-personal-agent-swarm.md) 为 Approved 基线，定义跨房间的身份、职责、事务、记忆与 Runtime 边界，其 §2.2 列明对本架构及现行协议的修订。本文相应小节按各领域版本落地进度回填；未落地小节仍以本文既有表述描述现行实现。
 
 ### 0.4 Keywords 关键词
 
@@ -311,7 +312,7 @@ Conversation Plane 记录“发生了什么”；Epistemic Plane 推断“当前
 |---|---|---|
 | AR-001 | 人类和至少 3 个异构 Agent 可加入一个 Room | 支持 1–10 个在线 Participant，其中 Agent ≥ 3 |
 | AR-002 | 普通公开消息可触发多个 Agent 独立评估，但不会全员抢答 | 每轮 Intent 全记录，公开发言数遵守 mode 上限 |
-| AR-003 | Agent 不能直接调用 Agent | 领域 API 不提供 `invokeAgent`；定向语义仅为 Room Event 的 `addressed_to` |
+| AR-003 | Agent 不能直接调用 Agent | 领域 API 不提供 `invokeAgent`；定向语义仅为 Room Event 的 `addressed_to`。（v1.1 / RFC-0018 增补）Mission 授权入口允许负责人请求受限委派，由系统持久化并调度——Agent 仍不能直接控制另一 Agent 的进程、身份或私有会话；圆桌发言仍由 Room 协议仲裁 |
 | AR-004 | 人类可在 500 ms 内暂停自动续聊 | 接收 pause 后不再提交新的 Agent 发言；在途生成被取消或结果丢弃 |
 | AR-005 | Thread 可 fork、pause、resume、close、reopen、merge | 所有操作生成事件并可从日志重建图；reopen 创建新的 discussion epoch |
 | AR-006 | 实时过程可观察 | P95 已提交事件到客户端投影 < 1 s（不含 LLM 生成） |
@@ -829,6 +830,8 @@ score =
 
 每次组装生成 Context Receipt（6.10.4）：Receipt 记录 Mosaic 交付了什么、Agent 查询了什么；Harness 内部保留或压缩了什么不属于 Mosaic 审计范围。任何未交付、未查询或对当前 Participant 不可见的来源都不能被当作已知上下文。
 
+> **长期 Agent 域边界注（v1.1 / RFC-0018）**：本节描述 Room 讨论上下文。RFC-0018 批准后，Agent 拥有独立于 Room 的语义 Session 与按作用域（Agent × scope × Binding）隔离的工作上下文，原生 CLI 会话仍归 Harness 私有（OQ-16 边界不变）；Mission 执行输入按 RFC-0018 §7.3 的 ContextManifest / Receipt / Checkpoint 组装，落地于 0.6–0.7 领域版本，落地前本节仍是现行实现的准确描述。
+
 ### 6.4 Agent Runtime 与异构模型适配
 
 Agent Profile 由四类配置组成：
@@ -859,6 +862,8 @@ Cancel(runId)
 
 Agent 发言的模型调用由外部 Harness 直连其 Provider 完成（OQ-20）：Mosaic 不持有 Provider 凭据、不做请求级代理；Model Gateway 收缩为 Mosaic 自用模型通道（embedding 与投影/检索等内部用途），与 Agent 发言流量隔离。供应商切换不改变 Agent Profile 身份；实际模型以 Profile 声明与 Harness 自报的 run 级元数据记录（`model.binding.changed`），保持可追踪性。
 
+> **长期 Agent 域边界注（v1.1 / RFC-0018）**：本节的讨论型 Runtime 语义不变。RFC-0018 批准后，Agent 身份独立于可执行程序与座位（AgentID 权威注册表，0.5.0 起）；Environment / Runtime / Lease 成为独立领域对象，支持执行型任务与按需启停（落地于 0.6 领域版本起）。Harness 适配层与能力协商（IF-ADAPTER / IF-HARNESS 边界）沿用本节框架，执行型任务类型经能力协商声明，不支持时明确报能力缺失。
+
 ### 6.5 记忆与检索
 
 Memory 分四层：
@@ -875,6 +880,8 @@ Memory Item 必须包含：来源 event ids、提取器/模型版本、置信度
 收束轮（6.9.5）接受的 Closure Capsule 作为一等 Memory 写入，但按 `closure_type` 区分共识、边界分歧、决定、方案图和证据阻塞，不统一写成“共识”。具名 dissent、assumptions、falsifiers、开放问题、Evidence Requests 与 reopen triggers 均保留 provenance。结束是可逆的认知快照，不是强制共识。
 
 v0.1 使用 PostgreSQL + pgvector 统一存储结构化记忆与 embedding，结合关键词/结构化过滤做混合检索。只有当向量规模、延迟或独立扩缩容需求超过 PostgreSQL 能力时才拆独立向量库。
+
+> **长期 Agent 域边界注（v1.1 / RFC-0018，对齐 RFC-0007 v0.3 裁定）**：本节四层为 Room 讨论记忆，归属与可见性不变。RFC-0018 批准后，记忆域扩展为 Agent 私有、Workspace/Room 共享、Goal/Mission 阶段与 Slot Knowledge（随职责实例）四类新域；跨域复制须记录授权与来源，Room 记忆不自动转为 Agent 私有记忆。个人版实现基线以 RFC-0007 §7.4（SQLite FTS5 起步）为准，分域记忆落地于 0.7 领域版本；落地前本节与 RFC-0007 仍是现行实现的准确描述。
 
 ### 6.6 实时流与用户体验
 
