@@ -40,6 +40,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/extdocs"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
+	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/room"
 	"github.com/sisibeloved/Mosaic/internal/settings"
 	"github.com/sisibeloved/Mosaic/internal/storage/sqlite"
@@ -275,6 +276,19 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		store.Close()
 		return nil, fmt.Errorf("app: harness registry: %w", err)
 	}
+	// 独立 Agent 身份域（RFC-0018 / ADR-0017，0.5.0）：SQLite 权威（v7 表）+
+	// 注册表单向同步。装载后先迁移磁盘存量（先于扫描），扫描完成后增量同步；
+	// 身份 API 读前另有惰性幂等同步兜底（手动登记/删除最终一致）。
+	identitySvc := personalagent.New(store, personalagent.NewRegistryAdapter(harnessRegistry),
+		personalagent.WithNewAgentID(func() string { return newID("ag") }), personalagent.WithNow(clock))
+	if rep, err := identitySvc.SyncFromHarness(ctx); err != nil {
+		logger.Warn("agent 身份迁移失败（读面前惰性重试）", "err", err)
+	} else {
+		logger.Info("agent 身份迁移完成", "created", rep.Created, "aliases", rep.AliasesAdded)
+		for _, c := range rep.Conflicts {
+			logger.Warn("agent 身份别名冲突（不合并，待人工处置）", "detail", c)
+		}
+	}
 	scanDone := make(chan struct{})
 	go func() {
 		defer close(scanDone)
@@ -286,6 +300,14 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		}
 		for _, note := range harnessRegistry.DrainNotes() {
 			logger.Info("harness 身份迁移", "note", note)
+		}
+		if rep, err := identitySvc.SyncFromHarness(scanCtx); err != nil {
+			logger.Warn("agent 身份同步失败（读面前惰性重试）", "err", err)
+		} else if rep.Created > 0 || len(rep.Conflicts) > 0 {
+			logger.Info("agent 身份同步", "created", rep.Created, "conflicts", len(rep.Conflicts))
+			for _, c := range rep.Conflicts {
+				logger.Warn("agent 身份别名冲突（不合并，待人工处置）", "detail", c)
+			}
 		}
 		for _, exe := range harnessRegistry.List() {
 			logger.Info("harness discovered",
@@ -313,6 +335,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Actor:            room.Actor{ParticipantID: "par_owner", Kind: "human"}, // 本地 owner（ADR-0009）
 		Harness:          harnessRegistry,
 		ProbeRunner:      harness.NewHostRunner(),
+		Identity:         identitySvc,
 		Logger:           logger,
 		Dev:              opts.Dev,
 		Budget:           budgetLimits,
@@ -462,8 +485,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			for _, exe := range harnessRegistry.EnabledList() {
 				// 身份从稳定 BotID 派生（ADR-0013：路径变化经重绑保持身份；四轮复审 #3
 				// 的多实例不折叠语义不变）；工作目录随 BotID 稳定（重绑后目录沿用）。
-				exeKey := sanitizeProfileKey(exe.BotIDOf())
-				profileID := "prof_" + exe.Adapter + "_" + exeKey
+				profileID := personalagent.ProfileIDOf(exe.Adapter, exe.BotIDOf())
 				// 渠道标签随座位进 Profile（快照参与者视图展示用）；注册表口径：空值按 cli 处理。
 				channel := exe.Channel
 				if channel == "" {
@@ -489,7 +511,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 						continue
 					}
 					seats = append(seats, room.AgentSeat{
-						ParticipantID: "par_codex_" + exeKey,
+						ParticipantID: personalagent.ParticipantIDOf("codex", exe.BotIDOf()),
 						Profile:       agent.Profile{ProfileID: profileID, Adapter: "codex", DisplayName: "Codex", Channel: channel},
 					})
 				case "kimi":
@@ -507,7 +529,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 						continue
 					}
 					seats = append(seats, room.AgentSeat{
-						ParticipantID: "par_kimi_" + exeKey,
+						ParticipantID: personalagent.ParticipantIDOf("kimi", exe.BotIDOf()),
 						Profile:       agent.Profile{ProfileID: profileID, Adapter: "kimi", DisplayName: "Kimi", Channel: channel},
 					})
 				case "minimax":
@@ -526,7 +548,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 						continue
 					}
 					seats = append(seats, room.AgentSeat{
-						ParticipantID: "par_minimax_" + exeKey,
+						ParticipantID: personalagent.ParticipantIDOf("minimax", exe.BotIDOf()),
 						Profile:       agent.Profile{ProfileID: profileID, Adapter: "minimax", DisplayName: "MiniMax", Channel: channel},
 					})
 				case "zcode":
@@ -549,7 +571,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 						continue
 					}
 					seats = append(seats, room.AgentSeat{
-						ParticipantID: "par_zcode_" + exeKey,
+						ParticipantID: personalagent.ParticipantIDOf("zcode", exe.BotIDOf()),
 						Profile:       agent.Profile{ProfileID: profileID, Adapter: "zcode", DisplayName: "ZCode", Channel: channel},
 					})
 				case "claude":
@@ -570,7 +592,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 						continue
 					}
 					seats = append(seats, room.AgentSeat{
-						ParticipantID: "par_claude_" + exeKey,
+						ParticipantID: personalagent.ParticipantIDOf("claude", exe.BotIDOf()),
 						Profile:       agent.Profile{ProfileID: profileID, Adapter: "claude", DisplayName: "Claude", Channel: channel},
 					})
 				}
@@ -731,21 +753,4 @@ func countRooms(store *sqlite.Store) (int, error) {
 		return 0, err
 	}
 	return len(rooms), nil
-}
-
-// sanitizeProfileKey 注册表 ID → 身份/目录名安全字符（四轮复审 #3）。
-func sanitizeProfileKey(id string) string {
-	var b strings.Builder
-	for _, r := range id {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('_')
-		}
-	}
-	if out := b.String(); out != "" {
-		return out
-	}
-	return "x"
 }

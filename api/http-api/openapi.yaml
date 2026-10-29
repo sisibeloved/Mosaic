@@ -1400,6 +1400,49 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /v1/identity/agents:
+    get:
+      operationId: listIdentityAgents
+      summary: 独立 Agent 身份注册表（0.5.0 / ADR-0017）
+      description: |
+        跨房间、跨可执行位置存在的长期 Agent 身份权威（SQLite agents/agent_aliases）。
+        每项含旧 ID 别名（bot_id / profile_id / participant_id——存量房间事件与座位
+        的统一解析点）与当前关联的可执行项引用（只读、现算）。读取前执行幂等同步
+        （注册表 → 身份表，只增不改）。0.5.0 无写面（生命周期随 0.5.1）。
+      responses:
+        "200":
+          description: Agent 身份列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agents]
+                properties:
+                  agents:
+                    type: array
+                    items: { $ref: "#/components/schemas/IdentityAgent" }
+        "503": { $ref: "#/components/responses/HarnessUnavailable" }
+  /v1/identity/agents/{agent_id}:
+    get:
+      operationId: getIdentityAgent
+      summary: 单个 Agent 身份详情
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^ag_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: Agent 身份详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IdentityAgent" }
+        "404":
+          description: 身份不存在（identity_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/HarnessUnavailable" }
   /v1/harness/executables:
     get:
       operationId: listHarnessExecutables
@@ -2858,12 +2901,43 @@ components:
         source: { type: string, description: auto_scan | manual }
         channel: { type: string, description: 实例渠道（ADR-0012）：cli | app:codex-desktop | app:kimi-work | app:zcode-desktop }
         bundle: { type: string, description: 桌面渠道内嵌 agent bundle 绝对路径（app:zcode-desktop 实例非空；空 = 纯 CLI 实例） }
+        agent_id: { type: string, description: 独立 Agent 身份引用（ADR-0017 / 0.5.0；身份权威在 /v1/identity/agents，本字段为发现表对身份的引用；同步后非空） }
         priority: { type: integer, description: 家族裁定优先级（数值小者优先；列表已按 adapter→priority→path 排序） }
         discovered_at: { type: string, format: date-time }
         enabled: { type: boolean }
         eval_model: { type: string, description: 评估任务专用模型（手编；空 = 与生成同模型） }
         model: { type: string, description: 模型覆盖（v1.48；空 = CLI 自身配置默认） }
         reasoning_effort: { type: string, description: 思考强度（v1.48；仅 codex 有此面；空 = CLI 默认） }
+    IdentityAgent:
+      type: object
+      required: [agent_id, display_name, adapter, status, source, created_at, aliases, executables]
+      description: 独立 Agent 身份（ADR-0017 / 0.5.0）——跨房间与部署位置的稳定主体；别名为旧 ID 的统一解析点。
+      properties:
+        agent_id: { type: string, description: "ag_ 前缀稳定身份，生成即持久" }
+        display_name: { type: string, description: 展示名（迁移来源 = adapter 家族名；未来可编辑） }
+        adapter: { type: string, description: 来源 adapter 家族（codex | kimi | minimax | zcode | claude | …） }
+        status: { type: string, description: "0.5.0 恒 active；生命周期状态机随 0.5.1" }
+        source: { type: string, description: migration | manual }
+        created_at: { type: string, format: date-time }
+        aliases:
+          type: object
+          required: [bot_id, profile_ids, participant_ids]
+          properties:
+            bot_id: { type: string, description: ADR-0013 稳定 BotID（身份等价键） }
+            profile_ids: { type: array, items: { type: string } }
+            participant_ids: { type: array, items: { type: string } }
+        executables:
+          type: array
+          description: 当前关联的可执行项引用（只读、从注册表现算；可为空——身份不随部署位置消失）
+          items:
+            type: object
+            required: [executable_id, runtime, enabled]
+            properties:
+              executable_id: { type: string, description: 注册表唯一 ID（含路径） }
+              runtime: { type: string, description: native | wsl }
+              distro: { type: string }
+              channel: { type: string, description: 空值按 cli }
+              enabled: { type: boolean }
     ManualExecutableRequest:
       type: object
       required: [adapter, runtime, path]

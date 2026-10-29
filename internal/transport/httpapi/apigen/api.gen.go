@@ -1567,6 +1567,9 @@ type EvidenceRequestViewStatus string
 type Executable struct {
 	Adapter string `json:"adapter"`
 
+	// AgentId 独立 Agent 身份引用（ADR-0017 / 0.5.0；身份权威在 /v1/identity/agents，本字段为发现表对身份的引用；同步后非空）
+	AgentId *string `json:"agent_id,omitempty"`
+
 	// Bundle 桌面渠道内嵌 agent bundle 绝对路径（app:zcode-desktop 实例非空；空 = 纯 CLI 实例）
 	Bundle *string `json:"bundle,omitempty"`
 
@@ -1797,6 +1800,45 @@ type HarnessUpdateCheck struct {
 
 // HarnessUpdateCheckChannel 更新通道三分类（ADR-0016）：registry=第三方分发仓库（现役 npm）；self-update=官方自更新子命令（检测可借仓库面）；mosaic=Mosaic 自带通道（自建打包脚本 ~/.mosaic/update/<adapter>.sh，检测对齐自建 releases 信号）
 type HarnessUpdateCheckChannel string
+
+// IdentityAgent 独立 Agent 身份（ADR-0017 / 0.5.0）——跨房间与部署位置的稳定主体；别名为旧 ID 的统一解析点。
+type IdentityAgent struct {
+	// Adapter 来源 adapter 家族（codex | kimi | minimax | zcode | claude | …）
+	Adapter string `json:"adapter"`
+
+	// AgentId ag_ 前缀稳定身份，生成即持久
+	AgentId string `json:"agent_id"`
+	Aliases struct {
+		// BotId ADR-0013 稳定 BotID（身份等价键）
+		BotId          string   `json:"bot_id"`
+		ParticipantIds []string `json:"participant_ids"`
+		ProfileIds     []string `json:"profile_ids"`
+	} `json:"aliases"`
+	CreatedAt time.Time `json:"created_at"`
+
+	// DisplayName 展示名（迁移来源 = adapter 家族名；未来可编辑）
+	DisplayName string `json:"display_name"`
+
+	// Executables 当前关联的可执行项引用（只读、从注册表现算；可为空——身份不随部署位置消失）
+	Executables []struct {
+		// Channel 空值按 cli
+		Channel *string `json:"channel,omitempty"`
+		Distro  *string `json:"distro,omitempty"`
+		Enabled bool    `json:"enabled"`
+
+		// ExecutableId 注册表唯一 ID（含路径）
+		ExecutableId string `json:"executable_id"`
+
+		// Runtime native | wsl
+		Runtime string `json:"runtime"`
+	} `json:"executables"`
+
+	// Source migration | manual
+	Source string `json:"source"`
+
+	// Status 0.5.0 恒 active；生命周期状态机随 0.5.1
+	Status string `json:"status"`
+}
 
 // ManualExecutableRequest defines model for ManualExecutableRequest.
 type ManualExecutableRequest struct {
@@ -2907,6 +2949,12 @@ type ServerInterface interface {
 	// GetHarnessExecutableUpdateStream 更新任务过程日志 SSE（0.4.1 可视化）
 	// (GET /v1/harness/executables/{id}/update/stream)
 	GetHarnessExecutableUpdateStream(w http.ResponseWriter, r *http.Request, id ExecutableID)
+	// ListIdentityAgents 独立 Agent 身份注册表（0.5.0 / ADR-0017）
+	// (GET /v1/identity/agents)
+	ListIdentityAgents(w http.ResponseWriter, r *http.Request)
+	// GetIdentityAgent 单个 Agent 身份详情
+	// (GET /v1/identity/agents/{agent_id})
+	GetIdentityAgent(w http.ResponseWriter, r *http.Request, agentId string)
 	// ListMonitors 监控源列表（含运行态水位）
 	// (GET /v1/monitors)
 	ListMonitors(w http.ResponseWriter, r *http.Request)
@@ -3976,6 +4024,46 @@ func (siw *ServerInterfaceWrapper) GetHarnessExecutableUpdateStream(w http.Respo
 	handler.ServeHTTP(w, r)
 }
 
+// ListIdentityAgents operation middleware
+func (siw *ServerInterfaceWrapper) ListIdentityAgents(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListIdentityAgents(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetIdentityAgent operation middleware
+func (siw *ServerInterfaceWrapper) GetIdentityAgent(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "agent_id" -------------
+	var agentId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "agent_id", r.PathValue("agent_id"), &agentId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agent_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetIdentityAgent(w, r, agentId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListMonitors operation middleware
 func (siw *ServerInterfaceWrapper) ListMonitors(w http.ResponseWriter, r *http.Request) {
 
@@ -4724,6 +4812,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/extdocs/sheet-transfers/by-id/{transfer_id}/cancel", wrapper.CancelSheetTransfer)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/extdocs/sheet-transfers/by-id/{transfer_id}/resume", wrapper.ResumeSheetTransfer)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/owner/bootstrap", wrapper.GetOwnerBootstrap)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/identity/agents", wrapper.ListIdentityAgents)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/identity/agents/{agent_id}", wrapper.GetIdentityAgent)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/enable", wrapper.EnableHarnessExecutable)

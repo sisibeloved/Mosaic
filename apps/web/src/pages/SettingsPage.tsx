@@ -472,6 +472,14 @@ export function SettingsPage() {
                               <ExeBadge tone={exe.login_state === "logged_in" ? "ok" : "warn"}>
                                 {exe.login_state ?? "unknown"}
                               </ExeBadge>
+                              {exe.agent_id && (
+                                <span
+                                  className="font-mono text-[10px] text-faint"
+                                  title={`Agent 身份（跨房间/部署位置稳定，ADR-0017）：${exe.agent_id}`}
+                                >
+                                  {truncate(exe.agent_id, 14)}
+                                </span>
+                              )}
                               {exe.source === "manual" && <ExeBadge>手动登记</ExeBadge>}
                             </div>
                             <p className="mt-0.5 truncate font-mono text-[11px] text-faint" title={exe.path}>

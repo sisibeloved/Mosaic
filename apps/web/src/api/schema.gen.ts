@@ -974,6 +974,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/identity/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 独立 Agent 身份注册表（0.5.0 / ADR-0017）
+         * @description 跨房间、跨可执行位置存在的长期 Agent 身份权威（SQLite agents/agent_aliases）。
+         *     每项含旧 ID 别名（bot_id / profile_id / participant_id——存量房间事件与座位
+         *     的统一解析点）与当前关联的可执行项引用（只读、现算）。读取前执行幂等同步
+         *     （注册表 → 身份表，只增不改）。0.5.0 无写面（生命周期随 0.5.1）。
+         */
+        get: operations["listIdentityAgents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/identity/agents/{agent_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 单个 Agent 身份详情 */
+        get: operations["getIdentityAgent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/harness/executables": {
         parameters: {
             query?: never;
@@ -2085,6 +2125,8 @@ export interface components {
             channel?: string;
             /** @description 桌面渠道内嵌 agent bundle 绝对路径（app:zcode-desktop 实例非空；空 = 纯 CLI 实例） */
             bundle?: string;
+            /** @description 独立 Agent 身份引用（ADR-0017 / 0.5.0；身份权威在 /v1/identity/agents，本字段为发现表对身份的引用；同步后非空） */
+            agent_id?: string;
             /** @description 家族裁定优先级（数值小者优先；列表已按 adapter→priority→path 排序） */
             priority?: number;
             /** Format: date-time */
@@ -2096,6 +2138,38 @@ export interface components {
             model?: string;
             /** @description 思考强度（v1.48；仅 codex 有此面；空 = CLI 默认） */
             reasoning_effort?: string;
+        };
+        /** @description 独立 Agent 身份（ADR-0017 / 0.5.0）——跨房间与部署位置的稳定主体；别名为旧 ID 的统一解析点。 */
+        IdentityAgent: {
+            /** @description ag_ 前缀稳定身份，生成即持久 */
+            agent_id: string;
+            /** @description 展示名（迁移来源 = adapter 家族名；未来可编辑） */
+            display_name: string;
+            /** @description 来源 adapter 家族（codex | kimi | minimax | zcode | claude | …） */
+            adapter: string;
+            /** @description 0.5.0 恒 active；生命周期状态机随 0.5.1 */
+            status: string;
+            /** @description migration | manual */
+            source: string;
+            /** Format: date-time */
+            created_at: string;
+            aliases: {
+                /** @description ADR-0013 稳定 BotID（身份等价键） */
+                bot_id: string;
+                profile_ids: string[];
+                participant_ids: string[];
+            };
+            /** @description 当前关联的可执行项引用（只读、从注册表现算；可为空——身份不随部署位置消失） */
+            executables: {
+                /** @description 注册表唯一 ID（含路径） */
+                executable_id: string;
+                /** @description native | wsl */
+                runtime: string;
+                distro?: string;
+                /** @description 空值按 cli */
+                channel?: string;
+                enabled: boolean;
+            }[];
         };
         ManualExecutableRequest: {
             adapter: string;
@@ -4233,6 +4307,61 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+        };
+    };
+    listIdentityAgents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Agent 身份列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        agents: components["schemas"]["IdentityAgent"][];
+                    };
+                };
+            };
+            503: components["responses"]["HarnessUnavailable"];
+        };
+    };
+    getIdentityAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Agent 身份详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityAgent"];
+                };
+            };
+            /** @description 身份不存在（identity_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["HarnessUnavailable"];
         };
     };
     listHarnessExecutables: {

@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.00 |
+| 版本 | v2.01 |
 | 日期 | 2026-10-28 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -149,6 +149,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.01 | 2026-10-28 | Mosaic 项目组 / ZCode | **0.5.0 开发（负责人指令："按新的项目计划，设计和测试先行，开发0.5.0版本"）——P0 门槛执行 + 独立 Agent 身份注册表（ADR-0017）**。**(1) P0 门槛**：RFC-0018 批准（Draft → Approved，v0.4——批准即设计基线，实施按 v2.00 版本映射）；§2.2 边界对齐——架构说明书 v1.1（AR-003 增补 Mission 授权委派边界 + §6.3/6.4/6.5 长期 Agent 域边界注）、RFC-0002 v0.6 / RFC-0007 v0.4 对齐修订；契约冻结（OpenAPI 增 /v1/identity/agents 两端点 + Executable.agent_id 增量字段，apigen/TS 双链重生成）；迁移 fixture（registry-migration.json：多 adapter/多实例/缺 bot_id 祖父化/bot_id≠id 重绑/同 bot_id 双 exe 归一——确定性 golden 可重复）。**(2) 实现（internal/personalagent 新域）**：SQLite migration v7（agents + agent_aliases，快照权威表——0.5.0 无状态转移，事件流随 0.5.1）；BotID 等价键幂等迁移（ag_ AgentID + bot/profile/participant 三类只增别名；同 bot_id 多 exe 归一；exe 消失不删 Agent；别名碰撞不合并记日志）；座位派生单源化（app.go 内联式收敛至 personalagent.ProfileIDOf/ParticipantIDOf，逐字节等价测试钉住——存量 participantID 解析不漂移）；注册表单向同步（装载后 + 扫描后 + API 读前惰性兜底；Executable.agent_id 回写经 ApplyAgentIDs 原子落盘，重绑路径身份延续）；httpapi 两端点（只读无写门）+ 座位面/可执行项输出兼容断言（旧 API 保持旧 ID）；设置页 ag_* 身份徽标。**(3) 验证**：测试先行（同步语义族 UT 10 例先红后绿）+ SQLite IT（v7 建表/CRUD/别名唯一与冲突）+ 端点测试；go vet（it st）+ go test -race 全量 + -tags it 全绿；SPA tsc+build 绿；ST 面由 CI 桩环境把关。CHANGELOG [Unreleased] 登记；定版与发布另行指令 |
 | v2.00 | 2026-10-28 | Mosaic 项目组 / Kimi | **按负责人裁定刷新 Roadmap**：确立 `X.Y.Z = 大版本 / 领域中版本 / 特性小版本`，第三段每次只交付一个特性，第二段按领域聚合成系统能力。RFC-0018 自 0.5 起拆为长期 Agent 与职责（0.5.0–0.5.5）、Mission 与本地执行（0.6.0–0.6.12）、记忆与可移植恢复（0.7.0–0.7.9）、有界 Swarm（0.8.0–0.8.8）、持续事务与环境维护（0.9.0–0.9.8）；0.10 对话优化为 1.0.0 前最后一个领域中版本。P0 改为 0.5 开工门槛，P5 保留为 1.0 后的条件领域。同步 README、CHANGELOG 版本规则与 RFC-0018 的阶段映射；RFC 设计仍为 Draft，版本规划不表示功能已经实现。 |
 | v1.99 | 2026-10-28 | Mosaic 项目组 / Codex | 登记 [RFC-0018：长期 Agent、Slot 与圆桌到 Swarm 的协作闭环](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（Draft，v0.2 审校修订），涵盖生命周期、可迁移记忆与上下文、Runtime 及环境管理员；P0–P5 为提案内分阶段设计，尚未纳入已承诺交付范围或发行版本，现行里程碑和路线图不变。 |
 | v1.98 | 2026-10-28 | Mosaic 项目组 / ZCode | **定版 v0.4.1（负责人指令："好，发布0.4.1版本"）**。**(1) CHANGELOG**：[Unreleased]（Added 版本检测与更新 + Fixed 验收反馈三条）定版 **[0.4.1] - 2026-10-28**，保留空 [Unreleased] 段。**(2) README**：当前版本推进 v0.4.1（三通道全线 + 可视化描述）；路线图摘除 0.4.1。**(3) 版本字样**：wails.json productVersion + SPA 关于区 → 0.4.1。**(4) 发布链**：定版 docs 提交 + tag v0.4.1 + GitHub Release 发布说明 + Windows 产物（wails 重建）；CI 已于同日修复全绿（windows 腿老红清除，见 v1.97 (5)）——发布即干净基线 |

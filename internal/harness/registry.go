@@ -54,7 +54,11 @@ type Executable struct {
 	Bundle string `json:"bundle,omitempty"`
 	// BotID 稳定身份（ADR-0013，M4-4）：首次发现时赋值 = ID（路径派生，祖父化零迁移），
 	// 此后 durable——路径变化经消失重绑迁移本字段，座位/会话/事件归属不随路径消亡。
-	BotID        string `json:"bot_id,omitempty"`
+	BotID string `json:"bot_id,omitempty"`
+	// AgentID 独立 Agent 身份引用（RFC-0018 / ADR-0017，0.5.0）：身份权威在
+	// personalagent 域（SQLite agents/agent_aliases），本字段仅为发现表对身份的
+	// 引用，由身份同步幂等回写；旧字段（id/bot_id/…）不变——旧 API 输出保持旧 ID。
+	AgentID      string `json:"agent_id,omitempty"`
 	Priority     int    `json:"priority"`
 	DiscoveredAt string `json:"discovered_at"`
 	Enabled      bool   `json:"enabled"`
@@ -395,6 +399,33 @@ func (r *Registry) List() []Executable {
 	return out
 }
 
+// ApplyAgentIDs 批量回写 exeID → AgentID（身份域同步的落盘面，ADR-0017：
+// 发现表只引用身份权威，不改 bot_id 等旧字段）。返回是否有变更；仅变更时落盘。
+// 落盘失败时内存已更新（读面即时正确），磁盘滞后由下次进程重启后的幂等同步追平。
+func (r *Registry) ApplyAgentIDs(ids map[string]string) (bool, error) {
+	if len(ids) == 0 {
+		return false, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	changed := false
+	for i := range r.exes {
+		want, ok := ids[r.exes[i].ID]
+		if !ok || r.exes[i].AgentID == want {
+			continue
+		}
+		r.exes[i].AgentID = want
+		changed = true
+	}
+	if !changed {
+		return false, nil
+	}
+	if err := r.saveLocked(); err != nil {
+		return true, fmt.Errorf("harness: apply agent ids: %w", err)
+	}
+	return true, nil
+}
+
 // upsertLocked 按 ID 合并：auto 刷新探测字段；manual 保留来源与渠道覆盖，但刷新
 // 登录/版本/摘要。优先级每次入库重算（PriorityFor），家族裁定调整即刻生效。
 func (r *Registry) upsertLocked(exe Executable) {
@@ -575,6 +606,8 @@ func (r *Registry) rebindVanishedLocked(ctx context.Context, runner Runner, disc
 		if cand >= 0 {
 			n := &r.exes[cand]
 			n.BotID = g.exe.BotIDOf()
+			// 身份引用随 BotID 一并延续（ADR-0017：同一 Agent 的部署位置变化）
+			n.AgentID = g.exe.AgentID
 			n.Model, n.EvalModel, n.ReasoningEffort = g.exe.Model, g.exe.EvalModel, g.exe.ReasoningEffort
 			if g.exe.Enabled && n.Login == LoginLoggedIn {
 				n.Enabled = true

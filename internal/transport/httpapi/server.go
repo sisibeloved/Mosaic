@@ -24,6 +24,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/monitor"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
+	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
 	"github.com/sisibeloved/Mosaic/internal/settings"
@@ -40,7 +41,9 @@ type Deps struct {
 	// Harness 宿主层可执行程序注册表（nil 时相关端点返回 503）。
 	Harness     *harness.Registry
 	ProbeRunner harness.Runner // 手动登记时的探测执行面（nil 时禁止手动登记）
-	Logger      *slog.Logger
+	// Identity 独立 Agent 身份域（RFC-0018 / ADR-0017，0.5.0；nil 时身份端点 503）。
+	Identity *personalagent.Service
+	Logger   *slog.Logger
 	// 开发者模式（M1 v1.8）：Dev 开启才注册 /v1/debug 只读端点与 UI 调试面板。
 	Dev    bool
 	Budget contextx.Limits         // 预算上限（状态端点的水位/梯度计算基准）
@@ -472,6 +475,42 @@ func (s *server) ListAgents(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": agents, "disabled": disabled})
+}
+
+// ListIdentityAgents 独立 Agent 身份列表（0.5.0 / ADR-0017；apigen.ServerInterface）。
+// 只读观察面：读取前经服务内幂等同步（注册表 → 身份表）最终一致。
+func (s *server) ListIdentityAgents(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Identity == nil {
+		writeError(w, http.StatusServiceUnavailable, "identity_unavailable", "身份注册表未配置")
+		return
+	}
+	agents, err := s.deps.Identity.List(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "identity_read_failed", err.Error())
+		return
+	}
+	if agents == nil {
+		agents = []personalagent.AgentView{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agents": agents})
+}
+
+// GetIdentityAgent 单个 Agent 身份详情（0.5.0 / ADR-0017）。
+func (s *server) GetIdentityAgent(w http.ResponseWriter, r *http.Request, agentID string) {
+	if s.deps.Identity == nil {
+		writeError(w, http.StatusServiceUnavailable, "identity_unavailable", "身份注册表未配置")
+		return
+	}
+	view, ok, err := s.deps.Identity.Get(r.Context(), agentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "identity_read_failed", err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "identity_not_found", "Agent 身份不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
 }
 
 func (s *server) ListHarnessExecutables(w http.ResponseWriter, _ *http.Request) {

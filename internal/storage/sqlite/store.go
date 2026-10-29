@@ -13,11 +13,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/doc"
 	"github.com/sisibeloved/Mosaic/internal/extdocs"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
+	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
 
@@ -173,6 +175,28 @@ CREATE TABLE IF NOT EXISTS sheet_transfers (
   cells_written   INTEGER NOT NULL DEFAULT 0,
   state_json      TEXT NOT NULL DEFAULT ''
 );
+
+-- v7（RFC-0018 / ADR-0017，0.5.0）：独立 Agent 身份域。agents 为聚合快照
+-- （0.5.0 无状态转移，事件流随 0.5.1 引入后本表降为投影重建基线）；
+-- agent_aliases 为旧 ID → AgentID 的只增解析面（bot_id / profile_id /
+-- participant_id 三类），(kind, value) 唯一——别名一经登记不改写、不删除。
+CREATE TABLE IF NOT EXISTS agents (
+  agent_id     TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  adapter      TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'active',
+  source       TEXT NOT NULL,
+  created_at   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_aliases (
+  alias_kind  TEXT NOT NULL,
+  alias_value TEXT NOT NULL,
+  agent_id    TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  PRIMARY KEY (alias_kind, alias_value)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_aliases_agent ON agent_aliases(agent_id);
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (7, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 `
 
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
@@ -1655,4 +1679,115 @@ func (s *Store) ensureDocFTS(ctx context.Context) error {
 		return fmt.Errorf("sqlite: doc fts rebuild commit: %w", err)
 	}
 	return nil
+}
+
+// ---- Agent 身份域（RFC-0018 / ADR-0017，0.5.0；v7 表，端口实现）----
+
+// EnsureAgent 幂等建 Agent（按 agent_id；INSERT OR IGNORE——返回是否新建）。
+func (s *Store) EnsureAgent(ctx context.Context, a personalagent.Agent) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+INSERT OR IGNORE INTO agents (agent_id, display_name, adapter, status, source, created_at)
+VALUES (?, ?, ?, ?, ?, ?)`,
+		a.AgentID, a.DisplayName, a.Adapter, a.Status, a.Source, a.CreatedAt)
+	if err != nil {
+		return false, fmt.Errorf("sqlite: ensure agent: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("sqlite: ensure agent rows: %w", err)
+	}
+	return n > 0, nil
+}
+
+// ListAgents 全量 Agent，按创建序（rowid = 首次同步的确定性顺序）。
+func (s *Store) ListAgents(ctx context.Context) ([]personalagent.Agent, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT agent_id, display_name, adapter, status, source, created_at FROM agents ORDER BY rowid`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list agents: %w", err)
+	}
+	defer rows.Close()
+	out := []personalagent.Agent{}
+	for rows.Next() {
+		var a personalagent.Agent
+		if err := rows.Scan(&a.AgentID, &a.DisplayName, &a.Adapter, &a.Status, &a.Source, &a.CreatedAt); err != nil {
+			return nil, fmt.Errorf("sqlite: scan agent: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// AgentByAlias 别名解析；未登记 ok=false。
+func (s *Store) AgentByAlias(ctx context.Context, kind personalagent.AliasKind, value string) (string, bool, error) {
+	var agentID string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT agent_id FROM agent_aliases WHERE alias_kind = ? AND alias_value = ?`, string(kind), value).
+		Scan(&agentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("sqlite: agent by alias: %w", err)
+	}
+	return agentID, true, nil
+}
+
+// AddAlias 幂等登记别名：同键同目标 no-op（added=false）；同键异目标
+// personalagent.ErrAliasConflict。先查后插（单进程写串行化下安全），唯一
+// 主键为并发兜底——撞约束时回读归属定性。
+func (s *Store) AddAlias(ctx context.Context, kind personalagent.AliasKind, value, agentID string) (bool, error) {
+	var owner string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT agent_id FROM agent_aliases WHERE alias_kind = ? AND alias_value = ?`, string(kind), value).
+		Scan(&owner)
+	switch {
+	case err == nil:
+		if owner != agentID {
+			return false, personalagent.ErrAliasConflict
+		}
+		return false, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return false, fmt.Errorf("sqlite: alias owner: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := s.db.ExecContext(ctx, `
+INSERT INTO agent_aliases (alias_kind, alias_value, agent_id, created_at) VALUES (?, ?, ?, ?)`,
+		string(kind), value, agentID, now)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			// 兜底路径：回读归属定性（同目标 = 幂等，异目标 = 冲突）
+			var owner2 string
+			if qerr := s.db.QueryRowContext(ctx,
+				`SELECT agent_id FROM agent_aliases WHERE alias_kind = ? AND alias_value = ?`, string(kind), value).
+				Scan(&owner2); qerr == nil && owner2 != agentID {
+				return false, personalagent.ErrAliasConflict
+			}
+			return false, nil
+		}
+		return false, fmt.Errorf("sqlite: add alias: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// AliasesOf 某 Agent 的全部别名行（登记序）。
+func (s *Store) AliasesOf(ctx context.Context, agentID string) ([]personalagent.Alias, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT alias_kind, alias_value FROM agent_aliases WHERE agent_id = ? ORDER BY rowid`, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: aliases of: %w", err)
+	}
+	defer rows.Close()
+	out := []personalagent.Alias{}
+	for rows.Next() {
+		var kind string
+		var a personalagent.Alias
+		if err := rows.Scan(&kind, &a.Value); err != nil {
+			return nil, fmt.Errorf("sqlite: scan alias: %w", err)
+		}
+		a.Kind = personalagent.AliasKind(kind)
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
