@@ -67,16 +67,19 @@ func (s *Service) SyncFromHarness(ctx context.Context) (SyncReport, error) {
 
 	agentOf := map[string]string{} // botID → agentID（本次同步内缓存）
 	mapping := map[string]string{} // exeID → agentID（回写注册表）
-	seenAlias := map[AliasKind]map[string]bool{}
+	// 去重按 (kind, value, 目标 Agent) 三元组判同（审校 P2#3）：同 Agent 的同值
+	// 别名在多可执行项间只计一次；目标不同（跨身份 sanitize 碰撞）不得跳过——
+	// 必须照常进入 AddAlias 的冲突检测并上报 Conflicts。
+	seenAlias := map[AliasKind]map[string]string{} // value → 已处理的 agentID
 
 	addAlias := func(kind AliasKind, value, agentID string) error {
 		if seenAlias[kind] == nil {
-			seenAlias[kind] = map[string]bool{}
+			seenAlias[kind] = map[string]string{}
 		}
-		if seenAlias[kind][value] {
-			return nil // 同值别名在多可执行项间去重（同 botID 多 exe 场景）
+		if prev, done := seenAlias[kind][value]; done && prev == agentID {
+			return nil // 同 Agent 同值：本轮已处理（同 botID 多 exe 场景）
 		}
-		seenAlias[kind][value] = true
+		seenAlias[kind][value] = agentID
 		added, err := s.store.AddAlias(ctx, kind, value, agentID)
 		if err != nil {
 			if errors.Is(err, ErrAliasConflict) {
@@ -102,28 +105,29 @@ func (s *Service) SyncFromHarness(ctx context.Context) (SyncReport, error) {
 			if found {
 				agentID = existing
 			} else {
-				agentID = s.newAgentID()
-				created, err := s.store.EnsureAgent(ctx, Agent{
-					AgentID:     agentID,
+				// 建行与 bot_id 认领同一事务（审校 P1#1）：并发竞争失败者回读胜者，
+				// 中断不留半行；全程只用成功认领的 AgentID 派生别名与回写注册表。
+				candidate := s.newAgentID()
+				owner, created, err := s.store.EnsureAgentWithAlias(ctx, Agent{
+					AgentID:     candidate,
 					DisplayName: DisplayNameOf(e.Adapter),
 					Adapter:     e.Adapter,
 					Status:      "active",
 					Source:      "migration",
 					CreatedAt:   s.now(),
-				})
+				}, AliasBotID, e.BotID)
 				if err != nil {
 					return rep, fmt.Errorf("personalagent: 建 Agent: %w", err)
 				}
+				agentID = owner
 				if created {
 					rep.Created++
+					rep.AliasesAdded++ // bot_id 认领随建行原子发生
 				}
 			}
 			agentOf[e.BotID] = agentID
 		}
 		mapping[e.ExeID] = agentID
-		if err := addAlias(AliasBotID, e.BotID, agentID); err != nil {
-			return rep, err
-		}
 		// 派生别名按 (adapter, botID) 定值——同 botID 跨 adapter 的病态场景下
 		// 两组派生别名都挂同一 Agent（bot_id 等价键裁决），不产生歧义
 		if err := addAlias(AliasProfileID, ProfileIDOf(e.Adapter, e.BotID), agentID); err != nil {

@@ -513,10 +513,16 @@ func (s *server) GetIdentityAgent(w http.ResponseWriter, r *http.Request, agentI
 	writeJSON(w, http.StatusOK, view)
 }
 
-func (s *server) ListHarnessExecutables(w http.ResponseWriter, _ *http.Request) {
+func (s *server) ListHarnessExecutables(w http.ResponseWriter, r *http.Request) {
 	if s.deps.Harness == nil {
 		writeError(w, http.StatusServiceUnavailable, "harness_unavailable", "宿主注册表未配置")
 		return
+	}
+	// 读前身份同步（审校 P2#2）：设置页登记/启停后只刷新本列表，不先调身份
+	// API——同步必须发生在该用户流程内，agent_id 徽标才会即时出现。幂等，失败
+	// 降级（身份读面另有惰性兜底）。
+	if s.deps.Identity != nil {
+		_, _ = s.deps.Identity.SyncFromHarness(r.Context())
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"executables": s.deps.Harness.List()})
 }

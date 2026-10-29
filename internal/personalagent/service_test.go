@@ -3,6 +3,7 @@ package personalagent
 import (
 	"context"
 	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -10,6 +11,7 @@ import (
 
 type fakeRegistry struct {
 	exes   []ExecutableSnapshot
+	mu     sync.Mutex // 并发同步测试件：ApplyAgentIDs 写侧互斥
 	applie map[string]string // ApplyAgentIDs 收到的 exeID → agentID
 }
 
@@ -18,6 +20,8 @@ func (f *fakeRegistry) Snapshot() []ExecutableSnapshot {
 }
 
 func (f *fakeRegistry) ApplyAgentIDs(ids map[string]string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.applie == nil {
 		f.applie = map[string]string{}
 	}
@@ -25,6 +29,13 @@ func (f *fakeRegistry) ApplyAgentIDs(ids map[string]string) (bool, error) {
 		f.applie[k] = v
 	}
 	return len(ids) > 0, nil
+}
+
+// applied 并发安全读取。
+func (f *fakeRegistry) applied(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.applie[id]
 }
 
 func seqID(prefix ...string) func() string {

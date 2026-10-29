@@ -192,3 +192,46 @@ func TestIdentityAgentsEndpoints(t *testing.T) {
 		t.Fatal("座位项泄漏 agent_id")
 	}
 }
+
+// TestManualRegisterThenExecutablesHasAgentID（审校 P2#2）：真实用户流程——
+// 手动登记后设置页只刷新可执行列表（不先调身份 API），徽标所需的 agent_id
+// 必须已经同步回写。既有测试先 GET 身份列表触发了惰性同步，掩盖了本缺口。
+func TestManualRegisterThenExecutablesHasAgentID(t *testing.T) {
+	ts := identityTestServer(t)
+
+	add, err := http.Post(ts.URL+"/v1/harness/executables", "application/json",
+		strings.NewReader(`{"adapter":"kimi","runtime":"native","path":"/opt/tools/kimi"}`))
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	add.Body.Close()
+	if add.StatusCode != http.StatusCreated {
+		t.Fatalf("add status = %d", add.StatusCode)
+	}
+
+	// 唯一读取面 = 可执行列表（与设置页 refreshExecutables 同一调用）
+	list, err := http.Get(ts.URL + "/v1/harness/executables")
+	if err != nil {
+		t.Fatalf("exes: %v", err)
+	}
+	var doc struct {
+		Executables []struct {
+			ID      string `json:"id"`
+			AgentID string `json:"agent_id"`
+		} `json:"executables"`
+	}
+	_ = json.NewDecoder(list.Body).Decode(&doc)
+	list.Body.Close()
+	found := false
+	for _, e := range doc.Executables {
+		if e.ID != "" && e.AgentID == "" {
+			t.Fatalf("可执行项 %s 缺 agent_id（手动登记后列表读取必须已同步）", e.ID)
+		}
+		if strings.Contains(e.ID, "kimi") && e.AgentID != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("kimi 手动登记项未出现或未带 agent_id: %+v", doc.Executables)
+	}
+}

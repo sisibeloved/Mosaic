@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.01 |
+| 版本 | v2.02 |
 | 日期 | 2026-10-28 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -95,6 +95,8 @@
 
 **领域出口**：AT-04、AT-05、AT-06，并补齐 AT-13 的同身份导入场景。
 
+个人实例全量备份与跨设备合并另见 [RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)（Draft）：进度任务、全量资源收集、口令加密、合并预览、可恢复提交、冲突中心按 S1–S6 拆分；不复用本领域的选择范围式 Agent Bundle 作为全量备份，发布编号待另行裁定。
+
 ### 0.8 有界 Swarm 协作领域
 
 领域目标：负责人可以组织多个协作者完成一个 Mission。
@@ -149,6 +151,8 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.02 | 2026-10-28 | Mosaic 项目组 / Codex | 登记 [RFC-0019：个人多设备全量加密备份、导入合并与进度反馈](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)（Draft）：按最新讨论明确全量导出、手动传输、用户自定口令、导入合并，补齐资源收集、进度窗口、冲突保留、中断恢复和容量预算。S1–S6 按单特性拆分，全部验收后才可称完整备份与合并；版本映射待裁定，不改变既有 0.7.5–0.7.7 的选择性 Agent Bundle 范围和已批准排期。 |
+| v2.02 | 2026-10-29 | Mosaic 项目组 / ZCode | **0.5.0 审校修复（独立审校报告：1 P1 + 3 P2 全确认，"建议修复后定版"）——ADR-0017 v0.2 修订**。**(1) P1 并发/中断重复身份**：建 Agent 行与 bot_id 别名认领改同事务原子 get-or-create（Store.EnsureAgentWithAlias——别名已被占即回滚候选行回读胜者；SQLite 真实并发 16 路 IT：恰一行 Agent/一行别名/零孤立行，各方同指胜者；服务层 8 路并发同步 UT：恰 2 Agent、回写一致；-race 全绿）。**(2) P2 跨身份碰撞静默**：同步内去重改按 (kind, value, 目标 Agent) 三元组判同——同 adapter 路径 `/a/b` 与 `/a_b` 经 sanitize 撞出同派生别名时照常上报 Conflicts（UT 钉住两轮持续上报 + 归属不被改写）。**(3) P2 手动登记徽标缺失**：可执行项列表读前触发身份同步（设置页登记→刷新 executables 即时获得 agent_id；端点测试改走真实用户流程——只读 executables 不先调身份 API）。**(4) P2 旧库升级测试缺口**：补真实 v0.4.1 库升级 IT（schemaDDL 截 v7 段建旧库 + 旧房间事件/outbox 记录 + 升级前断言无身份表 → Open 后 v7 表可用、旧数据在、迁移登记 1-5/7 各恰一条、重开幂等；实证升级实现本身无缺陷，为测试覆盖缺口）。补强：删除可执行项后三类别名仍可解析 + executables 收 []（身份独立于部署位置契约）。全量 vet(it st) + -race 单测/IT 绿 |
 | v2.01 | 2026-10-28 | Mosaic 项目组 / ZCode | **0.5.0 开发（负责人指令："按新的项目计划，设计和测试先行，开发0.5.0版本"）——P0 门槛执行 + 独立 Agent 身份注册表（ADR-0017）**。**(1) P0 门槛**：RFC-0018 批准（Draft → Approved，v0.4——批准即设计基线，实施按 v2.00 版本映射）；§2.2 边界对齐——架构说明书 v1.1（AR-003 增补 Mission 授权委派边界 + §6.3/6.4/6.5 长期 Agent 域边界注）、RFC-0002 v0.6 / RFC-0007 v0.4 对齐修订；契约冻结（OpenAPI 增 /v1/identity/agents 两端点 + Executable.agent_id 增量字段，apigen/TS 双链重生成）；迁移 fixture（registry-migration.json：多 adapter/多实例/缺 bot_id 祖父化/bot_id≠id 重绑/同 bot_id 双 exe 归一——确定性 golden 可重复）。**(2) 实现（internal/personalagent 新域）**：SQLite migration v7（agents + agent_aliases，快照权威表——0.5.0 无状态转移，事件流随 0.5.1）；BotID 等价键幂等迁移（ag_ AgentID + bot/profile/participant 三类只增别名；同 bot_id 多 exe 归一；exe 消失不删 Agent；别名碰撞不合并记日志）；座位派生单源化（app.go 内联式收敛至 personalagent.ProfileIDOf/ParticipantIDOf，逐字节等价测试钉住——存量 participantID 解析不漂移）；注册表单向同步（装载后 + 扫描后 + API 读前惰性兜底；Executable.agent_id 回写经 ApplyAgentIDs 原子落盘，重绑路径身份延续）；httpapi 两端点（只读无写门）+ 座位面/可执行项输出兼容断言（旧 API 保持旧 ID）；设置页 ag_* 身份徽标。**(3) 验证**：测试先行（同步语义族 UT 10 例先红后绿）+ SQLite IT（v7 建表/CRUD/别名唯一与冲突）+ 端点测试；go vet（it st）+ go test -race 全量 + -tags it 全绿；SPA tsc+build 绿；ST 面由 CI 桩环境把关。CHANGELOG [Unreleased] 登记；定版与发布另行指令 |
 | v2.00 | 2026-10-28 | Mosaic 项目组 / Kimi | **按负责人裁定刷新 Roadmap**：确立 `X.Y.Z = 大版本 / 领域中版本 / 特性小版本`，第三段每次只交付一个特性，第二段按领域聚合成系统能力。RFC-0018 自 0.5 起拆为长期 Agent 与职责（0.5.0–0.5.5）、Mission 与本地执行（0.6.0–0.6.12）、记忆与可移植恢复（0.7.0–0.7.9）、有界 Swarm（0.8.0–0.8.8）、持续事务与环境维护（0.9.0–0.9.8）；0.10 对话优化为 1.0.0 前最后一个领域中版本。P0 改为 0.5 开工门槛，P5 保留为 1.0 后的条件领域。同步 README、CHANGELOG 版本规则与 RFC-0018 的阶段映射；RFC 设计仍为 Draft，版本规划不表示功能已经实现。 |
 | v1.99 | 2026-10-28 | Mosaic 项目组 / Codex | 登记 [RFC-0018：长期 Agent、Slot 与圆桌到 Swarm 的协作闭环](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（Draft，v0.2 审校修订），涵盖生命周期、可迁移记忆与上下文、Runtime 及环境管理员；P0–P5 为提案内分阶段设计，尚未纳入已承诺交付范围或发行版本，现行里程碑和路线图不变。 |

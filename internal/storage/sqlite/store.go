@@ -1699,6 +1699,55 @@ VALUES (?, ?, ?, ?, ?, ?)`,
 	return n > 0, nil
 }
 
+// EnsureAgentWithAlias 原子 get-or-create（审校 P1#1）：建 Agent 行与别名认领
+// 同一事务——别名已被占（含并发竞争）时回滚候选行并回读既有归属者；成功则
+// 两行同落。任一时点库内要么"整行落库"要么"什么都不留"，不存在孤立 Agent。
+func (s *Store) EnsureAgentWithAlias(ctx context.Context, a personalagent.Agent, kind personalagent.AliasKind, value string) (string, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("sqlite: identity claim begin: %w", err)
+	}
+	var owner string
+	err = tx.QueryRowContext(ctx,
+		`SELECT agent_id FROM agent_aliases WHERE alias_kind = ? AND alias_value = ?`, string(kind), value).
+		Scan(&owner)
+	switch {
+	case err == nil:
+		_ = tx.Rollback()
+		return owner, false, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		_ = tx.Rollback()
+		return "", false, fmt.Errorf("sqlite: identity claim probe: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO agents (agent_id, display_name, adapter, status, source, created_at)
+VALUES (?, ?, ?, ?, ?, ?)`,
+		a.AgentID, a.DisplayName, a.Adapter, a.Status, a.Source, a.CreatedAt); err != nil {
+		_ = tx.Rollback()
+		return "", false, fmt.Errorf("sqlite: identity claim agent: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO agent_aliases (alias_kind, alias_value, agent_id, created_at) VALUES (?, ?, ?, ?)`,
+		string(kind), value, a.AgentID, now); err != nil {
+		_ = tx.Rollback()
+		// 并发兜底：别名唯一约束碰撞（另一事务已认领）→ 回读胜者，候选行随回滚丢弃
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			var winner string
+			if qerr := s.db.QueryRowContext(ctx,
+				`SELECT agent_id FROM agent_aliases WHERE alias_kind = ? AND alias_value = ?`, string(kind), value).
+				Scan(&winner); qerr == nil {
+				return winner, false, nil
+			}
+		}
+		return "", false, fmt.Errorf("sqlite: identity claim alias: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", false, fmt.Errorf("sqlite: identity claim commit: %w", err)
+	}
+	return a.AgentID, true, nil
+}
+
 // ListAgents 全量 Agent，按创建序（rowid = 首次同步的确定性顺序）。
 func (s *Store) ListAgents(ctx context.Context) ([]personalagent.Agent, error) {
 	rows, err := s.db.QueryContext(ctx, `
@@ -1791,3 +1840,4 @@ func (s *Store) AliasesOf(ctx context.Context, agentID string) ([]personalagent.
 	}
 	return out, rows.Err()
 }
+

@@ -57,16 +57,21 @@ CREATE TABLE agent_aliases (   -- 旧 ID → AgentID 解析面（只增）
 故 BotID 相等即同一 Agent）。算法：
 
 1. 读注册表全量 `List()`（含未启用项——身份不取决于是否可执行）；
-2. 对每个 exe：按 `bot_id` 别名查 Agent——
-   - 未命中 → 建 Agent（`ag_*`，display_name 取 adapter 家族名，source=
-     migration）+ 登记三别名：bot_id、`prof_<adapter>_<sanitize(bot_id)>`、
-     `par_<adapter>_<sanitize(bot_id)>`；
-   - 命中 → 只补缺失别名（防御旧库半迁移），不更新既有字段；
-3. 回写 `Executable.AgentID`（新字段，批量收集后一次 `ApplyAgentIDs` 原子落盘，
+2. 对每个 exe：**建行与 bot_id 别名认领为同一事务的原子 get-or-create**
+   （`EnsureAgentWithAlias`，v0.2 审校修订 P1）——别名已被占（含并发竞争）时
+   整体回滚新建行并回读既有归属者，返回实际 ownerID；同步全程只使用成功
+   认领的 AgentID 派生其余别名与回写注册表。由此并发首次同步与建行后中断
+   重试都不产生重复或孤立 Agent（要么整行落库、要么什么都不留）；
+3. 派生别名：`prof_<adapter>_<sanitize(bot_id)>` 与 `par_<adapter>_
+   <sanitize(bot_id)>`（同 Agent 同值幂等补齐，防御旧库半迁移）；
+4. 回写 `Executable.AgentID`（新字段，批量收集后一次 `ApplyAgentIDs` 原子落盘，
    与注册表写锁同临界区）；
-4. 别名碰撞（同 kind+value 已指向另一 Agent）：**不合并、不覆盖**，记冲突
+5. 别名碰撞（同 kind+value 已指向**另一** Agent）：**不合并、不覆盖**，记冲突
    note（启动日志可见），进入待处理——RFC-0018 §13.2.2"不按同名或同 adapter
-   自动合并"的落地。同名/同 adapter 从不构成合并依据。
+   自动合并"的落地。同名/同 adapter 从不构成合并依据。同步内去重按
+   (kind, value, **目标 Agent**) 三元组判同（v0.2 审校修订 P2#3）——不同
+   BotID 经 sanitize 归一化碰撞到同一派生别名时，第二身份必须照常进入
+   冲突检测并出现在 Conflicts，不得因本轮已处理过该别名值而静默跳过。
 
 派生函数（sanitize + 前缀拼接）从 `internal/app/app.go` **收敛到
 personalagent 单源**（`ProfileKeyOf / ProfileIDOf / ParticipantIDOf`），app.go
@@ -77,7 +82,9 @@ participantID 解析不漂移）。
 
 - 启动装载注册表后（覆盖磁盘存量，先于扫描）；
 - 启动扫描完成后（覆盖新发现/重绑）；
-- 身份 API 读前惰性同步（手动登记/删除可执行项后无需挂钩子即最终一致）。
+- 身份 API 读前惰性同步；**可执行项列表与手动登记端点读前同样触发同步**
+  （v0.2 审校修订 P2#2——设置页登记后刷新只读 executables，不先调身份 API，
+  同步必须在该用户流程内发生，徽标才会即时出现）。
 
 同步只增不改：可执行项从注册表消失**不删 Agent**（Agent 跨部署位置存在是
 本特性的意义；退役是 0.5.1 的显式动作）。身份表永不回写注册表身份字段
@@ -127,6 +134,13 @@ title/tooltip）。完整 Agent 导航入口（RFC-0018 §12）随 0.5.1+ 交付
   `agent_events` 事件流先行（无状态转移可记，空转复杂度）；
   按显示名 / adapter 合并（违反 RFC-0018 不自动合并裁定）；
   座位 participantID 直接换成 agent_id（重写存量事件引用，违反不重写旧事件）。
+
+## 修订记录
+
+| 版本 | 日期 | 说明 |
+|---|---|---|
+| v0.1 | 2026-10-28 | 初稿（随 0.5.0 实施） |
+| v0.2 | 2026-10-29 | 审校修订（1 P1 + 3 P2）：#1 建行与 bot_id 认领改 `EnsureAgentWithAlias` 同事务原子 get-or-create（竞争回读胜者，中断不留半行）；#3 同步内去重改按 (kind, value, 目标 Agent) 判同——跨身份派生碰撞照常上报 Conflicts；#2 可执行项列表/手动登记读取触发身份同步（设置页登记后徽标即时可见）；#4 补真实 v0.4.1 旧库升级 IT（旧表结构建库 + 旧记录保留 + 迁移登记断言） |
 
 ## 实现清单
 

@@ -13,6 +13,11 @@ var ErrAliasConflict = errors.New("personalagent: 别名已指向另一 Agent")
 type Store interface {
 	// EnsureAgent 幂等建 Agent（按 agent_id）；返回是否新建。
 	EnsureAgent(ctx context.Context, a Agent) (created bool, err error)
+	// EnsureAgentWithAlias 原子 get-or-create（审校 P1#1）：建 Agent 行与认领
+	// (kind, value) 别名在同一事务——别名已被占（含并发竞争）时回读既有归属者
+	// 并丢弃候选行（created=false，ownerID=胜者）；成功则两行同落（created=true，
+	// ownerID=候选）。保证任一时点要么"整行落库"要么"什么都不留"。
+	EnsureAgentWithAlias(ctx context.Context, a Agent, kind AliasKind, value string) (ownerID string, created bool, err error)
 	// ListAgents 全量 Agent，按创建序（插入序）。
 	ListAgents(ctx context.Context) ([]Agent, error)
 	// AgentByAlias 别名解析；未登记 ok=false。
