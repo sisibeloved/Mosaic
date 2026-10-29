@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.08 |
+| 版本 | v2.09 |
 | 日期 | 2026-10-29 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -177,6 +177,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.09 | 2026-10-29 | Mosaic 项目组 / ZCode | **0.5.2 审校修复（独立审校报告：1 P1 + 5 P2 全确认，"建议修复后定版"）——ADR-0019 v0.2 修订**。**(1) P1 修订丢配置**：修订提交以完整最新模板为基线，未编辑段逐字带入（仅改名称其余不变，冒烟钉住）。**(2) P2 交付规范逗号拆散**：仅按行拆分。**(3) P2 空 runtime 绕过校验**：workspace_access 空串/缺失建与追加两路径 400（UT+端点反例）。**(4) P2 历史停留旧版本**：读取直接依赖 (open, rev)+请求序号拒旧响应。**(5) P2 失败显示"暂无版本"**：错误态+显式重试，只缓存成功。**(6) P2 迟到修订覆盖草稿**：修订加载请求序号守卫，新建/取消/切换使在途失效。全量 vet/race/it/st + SPA 绿；真机回归冒烟（空 runtime 400 双路径 + 全字段基线追加 + 并发 1–6 连续 + 重启持久）ALL-PASS |
 | v2.08 | 2026-10-29 | Mosaic 项目组 / ZCode | **0.5.2 开发（负责人指令："开发0.5.2版本"）——SlotSpec 版本化职责模板（ADR-0019）**。**(1) 设计先行**：ADR-0019（RFC-0018 §5.1 候选语义正式定形——必填/上限/模式/枚举/required-optional 不相交；不可变版本行裁定——版本行本身即历史不另设事件流；slot. 前缀用户选定谱系标识）+ OpenAPI 契约冻结（五端点，apigen/TS 双链重生成）。**(2) 实现**：新域 internal/slot + SQLite migration v9（(slot_spec_id, version) 主键；追加取号在 BEGIN IMMEDIATE 临界区——0.5.1 P1 修复的全库约定延续）；校验单源服务层；httpapi 写面三读二端点（生产写门）；设置页"职责"区（列表/新建/按最新预填修订/版本历史懒加载）。**(3) 验证**：测试先行（UT 校验族 20 例 + 版本语义 + 并发追加 8 路 / IT v9 新库 + v0.5.1 真旧库升级 + 并发追加恰连续 / 端点测试，先红后绿）；vet(it st) + -race 全量 + -tags it/st + SPA 绿；真机冒烟全链 + 并发追加 6 路 1–8 连续唯一 + 重启持久 ALL-PASS。CHANGELOG [Unreleased] 登记；定版与发布另行指令 |
 | v2.07 | 2026-10-29 | Mosaic 项目组 / ZCode | **定版 v0.5.1（负责人指令："发布0.5.1"）——0.5 领域线第二件**。CHANGELOG [Unreleased]（Added 生命周期状态机与事件流 + Fixed 审校五项）定版 **[0.5.1] - 2026-10-29**，保留空 [Unreleased]；README 当前版本推进 v0.5.1、路线图 0.5 系列标注 0.5.1 已交付；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.5.1 + GitHub Release 发布说明与 Windows 产物（wails 按新版本字样重建）；CI 三平台绿基线（ced1b49 已验，定版提交复验） |
 | v2.06 | 2026-10-29 | Mosaic 项目组 / ZCode | **0.5.1 审校修复（独立审校报告：1 P1 + 4 P2 全确认，"建议修复后定版"）——ADR-0018 v0.2 修订**。**(1) P1 并发操作外泄 500**：身份写事务族（Ensure/EnsureAgentWithAlias/Transition/Retire）改 BEGIN IMMEDIATE 临界区——deferred 事务 WAL 下读后升级撞 SQLITE_BUSY_SNAPSHOT 的败者改按 409 语义返回（审校复现口径 100 次重复并发 IT 全绿；HTTP 层 8 路并发实测恰一 200、7×409、零 500）。**(2) P2 退役中断滞留 retiring**：空承诺门 retire 改 RetireAgent 单事务一次提交两段事件与终态（预取消上下文 IT 证整体回滚）；承诺门前置判定，retiring 重试只补终段。**(3) P2 前端事件明细不随操作刷新**：操作成功按修订号失效事件缓存并重读（连续操作每次最新）。**(4) P2 手动登记后身份列表缺新身份**：登记/启停后同步刷新身份列表。**(5) P2 旧响应覆盖新状态**：操作锁保持至刷新完成 + 请求序号拒过期响应。补测试：并发 retire UT（8 路恰一胜者、事件恰两条）+ 原子退役/混合并发写 IT；UT 并发族 -race ×30 + 全量 vet/race/it/st + SPA 绿；真机回归冒烟（全转移链 + HTTP 8 路并发 + 重启持久）ALL-PASS |
