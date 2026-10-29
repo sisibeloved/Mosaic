@@ -28,3 +28,4 @@ ADR 记录**实现与工具选型**级决策。三层文档分工：架构级约
 | [ADR-0018](ADR-0018-agent-lifecycle.md) | Agent 生命周期状态机与事件流（0.5.1）：active/suspended/retiring/retired、agent_events 流与 v7 存量回填、身份写面（create/lifecycle/events） | Accepted |
 | [ADR-0019](ADR-0019-slotspec-versioned-template.md) | SlotSpec 版本化职责模板（0.5.2）：不可变版本行、内容 Schema 定形（职责/技能/工具 required-optional/上下文/交付/委派/运行时/交接）、slot_spec_id 用户选定谱系 | Accepted |
 | [ADR-0020](ADR-0020-slotinstance-knowledge-namespace.md) | SlotInstance 职责实例与独立知识命名空间（0.5.3）：si_ 生成式实例、slotns_ 全局唯一稳定命名空间、模板谱系引用不钉版、默认标题存档 + 模板现势连接 | Accepted |
+| [ADR-0021](ADR-0021-binding-lifecycle.md) | Binding 任职状态机与交接（0.5.4）：preparing/ready/active/draining/released/blocked、单 active 部分唯一索引、固定模板版本、Readiness/Drain 双端口预埋（0.5.5/0.6 挂靠）、交接位 handoff_note | Accepted |
