@@ -1840,4 +1840,3 @@ func (s *Store) AliasesOf(ctx context.Context, agentID string) ([]personalagent.
 	}
 	return out, rows.Err()
 }
-

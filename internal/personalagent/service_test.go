@@ -11,7 +11,7 @@ import (
 
 type fakeRegistry struct {
 	exes   []ExecutableSnapshot
-	mu     sync.Mutex // 并发同步测试件：ApplyAgentIDs 写侧互斥
+	mu     sync.Mutex        // 并发同步测试件：ApplyAgentIDs 写侧互斥
 	applie map[string]string // ApplyAgentIDs 收到的 exeID → agentID
 }
 

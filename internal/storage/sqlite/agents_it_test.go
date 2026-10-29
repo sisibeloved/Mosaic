@@ -108,7 +108,7 @@ func TestEnsureAgentWithAliasAtomicIT(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			a := personalagent.Agent{
-				AgentID:   "ag_atomic_" + strconv.Itoa(i),
+				AgentID:     "ag_atomic_" + strconv.Itoa(i),
 				DisplayName: "Codex", Adapter: "codex",
 				Status: "active", Source: "migration", CreatedAt: "2026-10-29T10:00:00.000Z",
 			}
