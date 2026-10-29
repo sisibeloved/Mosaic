@@ -219,3 +219,8 @@ func (s *Service) Get(ctx context.Context, agentID string) (*AgentView, bool, er
 func (s *Service) ResolveAlias(ctx context.Context, kind AliasKind, value string) (string, bool, error) {
 	return s.store.AgentByAlias(ctx, kind, value)
 }
+
+// AgentByID 单查 Agent 行（外部域任职校验等经端口消费；0.5.4）。
+func (s *Service) AgentByID(ctx context.Context, agentID string) (Agent, bool, error) {
+	return s.store.AgentByID(ctx, agentID)
+}

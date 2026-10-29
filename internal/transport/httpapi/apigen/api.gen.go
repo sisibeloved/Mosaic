@@ -17,16 +17,79 @@ import (
 
 // Defines values for AgentEventEventType.
 const (
-	Created       AgentEventEventType = "created"
-	StatusChanged AgentEventEventType = "status_changed"
+	AgentEventEventTypeCreated       AgentEventEventType = "created"
+	AgentEventEventTypeStatusChanged AgentEventEventType = "status_changed"
 )
 
 // Valid indicates whether the value is a known member of the AgentEventEventType enum.
 func (e AgentEventEventType) Valid() bool {
 	switch e {
-	case Created:
+	case AgentEventEventTypeCreated:
 		return true
-	case StatusChanged:
+	case AgentEventEventTypeStatusChanged:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BindingEventEventType.
+const (
+	BindingEventEventTypeCreated       BindingEventEventType = "created"
+	BindingEventEventTypeStatusChanged BindingEventEventType = "status_changed"
+)
+
+// Valid indicates whether the value is a known member of the BindingEventEventType enum.
+func (e BindingEventEventType) Valid() bool {
+	switch e {
+	case BindingEventEventTypeCreated:
+		return true
+	case BindingEventEventTypeStatusChanged:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BindingViewScope.
+const (
+	BindingViewScopeWorkspace BindingViewScope = "workspace"
+)
+
+// Valid indicates whether the value is a known member of the BindingViewScope enum.
+func (e BindingViewScope) Valid() bool {
+	switch e {
+	case BindingViewScopeWorkspace:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BindingViewStatus.
+const (
+	BindingViewStatusActive    BindingViewStatus = "active"
+	BindingViewStatusBlocked   BindingViewStatus = "blocked"
+	BindingViewStatusDraining  BindingViewStatus = "draining"
+	BindingViewStatusPreparing BindingViewStatus = "preparing"
+	BindingViewStatusReady     BindingViewStatus = "ready"
+	BindingViewStatusReleased  BindingViewStatus = "released"
+)
+
+// Valid indicates whether the value is a known member of the BindingViewStatus enum.
+func (e BindingViewStatus) Valid() bool {
+	switch e {
+	case BindingViewStatusActive:
+		return true
+	case BindingViewStatusBlocked:
+		return true
+	case BindingViewStatusDraining:
+		return true
+	case BindingViewStatusPreparing:
+		return true
+	case BindingViewStatusReady:
+		return true
+	case BindingViewStatusReleased:
 		return true
 	default:
 		return false
@@ -935,19 +998,19 @@ func (e SheetTransferIssueAction) Valid() bool {
 
 // Defines values for SheetTransferIssueSeverity.
 const (
-	Blocked SheetTransferIssueSeverity = "blocked"
-	Info    SheetTransferIssueSeverity = "info"
-	Warning SheetTransferIssueSeverity = "warning"
+	SheetTransferIssueSeverityBlocked SheetTransferIssueSeverity = "blocked"
+	SheetTransferIssueSeverityInfo    SheetTransferIssueSeverity = "info"
+	SheetTransferIssueSeverityWarning SheetTransferIssueSeverity = "warning"
 )
 
 // Valid indicates whether the value is a known member of the SheetTransferIssueSeverity enum.
 func (e SheetTransferIssueSeverity) Valid() bool {
 	switch e {
-	case Blocked:
+	case SheetTransferIssueSeverityBlocked:
 		return true
-	case Info:
+	case SheetTransferIssueSeverityInfo:
 		return true
-	case Warning:
+	case SheetTransferIssueSeverityWarning:
 		return true
 	default:
 		return false
@@ -1061,13 +1124,13 @@ func (e SheetTransferUpdatePreviewDirection) Valid() bool {
 
 // Defines values for SlotInstanceViewScope.
 const (
-	Workspace SlotInstanceViewScope = "workspace"
+	SlotInstanceViewScopeWorkspace SlotInstanceViewScope = "workspace"
 )
 
 // Valid indicates whether the value is a known member of the SlotInstanceViewScope enum.
 func (e SlotInstanceViewScope) Valid() bool {
 	switch e {
-	case Workspace:
+	case SlotInstanceViewScopeWorkspace:
 		return true
 	default:
 		return false
@@ -1397,6 +1460,72 @@ type BackupSummary struct {
 	CreatedAt time.Time `json:"created_at"`
 	SizeBytes int64     `json:"size_bytes"`
 }
+
+// BindingEvent binding_events 流事件（migration v11；seq 升序即流序）。
+type BindingEvent struct {
+	BindingId  string                `json:"binding_id"`
+	EventType  BindingEventEventType `json:"event_type"`
+	OccurredAt time.Time             `json:"occurred_at"`
+
+	// Payload 事件体——created: {agent_id, slot_instance_id, slot_spec_version}；status_changed: {from, to, handoff_note}
+	Payload map[string]interface{} `json:"payload"`
+
+	// Seq 全表单调流序
+	Seq int64 `json:"seq"`
+}
+
+// BindingEventEventType defines model for BindingEvent.EventType.
+type BindingEventEventType string
+
+// BindingPrepare 建任职请求；slot_spec_version 缺省取谱系最新版（创建即钉住）。
+type BindingPrepare struct {
+	AgentId         string `json:"agent_id"`
+	SlotInstanceId  string `json:"slot_instance_id"`
+	SlotSpecVersion *int   `json:"slot_spec_version,omitempty"`
+}
+
+// BindingRelease 释放请求；handoff_note 为交接备注（接续方经实例任职列表读取）。
+type BindingRelease struct {
+	HandoffNote *string `json:"handoff_note,omitempty"`
+}
+
+// BindingReleaseResult 释放结果；outstanding 仅排空门非空时非空（Binding 停留 draining）。
+type BindingReleaseResult struct {
+	// Binding 任职记录（ADR-0021 / 0.5.4）。status：preparing/ready/active/draining/
+	// released/blocked；released 唯一终态，留作审计不删除。
+	Binding BindingView `json:"binding"`
+
+	// Outstanding 未处置在途工作清单（0.6 Mission 域注入排空门后生效）
+	Outstanding []string `json:"outstanding"`
+}
+
+// BindingView 任职记录（ADR-0021 / 0.5.4）。status：preparing/ready/active/draining/
+// released/blocked；released 唯一终态，留作审计不删除。
+type BindingView struct {
+	AgentId string `json:"agent_id"`
+
+	// BindingId bd_ 前缀生成式
+	BindingId string    `json:"binding_id"`
+	CreatedAt time.Time `json:"created_at"`
+
+	// HandoffNote 释放时交接备注（未释放为空）
+	HandoffNote    string           `json:"handoff_note"`
+	Scope          BindingViewScope `json:"scope"`
+	SlotInstanceId string           `json:"slot_instance_id"`
+
+	// SlotSpecVersion 创建时钉住的模板版本
+	SlotSpecVersion int               `json:"slot_spec_version"`
+	Status          BindingViewStatus `json:"status"`
+
+	// UpdatedAt 最近转移时间
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// BindingViewScope defines model for BindingView.Scope.
+type BindingViewScope string
+
+// BindingViewStatus defines model for BindingView.Status.
+type BindingViewStatus string
 
 // CapabilityList 能力/上下文域要求分层——required 缺失即 blocked、optional 缺失按声明降级（AT-07 准入预埋）；两者不得相交。
 type CapabilityList struct {
@@ -3110,6 +3239,11 @@ type SearchRoomMessagesParams struct {
 	Limit *int    `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// ListSlotBindingsParams defines parameters for ListSlotBindings.
+type ListSlotBindingsParams struct {
+	SlotInstanceId *string `form:"slot_instance_id,omitempty" json:"slot_instance_id,omitempty"`
+}
+
 // RequestRestoreJSONBody defines parameters for RequestRestore.
 type RequestRestoreJSONBody struct {
 	BackupId string                        `json:"backup_id"`
@@ -3172,6 +3306,12 @@ type UploadRoomAttachmentMultipartRequestBody UploadRoomAttachmentMultipartBody
 
 // SubmitRoomCommandJSONRequestBody defines body for SubmitRoomCommand for application/json ContentType.
 type SubmitRoomCommandJSONRequestBody = RoomCommand
+
+// PrepareSlotBindingJSONRequestBody defines body for PrepareSlotBinding for application/json ContentType.
+type PrepareSlotBindingJSONRequestBody = BindingPrepare
+
+// ReleaseSlotBindingJSONRequestBody defines body for ReleaseSlotBinding for application/json ContentType.
+type ReleaseSlotBindingJSONRequestBody = BindingRelease
 
 // CreateSlotInstanceJSONRequestBody defines body for CreateSlotInstance for application/json ContentType.
 type CreateSlotInstanceJSONRequestBody = SlotInstanceCreate
@@ -3373,6 +3513,24 @@ type ServerInterface interface {
 	// GetRoomSnapshot 快照（版本 + 水位 + 投影/算法版本 + Timeline 投影 + 房间名/参与者视图）
 	// (GET /v1/rooms/{room_id}/snapshot)
 	GetRoomSnapshot(w http.ResponseWriter, r *http.Request, roomId RoomID)
+	// ListSlotBindings 任职记录列表（0.5.4 / ADR-0021）
+	// (GET /v1/slots/bindings)
+	ListSlotBindings(w http.ResponseWriter, r *http.Request, params ListSlotBindingsParams)
+	// PrepareSlotBinding 建任职（preparing → readiness 门 → ready）
+	// (POST /v1/slots/bindings)
+	PrepareSlotBinding(w http.ResponseWriter, r *http.Request)
+	// GetSlotBinding 任职记录详情
+	// (GET /v1/slots/bindings/{binding_id})
+	GetSlotBinding(w http.ResponseWriter, r *http.Request, bindingId string)
+	// ActivateSlotBinding 激活任职（ready → active）
+	// (POST /v1/slots/bindings/{binding_id}/activate)
+	ActivateSlotBinding(w http.ResponseWriter, r *http.Request, bindingId string)
+	// ListSlotBindingEvents 任职事件流（只读审计面）
+	// (GET /v1/slots/bindings/{binding_id}/events)
+	ListSlotBindingEvents(w http.ResponseWriter, r *http.Request, bindingId string)
+	// ReleaseSlotBinding 释放任职（active → draining → released；ready → released）
+	// (POST /v1/slots/bindings/{binding_id}/release)
+	ReleaseSlotBinding(w http.ResponseWriter, r *http.Request, bindingId string)
 	// ListSlotInstances 职责实例列表（0.5.3 / ADR-0020）
 	// (GET /v1/slots/instances)
 	ListSlotInstances(w http.ResponseWriter, r *http.Request)
@@ -5009,6 +5167,157 @@ func (siw *ServerInterfaceWrapper) GetRoomSnapshot(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// ListSlotBindings operation middleware
+func (siw *ServerInterfaceWrapper) ListSlotBindings(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListSlotBindingsParams
+
+	// ------------- Optional query parameter "slot_instance_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "slot_instance_id", r.URL.Query(), &params.SlotInstanceId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "slot_instance_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "slot_instance_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSlotBindings(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PrepareSlotBinding operation middleware
+func (siw *ServerInterfaceWrapper) PrepareSlotBinding(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PrepareSlotBinding(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSlotBinding operation middleware
+func (siw *ServerInterfaceWrapper) GetSlotBinding(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "binding_id" -------------
+	var bindingId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "binding_id", r.PathValue("binding_id"), &bindingId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "binding_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSlotBinding(w, r, bindingId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ActivateSlotBinding operation middleware
+func (siw *ServerInterfaceWrapper) ActivateSlotBinding(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "binding_id" -------------
+	var bindingId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "binding_id", r.PathValue("binding_id"), &bindingId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "binding_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ActivateSlotBinding(w, r, bindingId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListSlotBindingEvents operation middleware
+func (siw *ServerInterfaceWrapper) ListSlotBindingEvents(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "binding_id" -------------
+	var bindingId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "binding_id", r.PathValue("binding_id"), &bindingId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "binding_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSlotBindingEvents(w, r, bindingId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReleaseSlotBinding operation middleware
+func (siw *ServerInterfaceWrapper) ReleaseSlotBinding(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "binding_id" -------------
+	var bindingId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "binding_id", r.PathValue("binding_id"), &bindingId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "binding_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReleaseSlotBinding(w, r, bindingId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListSlotInstances operation middleware
 func (siw *ServerInterfaceWrapper) ListSlotInstances(w http.ResponseWriter, r *http.Request) {
 
@@ -5439,6 +5748,12 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/instances", wrapper.ListSlotInstances)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/slots/instances", wrapper.CreateSlotInstance)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/instances/{slot_instance_id}", wrapper.GetSlotInstance)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/bindings", wrapper.ListSlotBindings)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/slots/bindings", wrapper.PrepareSlotBinding)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/slots/bindings/{binding_id}/activate", wrapper.ActivateSlotBinding)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/slots/bindings/{binding_id}/release", wrapper.ReleaseSlotBinding)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/bindings/{binding_id}", wrapper.GetSlotBinding)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/bindings/{binding_id}/events", wrapper.ListSlotBindingEvents)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/enable", wrapper.EnableHarnessExecutable)

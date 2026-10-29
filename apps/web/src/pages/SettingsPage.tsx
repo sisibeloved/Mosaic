@@ -5,7 +5,7 @@
 // 分层规矩：房间讨论策略在房间内调（右侧信息面板）；本页子导航纯前端态（刷新回
 // 默认 Agent 区）。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type BackupSummary, type Executable, type IdentityAgent, type MonitorView, type SettingsDoc, type SlotSpecContent, type SlotSpecSummary, type SlotSpecView, type SlotInstanceView } from "../api/client";
+import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type BackupSummary, type Executable, type IdentityAgent, type MonitorView, type SettingsDoc, type SlotSpecContent, type SlotSpecSummary, type SlotSpecView, type SlotInstanceView, type BindingView } from "../api/client";
 import { AppLogo } from "../components/AppLogo";
 import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
 import { UpdateEditor } from "../components/UpdateEditor";
@@ -516,6 +516,7 @@ export function SettingsPage() {
       setSlotBusy(false);
     }
   };
+
 
   // RFC-0016 外部云文档面：provider 状态加载（404 = 未装配）
   useEffect(() => {
@@ -1137,6 +1138,7 @@ export function SettingsPage() {
                       >
                         {inst.knowledge_namespace} · {absoluteTime(inst.created_at)}
                       </p>
+                      <InstanceBindings instanceID={inst.slot_instance_id} specLatest={inst.spec.latest_version} />
                     </li>
                   ))}
                 </ul>
@@ -1878,4 +1880,158 @@ function SlotVersionsDetails({ slotSpecID, rev }: { slotSpecID: string; rev: num
       )}
     </details>
   );
+}
+
+/** 实例任职管理（ADR-0021 / 0.5.4）：展开即拉取；任职（Agent 下拉 + 钉版本）、
+ * 激活（单 active——冲突可见 409）、释放（交接备注输入）。 */
+function InstanceBindings({ instanceID, specLatest }: { instanceID: string; specLatest: number }) {
+  const [open, setOpen] = useState(false);
+  const [bindings, setBindings] = useState<BindingView[] | null>(null);
+  const [agents, setAgents] = useState<{ agent_id: string; display_name: string }[]>([]);
+  const [agentID, setAgentID] = useState("");
+  const [version, setVersion] = useState<string>("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [rev, setRev] = useState(0);
+  const seq = useRef(0);
+
+  useEffect(() => {
+    if (!open) return;
+    const cur = ++seq.current;
+    void Promise.all([api.listSlotBindings(instanceID), api.identityAgents()])
+      .then(([b, a]) => {
+        if (seq.current !== cur) return;
+        setBindings(b.bindings);
+        const active = a.agents.filter((x) => x.status === "active");
+        setAgents(active.map((x) => ({ agent_id: x.agent_id, display_name: x.display_name })));
+        setAgentID((prev) => prev || active[0]?.agent_id || "");
+      })
+      .catch((e) => {
+        if (seq.current !== cur) return;
+        setMsg(e instanceof Error ? e.message : String(e));
+      });
+  }, [open, instanceID, rev]);
+
+  const act = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await fn();
+      setRev((r) => r + 1);
+    } catch (e) {
+      setMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const activeBinding = (bindings ?? []).find((b) => b.status === "active");
+  const readyOnes = (bindings ?? []).filter((b) => b.status === "ready");
+  const draining = (bindings ?? []).filter((b) => b.status === "draining");
+  const released = (bindings ?? []).filter((b) => b.status === "released").slice(-1);
+
+  return (
+    <details onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+      <summary className="cursor-pointer select-none text-[11px] text-faint">
+        任职{activeBinding ? `：${agentNameOf(agents, activeBinding.agent_id)}（在任）` : "：空缺"}
+      </summary>
+      <div className="mt-1 flex flex-col gap-1.5">
+        {msg && <p className="text-[11px] text-danger">{msg}</p>}
+        {bindings === null ? (
+          <p className="text-[11px] text-faint">加载中…</p>
+        ) : (
+          <>
+            {activeBinding && (
+              <div className="flex flex-wrap items-center gap-1.5 rounded-lg bg-surface-2 px-2 py-1.5 text-[11px]">
+                <span className="font-medium">在任：{agentNameOf(agents, activeBinding.agent_id)}</span>
+                <ExeBadge>v{activeBinding.slot_spec_version}（钉住）</ExeBadge>
+                <input
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  placeholder="交接备注（可选，≤4096 字）"
+                  className="min-w-0 flex-1 rounded border border-border bg-surface px-1.5 py-px text-[11px] outline-none focus:border-accent"
+                />
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void act(() => api.releaseSlotBinding(activeBinding.binding_id, note.trim() || undefined))}
+                  className="rounded bg-surface-3 px-2 py-px text-[11px] text-danger disabled:opacity-40"
+                >
+                  释放并排空
+                </button>
+              </div>
+            )}
+            {draining.map((b) => (
+              <p key={b.binding_id} className="text-[11px] text-warn">
+                排空中（{agentNameOf(agents, b.agent_id)}）——在途工作清空后重试释放
+              </p>
+            ))}
+            {readyOnes.length > 0 && (
+              <div className="flex flex-col gap-1">
+                {readyOnes.map((b) => (
+                  <div key={b.binding_id} className="flex items-center gap-1.5 text-[11px]">
+                    <span>就绪：{agentNameOf(agents, b.agent_id)}</span>
+                    <ExeBadge>v{b.slot_spec_version}</ExeBadge>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void act(() => api.activateSlotBinding(b.binding_id))}
+                      className="rounded bg-surface-3 px-2 py-px text-[11px] disabled:opacity-40"
+                    >
+                      激活{activeBinding ? "（需先释放现任）" : ""}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {released.length > 0 && released[0].handoff_note && (
+              <p className="rounded bg-surface-2 px-2 py-1 text-[11px] text-dim" title={released[0].binding_id}>
+                最近交接（{agentNameOf(agents, released[0].agent_id)}）：{released[0].handoff_note}
+              </p>
+            )}
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+              <select
+                value={agentID}
+                onChange={(e) => setAgentID(e.target.value)}
+                className="rounded border border-border bg-surface-2 px-1.5 py-px outline-none"
+              >
+                {agents.map((a) => (
+                  <option key={a.agent_id} value={a.agent_id}>
+                    {a.display_name}
+                  </option>
+                ))}
+              </select>
+              <input
+                value={version}
+                onChange={(e) => setVersion(e.target.value)}
+                placeholder={`钉版本（空 = 最新 v${specLatest}）`}
+                className="w-32 rounded border border-border bg-surface-2 px-1.5 py-px outline-none"
+              />
+              <button
+                type="button"
+                disabled={busy || !agentID}
+                onClick={() =>
+                  void act(() =>
+                    api.prepareSlotBinding({
+                      slot_instance_id: instanceID,
+                      agent_id: agentID,
+                      ...(version.trim() ? { slot_spec_version: Number(version.trim()) } : {}),
+                    }),
+                  )
+                }
+                className="rounded bg-surface-3 px-2 py-px disabled:opacity-40"
+              >
+                建任职
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function agentNameOf(agents: { agent_id: string; display_name: string }[], id: string): string {
+  return agents.find((a) => a.agent_id === id)?.display_name ?? id;
 }

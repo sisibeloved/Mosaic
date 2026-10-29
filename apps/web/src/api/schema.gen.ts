@@ -1175,6 +1175,110 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/slots/bindings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 任职记录列表（0.5.4 / ADR-0021）
+         * @description Binding 是 Agent 任职 SlotInstance 的记录（§3.1）：每次换人新建，
+         *     旧记录留作审计。可按实例过滤；创建序。
+         */
+        get: operations["listSlotBindings"];
+        put?: never;
+        /**
+         * 建任职（preparing → readiness 门 → ready）
+         * @description Binding 创建即固定 slot_spec_version（缺省取该谱系最新版；模板后续
+         *     演进不改变在任）。Agent 须存在且 active（409 agent_not_active）。
+         *     readiness 核对随 0.5.5 交付——当前门恒通过，一次调用至 ready。
+         */
+        post: operations["prepareSlotBinding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/slots/bindings/{binding_id}/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 激活任职（ready → active）
+         * @description 单 active 不变量（§3.1/§13.5）：同实例已有 active 任职 → 409
+         *     active_binding_exists（拒绝激活，不静默换人——排空释放后重试）。
+         */
+        post: operations["activateSlotBinding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/slots/bindings/{binding_id}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 释放任职（active → draining → released；ready → released）
+         * @description 在任释放经排空门：在途工作（0.6 Mission 域注入）非空时停留 draining
+         *     并返回未处置清单；当前恒空——两段事件与终态同一事务一次提交。交接
+         *     备注随释放入档（接续方经实例列表读取）。
+         */
+        post: operations["releaseSlotBinding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/slots/bindings/{binding_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 任职记录详情 */
+        get: operations["getSlotBinding"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/slots/bindings/{binding_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 任职事件流（只读审计面） */
+        get: operations["listSlotBindingEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/harness/executables": {
         parameters: {
             query?: never;
@@ -2474,6 +2578,62 @@ export interface components {
             slot_spec_id: string;
             /** @description 展示标题（可选） */
             title?: string;
+        };
+        /** @description 建任职请求；slot_spec_version 缺省取谱系最新版（创建即钉住）。 */
+        BindingPrepare: {
+            slot_instance_id: string;
+            agent_id: string;
+            slot_spec_version?: number;
+        };
+        /** @description 释放请求；handoff_note 为交接备注（接续方经实例任职列表读取）。 */
+        BindingRelease: {
+            handoff_note?: string;
+        };
+        /**
+         * @description 任职记录（ADR-0021 / 0.5.4）。status：preparing/ready/active/draining/
+         *     released/blocked；released 唯一终态，留作审计不删除。
+         */
+        BindingView: {
+            /** @description bd_ 前缀生成式 */
+            binding_id: string;
+            agent_id: string;
+            slot_instance_id: string;
+            /** @description 创建时钉住的模板版本 */
+            slot_spec_version: number;
+            /** @enum {string} */
+            scope: "workspace";
+            /** @enum {string} */
+            status: "preparing" | "ready" | "active" | "draining" | "released" | "blocked";
+            /** @description 释放时交接备注（未释放为空） */
+            handoff_note: string;
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * Format: date-time
+             * @description 最近转移时间
+             */
+            updated_at: string;
+        };
+        /** @description 释放结果；outstanding 仅排空门非空时非空（Binding 停留 draining）。 */
+        BindingReleaseResult: {
+            binding: components["schemas"]["BindingView"];
+            /** @description 未处置在途工作清单（0.6 Mission 域注入排空门后生效） */
+            outstanding: string[];
+        };
+        /** @description binding_events 流事件（migration v11；seq 升序即流序）。 */
+        BindingEvent: {
+            /**
+             * Format: int64
+             * @description 全表单调流序
+             */
+            seq: number;
+            binding_id: string;
+            /** @enum {string} */
+            event_type: "created" | "status_changed";
+            /** @description 事件体——created: {agent_id, slot_instance_id, slot_spec_version}；status_changed: {from, to, handoff_note} */
+            payload: Record<string, never>;
+            /** Format: date-time */
+            occurred_at: string;
         };
         /**
          * @description 职责实例（ADR-0020 / 0.5.3）。spec 为模板现势连接（现算）；实例自身
@@ -5112,6 +5272,283 @@ export interface operations {
                 };
             };
             /** @description 实例不存在（instance_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listSlotBindings: {
+        parameters: {
+            query?: {
+                slot_instance_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 任职记录列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        bindings: components["schemas"]["BindingView"][];
+                    };
+                };
+            };
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    prepareSlotBinding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BindingPrepare"];
+            };
+        };
+        responses: {
+            /** @description 已就绪（ready） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BindingView"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            /** @description 实例或 Agent 不存在（instance_not_found / agent_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description agent_not_active（Agent 非 active）或 invalid_spec_version（版本超谱系） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    activateSlotBinding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已激活 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BindingView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 任职记录不存在（binding_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description invalid_transition（状态不匹配）或 active_binding_exists（同实例已有在任） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    releaseSlotBinding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BindingRelease"];
+            };
+        };
+        responses: {
+            /** @description 释放结果（含未处置清单） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BindingReleaseResult"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 任职记录不存在（binding_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description invalid_transition（终态或状态不匹配） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getSlotBinding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BindingView"];
+                };
+            };
+            /** @description 任职记录不存在（binding_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listSlotBindingEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 事件列表（seq 升序） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        events: components["schemas"]["BindingEvent"][];
+                    };
+                };
+            };
+            /** @description 任职记录不存在（binding_not_found） */
             404: {
                 headers: {
                     [name: string]: unknown;

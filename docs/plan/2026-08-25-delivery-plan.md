@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.13 |
+| 版本 | v2.14 |
 | 日期 | 2026-10-29 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -177,6 +177,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.14 | 2026-10-29 | Mosaic 项目组 / ZCode | **0.5.4 开发（负责人指令："开发0.5.4版本"）——Binding 任职状态机与交接（ADR-0021）**。**(1) 设计先行**：ADR-0021（preparing/ready/active/draining/released/blocked 状态机；单 active 库级部分唯一索引兜底（AT-13）；固定模板版本；Readiness/Drain 双端口预埋（0.5.5/0.6 挂靠）；交接位 handoff_note）+ OpenAPI 契约冻结（六端点，apigen/TS 双链重生成）。**(2) 实现**：internal/slot/binding 域 + SQLite migration v11（slot_bindings 投影 + binding_events 流 + 部分唯一索引）；release 两段一事务（0.5.1 P2#4 教训前置规避）；Agent 前置校验两时点（AgentLookup 端口 app 装配注入）；httpapi 六端点；设置页实例行任职管理块。**(3) 验证**：测试先行（UT 9 例含双门注入 / IT v11 新库 + v0.5.3 真旧库升级 + 8 轮交替并发恒 1 在任 / 端点全链，先红后绿）；vet(it st) + -race 全量 + -tags it/st + SPA 绿；真机冒烟（全链 + 并发恰一在任 + 重启持久）ALL-PASS。CHANGELOG [Unreleased] 登记；定版与发布另行指令 |
 | v2.13 | 2026-10-29 | Mosaic 项目组 / ZCode | **定版 v0.5.3（负责人指令："发布"）——0.5 领域线第四件**。CHANGELOG [Unreleased]（Added SlotInstance 职责实例与独立知识命名空间 + Fixed 审校五项 P2）定版 **[0.5.3] - 2026-10-29**，保留空 [Unreleased]；README 当前版本推进 v0.5.3、路线图 0.5 系列标注 0.5.3 已交付；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.5.3 + GitHub Release 发布说明与 Windows 产物（wails 按新版本字样重建）；CI 三平台绿基线（870a136 已验，定版提交复验） |
 | v2.12 | 2026-10-29 | Mosaic 项目组 / ZCode | **0.5.3 审校修复（独立审校报告：5 项 P2 全确认，未发现 P0/P1，"建议修复后定版"）——ADR-0020 v0.2 修订**。**(1) P2 并发列表矛盾版本**：组装改先实例后模板 + 防御钳制（UT 陈旧注入 + IT 并发交替施压钉住 latest ≥ from_version）。**(2) P2 现势读取失败伪装成功**：详情错误传播（故障注入 UT）。**(3) P2 显式空标题绕过**：省略/空串/空白三态区分（端点反例）。**(4) P2 列表失败永远加载中**：错误态 + 保留旧列表 + 重试。**(5) P2 修订后实例旧信息**：模板提交后同步刷新实例现势。全量 vet/race/it/st + SPA 绿；真机回归冒烟 ALL-PASS |
 | v2.11 | 2026-10-29 | Mosaic 项目组 / ZCode | **0.5.3 开发（负责人指令："开发0.5.3版本"）——SlotInstance 职责实例与独立知识命名空间（ADR-0020）**。**(1) 设计先行**：ADR-0020（实例引用谱系不钉版——Binding 才固定；slotns_ 命名空间全局唯一终身稳定；存档标题与模板现势连接分离；无状态机不发明）+ OpenAPI 契约冻结（三端点，apigen/TS 双链重生成）。**(2) 实现**：internal/slot 扩展（SlotInstance + InstanceSpecNow 现势连接单源 LatestByLineage）+ SQLite migration v10（knowledge_namespace UNIQUE）；si_/slotns_ 生成式 ID（ag_ 同族，选项可注入）；httpapi 三端点（写门）；设置页"职责实例"块（模板下拉实例化表单 + 实例列表）。**(3) 验证**：测试先行（UT 7 例含并发 8 路全唯一 / IT v10 新库 + v0.5.2 真旧库升级 + UNIQUE 实测 / 端点测试，先红后绿）；vet(it st) + -race 全量 + -tags it/st + SPA 绿；真机冒烟（默认/显式标题 + 404/400 + 模板演进存档不变现势演进 + 写门 + 并发全唯一 + 重启持久）ALL-PASS。CHANGELOG [Unreleased] 登记；定版与发布另行指令 |

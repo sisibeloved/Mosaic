@@ -290,8 +290,10 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			logger.Warn("agent 身份别名冲突（不合并，待人工处置）", "detail", c)
 		}
 	}
-	// 职责模板域（RFC-0018 §5 / ADR-0019，0.5.2）：SQLite v9 表，不可变版本行。
-	slotSvc := slot.New(store, slot.WithNow(clock))
+	// 职责域（RFC-0018 §5 / ADR-0019–0021，0.5.2–0.5.4）：模板/实例/任职。
+	// AgentLookup 适配身份服务（任职需要 Agent 存在且 active；依赖方向：
+	// app 装配注入，slot 不 import personalagent）。
+	slotSvc := slot.New(store, slot.WithNow(clock), slot.WithAgentLookup(identityAgentLookup{identitySvc}))
 	scanDone := make(chan struct{})
 	go func() {
 		defer close(scanDone)
@@ -757,4 +759,18 @@ func countRooms(store *sqlite.Store) (int, error) {
 		return 0, err
 	}
 	return len(rooms), nil
+}
+
+// identityAgentLookup slot.AgentLookup 的身份域适配（任职前置校验：
+// Agent 须存在且 active；ADR-0021）。
+type identityAgentLookup struct {
+	svc *personalagent.Service
+}
+
+func (l identityAgentLookup) AgentStatus(ctx context.Context, agentID string) (string, bool, error) {
+	a, ok, err := l.svc.AgentByID(ctx, agentID)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	return a.Status, true, nil
 }

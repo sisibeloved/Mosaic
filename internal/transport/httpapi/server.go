@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -1450,4 +1451,205 @@ func (s *server) GetSlotInstance(w http.ResponseWriter, r *http.Request, slotIns
 		return
 	}
 	writeJSON(w, http.StatusOK, inst)
+}
+
+// ---- 任职面（RFC-0018 §3.2/§5.2 / ADR-0021，0.5.4）----
+
+// ListSlotBindings 任职列表（创建序；可按实例过滤）。
+func (s *server) ListSlotBindings(w http.ResponseWriter, r *http.Request, params apigen.ListSlotBindingsParams) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	instanceID := ""
+	if params.SlotInstanceId != nil {
+		instanceID = *params.SlotInstanceId
+	}
+	bindings, err := s.deps.Slots.ListBindings(r.Context(), instanceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "slot_read_failed", err.Error())
+		return
+	}
+	if bindings == nil {
+		bindings = []slot.Binding{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"bindings": bindings})
+}
+
+// PrepareSlotBinding 建任职（preparing → readiness 门 → ready）。
+func (s *server) PrepareSlotBinding(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.BindingPrepare
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	version := 0
+	if req.SlotSpecVersion != nil {
+		version = int(*req.SlotSpecVersion)
+	}
+	b, err := s.deps.Slots.PrepareBinding(r.Context(), req.SlotInstanceId, req.AgentId, version)
+	if err != nil {
+		writeBindingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, b)
+}
+
+// ActivateSlotBinding 激活任职（ready → active；单 active）。
+func (s *server) ActivateSlotBinding(w http.ResponseWriter, r *http.Request, bindingID string) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	b, err := s.deps.Slots.ActivateBinding(r.Context(), bindingID)
+	if err != nil {
+		writeBindingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, b)
+}
+
+// ReleaseSlotBinding 释放任职（排空门 + 交接备注）。
+func (s *server) ReleaseSlotBinding(w http.ResponseWriter, r *http.Request, bindingID string) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.BindingRelease
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	note := ""
+	if req.HandoffNote != nil {
+		note = *req.HandoffNote
+	}
+	res, err := s.deps.Slots.ReleaseBinding(r.Context(), bindingID, note)
+	if err != nil {
+		writeBindingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// GetSlotBinding 任职详情 / 404。
+func (s *server) GetSlotBinding(w http.ResponseWriter, r *http.Request, bindingID string) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	b, ok, err := s.deps.Slots.GetBinding(r.Context(), bindingID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "slot_read_failed", err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "binding_not_found", "任职记录不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, b)
+}
+
+// ListSlotBindingEvents 任职事件流（只读审计面）。
+func (s *server) ListSlotBindingEvents(w http.ResponseWriter, r *http.Request, bindingID string) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	evs, ok, err := s.deps.Slots.BindingEvents(r.Context(), bindingID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "slot_read_failed", err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "binding_not_found", "任职记录不存在")
+		return
+	}
+	out := make([]apigen.AgentEvent, 0, len(evs))
+	for _, ev := range evs {
+		view, err := bindingEventView(ev)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "slot_read_failed", err.Error())
+			return
+		}
+		out = append(out, view)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": out})
+}
+
+// writeBindingError 任职域错误映射。
+func writeBindingError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, slot.ErrBindingNotFound):
+		writeError(w, http.StatusNotFound, "binding_not_found", err.Error())
+	case errors.Is(err, slot.ErrInstanceNotFound):
+		writeError(w, http.StatusNotFound, "instance_not_found", err.Error())
+	case errors.Is(err, slot.ErrAgentNotFound):
+		writeError(w, http.StatusNotFound, "agent_not_found", err.Error())
+	case errors.Is(err, slot.ErrNotFound):
+		writeError(w, http.StatusNotFound, "spec_not_found", err.Error())
+	case errors.Is(err, slot.ErrAgentNotActive):
+		writeError(w, http.StatusConflict, "agent_not_active", err.Error())
+	case errors.Is(err, slot.ErrInvalidSpecVersion):
+		writeError(w, http.StatusConflict, "invalid_spec_version", err.Error())
+	case errors.Is(err, slot.ErrActiveBindingExists):
+		writeError(w, http.StatusConflict, "active_binding_exists", err.Error())
+	case errors.Is(err, slot.ErrInvalidTransition):
+		writeError(w, http.StatusConflict, "invalid_transition", err.Error())
+	case errors.Is(err, slot.ErrInvalidBinding):
+		writeError(w, http.StatusBadRequest, "invalid_binding", err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "slot_write_failed", err.Error())
+	}
+}
+
+// bindingEventView slot.BindingEvent → apigen.AgentEvent 形状（BindingEvent
+// schema 与之同构：seq/event_type/payload/occurred_at + 绑定主体 ID）。
+func bindingEventView(ev slot.BindingEvent) (apigen.AgentEvent, error) {
+	ts, err := time.Parse(time.RFC3339, ev.OccurredAt)
+	if err != nil {
+		return apigen.AgentEvent{}, fmt.Errorf("事件时间 %q: %w", ev.OccurredAt, err)
+	}
+	var payload map[string]interface{}
+	if len(ev.Payload) > 0 {
+		if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+			return apigen.AgentEvent{}, fmt.Errorf("事件 payload: %w", err)
+		}
+	}
+	return apigen.AgentEvent{
+		Seq:        ev.Seq,
+		AgentId:    ev.BindingID,
+		EventType:  apigen.AgentEventEventType(ev.EventType),
+		OccurredAt: ts,
+		Payload:    payload,
+	}, nil
 }

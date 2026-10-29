@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -253,6 +254,34 @@ CREATE TABLE IF NOT EXISTS slot_instances (
   created_at          TEXT NOT NULL
 );
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (10, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+
+-- v11（RFC-0018 §3.2/§5.2 / ADR-0021，0.5.4）：Binding 任职。slot_bindings 为
+-- 投影（转移 = 单事务[校验→投影→事件]）；单 active 由部分唯一索引库级兜底
+-- （AT-13：并发激活恒 ≤1 在任）；released 终态留审计，无 UPDATE-外/DELETE
+-- 路径。binding_events 为 append-only 流（created / status_changed）。
+CREATE TABLE IF NOT EXISTS slot_bindings (
+  binding_id        TEXT PRIMARY KEY,
+  agent_id          TEXT NOT NULL,
+  slot_instance_id  TEXT NOT NULL,
+  slot_spec_version INTEGER NOT NULL,
+  scope             TEXT NOT NULL,
+  status            TEXT NOT NULL,
+  handoff_note      TEXT NOT NULL DEFAULT '',
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_slot_bindings_single_active
+  ON slot_bindings(slot_instance_id) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_slot_bindings_instance ON slot_bindings(slot_instance_id);
+CREATE TABLE IF NOT EXISTS binding_events (
+  seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+  binding_id  TEXT NOT NULL,
+  event_type  TEXT NOT NULL,
+  payload     TEXT NOT NULL,
+  occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_binding_events_binding ON binding_events(binding_id, seq);
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (11, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 `
 
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
@@ -2317,6 +2346,193 @@ SELECT slot_spec_id, name, version FROM slot_specs
 			return nil, fmt.Errorf("sqlite: scan latest by lineage: %w", err)
 		}
 		out[id] = slot.InstanceSpecNow{Name: name, LatestVersion: version}
+	}
+	return out, rows.Err()
+}
+
+// ---- 任职域（RFC-0018 §3.2/§5.2 / ADR-0021，0.5.4；v11 表，端口实现）----
+
+const bindingCols = `binding_id, agent_id, slot_instance_id, slot_spec_version, scope, status, handoff_note, created_at, updated_at`
+
+func scanBinding(row interface{ Scan(...any) error }) (slot.Binding, error) {
+	var b slot.Binding
+	if err := row.Scan(&b.BindingID, &b.AgentID, &b.SlotInstanceID, &b.SlotSpecVersion,
+		&b.Scope, &b.Status, &b.HandoffNote, &b.CreatedAt, &b.UpdatedAt); err != nil {
+		return slot.Binding{}, err
+	}
+	return b, nil
+}
+
+func appendBindingEvent(ctx context.Context, q identityExec, bindingID, eventType string, payload map[string]string, occurredAt string) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("sqlite: binding event payload: %w", err)
+	}
+	if _, err := q.ExecContext(ctx, `
+INSERT INTO binding_events (binding_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+		bindingID, eventType, string(raw), occurredAt); err != nil {
+		return fmt.Errorf("sqlite: append binding %s: %w", eventType, err)
+	}
+	return nil
+}
+
+// CreateBinding 建任职行（preparing + created 事件同一事务）。
+func (s *Store) CreateBinding(ctx context.Context, b slot.Binding) (slot.Binding, error) {
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO slot_bindings (`+bindingCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			b.BindingID, b.AgentID, b.SlotInstanceID, b.SlotSpecVersion,
+			b.Scope, b.Status, b.HandoffNote, b.CreatedAt, b.UpdatedAt); err != nil {
+			return fmt.Errorf("sqlite: create binding: %w", err)
+		}
+		return appendBindingEvent(ctx, q, b.BindingID, slot.EventCreated, map[string]string{
+			"agent_id": b.AgentID, "slot_instance_id": b.SlotInstanceID,
+			"slot_spec_version": strconv.Itoa(b.SlotSpecVersion),
+		}, b.CreatedAt)
+	})
+	if err != nil {
+		return slot.Binding{}, err
+	}
+	return b, nil
+}
+
+// BindingByID 单查任职；未知 ok=false。
+func (s *Store) BindingByID(ctx context.Context, bindingID string) (slot.Binding, bool, error) {
+	var b slot.Binding
+	err := s.db.QueryRowContext(ctx,
+		`SELECT `+bindingCols+` FROM slot_bindings WHERE binding_id = ?`, bindingID).
+		Scan(&b.BindingID, &b.AgentID, &b.SlotInstanceID, &b.SlotSpecVersion,
+			&b.Scope, &b.Status, &b.HandoffNote, &b.CreatedAt, &b.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return slot.Binding{}, false, nil
+	}
+	if err != nil {
+		return slot.Binding{}, false, fmt.Errorf("sqlite: binding by id: %w", err)
+	}
+	return b, true, nil
+}
+
+// ListBindings 任职列表（创建序）；instanceID 非空时按实例过滤。
+func (s *Store) ListBindings(ctx context.Context, instanceID string) ([]slot.Binding, error) {
+	query := `SELECT ` + bindingCols + ` FROM slot_bindings`
+	args := []any{}
+	if instanceID != "" {
+		query += ` WHERE slot_instance_id = ?`
+		args = append(args, instanceID)
+	}
+	query += ` ORDER BY rowid`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list bindings: %w", err)
+	}
+	defer rows.Close()
+	out := []slot.Binding{}
+	for rows.Next() {
+		b, err := scanBinding(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: scan binding: %w", err)
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// TransitionBinding 事务转移（读在 BEGIN IMMEDIATE 临界区内）；激活撞单
+// active 部分唯一索引 → ErrActiveBindingExists。
+func (s *Store) TransitionBinding(ctx context.Context, bindingID string, allowedFrom []string, to string, extras map[string]string, occurredAt string) (string, bool, error) {
+	var from string
+	var ok bool
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		err := q.QueryRowContext(ctx,
+			`SELECT status FROM slot_bindings WHERE binding_id = ?`, bindingID).Scan(&from)
+		if errors.Is(err, sql.ErrNoRows) {
+			return slot.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("sqlite: binding probe: %w", err)
+		}
+		if !allowedFromHas(allowedFrom, from) {
+			return nil
+		}
+		if _, err := q.ExecContext(ctx,
+			`UPDATE slot_bindings SET status = ?, updated_at = ? WHERE binding_id = ?`, to, occurredAt, bindingID); err != nil {
+			if to == slot.BindingActive && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+				return slot.ErrActiveBindingExists // 单 active 部分唯一索引（AT-13）
+			}
+			return fmt.Errorf("sqlite: binding project: %w", err)
+		}
+		payload := map[string]string{"from": from, "to": to}
+		for k, v := range extras {
+			payload[k] = v
+		}
+		if err := appendBindingEvent(ctx, q, bindingID, slot.EventStatusChanged, payload, occurredAt); err != nil {
+			return err
+		}
+		ok = true
+		return nil
+	})
+	if err != nil {
+		return "", false, err
+	}
+	return from, ok, nil
+}
+
+// ReleaseBinding 原子释放：draining/released 两段事件 + 终态投影（含交接
+// 备注）同一事务一次提交；ok=false = 非 active。
+func (s *Store) ReleaseBinding(ctx context.Context, bindingID string, handoffNote, occurredAt string) (string, bool, error) {
+	var from string
+	var ok bool
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		err := q.QueryRowContext(ctx,
+			`SELECT status FROM slot_bindings WHERE binding_id = ?`, bindingID).Scan(&from)
+		if errors.Is(err, sql.ErrNoRows) {
+			return slot.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("sqlite: release probe: %w", err)
+		}
+		if from != slot.BindingActive {
+			return nil
+		}
+		if err := appendBindingEvent(ctx, q, bindingID, slot.EventStatusChanged,
+			map[string]string{"from": from, "to": slot.BindingDraining, "handoff_note": handoffNote}, occurredAt); err != nil {
+			return err
+		}
+		if err := appendBindingEvent(ctx, q, bindingID, slot.EventStatusChanged,
+			map[string]string{"from": slot.BindingDraining, "to": slot.BindingReleased}, occurredAt); err != nil {
+			return err
+		}
+		if _, err := q.ExecContext(ctx,
+			`UPDATE slot_bindings SET status = ?, handoff_note = ?, updated_at = ? WHERE binding_id = ?`,
+			slot.BindingReleased, handoffNote, occurredAt, bindingID); err != nil {
+			return fmt.Errorf("sqlite: release project: %w", err)
+		}
+		ok = true
+		return nil
+	})
+	if err != nil {
+		return "", false, err
+	}
+	return from, ok, nil
+}
+
+// BindingEvents 任职事件流（seq 升序）。
+func (s *Store) BindingEvents(ctx context.Context, bindingID string) ([]slot.BindingEvent, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT seq, binding_id, event_type, payload, occurred_at FROM binding_events WHERE binding_id = ? ORDER BY seq`, bindingID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: binding events: %w", err)
+	}
+	defer rows.Close()
+	out := []slot.BindingEvent{}
+	for rows.Next() {
+		var ev slot.BindingEvent
+		var payload string
+		if err := rows.Scan(&ev.Seq, &ev.BindingID, &ev.EventType, &payload, &ev.OccurredAt); err != nil {
+			return nil, fmt.Errorf("sqlite: scan binding event: %w", err)
+		}
+		ev.Payload = json.RawMessage(payload)
+		out = append(out, ev)
 	}
 	return out, rows.Err()
 }

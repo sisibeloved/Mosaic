@@ -24,6 +24,8 @@ export type SlotSpecView = Schemas["SlotSpecView"];
 export type SlotSpecSummary = Schemas["SlotSpecSummary"];
 export type SlotInstanceCreate = Schemas["SlotInstanceCreate"];
 export type SlotInstanceView = Schemas["SlotInstanceView"];
+export type BindingView = Schemas["BindingView"];
+export type BindingReleaseResult = Schemas["BindingReleaseResult"];
 export type TaskItem = Schemas["TaskItem"];
 export type SearchHit = Schemas["SearchHit"];
 export type RuntimeOptions = Schemas["RuntimeOptions"];
@@ -492,6 +494,21 @@ export const api = {
   },
   getSlotInstance(slotInstanceID: string): Promise<SlotInstanceView> {
     return request(`/v1/slots/instances/${encodeURIComponent(slotInstanceID)}`);
+  },
+  /** 0.5.4 任职记录列表（可按实例过滤）。 */
+  listSlotBindings(slotInstanceID?: string): Promise<{ bindings: BindingView[] }> {
+    const q = slotInstanceID ? `?slot_instance_id=${encodeURIComponent(slotInstanceID)}` : "";
+    return request(`/v1/slots/bindings${q}`);
+  },
+  /** 0.5.4 建任职（preparing → readiness 门 → ready；Agent 须 active）。 */
+  prepareSlotBinding(req: { slot_instance_id: string; agent_id: string; slot_spec_version?: number }): Promise<BindingView> {
+    return post("/v1/slots/bindings", req);
+  },
+  activateSlotBinding(bindingID: string): Promise<BindingView> {
+    return post(`/v1/slots/bindings/${encodeURIComponent(bindingID)}/activate`, {});
+  },
+  releaseSlotBinding(bindingID: string, handoffNote?: string): Promise<BindingReleaseResult> {
+    return post(`/v1/slots/bindings/${encodeURIComponent(bindingID)}/release`, handoffNote ? { handoff_note: handoffNote } : {});
   },
   /** 0.5.1 生命周期转移（ADR-0018）：suspend/resume/retire（retire 经承诺门）。 */
   transitionAgent(agentID: string, action: AgentLifecycleAction, reason?: string): Promise<AgentLifecycleResult> {

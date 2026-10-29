@@ -4,13 +4,17 @@ package httpapi
 // 校验 400 + 写门。
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/sisibeloved/Mosaic/internal/agent"
+	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/room"
 	"github.com/sisibeloved/Mosaic/internal/slot"
 	"github.com/sisibeloved/Mosaic/internal/transport/sse"
@@ -450,4 +454,239 @@ func TestSlotInstanceExplicitEmptyTitle(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated || inst.Title != "值守" {
 		t.Fatalf("省略标题: status=%d title=%q", resp.StatusCode, inst.Title)
 	}
+}
+
+// TestSlotBindingsEndpoints 任职全链：prepare（默认/钉版/挂起 Agent 409）→
+// activate（冲突 409）→ release（交接备注）→ 列表过滤/详情/事件/404/写门。
+func TestSlotBindingsEndpoints(t *testing.T) {
+	ts := bindingTestServer(t)
+
+	// 谱系 + 实例 + Agent（经身份 API 手动建）
+	resp := postSlot(t, ts.URL+"/v1/slots/specs", `{"slot_spec_id":"slot.duty","name":"值守","responsibility":"r","deliverables":["d"]}`)
+	resp.Body.Close()
+	resp = postSlot(t, ts.URL+"/v1/slots/instances", `{"slot_spec_id":"slot.duty"}`)
+	var inst struct {
+		SlotInstanceID string `json:"slot_instance_id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&inst)
+	resp.Body.Close()
+	agentResp := postSlot(t, ts.URL+"/v1/identity/agents", `{"display_name":"值守 Agent"}`)
+	var agentDoc struct {
+		AgentID string `json:"agent_id"`
+	}
+	_ = json.NewDecoder(agentResp.Body).Decode(&agentDoc)
+	agentResp.Body.Close()
+	secondAgent := postSlot(t, ts.URL+"/v1/identity/agents", `{"display_name":"接任 Agent"}`)
+	var secondDoc struct {
+		AgentID string `json:"agent_id"`
+	}
+	_ = json.NewDecoder(secondAgent.Body).Decode(&secondDoc)
+	secondAgent.Body.Close()
+
+	var errDoc struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+
+	// 未知实例 / 未知 Agent → 404
+	resp = postSlot(t, ts.URL+"/v1/slots/bindings", `{"slot_instance_id":"si_missing","agent_id":"`+agentDoc.AgentID+`"}`)
+	_ = json.NewDecoder(resp.Body).Decode(&errDoc)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound || errDoc.Error.Code != "instance_not_found" {
+		t.Fatalf("未知实例: %d %q", resp.StatusCode, errDoc.Error.Code)
+	}
+	resp = postSlot(t, ts.URL+"/v1/slots/bindings", `{"slot_instance_id":"`+inst.SlotInstanceID+`","agent_id":"ag_missing"}`)
+	_ = json.NewDecoder(resp.Body).Decode(&errDoc)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound || errDoc.Error.Code != "agent_not_found" {
+		t.Fatalf("未知 Agent: %d %q", resp.StatusCode, errDoc.Error.Code)
+	}
+	// 超谱系版本 → 409 invalid_spec_version
+	resp = postSlot(t, ts.URL+"/v1/slots/bindings", `{"slot_instance_id":"`+inst.SlotInstanceID+`","agent_id":"`+agentDoc.AgentID+`","slot_spec_version":9}`)
+	_ = json.NewDecoder(resp.Body).Decode(&errDoc)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict || errDoc.Error.Code != "invalid_spec_version" {
+		t.Fatalf("超谱系: %d %q", resp.StatusCode, errDoc.Error.Code)
+	}
+
+	// prepare 201（默认钉 v1）
+	resp = postSlot(t, ts.URL+"/v1/slots/bindings", `{"slot_instance_id":"`+inst.SlotInstanceID+`","agent_id":"`+agentDoc.AgentID+`"}`)
+	var b1 struct {
+		BindingID       string `json:"binding_id"`
+		Status          string `json:"status"`
+		SlotSpecVersion int    `json:"slot_spec_version"`
+		AgentID         string `json:"agent_id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&b1)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated || !strings.HasPrefix(b1.BindingID, "bd_") ||
+		b1.Status != "ready" || b1.SlotSpecVersion != 1 {
+		t.Fatalf("prepare: %d %+v", resp.StatusCode, b1)
+	}
+
+	// activate → active
+	resp = postSlot(t, ts.URL+"/v1/slots/bindings/"+b1.BindingID+"/activate", `{}`)
+	var act struct {
+		Status string `json:"status"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&act)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || act.Status != "active" {
+		t.Fatalf("activate: %d %+v", resp.StatusCode, act)
+	}
+
+	// 二任 prepare ok、activate → 409 active_binding_exists
+	resp = postSlot(t, ts.URL+"/v1/slots/bindings", `{"slot_instance_id":"`+inst.SlotInstanceID+`","agent_id":"`+secondDoc.AgentID+`"}`)
+	var b2 struct {
+		BindingID string `json:"binding_id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&b2)
+	resp.Body.Close()
+	resp = postSlot(t, ts.URL+"/v1/slots/bindings/"+b2.BindingID+"/activate", `{}`)
+	_ = json.NewDecoder(resp.Body).Decode(&errDoc)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict || errDoc.Error.Code != "active_binding_exists" {
+		t.Fatalf("二任激活: %d %q", resp.StatusCode, errDoc.Error.Code)
+	}
+
+	// 释放首任（交接备注）→ 二任激活成功
+	resp = postSlot(t, ts.URL+"/v1/slots/bindings/"+b1.BindingID+"/release", `{"handoff_note":"在办 A 待续"}`)
+	var rel struct {
+		Binding struct {
+			Status      string `json:"status"`
+			HandoffNote string `json:"handoff_note"`
+		} `json:"binding"`
+		Outstanding []string `json:"outstanding"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&rel)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || rel.Binding.Status != "released" ||
+		rel.Binding.HandoffNote != "在办 A 待续" || len(rel.Outstanding) != 0 {
+		t.Fatalf("release: %d %+v", resp.StatusCode, rel)
+	}
+	resp = postSlot(t, ts.URL+"/v1/slots/bindings/"+b2.BindingID+"/activate", `{}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("接任激活: %d", resp.StatusCode)
+	}
+
+	// 终态再动 → 409 invalid_transition
+	resp = postSlot(t, ts.URL+"/v1/slots/bindings/"+b1.BindingID+"/release", `{}`)
+	_ = json.NewDecoder(resp.Body).Decode(&errDoc)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict || errDoc.Error.Code != "invalid_transition" {
+		t.Fatalf("终态再动: %d %q", resp.StatusCode, errDoc.Error.Code)
+	}
+
+	// 列表过滤 / 详情 / 事件 / 404
+	list, _ := http.Get(ts.URL + "/v1/slots/bindings?slot_instance_id=" + inst.SlotInstanceID)
+	var listDoc struct {
+		Bindings []struct {
+			BindingID string `json:"binding_id"`
+			Status    string `json:"status"`
+		} `json:"bindings"`
+	}
+	_ = json.NewDecoder(list.Body).Decode(&listDoc)
+	list.Body.Close()
+	if len(listDoc.Bindings) != 2 {
+		t.Fatalf("过滤列表: %d", len(listDoc.Bindings))
+	}
+	one, _ := http.Get(ts.URL + "/v1/slots/bindings/" + b1.BindingID)
+	one.Body.Close()
+	if one.StatusCode != http.StatusOK {
+		t.Fatalf("详情: %d", one.StatusCode)
+	}
+	evs, _ := http.Get(ts.URL + "/v1/slots/bindings/" + b1.BindingID + "/events")
+	var evDoc struct {
+		Events []struct {
+			EventType string `json:"event_type"`
+		} `json:"events"`
+	}
+	_ = json.NewDecoder(evs.Body).Decode(&evDoc)
+	evs.Body.Close()
+	if evs.StatusCode != http.StatusOK || len(evDoc.Events) != 5 {
+		t.Fatalf("事件: %d n=%d（created + preparing→ready + active + 两段释放）", evs.StatusCode, len(evDoc.Events))
+	}
+	miss, _ := http.Get(ts.URL + "/v1/slots/bindings/bd_missing")
+	_ = json.NewDecoder(miss.Body).Decode(&errDoc)
+	miss.Body.Close()
+	if miss.StatusCode != http.StatusNotFound || errDoc.Error.Code != "binding_not_found" {
+		t.Fatalf("详情404: %d %q", miss.StatusCode, errDoc.Error.Code)
+	}
+
+	// 写门：跨源 403 / 非 JSON 415
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/slots/bindings",
+		strings.NewReader(`{"slot_instance_id":"`+inst.SlotInstanceID+`","agent_id":"`+agentDoc.AgentID+`"}`))
+	req.Header.Set("Origin", "http://evil.example")
+	req.Header.Set("Content-Type", "application/json")
+	gate, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("跨源: %v", err)
+	}
+	_ = json.NewDecoder(gate.Body).Decode(&errDoc)
+	gate.Body.Close()
+	if gate.StatusCode != http.StatusForbidden || errDoc.Error.Code != "origin_rejected" {
+		t.Fatalf("跨源: %d %q", gate.StatusCode, errDoc.Error.Code)
+	}
+	req2, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/slots/bindings/"+b2.BindingID+"/activate", strings.NewReader(""))
+	req2.Header.Set("Content-Type", "text/plain")
+	gate2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("文本: %v", err)
+	}
+	gate2.Body.Close()
+	if gate2.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("激活文本类型: %d", gate2.StatusCode)
+	}
+}
+
+// emptyIdentityRegistry 身份域空注册表件（binding 测试只需手动建 Agent）。
+type emptyIdentityRegistry struct{}
+
+func (emptyIdentityRegistry) Snapshot() []personalagent.ExecutableSnapshot  { return nil }
+func (emptyIdentityRegistry) ApplyAgentIDs(map[string]string) (bool, error) { return false, nil }
+
+// bindingTestServer 身份 + 职责双装配（任职需要手动 Agent 与模板实例）。
+func bindingTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	store := room.NewMemStore()
+	svc := room.NewService(room.Config{
+		Store:  store,
+		Clock:  func() string { return "2026-10-29T12:00:00.000Z" },
+		NewID:  func(prefix string) string { return prefix + "_id" },
+		Tenant: "ten_local",
+	})
+	var seq atomic.Int64
+	ident := personalagent.New(personalagent.NewMemStore(), emptyIdentityRegistry{},
+		personalagent.WithNewAgentID(func() string { return "ag_seq_" + strconv.FormatInt(seq.Add(1), 10) }),
+		personalagent.WithNow(func() string { return "2026-10-29T12:00:00.000Z" }))
+	ts := httptest.NewServer(New(Deps{
+		SVC: svc, Reader: store, Hub: sse.NewHub(),
+		Actor: room.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Slots: slot.New(slot.NewMemStore(), slot.WithNow(func() string { return "2026-10-29T12:00:00.000Z" }),
+			slot.WithAgentLookup(identAgents{ident})),
+		Identity: ident,
+		Seats: func() []room.AgentSeat {
+			return []room.AgentSeat{{
+				ParticipantID: "par_echo",
+				Profile:       agent.Profile{ProfileID: "prof_echo", Adapter: "echo", DisplayName: "Echo"},
+			}}
+		},
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// identAgents slot.AgentLookup 的测试适配（经身份服务）。
+type identAgents struct {
+	svc *personalagent.Service
+}
+
+func (l identAgents) AgentStatus(ctx context.Context, agentID string) (string, bool, error) {
+	a, ok, err := l.svc.AgentByID(ctx, agentID)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	return a.Status, true, nil
 }

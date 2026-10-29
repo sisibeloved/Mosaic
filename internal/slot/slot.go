@@ -24,8 +24,14 @@ var (
 	ErrInvalidSpec = errors.New("slot: 模板内容不合法")
 	// ErrSpecExists 谱系已存在（建谱系唯一冲突；演进走 AppendVersion）。
 	ErrSpecExists = errors.New("slot: 谱系已存在")
-	// ErrNotFound 谱系不存在。
+	// ErrNotFound 谱系不存在（兼容既有语义）。
 	ErrNotFound = errors.New("slot: 谱系不存在")
+	// ErrInstanceNotFound 职责实例不存在（任职路径细分）。
+	ErrInstanceNotFound = fmt.Errorf("%w：实例不存在", ErrNotFound)
+	// ErrAgentNotFound Agent 不存在（任职路径细分）。
+	ErrAgentNotFound = fmt.Errorf("%w：Agent 不存在", ErrNotFound)
+	// ErrBindingNotFound 任职记录不存在（细分）。
+	ErrBindingNotFound = fmt.Errorf("%w：任职记录不存在", ErrNotFound)
 )
 
 const SchemaVersion = 1
@@ -113,6 +119,21 @@ type Store interface {
 	InstanceByID(ctx context.Context, slotInstanceID string) (SlotInstance, bool, error)
 	// LatestByLineage 各谱系最新版聚合（实例列表的现势连接单源）。
 	LatestByLineage(ctx context.Context) (map[string]InstanceSpecNow, error)
+	// CreateBinding 建任职行（preparing + created 事件同事务）。
+	CreateBinding(ctx context.Context, b Binding) (Binding, error)
+	// BindingByID 单查任职；未知 ok=false。
+	BindingByID(ctx context.Context, bindingID string) (Binding, bool, error)
+	// ListBindings 任职列表（创建序）；instanceID 非空时按实例过滤。
+	ListBindings(ctx context.Context, instanceID string) ([]Binding, error)
+	// TransitionBinding 事务转移：状态在 allowedFrom 内才更新投影并追加
+	// status_changed 事件（extras 并入事件 payload）；激活撞单 active 部分
+	// 唯一索引 → ErrActiveBindingExists；ok=false = 状态不匹配。
+	TransitionBinding(ctx context.Context, bindingID string, allowedFrom []string, to string, extras map[string]string, occurredAt string) (from string, ok bool, err error)
+	// ReleaseBinding 原子释放（active → draining → released 两段事件与终态
+	// 同一事务一次提交，含交接备注入投影）；ok=false = 非 active。
+	ReleaseBinding(ctx context.Context, bindingID string, handoffNote, occurredAt string) (from string, ok bool, err error)
+	// BindingEvents 任职事件流（seq 升序）。
+	BindingEvents(ctx context.Context, bindingID string) ([]BindingEvent, error)
 }
 
 // Service 职责模板服务：校验单源 + 版本化存取。
@@ -121,6 +142,10 @@ type Service struct {
 	now           func() string
 	newInstanceID func() string
 	newNamespace  func() string
+	newBindingID  func() string
+	readiness     ReadinessChecker // 准入门（0.5.5；缺省 nil = 恒通过）
+	drain         DrainChecker     // 排空门（0.6；缺省 nil = 恒空）
+	agentLookup   AgentLookup      // 身份域查询（nil = 任职端点不可用）
 }
 
 // Option 装配选项（测试注入确定性时钟）。
@@ -136,6 +161,7 @@ func New(store Store, opts ...Option) *Service {
 		now:           func() string { return nowUTC() },
 		newInstanceID: newInstanceID,
 		newNamespace:  newNamespace,
+		newBindingID:  newBindingID,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -148,6 +174,18 @@ func WithNewInstanceID(f func() string) Option { return func(s *Service) { s.new
 
 // WithNewNamespace 注入知识命名空间生成器（缺省：slotns_ + 时间有序 + 随机）。
 func WithNewNamespace(f func() string) Option { return func(s *Service) { s.newNamespace = f } }
+
+// WithNewBindingID 注入任职 ID 生成器（缺省：bd_ + 时间有序 + 随机后缀）。
+func WithNewBindingID(f func() string) Option { return func(s *Service) { s.newBindingID = f } }
+
+// WithReadiness 注入准入门（0.5.5 权限交集/能力核对；缺省 nil = 恒通过）。
+func WithReadiness(c ReadinessChecker) Option { return func(s *Service) { s.readiness = c } }
+
+// WithDrain 注入排空门（0.6 在途工作；缺省 nil = 恒空）。
+func WithDrain(c DrainChecker) Option { return func(s *Service) { s.drain = c } }
+
+// WithAgentLookup 注入身份域查询端口（任职需要 Agent 存在且 active）。
+func WithAgentLookup(l AgentLookup) Option { return func(s *Service) { s.agentLookup = l } }
 
 // Create 建谱系（首版 version=1）。
 func (s *Service) Create(ctx context.Context, slotSpecID string, c SpecContent) (SlotSpec, error) {
