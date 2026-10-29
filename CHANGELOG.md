@@ -1,6 +1,6 @@
 # Changelog
 
-本文件记录 Mosaic 的显著变更，面向使用者和维护者，而不是 git 日志的简单堆砌。格式基于 [Keep a Changelog 1.1.0](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
+本文件记录 Mosaic 的显著变更，面向使用者和维护者，而不是 git 日志的简单堆砌。格式基于 [Keep a Changelog 1.1.0](https://keepachangelog.com/zh-CN/1.1.0/)。版本号位置沿用 `X.Y.Z`；自 0.5 领域线起采用项目约定的“大版本 / 领域中版本 / 特性小版本”规则：第二段按领域聚合系统性交付，第三段每次只交付一个特性，不宣称遵循严格 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) 的功能与修复升位规则；历史版本不回溯改写。
 
 ## [Unreleased]
 
