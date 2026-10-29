@@ -21,7 +21,7 @@
 | 2026-09-26 | [RFC-0016 飞书云文档接入、多 provider 泛化与块模型元数据增补](rfc/2026-09-26-rfc-0016-feishu-extdocs.md) | Accepted |
 | 2026-09-28 | [RFC-0017 协作表格与飞书 / 腾讯文档手动双向交换](rfc/2026-09-28-rfc-0017-spreadsheets.md) | Accepted（M1 已实现，M2/M3 后置） |
 | 2026-10-28 | [RFC-0018 长期 Agent、Slot 与圆桌到 Swarm 的协作闭环](rfc/2026-10-28-rfc-0018-personal-agent-swarm.md) | Approved（2026-10-28；实施按交付计划 v2.00 自 0.5.0 起分阶段推进） |
-| 2026-10-28 | [RFC-0019 个人多设备全量加密备份、导入合并与进度反馈](rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md) | Draft（手动全量导出、用户口令、导入合并、进度窗口与中断恢复） |
+| 2026-10-28 | [RFC-0019 个人多设备全量加密备份、导入合并与进度反馈](rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md) | Draft（手动全量导出、用户口令、导入合并、进度窗口与中断恢复；S1–S6 预排 0.10.0–0.10.5，自动同步另立 RFC） |
 | 2026-08-25 | [Harness 调研报告](research/2026-08-25-harness-survey.md) | Done |
 
 RFC 系列存放于 `rfc/` 目录，状态取 Draft / Reviewing / Approved / Rejected / Superseded；每份 RFC 吸收架构说明书 11.5 中的对应开放问题，Accepted 后回填架构文档与 `api/room-protocol` 工程。
