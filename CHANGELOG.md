@@ -8,6 +8,10 @@
 
 - 新增独立 Agent 身份注册表（0.5.0，RFC-0018 获批后首个领域小版本；负责人指令 2026-10-28："按新的项目计划，设计和测试先行，开发0.5.0版本"）：Agent 成为跨房间、跨部署位置的稳定主体，身份权威自 `harness-registry.json` 迁入 SQLite（migration v7：`agents` + `agent_aliases` 两表，ADR-0017）。**迁移与别名**：以 BotID 为等价键（ADR-0013 重绑语义延伸）幂等迁移——建行与 bot_id 别名认领为同一事务的原子 get-or-create（`EnsureAgentWithAlias`：并发竞争回读胜者、中断不留半行，杜绝重复或孤立身份），每个唯一 BotID 建 `ag_` 前缀 AgentID，旧 ID（bot_id / profile_id / participant_id）收敛为只增别名（旧房间事件里的 participantID 从此有统一解析点；派生函数收敛 personalagent 单源，有逐字节等价测试钉住）；同 BotID 多可执行项归一 Agent，可执行项消失不删 Agent，别名碰撞（指向另一 Agent，含同 adapter 路径经 sanitize 归一化的跨身份派生碰撞）不合并、按 (kind, value, 目标 Agent) 去重后照常上报冲突日志待人工处置。**单向同步**：启动装载后、扫描完成后各同步一次，身份 API 与可执行项列表读前惰性幂等同步兜底（手动登记后设置页刷新 executables 即时获得 agent_id 徽标）；可执行发现表只引用身份（`Executable` 增 `agent_id` 增量字段），身份表永不回写注册表身份字段。**API（契约冻结）**：`GET /v1/identity/agents`（列表：别名集 + 可执行引用现算连接）与 `GET /v1/identity/agents/{agent_id}`（详情 / 404 `identity_not_found`），只读无写门；座位面 `GET /v1/agents` 与既有可执行项输出保持旧 ID 不变（兼容断言测试钉住）。**UI**：设置页可执行项行显示 `ag_*` 身份徽标（title 携完整 ID）。设计与测试先行：RFC-0018 批准（v0.4）+ 架构/RFC-0002/0007 边界对齐（P0 门槛）+ ADR-0017 + OpenAPI 契约冻结 → 迁移 fixture（多 adapter/多实例/祖父化/重绑/同 BotID 归一）golden、同步语义族 UT、SQLite IT、端点与兼容断言，先红后绿；vet + `-race` 全量 + `-tags it` 全部通过。
 
+### Fixed
+
+- 修复 0.5.0 审校发现（独立审校报告"建议修复后定版"，ADR-0017 v0.2）：**(1) P1 并发/中断重复身份**——建 Agent 行与 bot_id 别名认领原先分开提交，并发首次同步各建一行、失败者仍回写自己的 ID，建行后中断也留孤立身份；改同事务原子 get-or-create（`EnsureAgentWithAlias`，别名已被占即回滚候选行回读胜者）。**(2) P2 跨身份别名碰撞静默**——同步内去重原先只按别名类型+值、未比对目标 Agent，同 adapter 路径 `/a/b` 与 `/a_b` 经 sanitize 撞出同派生别名时第二身份每轮绕过冲突检测；改按 (kind, value, 目标 Agent) 三元组判同，碰撞照常上报 Conflicts。**(3) P2 手动登记后徽标缺失**——身份同步原先只在启动与身份 API 读前发生，设置页登记后只刷新可执行列表永远拿不到 agent_id；可执行项列表读前现触发同步。**(4) P2 旧库升级测试缺口**——补真实 v0.4.1 表结构建库（含旧房间事件/outbox 记录）的升级 IT（实证升级实现无缺陷）。**附带（CI ubuntu 腿 -race 实证）**：修复 0.4.1 更新任务 `StartUpdate` 在注册表锁内裸读 `job.done` 与 `finish()` 写入的数据竞态（两把锁不同步；改经 `isDone()` 加锁读，20 次压测全绿）。
+
 ## [0.4.1] - 2026-10-28
 
 ### Added
