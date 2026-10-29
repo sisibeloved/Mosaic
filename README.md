@@ -82,7 +82,7 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 文档
 
-- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.5.2）
+- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.5.3）
 - [架构设计说明书](docs/design/2026-08-13-mosaic-architecture-design.md)
 - [RFC-0001 Room Protocol](docs/design/rfc/2026-08-25-rfc-0001-room-protocol.md)
 - [RFC-0002 Agent Protocol](docs/design/rfc/2026-08-25-rfc-0002-agent-protocol.md)
@@ -94,11 +94,11 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 当前状态与路线图
 
-当前版本 **v0.5.2**（2026-10-29，0.5 长期 Agent 与职责领域第三件——SlotSpec 版本化职责模板（RFC-0018 §5.1 / ADR-0019）：不可变版本行、内容 Schema 定形（职责/技能/工具 required-optional 分层/上下文/交付/委派/运行时/交接）、五端点与设置页职责区，见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收；0.5 系列后续为 SlotInstance（0.5.3）、Binding 与准入（0.5.4–0.5.5）。
+当前版本 **v0.5.3**（2026-10-29，0.5 长期 Agent 与职责领域第四件——SlotInstance 职责实例与独立知识命名空间（RFC-0018 §3.1/§5.2 / ADR-0020）：si_ 实例引用模板谱系不钉版、slotns_ 全局唯一终身稳定知识命名空间、存档标题与模板现势连接分离、三端点与设置页职责实例区，见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收；0.5 系列后续为 Binding 与准入（0.5.4–0.5.5）。
 
 后续版本采用 `大版本.领域中版本.特性小版本`（`X.Y.Z`）：**第三段每次只交付一个特性，第二段按领域聚合成系统能力**。领域中版本是版本线，不另发只用于汇总的版本；各小版本及验收口径见[交付与进度规划](docs/plan/2026-08-25-delivery-plan.md#02-当前-roadmap)。
 
-- **0.5 长期 Agent 与职责领域**（`0.5.0–0.5.5`，**0.5.0–0.5.2 已交付**）：独立 Agent 身份与生命周期、SlotSpec / SlotInstance、Binding 与职责准入。
+- **0.5 长期 Agent 与职责领域**（`0.5.0–0.5.5`，**0.5.0–0.5.3 已交付**）：独立 Agent 身份与生命周期、SlotSpec / SlotInstance、Binding 与职责准入。
 - **0.6 Mission 与本地执行领域**（`0.6.0–0.6.12`）：独立 Mission、房间交办、本地 Runtime / Lease、单 Agent 执行、交付验收与责任交接。
 - **0.7 记忆与可移植恢复领域**（`0.7.0–0.7.9`）：分域记忆、Checkpoint、跨 Harness 续办、Portable Agent Bundle 与删除传播。
 - **0.8 有界 Swarm 协作领域**（`0.8.0–0.8.8`）：WorkItem DAG、长期 Agent 委派、临时 Worker、配额、取消隔离与结果汇总。
