@@ -364,6 +364,8 @@ MemoryBackend 提供 `Propose / Accept / Revise / Search / Export / Import / For
 
 # 8. 可迁移 Agent 与交接协议
 
+> 个人全量备份扩展：[RFC-0019](2026-10-28-rfc-0019-encrypted-backup-merge.md)（Draft）覆盖整个受管实例的加密导出与导入合并，包含受管文件及可导出第三方凭据；本节的选择性 Agent Bundle 继续用于职责/身份交接，保留不携秘密的边界。两者都不因导入自动获得执行权；RFC-0019 的全量范围及合并规则不应误用本节的范围选择流程。
+
 ## 8.1 三种迁移，分别承诺
 
 | 操作 | 必须携带或重新绑定 | 不保证的内容 |
