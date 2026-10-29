@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-29
+
 ### Added
 
 - 新增 SlotSpec 版本化职责模板（0.5.2，0.5 长期 Agent 与职责领域第三件；负责人指令 2026-10-29："开发0.5.2版本"；ADR-0019，RFC-0018 §5.1 候选语义的正式定形）：**不可变版本行**——`slot_specs` 表（migration v9）以 `(slot_spec_id, version)` 为主键，修订即追加新版本（version=latest+1，取号在 BEGIN IMMEDIATE 临界区内——并发追加串行化为连续版本号，无空洞无重复），无 UPDATE/DELETE 路径，历史版本永不清除（0.5.4 Binding 固定版本引用的审计前提）；版本行本身即不可变历史，不另设事件流。**内容 Schema 定形**：名称/职责陈述/交付规范必填，可选段——技能引用（仅引用，不含可执行体）、工具与上下文的 required/optional 分层（required 缺失 blocked、optional 缺失按声明降级——AT-07 准入预埋，两者不得相交）、委派策略（缺省 = 不允许委派的安全缺省）、运行时能力要求（能力名而非安装路径）、交接必备件；校验单源在服务层（必填/上限/模式/枚举/相交全拒）。**谱系标识**：`slot.` 前缀小写 slug（用户选定、跨版本稳定——进配置与导出引用，对齐 RFC 示例 `slot.research-lead`）。**API（契约冻结）**：`POST /v1/slots/specs`（建谱系 409 spec_exists）、`POST /v1/slots/specs/{id}/versions`（追加不可变版本）、`GET /v1/slots/specs`（谱系摘要）、`GET /v1/slots/specs/{id}`（最新全量）、`GET .../versions`（全版本升序）；写面过生产写门（Origin/CT/OwnerToken）。**UI**：设置页新增"职责"区——谱系列表（最新版本徽标/版本数/修订时间）、新建模板表单（核心字段 + 必选/可选工具）、按最新版本预填的修订流、版本历史懒加载明细。设计与测试先行：ADR-0019 + OpenAPI 契约冻结（apigen/TS 双链重生成）→ UT（校验族 20 例 + 版本语义 + 并发追加 8 路）/ SQLite IT（v9 新库 + v0.5.1 真旧库升级 + 并发追加恰连续）/ 端点测试先红后绿；vet（it st）+ `-race` 全量 + `-tags it/st` + SPA tsc/build 全绿；真机冒烟：全链（建/409/追加/版本不可变/校验 400/404/写门 403）+ 并发追加 6 路 1–8 连续唯一 + 重启 8 版持久 ALL-PASS。0.5.2 仅模板本身：实例（0.5.3）、任职（0.5.4）、准入（0.5.5）随后交付。
