@@ -26,3 +26,4 @@ ADR 记录**实现与工具选型**级决策。三层文档分工：架构级约
 | [ADR-0016](ADR-0016-agent-update-channels.md) | Agent 更新通道三分类：registry（第三方仓库）/ self-update（官方自更新）/ mosaic（Mosaic 自带脚本通道） | Accepted |
 | [ADR-0017](ADR-0017-agent-identity-registry.md) | 独立 Agent 身份注册表（0.5.0）：SQLite 权威 agents/agent_aliases、bot_id 等价键迁移、旧 ID 别名解析、注册表单向同步 | Accepted |
 | [ADR-0018](ADR-0018-agent-lifecycle.md) | Agent 生命周期状态机与事件流（0.5.1）：active/suspended/retiring/retired、agent_events 流与 v7 存量回填、身份写面（create/lifecycle/events） | Accepted |
+| [ADR-0019](ADR-0019-slotspec-versioned-template.md) | SlotSpec 版本化职责模板（0.5.2）：不可变版本行、内容 Schema 定形（职责/技能/工具 required-optional/上下文/交付/委派/运行时/交接）、slot_spec_id 用户选定谱系 | Accepted |
