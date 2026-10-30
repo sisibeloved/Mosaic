@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.18 |
+| 版本 | v2.19 |
 | 日期 | 2026-10-30 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -26,7 +26,7 @@
 
 ## 0.2 当前 Roadmap
 
-当前产品版本为 **v0.5.4**（0.5.5 已进入开发，尚未定版）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
+当前产品版本为 **v0.5.5**（0.5 领域线 0.5.0–0.5.5 六件全部交付、已收官；下一领域 0.6 Mission 未开工）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
 
 | 版本线 | 领域 / 产品目标 | 设计来源 / RFC-0018 阶段映射 |
 |---|---|---|
@@ -181,6 +181,7 @@ P5 不提前占用确定的小版本：
 | v2.16 | 2026-10-30 | Mosaic 项目组 / ZCode | **定版 v0.5.4（负责人指令："发布"）——0.5 领域线第五件**。CHANGELOG [Unreleased]（Added Binding 任职状态机与交接 + Fixed 审校六项 P2）定版 **[0.5.4] - 2026-10-30**，保留空 [Unreleased]；README 当前版本推进 v0.5.4、路线图 0.5 系列标注 0.5.4 已交付；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.5.4 + GitHub Release 发布说明与 Windows 产物（wails 按新版本字样重建）；CI 三平台绿基线（1aa2d9e 已验，定版提交复验） |
 | v2.17 | 2026-10-30 | Mosaic 项目组 / ZCode | **0.5.5 开发（负责人指令："继续开发0.5.5版本"）——职责准入：能力核对、权限交集与 readiness report（ADR-0022，0.5 领域线收官件）**。**(1) 设计先行**：ADR-0022（AgentGrant 授权档案——用户授权侧、无档案=空授权安全缺省；EvaluateReadiness 交集单源——必需缺失 blocked/选配降级有报告/workspace 格栅 min 交集；ReadinessChecker 端口签名升级为完整报告并实装 GrantReadinessChecker；试算与 blocked 重试端点；AT-07 验收）+ OpenAPI 契约冻结（grants GET/PUT、实例 readiness 试算、bindings retry 四端点，apigen/TS 双链重生成）。**(2) 实现**：internal/slot/readiness 域 + SQLite migration v12（slot_agent_grants upsert 全量替换，不建事件流之权衡入 ADR）；prepare/retry 的 blocked 事件 payload 增 missing+degraded；httpapi 四端点；设置页授权档案块 + 准入试算 + blocked 展示与重试。**(3) 验证**：测试先行（UT 纯函数表驱动/校验族/AT-07 域内全链、IT v12 新库 + v0.5.4 旧库升级 + 并发 upsert、四端点先红后绿）；vet(it st) + -race + -tags it/st 串行全绿 + SPA 绿；真机冒烟 19 项（AT-07 全链 + 单 active 回归 + 重启持久）ALL-PASS。CHANGELOG [Unreleased] 登记；定版与发布另行指令 |
 | v2.18 | 2026-10-30 | Mosaic 项目组 / ZCode | **0.5.5 审校修复（独立审校"2 P1 + 4 P2，建议修复后定版"，ADR-0022 v0.2）**：P1#1 授权表单归属锁（formAgent + 加载锁——切档残留内容不得覆盖他人授权）；P1#2 激活两时点准入复核（按钉住版本重算交集，必需项缺失 409 readiness_not_met——RFC §11 落实）；P2#3 试算请求序号守卫；P2#4 钉版本解析前后端同源（空=最新，非空必须正整数）；P2#5 ADR 强隔离验收阶段归属更正（0.6/P1 交付准入，P4 只复验）；P2#6 授权 PUT 必填存在性检查（缺/null 400，半体不清空）。验证：UT + 端点反例先红后绿；vet/race/it/st 串行 + SPA 绿；真机回归冒烟 13 项 ALL-PASS。CHANGELOG [Unreleased] Fixed 登记 |
+| v2.19 | 2026-10-30 | Mosaic 项目组 / ZCode | **定版 v0.5.5（负责人指令："发布"）——0.5 领域线第六件（收官）**。CHANGELOG [Unreleased]（Added 职责准入 + Fixed 审校 2 P1 / 4 P2）定版 **[0.5.5] - 2026-10-30**，保留空 [Unreleased]；README 当前版本推进 v0.5.5、路线图 0.5 系列标注已全部交付（领域收官）、下一域 0.6 指向；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.5.5 + GitHub Release 发布说明与 Windows 产物（wails 按新版本字样重建）；CI 三平台绿基线（d60bd5b 已验，定版提交复验） |
 | v2.15 | 2026-10-30 | Mosaic 项目组 / ZCode | **0.5.4 审校修复（独立审校报告：6 项 P2 全确认，未发现 P0/P1，"建议修复后定版"）——ADR-0021 v0.2 修订**。**(1) P2 prepare/retry 单事务**：门判定前置、建行直接落终态 + 两事件一次提交（中断零残留，不留 preparing 死记录）。**(2) P2 交接备注三处一致**：ready 直释与 draining 补终段的备注与状态/事件同事务入投影。**(3) P2 版本三态**：省略钉最新 / 显式 <1 → 400（不静默换最新）。**(4) P2 事件主体**：BindingEvent 类型（binding_id）替代 AgentEvent 借形。**(5) P2 前端最近交接**：按释放时间取最新（接口保持创建序）。**(6) P2 前端未加载中性提示**：不误报空缺。全量 vet/race/it/st + SPA 绿；真机回归冒烟 ALL-PASS |
 | v2.14 | 2026-10-29 | Mosaic 项目组 / ZCode | **0.5.4 开发（负责人指令："开发0.5.4版本"）——Binding 任职状态机与交接（ADR-0021）**。**(1) 设计先行**：ADR-0021（preparing/ready/active/draining/released/blocked 状态机；单 active 库级部分唯一索引兜底（AT-13）；固定模板版本；Readiness/Drain 双端口预埋（0.5.5/0.6 挂靠）；交接位 handoff_note）+ OpenAPI 契约冻结（六端点，apigen/TS 双链重生成）。**(2) 实现**：internal/slot/binding 域 + SQLite migration v11（slot_bindings 投影 + binding_events 流 + 部分唯一索引）；release 两段一事务（0.5.1 P2#4 教训前置规避）；Agent 前置校验两时点（AgentLookup 端口 app 装配注入）；httpapi 六端点；设置页实例行任职管理块。**(3) 验证**：测试先行（UT 9 例含双门注入 / IT v11 新库 + v0.5.3 真旧库升级 + 8 轮交替并发恒 1 在任 / 端点全链，先红后绿）；vet(it st) + -race 全量 + -tags it/st + SPA 绿；真机冒烟（全链 + 并发恰一在任 + 重启持久）ALL-PASS。CHANGELOG [Unreleased] 登记；定版与发布另行指令 |
 | v2.13 | 2026-10-29 | Mosaic 项目组 / ZCode | **定版 v0.5.3（负责人指令："发布"）——0.5 领域线第四件**。CHANGELOG [Unreleased]（Added SlotInstance 职责实例与独立知识命名空间 + Fixed 审校五项 P2）定版 **[0.5.3] - 2026-10-29**，保留空 [Unreleased]；README 当前版本推进 v0.5.3、路线图 0.5 系列标注 0.5.3 已交付；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.5.3 + GitHub Release 发布说明与 Windows 产物（wails 按新版本字样重建）；CI 三平台绿基线（870a136 已验，定版提交复验） |
