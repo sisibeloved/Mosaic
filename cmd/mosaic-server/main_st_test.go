@@ -20,7 +20,6 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -612,14 +611,12 @@ func TestCrashRecovery_ST(t *testing.T) {
 	}
 }
 
-// stOwnerTokens 每实例缓存写凭据（owner token M2：真实二进制写端点强制 X-Owner-Token）。
-var stOwnerTokens sync.Map // base → token
-
+// ownerTokenST 每次现取写凭据（owner token M2：真实二进制写端点强制
+// X-Owner-Token）。不缓存：ST 实例用 -addr :0 临时端口，顺序测试间 OS 复用
+// 端口时缓存会把上一实例的 token 发给新实例 → 401（ubuntu CI 实证）；
+// bootstrap 幂等 GET，现取即正确。
 func ownerTokenST(t *testing.T, base string) string {
 	t.Helper()
-	if v, ok := stOwnerTokens.Load(base); ok {
-		return v.(string)
-	}
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Get(base + "/v1/owner/bootstrap")
 	if err != nil {
 		t.Fatalf("bootstrap %s: %v", base, err)
@@ -632,7 +629,6 @@ func ownerTokenST(t *testing.T, base string) string {
 	if resp.StatusCode != 200 || out.Token == "" {
 		t.Fatalf("bootstrap %s status=%d token=%q", base, resp.StatusCode, out.Token)
 	}
-	stOwnerTokens.Store(base, out.Token)
 	return out.Token
 }
 
