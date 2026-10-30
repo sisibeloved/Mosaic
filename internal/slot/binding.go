@@ -38,6 +38,9 @@ var (
 	ErrInvalidTransition = errors.New("slot: 非法任职转移")
 	// ErrInvalidBinding 任职参数不合法（交接备注超长等）。
 	ErrInvalidBinding = errors.New("slot: 任职参数不合法")
+	// ErrReadinessNotMet 激活时点授权不再满足模板必需项（准入两时点复核，
+	// 审校 P1#2：ready 只代表 prepare 时点就绪，授权此后可被撤销）。
+	ErrReadinessNotMet = errors.New("slot: 授权不再满足模板必需项，不能激活")
 )
 
 // Binding 任职记录（投影行；事件流见 binding_events）。
@@ -201,8 +204,9 @@ func (s *Service) RetryPrepare(ctx context.Context, bindingID string) (Binding, 
 	return b, nil
 }
 
-// ActivateBinding 激活（ready → active）：Agent 仍须 active；单 active 由
-// 存储层部分唯一索引兜底（并发恰一胜者，败者 ErrActiveBindingExists）。
+// ActivateBinding 激活（ready → active）：Agent 仍须 active 且授权仍满足
+// 钉住版本必需项（两时点复核，审校 P1#2——撤权后激活可见拒绝）；单 active
+// 由存储层部分唯一索引兜底（并发恰一胜者，败者 ErrActiveBindingExists）。
 func (s *Service) ActivateBinding(ctx context.Context, bindingID string) (Binding, error) {
 	b, ok, err := s.store.BindingByID(ctx, bindingID)
 	if err != nil {
@@ -220,6 +224,20 @@ func (s *Service) ActivateBinding(ctx context.Context, bindingID string) (Bindin
 	}
 	if status != "active" {
 		return Binding{}, fmt.Errorf("%w: %s（%s）", ErrAgentNotActive, b.AgentID, status)
+	}
+	// 状态前置判定：非 ready 一律 invalid_transition（错误优先级先于复核）
+	if b.Status != BindingReady {
+		return Binding{}, fmt.Errorf("%w: %s → active", ErrInvalidTransition, b.Status)
+	}
+	// 准入两时点复核（审校 P1#2）：按钉住版本重算交集，必需项缺失 → 409
+	// 可见拒绝（与 Agent active 两时点校验同口径；复核拒绝不落状态不留痕，
+	// 修复路径仍是改授权后激活）
+	target, payload, err := s.runAdmission(ctx, b)
+	if err != nil {
+		return Binding{}, err
+	}
+	if target == BindingBlocked {
+		return Binding{}, fmt.Errorf("%w: %s", ErrReadinessNotMet, payload["missing"])
 	}
 	_, done, err := s.store.TransitionBinding(ctx, bindingID,
 		[]string{BindingReady}, BindingActive, nil, s.now())

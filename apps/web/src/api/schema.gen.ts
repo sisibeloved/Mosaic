@@ -5519,7 +5519,7 @@ export interface operations {
                     "application/json": components["schemas"]["AgentGrantView"];
                 };
             };
-            /** @description 档案不合法（invalid_grant——模式 / 上限 / 枚举 / 重复 ref） */
+            /** @description 档案不合法（invalid_grant——模式 / 上限 / 枚举 / 重复 ref）或必填字段缺失/null（bad_request——半体 PUT 不清空既有授权，清空须显式空数组） */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -5669,7 +5669,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description invalid_transition（状态不匹配）或 active_binding_exists（同实例已有在任） */
+            /** @description invalid_transition（状态不匹配）、active_binding_exists（同实例已有在任）或 readiness_not_met（授权不再满足模板必需项——激活时点按钉住版本复核） */
             409: {
                 headers: {
                     [name: string]: unknown;

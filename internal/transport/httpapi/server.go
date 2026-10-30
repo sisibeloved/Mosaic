@@ -3,6 +3,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1669,15 +1670,46 @@ func (s *server) PutSlotGrant(w http.ResponseWriter, r *http.Request, agentID st
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	var req apigen.AgentGrantPut
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	// 必填字段存在性（审校 P2#6）：缺键或 null 一律 400——半体 PUT 不得静默
+	// 清空既有授权（显式空数组才是清空语义）；校验失败原档案不动
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
 			return
 		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体读取失败："+err.Error())
+		return
+	}
+	var presence map[string]json.RawMessage
+	if err := json.Unmarshal(body, &presence); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	for _, k := range []string{"skills", "tools", "context", "runtime"} {
+		raw, ok := presence[k]
+		if !ok || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			writeError(w, http.StatusBadRequest, "bad_request", "必填字段缺失或为 null："+k+"（清空请显式传空数组）")
+			return
+		}
+	}
+	var runtimeKeys map[string]json.RawMessage
+	if err := json.Unmarshal(presence["runtime"], &runtimeKeys); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "runtime 须为对象："+err.Error())
+		return
+	}
+	for _, k := range []string{"capabilities", "workspace_access"} {
+		raw, ok := runtimeKeys[k]
+		if !ok || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			writeError(w, http.StatusBadRequest, "bad_request", "必填字段缺失或为 null：runtime."+k)
+			return
+		}
+	}
+	var req apigen.AgentGrantPut
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
 		return
 	}
@@ -1793,6 +1825,8 @@ func writeBindingError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "active_binding_exists", err.Error())
 	case errors.Is(err, slot.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, "invalid_transition", err.Error())
+	case errors.Is(err, slot.ErrReadinessNotMet):
+		writeError(w, http.StatusConflict, "readiness_not_met", err.Error())
 	case errors.Is(err, slot.ErrInvalidBinding):
 		writeError(w, http.StatusBadRequest, "invalid_binding", err.Error())
 	case errors.Is(err, slot.ErrInvalidGrant):

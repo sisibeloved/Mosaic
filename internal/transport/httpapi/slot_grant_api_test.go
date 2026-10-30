@@ -291,6 +291,103 @@ func TestSlotReadinessEndpoint(t *testing.T) {
 	}
 }
 
+// TestSlotGrantPutRequiredFields 半体 PUT（审校 P2#6）：缺必填键或 null →
+// 400，且不清空既有授权（显式空数组才是清空语义）。
+func TestSlotGrantPutRequiredFields(t *testing.T) {
+	ts := grantTestServer(t)
+	_, agentID := grantFixture(t, ts)
+
+	put, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/slots/grants/"+agentID, strings.NewReader(fullGrantBody))
+	put.Header.Set("Content-Type", "application/json")
+	r, _ := http.DefaultClient.Do(put)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("完整 PUT: %d", r.StatusCode)
+	}
+
+	for name, body := range map[string]string{
+		"仅 runtime":     `{"runtime":{"capabilities":[],"workspace_access":"none"}}`,
+		"skills 缺席":     `{"tools":[],"context":[],"runtime":{"capabilities":[],"workspace_access":"none"}}`,
+		"skills null":    `{"skills":null,"tools":[],"context":[],"runtime":{"capabilities":[],"workspace_access":"none"}}`,
+		"runtime 子字段缺": `{"skills":[],"tools":[],"context":[],"runtime":{"workspace_access":"none"}}`,
+	} {
+		req, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/slots/grants/"+agentID, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, _ := http.DefaultClient.Do(req)
+		if resp.StatusCode != http.StatusBadRequest || errCodeOf(t, resp) != "bad_request" {
+			t.Fatalf("%s 应 400 bad_request: %d %s", name, resp.StatusCode, errCodeOf(t, resp))
+		}
+	}
+
+	// 原档案未被半体 PUT 触碰
+	get, _ := http.Get(ts.URL + "/v1/slots/grants/" + agentID)
+	var view struct {
+		Tools []string `json:"tools"`
+	}
+	_ = json.NewDecoder(get.Body).Decode(&view)
+	get.Body.Close()
+	if len(view.Tools) != 1 || view.Tools[0] != "documents.read" {
+		t.Fatalf("半体 PUT 不得清空既有授权: %v", view.Tools)
+	}
+}
+
+// TestSlotActivateReadinessRecheckEndpoint 撤权后激活（审校 P1#2）：ready 任职
+// 在授权被撤后激活 → 409 readiness_not_met（状态仍 ready）；补回 → 200。
+func TestSlotActivateReadinessRecheckEndpoint(t *testing.T) {
+	ts := grantTestServer(t)
+	instID, agentID := grantFixture(t, ts)
+
+	put, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/slots/grants/"+agentID, strings.NewReader(fullGrantBody))
+	put.Header.Set("Content-Type", "application/json")
+	r, _ := http.DefaultClient.Do(put)
+	r.Body.Close()
+	resp := postSlot(t, ts.URL+"/v1/slots/bindings", `{"slot_instance_id":"`+instID+`","agent_id":"`+agentID+`"}`)
+	var b struct {
+		BindingID string `json:"binding_id"`
+		Status    string `json:"status"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&b)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated || b.Status != "ready" {
+		t.Fatalf("建任职应 ready: %d %s", resp.StatusCode, b.Status)
+	}
+
+	// 撤销（空授权全量替换）
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/slots/grants/"+agentID,
+		strings.NewReader(`{"skills":[],"tools":[],"context":[],"runtime":{"capabilities":[],"workspace_access":"none"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	r2, _ := http.DefaultClient.Do(req)
+	r2.Body.Close()
+	if r2.StatusCode != http.StatusOK {
+		t.Fatalf("撤权 PUT: %d", r2.StatusCode)
+	}
+
+	// 激活 → 409 readiness_not_met；详情仍 ready
+	act := postSlot(t, ts.URL+"/v1/slots/bindings/"+b.BindingID+"/activate", `{}`)
+	if act.StatusCode != http.StatusConflict || errCodeOf(t, act) != "readiness_not_met" {
+		t.Fatalf("撤权后激活应 409 readiness_not_met: %d %s", act.StatusCode, errCodeOf(t, act))
+	}
+	det, _ := http.Get(ts.URL + "/v1/slots/bindings/" + b.BindingID)
+	var doc struct {
+		Status string `json:"status"`
+	}
+	_ = json.NewDecoder(det.Body).Decode(&doc)
+	det.Body.Close()
+	if doc.Status != "ready" {
+		t.Fatalf("复核拒绝后应保持 ready: %s", doc.Status)
+	}
+
+	// 补回 → 激活 200
+	put2, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/slots/grants/"+agentID, strings.NewReader(fullGrantBody))
+	put2.Header.Set("Content-Type", "application/json")
+	r3, _ := http.DefaultClient.Do(put2)
+	r3.Body.Close()
+	act2 := postSlot(t, ts.URL+"/v1/slots/bindings/"+b.BindingID+"/activate", `{}`)
+	if act2.StatusCode != http.StatusOK {
+		t.Fatalf("补回后激活: %d", act2.StatusCode)
+	}
+}
+
 // TestSlotBindingRetryEndpoint AT-07 全链：无授权 prepare → blocked（事件含
 // missing/degraded）→ 仍未授权 retry → blocked → 补授权 → retry → ready →
 // 激活；非 blocked 重试 409；未知 404。

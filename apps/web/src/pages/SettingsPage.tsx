@@ -1891,7 +1891,10 @@ function SlotVersionsDetails({ slotSpecID, rev }: { slotSpecID: string; rev: num
 
 /** Agent 授权档案（ADR-0022 / 0.5.5）：用户授权侧——技能（每行 ref@vN）、
  * 工具/上下文域/运行能力（每行一项）、工作区权限级。PUT 全量替换（显式清空
- * = 空授权）；未设置（404 grant_not_found）与读取失败两态区分。 */
+ * = 空授权）；未设置（404 grant_not_found）与读取失败两态区分。审校 P1#1：
+ * 表单记录所属 Agent（formAgent），档案加载期间禁编辑禁保存；加载未完成或
+ * 归属不符时保存按钮禁用，保存期间锁定 Agent 选择——切档残留内容绝无机会
+ * 覆盖到别人的授权。 */
 function AgentGrants() {
   const [agents, setAgents] = useState<{ agent_id: string; display_name: string; status: string }[]>([]);
   const [agentID, setAgentID] = useState("");
@@ -1901,6 +1904,8 @@ function AgentGrants() {
   const [caps, setCaps] = useState("");
   const [access, setAccess] = useState<"none" | "read" | "read_write">("none");
   const [configured, setConfigured] = useState(false);
+  const [formAgent, setFormAgent] = useState(""); // 表单内容所属 Agent（P1#1）
+  const [grantLoading, setGrantLoading] = useState(false);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [agentsErr, setAgentsErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1909,13 +1914,15 @@ function AgentGrants() {
   const [open, setOpen] = useState(false);
   const seq = useRef(0);
 
-  // 换 Agent 即弃置未保存编辑（表单随档案重置）；请求序号拒旧响应
+  // 换 Agent 即弃置未保存编辑（表单随档案重置）；请求序号拒旧响应。
+  // 加载完成前表单整体锁定（formAgent !== agentID），迟到回包核对归属后才解锁。
   useEffect(() => {
     if (!open || !agentID) return;
     const cur = ++seq.current;
     setMsg(null);
     setLoadErr(null);
     setSavedAt(null);
+    setGrantLoading(true);
     api
       .getSlotGrant(agentID)
       .then((g) => {
@@ -1926,9 +1933,13 @@ function AgentGrants() {
         setContext(g.context.join("\n"));
         setCaps(g.runtime.capabilities.join("\n"));
         setAccess(g.runtime.workspace_access);
+        setFormAgent(agentID);
+        setGrantLoading(false);
       })
       .catch((e) => {
         if (seq.current !== cur) return;
+        setGrantLoading(false);
+        setFormAgent(agentID);
         if (e instanceof ApiError && e.code === "grant_not_found") {
           setConfigured(false); // 未设置 = 空授权安全缺省（可编辑空表单，非错误态）
           setSkills("");
@@ -1955,6 +1966,11 @@ function AgentGrants() {
   }, [open, agentsRev]);
 
   const save = async () => {
+    // 归属核对（P1#1）：表单内容不属于当前选中 Agent 时拒绝提交
+    if (formAgent !== agentID || grantLoading) {
+      setMsg("档案尚未加载完成，待表单同步后再保存");
+      return;
+    }
     const sk: { ref: string; version: number }[] = [];
     for (const line of skills.split("\n").map((x) => x.trim()).filter(Boolean)) {
       const m = line.match(/^(.+)@v(\d+)$/);
@@ -1974,6 +1990,7 @@ function AgentGrants() {
         runtime: { capabilities: splitGrantLines(caps), workspace_access: access },
       });
       setConfigured(true);
+      setFormAgent(g.agent_id);
       setSavedAt(g.updated_at);
     } catch (e) {
       setMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
@@ -1983,6 +2000,7 @@ function AgentGrants() {
   };
 
   const current = agents.find((a) => a.agent_id === agentID);
+  const formLocked = grantLoading || formAgent !== agentID; // P1#1：加载中/归属不符禁编辑
   return (
     <details onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)} className="rounded-xl border border-border">
       <summary className="cursor-pointer select-none px-3 py-2 text-xs">
@@ -2013,6 +2031,7 @@ function AgentGrants() {
               <select
                 value={agentID}
                 onChange={(e) => setAgentID(e.target.value)}
+                disabled={busy || grantLoading}
                 className="rounded border border-border bg-surface-2 px-1.5 py-1 outline-none"
               >
                 {agents.map((a) => (
@@ -2021,6 +2040,7 @@ function AgentGrants() {
                   </option>
                 ))}
               </select>
+              {formLocked && !loadErr && <span className="text-faint">档案加载中…</span>}
             </div>
             {loadErr ? (
               <p className="text-xs text-danger">档案读取失败：{loadErr}</p>
@@ -2031,8 +2051,9 @@ function AgentGrants() {
                   <textarea
                     value={skills}
                     onChange={(e) => setSkills(e.target.value)}
+                    disabled={formLocked}
                     rows={3}
-                    className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
+                    className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent disabled:opacity-50"
                   />
                 </label>
                 <label className="flex flex-col gap-1">
@@ -2040,8 +2061,9 @@ function AgentGrants() {
                   <textarea
                     value={tools}
                     onChange={(e) => setTools(e.target.value)}
+                    disabled={formLocked}
                     rows={3}
-                    className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
+                    className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent disabled:opacity-50"
                   />
                 </label>
                 <label className="flex flex-col gap-1">
@@ -2049,8 +2071,9 @@ function AgentGrants() {
                   <textarea
                     value={context}
                     onChange={(e) => setContext(e.target.value)}
+                    disabled={formLocked}
                     rows={2}
-                    className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
+                    className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent disabled:opacity-50"
                   />
                 </label>
                 <label className="flex flex-col gap-1">
@@ -2058,8 +2081,9 @@ function AgentGrants() {
                   <textarea
                     value={caps}
                     onChange={(e) => setCaps(e.target.value)}
+                    disabled={formLocked}
                     rows={2}
-                    className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
+                    className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent disabled:opacity-50"
                   />
                 </label>
                 <label className="flex flex-col gap-1">
@@ -2067,7 +2091,8 @@ function AgentGrants() {
                   <select
                     value={access}
                     onChange={(e) => setAccess(e.target.value as "none" | "read" | "read_write")}
-                    className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-xs outline-none"
+                    disabled={formLocked}
+                    className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-xs outline-none disabled:opacity-50"
                   >
                     <option value="none">none（无工作区）</option>
                     <option value="read">read（只读）</option>
@@ -2080,11 +2105,11 @@ function AgentGrants() {
             <div>
               <button
                 type="button"
-                disabled={busy || !agentID || loadErr !== null}
+                disabled={busy || grantLoading || formLocked || !agentID || loadErr !== null}
                 onClick={() => void save()}
                 className="rounded-lg bg-surface-3 px-3 py-1.5 text-xs text-text transition-opacity hover:opacity-85 disabled:opacity-40"
               >
-                {busy ? "保存中…" : "保存授权（全量替换）"}
+                {busy ? "保存中…" : grantLoading ? "档案加载中…" : "保存授权（全量替换）"}
               </button>
             </div>
           </>
@@ -2092,6 +2117,17 @@ function AgentGrants() {
       </div>
     </details>
   );
+}
+
+/** parseSpecVersion 钉版本输入三态（审校 P2#4，与后端同规则）：空 = 最新
+ *（undefined）；非空必须为正整数（number）；非法（null）由调用方就地拒绝——
+ * 试算与建任职共用，杜绝非法输入被静默换成最新版。 */
+function parseSpecVersion(input: string): number | undefined | null {
+  const t = input.trim();
+  if (!t) return undefined;
+  const n = Number(t);
+  if (!Number.isInteger(n) || n < 1) return null;
+  return n;
 }
 
 /** splitGrantLines 授权档案表单：每行一项，去空白滤空行。 */
@@ -2115,6 +2151,7 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
   // 0.5.5 准入试算（只读报告；换 Agent/版本即失效）
   const [probe, setProbe] = useState<ReadinessReportView | null>(null);
   const [probeBusy, setProbeBusy] = useState(false);
+  const probeSeq = useRef(0); // 试算请求序号（审校 P2#3：换 Agent/版本即失效旧响应）
   // 0.5.5 blocked 任职的事件取证（缺失/降级可见）
   const [blockedInfo, setBlockedInfo] = useState<Record<string, { missing?: string; degraded?: string }>>({});
   const seq = useRef(0);
@@ -2168,14 +2205,25 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
     }
   };
 
-  // 准入试算：只读无副作用（不建任职记录）
+  // 准入试算：只读无副作用（不建任职记录）。共享版本解析（P2#4：空=最新，
+  // 非空必须正整数，非法就地拒绝不发出）；序号守卫（P2#3：迟到响应丢弃，
+  // 只呈现当前选择的结果——后端 prepare 仍独立校验）
   const runProbe = async () => {
+    const v = parseSpecVersion(version);
+    if (v === null) {
+      setProbe(null);
+      setMsg("版本须为正整数（留空 = 最新版）");
+      return;
+    }
+    const cur = ++probeSeq.current;
     setProbeBusy(true);
     setMsg(null);
     try {
-      const v = version.trim() ? Number(version.trim()) : undefined;
-      setProbe(await api.getSlotReadiness(instanceID, agentID, v !== undefined && v > 0 ? v : undefined));
+      const rep = await api.getSlotReadiness(instanceID, agentID, v);
+      if (probeSeq.current !== cur) return;
+      setProbe(rep);
     } catch (e) {
+      if (probeSeq.current !== cur) return;
       setProbe(null);
       setMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
     } finally {
@@ -2275,6 +2323,7 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
               <select
                 value={agentID}
                 onChange={(e) => {
+                  probeSeq.current++;
                   setAgentID(e.target.value);
                   setProbe(null);
                 }}
@@ -2289,6 +2338,7 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
               <input
                 value={version}
                 onChange={(e) => {
+                  probeSeq.current++;
                   setVersion(e.target.value);
                   setProbe(null);
                 }}
@@ -2306,15 +2356,20 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
               <button
                 type="button"
                 disabled={busy || !agentID}
-                onClick={() =>
+                onClick={() => {
+                  const v = parseSpecVersion(version);
+                  if (v === null) {
+                    setMsg("版本须为正整数（留空 = 最新版）");
+                    return;
+                  }
                   void act(() =>
                     api.prepareSlotBinding({
                       slot_instance_id: instanceID,
                       agent_id: agentID,
-                      ...(version.trim() ? { slot_spec_version: Number(version.trim()) } : {}),
+                      ...(v !== undefined ? { slot_spec_version: v } : {}),
                     }),
-                  )
-                }
+                  );
+                }}
                 className="rounded bg-surface-3 px-2 py-px disabled:opacity-40"
               >
                 建任职

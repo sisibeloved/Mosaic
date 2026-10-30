@@ -250,6 +250,50 @@ func TestGrantReadinessGateAT07(t *testing.T) {
 	}
 }
 
+// TestActivateReadinessRecheck 激活两时点准入复核（审校 P1#2）：ready 后
+// 撤销必需授权 → ActivateBinding 拒绝 ErrReadinessNotMet（状态保持 ready）；
+// 补回 → 激活成功。
+func TestActivateReadinessRecheck(t *testing.T) {
+	mem := NewMemStore()
+	agents := &fakeAgents{status: map[string]string{"ag_a": "active"}}
+	svc := newGrantService(t, agents, mem)
+	ctx := context.Background()
+	inst := mustInstance(t, svc)
+	if _, err := svc.PutGrant(ctx, "ag_a", fullGrant()); err != nil {
+		t.Fatalf("授权: %v", err)
+	}
+	b, err := svc.PrepareBinding(ctx, inst, "ag_a", 0)
+	if err != nil || b.Status != BindingReady {
+		t.Fatalf("建任职: %+v %v", b, err)
+	}
+	before, _ := svc.ListBindings(ctx, inst)
+
+	// 撤销必需工具（可选仍给）
+	revoked := fullGrant()
+	revoked.Tools = []string{"web.search"}
+	if _, err := svc.PutGrant(ctx, "ag_a", revoked); err != nil {
+		t.Fatalf("撤权: %v", err)
+	}
+	if _, err := svc.ActivateBinding(ctx, b.BindingID); !errors.Is(err, ErrReadinessNotMet) {
+		t.Fatalf("撤权后激活应 ErrReadinessNotMet：%v", err)
+	}
+	// 状态保持 ready、无 active（复核拒绝不落状态）
+	after, _ := svc.ListBindings(ctx, inst)
+	if after[0].Status != BindingReady {
+		t.Fatalf("复核拒绝后状态应保持 ready：%s", after[0].Status)
+	}
+
+	// 补回 → 激活成功
+	if _, err := svc.PutGrant(ctx, "ag_a", fullGrant()); err != nil {
+		t.Fatalf("补回: %v", err)
+	}
+	act, err := svc.ActivateBinding(ctx, b.BindingID)
+	if err != nil || act.Status != BindingActive {
+		t.Fatalf("补回后激活: %+v %v", act, err)
+	}
+	_ = before
+}
+
 // TestServiceReadinessProbe 试算：不建记录、无副作用；版本三态
 //（缺省最新 / 显式越界 ErrInvalidSpecVersion / 合法钉住）。
 func TestServiceReadinessProbe(t *testing.T) {
