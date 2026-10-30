@@ -83,7 +83,7 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 文档
 
-- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.5.5）
+- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.6.0）
 - [架构设计说明书](docs/design/2026-08-13-mosaic-architecture-design.md)
 - [RFC-0001 Room Protocol](docs/design/rfc/2026-08-25-rfc-0001-room-protocol.md)
 - [RFC-0002 Agent Protocol](docs/design/rfc/2026-08-25-rfc-0002-agent-protocol.md)
@@ -95,12 +95,12 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 当前状态与路线图
 
-当前版本 **v0.5.5**（2026-10-30，0.5 长期 Agent 与职责领域第六件（收官）——职责准入：能力核对、权限交集与 readiness report（RFC-0018 §5.2 / ADR-0022）：AgentGrant 授权档案（无档案 = 空授权安全缺省）、EvaluateReadiness 交集单源（必需缺失 blocked / 选配降级 / 有效权限 = min 交集）、激活两时点复核、准入试算与 blocked 重试、设置页授权档案与准入管理，见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收；0.5 领域线至此收官；下一领域为 0.6 Mission 与本地执行。
+当前版本 **v0.6.0**（2026-10-30，0.6 Mission 与本地执行领域第一件——MissionContract 独立事实源（RFC-0018 §6.1 / ADR-0023）：mi_ 生成式契约 + 不可变版本行 + 事件流（migration v13）、完备性判定 draft/ready、expected_version CAS 修订（并发恰一胜者 409 可见）、canceled 终态、预算安全缺省、七端点与 /missions 任务中心页，见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收；0.5 领域线已收官，0.6 领域线开工（下一件 0.6.1 房间交办——含网关 Dispatch 首切片）。
 
 后续版本采用 `大版本.领域中版本.特性小版本`（`X.Y.Z`）：**第三段每次只交付一个特性，第二段按领域聚合成系统能力**。领域中版本是版本线，不另发只用于汇总的版本；各小版本及验收口径见[交付与进度规划](docs/plan/2026-08-25-delivery-plan.md#02-当前-roadmap)。
 
 - **0.5 长期 Agent 与职责领域**（`0.5.0–0.5.5`，**0.5.0–0.5.5 已全部交付（领域收官）**）：独立 Agent 身份与生命周期、SlotSpec / SlotInstance、Binding 与职责准入。
-- **0.6 Mission 与本地执行领域**（`0.6.0–0.6.12`）：独立 Mission、房间交办、本地 Runtime / Lease、单 Agent 执行、交付验收与责任交接。
+- **0.6 Mission 与本地执行领域**（`0.6.0–0.6.12`，**0.6.0 已交付**）：独立 Mission、房间交办、本地 Runtime / Lease、单 Agent 执行、交付验收与责任交接。
 - **0.7 记忆与可移植恢复领域**（`0.7.0–0.7.9`）：分域记忆、Checkpoint、跨 Harness 续办、Portable Agent Bundle 与删除传播。
 - **0.8 有界 Swarm 协作领域**（`0.8.0–0.8.8`）：WorkItem DAG、长期 Agent 委派、临时 Worker、配额、取消隔离与结果汇总。
 - **0.9 持续事务与环境维护领域**（`0.9.0–0.9.8`）：Goal、持久唤醒、离线恢复、Runtime 排空升级与环境管理员。
