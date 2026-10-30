@@ -282,6 +282,21 @@ CREATE TABLE IF NOT EXISTS binding_events (
 );
 CREATE INDEX IF NOT EXISTS idx_binding_events_binding ON binding_events(binding_id, seq);
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (11, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+
+-- v12（RFC-0018 §5.2 / ADR-0022，0.5.5）：职责准入——AgentGrant 授权档案
+-- （用户授权侧）。一 Agent 一档（agent_id 主键），PUT 全量替换（upsert）；
+-- 无档案 = 空授权（安全缺省：一切声明要求缺失 → blocked）。清单列存 JSON
+-- 数组；不建事件流（单用户 owner-token 本地应用，权衡见 ADR-0022）。
+CREATE TABLE IF NOT EXISTS slot_agent_grants (
+  agent_id             TEXT PRIMARY KEY,
+  skills               TEXT NOT NULL DEFAULT '[]',
+  tools                TEXT NOT NULL DEFAULT '[]',
+  context              TEXT NOT NULL DEFAULT '[]',
+  runtime_capabilities TEXT NOT NULL DEFAULT '[]',
+  workspace_access     TEXT NOT NULL DEFAULT 'none',
+  updated_at           TEXT NOT NULL
+);
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (12, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 `
 
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
@@ -2272,6 +2287,92 @@ func (s *Store) Versions(ctx context.Context, slotSpecID string) ([]slot.SlotSpe
 		return nil, false, nil
 	}
 	return out, true, nil
+}
+
+// SpecByVersion 钉版本单查（0.5.5 准入取钉住版内容）；未知 ok=false。
+func (s *Store) SpecByVersion(ctx context.Context, slotSpecID string, version int) (slot.SlotSpec, bool, error) {
+	var s0 slot.SlotSpec
+	var content string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT `+slotSpecCols+` FROM slot_specs WHERE slot_spec_id = ? AND version = ?`, slotSpecID, version).
+		Scan(&s0.SlotSpecID, &s0.Version, &s0.SchemaVersion, &s0.Name, &s0.Responsibility, &content, &s0.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return slot.SlotSpec{}, false, nil
+	}
+	if err != nil {
+		return slot.SlotSpec{}, false, fmt.Errorf("sqlite: slot by version: %w", err)
+	}
+	if err := json.Unmarshal([]byte(content), &s0.SpecContent); err != nil {
+		return slot.SlotSpec{}, false, fmt.Errorf("sqlite: slot content unmarshal: %w", err)
+	}
+	return s0, true, nil
+}
+
+// ---- 授权档案域（RFC-0018 §5.2 / ADR-0022，0.5.5；v12 表，端口实现）----
+
+// PutGrant upsert 授权档案（BEGIN IMMEDIATE 临界区内整行替换——并发写
+// 串行化，终态为某次请求的完整快照，无半写）。
+func (s *Store) PutGrant(ctx context.Context, g slot.AgentGrant) error {
+	skills, err := json.Marshal(g.Skills)
+	if err != nil {
+		return fmt.Errorf("sqlite: grant skills marshal: %w", err)
+	}
+	tools, err := json.Marshal(g.Tools)
+	if err != nil {
+		return fmt.Errorf("sqlite: grant tools marshal: %w", err)
+	}
+	contexts, err := json.Marshal(g.Context)
+	if err != nil {
+		return fmt.Errorf("sqlite: grant context marshal: %w", err)
+	}
+	caps, err := json.Marshal(g.Runtime.Capabilities)
+	if err != nil {
+		return fmt.Errorf("sqlite: grant capabilities marshal: %w", err)
+	}
+	return s.identityWriteTx(ctx, func(q identityExec) error {
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO slot_agent_grants (agent_id, skills, tools, context, runtime_capabilities, workspace_access, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(agent_id) DO UPDATE SET
+  skills = excluded.skills,
+  tools = excluded.tools,
+  context = excluded.context,
+  runtime_capabilities = excluded.runtime_capabilities,
+  workspace_access = excluded.workspace_access,
+  updated_at = excluded.updated_at`,
+			g.AgentID, string(skills), string(tools), string(contexts), string(caps),
+			g.Runtime.WorkspaceAccess, g.UpdatedAt); err != nil {
+			return fmt.Errorf("sqlite: put grant: %w", err)
+		}
+		return nil
+	})
+}
+
+// GrantByAgent 读取授权档案；未设置 ok=false（空授权安全缺省）。
+func (s *Store) GrantByAgent(ctx context.Context, agentID string) (slot.AgentGrant, bool, error) {
+	var g slot.AgentGrant
+	var skills, tools, contexts, caps string
+	err := s.db.QueryRowContext(ctx, `
+SELECT agent_id, skills, tools, context, runtime_capabilities, workspace_access, updated_at
+  FROM slot_agent_grants WHERE agent_id = ?`, agentID).
+		Scan(&g.AgentID, &skills, &tools, &contexts, &caps, &g.Runtime.WorkspaceAccess, &g.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return slot.AgentGrant{}, false, nil
+	}
+	if err != nil {
+		return slot.AgentGrant{}, false, fmt.Errorf("sqlite: grant by agent: %w", err)
+	}
+	for _, u := range []struct {
+		raw string
+		out any
+	}{
+		{skills, &g.Skills}, {tools, &g.Tools}, {contexts, &g.Context}, {caps, &g.Runtime.Capabilities},
+	} {
+		if err := json.Unmarshal([]byte(u.raw), u.out); err != nil {
+			return slot.AgentGrant{}, false, fmt.Errorf("sqlite: grant unmarshal: %w", err)
+		}
+	}
+	return g, true, nil
 }
 
 // ---- 职责实例域（RFC-0018 §3.1/§5.2 / ADR-0020，0.5.3；v10 表，端口实现）----

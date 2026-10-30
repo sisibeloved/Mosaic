@@ -1175,6 +1175,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/slots/instances/{slot_instance_id}/readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 准入试算（只读无副作用；0.5.5 / ADR-0022）
+         * @description 按模板钉住版本与 Agent 授权档案现算 readiness report——满足项 /
+         *     缺失项 / 可选降级 / 有效权限。未就绪也是 200（报告不是错误）；
+         *     建任职仍走 prepare（试算不留任何记录）。
+         */
+        get: operations["getSlotInstanceReadiness"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/slots/grants/{agent_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Agent 授权档案（用户授权侧；0.5.5 / ADR-0022） */
+        get: operations["getSlotGrant"];
+        /**
+         * 全量替换 Agent 授权档案（写门）
+         * @description PUT 全量替换（同 RuntimeUpdateRequest 语义：显式空数组 = 清空，无
+         *     三态歧义）；无档案 = 空授权。Agent 须存在——任意生命周期状态可存档
+         *     （授权是数据；行为许可是 prepare/activate 的 agent_not_active 校验）。
+         */
+        put: operations["putSlotGrant"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/slots/bindings": {
         parameters: {
             query?: never;
@@ -1239,6 +1284,28 @@ export interface paths {
          *     备注随释放入档（接续方经实例列表读取）。
          */
         post: operations["releaseSlotBinding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/slots/bindings/{binding_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 重试任职准备（blocked → preparing → 门 → ready/blocked）
+         * @description 单事务两段事件一次提交（ADR-0021 v0.2 #3 路径的 HTTP 暴露）：补授权
+         *     后重算准入门；仍不就绪则回 blocked，missing/degraded 记入事件。
+         *     不自动换人、不自动扩权（AT-07）。
+         */
+        post: operations["retrySlotBinding"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2630,10 +2697,54 @@ export interface components {
             binding_id: string;
             /** @enum {string} */
             event_type: "created" | "status_changed";
-            /** @description 事件体——created: {agent_id, slot_instance_id, slot_spec_version}；status_changed: {from, to, handoff_note} */
+            /** @description 事件体——created: {agent_id, slot_instance_id, slot_spec_version}；status_changed: {from, to, handoff_note}；blocked 转移含 {missing, degraded}（0.5.5 准入门产出） */
             payload: Record<string, never>;
             /** Format: date-time */
             occurred_at: string;
+        };
+        /** @description 授权侧运行能力（与模板 RuntimeRequirements 对偶：能力名集合 + 工作区权限级）。 */
+        GrantRuntime: {
+            capabilities: string[];
+            /** @enum {string} */
+            workspace_access: "none" | "read" | "read_write";
+        };
+        /** @description 授权档案全量替换体（0.5.5 / ADR-0022）——显式空数组 = 清空该类授权；无档案即空授权（安全缺省）。 */
+        AgentGrantPut: {
+            skills: components["schemas"]["SkillRef"][];
+            tools: string[];
+            context: string[];
+            runtime: components["schemas"]["GrantRuntime"];
+        };
+        /** @description 授权档案视图（PUT 后返回；GET 未设置时 404 grant_not_found）。 */
+        AgentGrantView: {
+            agent_id: string;
+            skills: components["schemas"]["SkillRef"][];
+            tools: string[];
+            context: string[];
+            runtime: components["schemas"]["GrantRuntime"];
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /**
+         * @description readiness report（ADR-0022 / RFC-0018 §5.2）：ready = missing 为空；
+         *     missing = 必需项缺失（blocked 依据）；degraded = 选配缺失（按声明
+         *     降级执行）；effective_workspace_access = min(授权级, 模板要求)。
+         */
+        ReadinessReportView: {
+            slot_instance_id: string;
+            agent_id: string;
+            slot_spec_id: string;
+            /** @description 试算钉住的模板版本 */
+            slot_spec_version: number;
+            ready: boolean;
+            /** @description 满足项（必需与选配均列） */
+            satisfied: string[];
+            /** @description 缺失项（skill:… / tool:… / context:… / runtime:… / workspace_access:…） */
+            missing: string[];
+            /** @description 选配降级项（不阻塞） */
+            degraded: string[];
+            /** @enum {string} */
+            effective_workspace_access: "none" | "read" | "read_write";
         };
         /**
          * @description 职责实例（ADR-0020 / 0.5.3）。spec 为模板现势连接（现算）；实例自身
@@ -5291,6 +5402,155 @@ export interface operations {
             };
         };
     };
+    getSlotInstanceReadiness: {
+        parameters: {
+            query: {
+                agent_id: string;
+                /** @description 缺省取谱系最新版（与 prepare 钉版同规则）；显式越界 409 */
+                slot_spec_version?: number;
+            };
+            header?: never;
+            path: {
+                slot_instance_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description readiness report（未就绪也是 200） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadinessReportView"];
+                };
+            };
+            /** @description 实例或 Agent 不存在（instance_not_found / agent_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 显式版本越界（invalid_spec_version） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getSlotGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 授权档案 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentGrantView"];
+                };
+            };
+            /** @description 档案未设置（grant_not_found——空授权安全缺省，UI 可编辑空表单）或 Agent 不存在（agent_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    putSlotGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentGrantPut"];
+            };
+        };
+        responses: {
+            /** @description 已保存（幂等替换） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentGrantView"];
+                };
+            };
+            /** @description 档案不合法（invalid_grant——模式 / 上限 / 枚举 / 重复 ref） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Agent 不存在（agent_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     listSlotBindings: {
         parameters: {
             query?: {
@@ -5475,6 +5735,56 @@ export interface operations {
             };
             413: components["responses"]["TooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    retrySlotBinding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 重算后的任职记录（ready 或 blocked） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BindingView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 任职记录不存在（binding_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 非 blocked 状态（invalid_transition） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description 职责域未装配（slot_unavailable） */
             503: {
                 headers: {

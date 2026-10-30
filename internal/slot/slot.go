@@ -138,6 +138,12 @@ type Store interface {
 	ReleaseBinding(ctx context.Context, bindingID string, handoffNote, occurredAt string) (from string, ok bool, err error)
 	// BindingEvents 任职事件流（seq 升序）。
 	BindingEvents(ctx context.Context, bindingID string) ([]BindingEvent, error)
+	// SpecByVersion 钉版本单查（0.5.5 准入取钉住版内容）；未知 ok=false。
+	SpecByVersion(ctx context.Context, slotSpecID string, version int) (SlotSpec, bool, error)
+	// PutGrant upsert 授权档案（ADR-0022；键 = agent_id，全量替换）。
+	PutGrant(ctx context.Context, g AgentGrant) error
+	// GrantByAgent 读取授权档案；未设置 ok=false（空授权安全缺省）。
+	GrantByAgent(ctx context.Context, agentID string) (AgentGrant, bool, error)
 }
 
 // Service 职责模板服务：校验单源 + 版本化存取。

@@ -1770,6 +1770,116 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /v1/slots/instances/{slot_instance_id}/readiness:
+    get:
+      operationId: getSlotInstanceReadiness
+      summary: 准入试算（只读无副作用；0.5.5 / ADR-0022）
+      description: |
+        按模板钉住版本与 Agent 授权档案现算 readiness report——满足项 /
+        缺失项 / 可选降级 / 有效权限。未就绪也是 200（报告不是错误）；
+        建任职仍走 prepare（试算不留任何记录）。
+      parameters:
+        - name: slot_instance_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^si_[0-9A-Za-z_-]+$" }
+        - name: agent_id
+          in: query
+          required: true
+          schema: { type: string, pattern: "^ag_[0-9A-Za-z_-]+$" }
+        - name: slot_spec_version
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1 }
+          description: 缺省取谱系最新版（与 prepare 钉版同规则）；显式越界 409
+      responses:
+        "200":
+          description: readiness report（未就绪也是 200）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadinessReportView" }
+        "404":
+          description: 实例或 Agent 不存在（instance_not_found / agent_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 显式版本越界（invalid_spec_version）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: 职责域未装配（slot_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/slots/grants/{agent_id}:
+    get:
+      operationId: getSlotGrant
+      summary: Agent 授权档案（用户授权侧；0.5.5 / ADR-0022）
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^ag_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 授权档案
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentGrantView" }
+        "404":
+          description: 档案未设置（grant_not_found——空授权安全缺省，UI 可编辑空表单）或 Agent 不存在（agent_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: 职责域未装配（slot_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    put:
+      operationId: putSlotGrant
+      summary: 全量替换 Agent 授权档案（写门）
+      description: |
+        PUT 全量替换（同 RuntimeUpdateRequest 语义：显式空数组 = 清空，无
+        三态歧义）；无档案 = 空授权。Agent 须存在——任意生命周期状态可存档
+        （授权是数据；行为许可是 prepare/activate 的 agent_not_active 校验）。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^ag_[0-9A-Za-z_-]+$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentGrantPut" }
+      responses:
+        "200":
+          description: 已保存（幂等替换）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentGrantView" }
+        "400":
+          description: 档案不合法（invalid_grant——模式 / 上限 / 枚举 / 重复 ref）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Agent 不存在（agent_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: 职责域未装配（slot_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/slots/bindings:
     get:
       operationId: listSlotBindings
@@ -1911,6 +2021,42 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "413": { $ref: "#/components/responses/TooLarge" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: 职责域未装配（slot_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/slots/bindings/{binding_id}/retry:
+    post:
+      operationId: retrySlotBinding
+      summary: 重试任职准备（blocked → preparing → 门 → ready/blocked）
+      description: |
+        单事务两段事件一次提交（ADR-0021 v0.2 #3 路径的 HTTP 暴露）：补授权
+        后重算准入门；仍不就绪则回 blocked，missing/degraded 记入事件。
+        不自动换人、不自动扩权（AT-07）。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: binding_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^bd_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 重算后的任职记录（ready 或 blocked）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BindingView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: 任职记录不存在（binding_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 非 blocked 状态（invalid_transition）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "503":
           description: 职责域未装配（slot_unavailable）
           content:
@@ -3701,8 +3847,81 @@ components:
         event_type: { type: string, enum: [created, status_changed] }
         payload:
           type: object
-          description: "事件体——created: {agent_id, slot_instance_id, slot_spec_version}；status_changed: {from, to, handoff_note}"
+          description: "事件体——created: {agent_id, slot_instance_id, slot_spec_version}；status_changed: {from, to, handoff_note}；blocked 转移含 {missing, degraded}（0.5.5 准入门产出）"
         occurred_at: { type: string, format: date-time }
+    GrantRuntime:
+      type: object
+      required: [capabilities, workspace_access]
+      additionalProperties: false
+      description: 授权侧运行能力（与模板 RuntimeRequirements 对偶：能力名集合 + 工作区权限级）。
+      properties:
+        capabilities:
+          type: array
+          maxItems: 32
+          items: { type: string, pattern: "^[a-z0-9][a-z0-9._-]{0,63}$" }
+        workspace_access: { type: string, enum: [none, read, read_write] }
+    AgentGrantPut:
+      type: object
+      required: [skills, tools, context, runtime]
+      additionalProperties: false
+      description: 授权档案全量替换体（0.5.5 / ADR-0022）——显式空数组 = 清空该类授权；无档案即空授权（安全缺省）。
+      properties:
+        skills:
+          type: array
+          maxItems: 16
+          items: { $ref: "#/components/schemas/SkillRef" }
+        tools:
+          type: array
+          maxItems: 32
+          items: { type: string, pattern: "^[a-z0-9][a-z0-9._-]{0,63}$" }
+        context:
+          type: array
+          maxItems: 32
+          items: { type: string, pattern: "^[a-z0-9][a-z0-9._-]{0,63}$" }
+        runtime: { $ref: "#/components/schemas/GrantRuntime" }
+    AgentGrantView:
+      type: object
+      required: [agent_id, skills, tools, context, runtime, updated_at]
+      description: 授权档案视图（PUT 后返回；GET 未设置时 404 grant_not_found）。
+      properties:
+        agent_id: { type: string }
+        skills:
+          type: array
+          items: { $ref: "#/components/schemas/SkillRef" }
+        tools:
+          type: array
+          items: { type: string }
+        context:
+          type: array
+          items: { type: string }
+        runtime: { $ref: "#/components/schemas/GrantRuntime" }
+        updated_at: { type: string, format: date-time }
+    ReadinessReportView:
+      type: object
+      required: [slot_instance_id, agent_id, slot_spec_id, slot_spec_version, ready, satisfied, missing, degraded, effective_workspace_access]
+      description: |
+        readiness report（ADR-0022 / RFC-0018 §5.2）：ready = missing 为空；
+        missing = 必需项缺失（blocked 依据）；degraded = 选配缺失（按声明
+        降级执行）；effective_workspace_access = min(授权级, 模板要求)。
+      properties:
+        slot_instance_id: { type: string }
+        agent_id: { type: string }
+        slot_spec_id: { type: string }
+        slot_spec_version: { type: integer, minimum: 1, description: 试算钉住的模板版本 }
+        ready: { type: boolean }
+        satisfied:
+          type: array
+          items: { type: string }
+          description: 满足项（必需与选配均列）
+        missing:
+          type: array
+          items: { type: string }
+          description: "缺失项（skill:… / tool:… / context:… / runtime:… / workspace_access:…）"
+        degraded:
+          type: array
+          items: { type: string }
+          description: 选配降级项（不阻塞）
+        effective_workspace_access: { type: string, enum: [none, read, read_write] }
     SlotInstanceView:
       type: object
       required: [slot_instance_id, slot_spec_id, scope, title, knowledge_namespace, created_from_version, created_at, spec]

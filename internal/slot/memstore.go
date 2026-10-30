@@ -16,6 +16,7 @@ type MemStore struct {
 	instances []SlotInstance // 创建序
 	bindings  []Binding      // 创建序
 	bevents   []BindingEvent
+	grants    map[string]AgentGrant
 	bseq      int64
 }
 
@@ -105,6 +106,39 @@ func (m *MemStore) Versions(_ context.Context, slotSpecID string) ([]SlotSpec, b
 	}
 	// 插入序天然升序（版本号单调追加）
 	return out, out != nil, nil
+}
+
+// SpecByVersion 钉版本单查（0.5.5 准入取钉住版内容）。
+func (m *MemStore) SpecByVersion(_ context.Context, slotSpecID string, version int) (SlotSpec, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, ex := range m.specs {
+		if ex.SlotSpecID == slotSpecID && ex.Version == version {
+			return ex, true, nil
+		}
+	}
+	return SlotSpec{}, false, nil
+}
+
+// ---- AgentGrant（ADR-0022，0.5.5；MemStore 实现）----
+
+// PutGrant upsert 全量替换（键 = agent_id）。
+func (m *MemStore) PutGrant(_ context.Context, g AgentGrant) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.grants == nil {
+		m.grants = map[string]AgentGrant{}
+	}
+	m.grants[g.AgentID] = g
+	return nil
+}
+
+// GrantByAgent 读取授权档案；未设置 ok=false（空授权安全缺省）。
+func (m *MemStore) GrantByAgent(_ context.Context, agentID string) (AgentGrant, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	g, ok := m.grants[agentID]
+	return g, ok, nil
 }
 
 // ---- SlotInstance（ADR-0020，0.5.3；MemStore 实现）----

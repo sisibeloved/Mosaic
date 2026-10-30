@@ -290,10 +290,13 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			logger.Warn("agent 身份别名冲突（不合并，待人工处置）", "detail", c)
 		}
 	}
-	// 职责域（RFC-0018 §5 / ADR-0019–0021，0.5.2–0.5.4）：模板/实例/任职。
-	// AgentLookup 适配身份服务（任职需要 Agent 存在且 active；依赖方向：
-	// app 装配注入，slot 不 import personalagent）。
-	slotSvc := slot.New(store, slot.WithNow(clock), slot.WithAgentLookup(identityAgentLookup{identitySvc}))
+	// 职责域（RFC-0018 §5 / ADR-0019–0022，0.5.2–0.5.5）：模板/实例/任职/准入。
+	// AgentLookup 适配身份服务（任职需要 Agent 存在且 active）；准入门实装
+	// GrantReadinessChecker（0.5.5：授权档案 × 模板要求 → blocked/降级）。
+	// 依赖方向：app 装配注入，slot 不 import personalagent。
+	slotSvc := slot.New(store, slot.WithNow(clock),
+		slot.WithAgentLookup(identityAgentLookup{identitySvc}),
+		slot.WithReadiness(slot.NewGrantReadinessChecker(store)))
 	scanDone := make(chan struct{})
 	go func() {
 		defer close(scanDone)

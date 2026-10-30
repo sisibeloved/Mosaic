@@ -68,11 +68,13 @@ type ReleaseResult struct {
 	Outstanding []string `json:"outstanding"`
 }
 
-// ReadinessChecker 准入门（0.5.5 权限交集/能力核对的挂靠点）：核对候选任职
-// 的就绪性。0.5.4 生产缺省 nil = 恒通过（prepare 一次调用至 ready）。
+// ReadinessChecker 准入门（0.5.5 权限交集/能力核对实装——ADR-0022）：核对
+// 候选任职的就绪性并产出完整报告（缺失 → blocked；降级与有效权限入报告与
+// 事件）。生产装配 GrantReadinessChecker；缺省 nil = 恒通过（保留给
+// 无要求场景与既有注入测试）。
 type ReadinessChecker interface {
-	// Check 返回是否就绪与缺失清单（blocked 时记入事件）。
-	Check(ctx context.Context, candidate Binding) (ok bool, missing []string, err error)
+	// Check 返回 readiness report（blocked 判定与事件 payload 的单源）。
+	Check(ctx context.Context, candidate Binding) (ReadinessReport, error)
 }
 
 // DrainChecker 排空门（0.6 Mission 域在途工作的挂靠点）：返回该任职未处置
@@ -148,22 +150,11 @@ func (s *Service) PrepareBinding(ctx context.Context, slotInstanceID, agentID st
 	}
 	// 门判定前置（审校 P2#3）：建行与 created + preparing→target 两事件
 	// 同一事务一次提交——中断/失败零残留（不留无法推进的 preparing 死记录）
-	ready := true
-	var missing []string
-	if s.readiness != nil {
-		ok, miss, err := s.readiness.Check(ctx, Binding{
-			AgentID: agentID, SlotInstanceID: slotInstanceID, SlotSpecVersion: version, Scope: inst.Scope,
-		})
-		if err != nil {
-			return Binding{}, fmt.Errorf("slot: 准入门: %w", err)
-		}
-		ready, missing = ok, miss
-	}
-	target := BindingReady
-	var payload map[string]string
-	if !ready {
-		target = BindingBlocked
-		payload = map[string]string{"missing": joinStrings(missing)}
+	target, payload, err := s.runAdmission(ctx, Binding{
+		AgentID: agentID, SlotInstanceID: slotInstanceID, SlotSpecVersion: version, Scope: inst.Scope,
+	})
+	if err != nil {
+		return Binding{}, err
 	}
 	b, err := s.store.CreateBinding(ctx, Binding{
 		BindingID:       s.newBindingID(),
@@ -196,20 +187,9 @@ func (s *Service) RetryPrepare(ctx context.Context, bindingID string) (Binding, 
 	}
 	// 单事务重试（审校 P2#3）：blocked → preparing → target 两事件一次提交，
 	// 中断不留 preparing 死记录
-	ready := true
-	var missing []string
-	if s.readiness != nil {
-		ok, miss, err := s.readiness.Check(ctx, b)
-		if err != nil {
-			return Binding{}, fmt.Errorf("slot: 准入门: %w", err)
-		}
-		ready, missing = ok, miss
-	}
-	target := BindingReady
-	var payload map[string]string
-	if !ready {
-		target = BindingBlocked
-		payload = map[string]string{"missing": joinStrings(missing)}
+	target, payload, err := s.runAdmission(ctx, b)
+	if err != nil {
+		return Binding{}, err
 	}
 	b, done, err := s.store.RetryBindingPreparation(ctx, bindingID, target, payload, s.now())
 	if err != nil {
@@ -357,6 +337,29 @@ func (s *Service) BindingEvents(ctx context.Context, bindingID string) ([]Bindin
 		evs = []BindingEvent{}
 	}
 	return evs, true, nil
+}
+
+// runAdmission 准入门判定（0.5.5 单源）：nil 门 = 恒过；报告缺失 → blocked
+// 且 missing/degraded 记入事件 payload（空清单省键）；门自身故障上抛不吞。
+func (s *Service) runAdmission(ctx context.Context, candidate Binding) (string, map[string]string, error) {
+	if s.readiness == nil {
+		return BindingReady, nil, nil
+	}
+	rep, err := s.readiness.Check(ctx, candidate)
+	if err != nil {
+		return "", nil, fmt.Errorf("slot: 准入门: %w", err)
+	}
+	if rep.Ready {
+		if len(rep.Degraded) > 0 { // ready 仍记降级（AT-07：降级有报告）
+			return BindingReady, map[string]string{"degraded": joinStrings(rep.Degraded)}, nil
+		}
+		return BindingReady, nil, nil
+	}
+	payload := map[string]string{"missing": joinStrings(rep.Missing)}
+	if len(rep.Degraded) > 0 {
+		payload["degraded"] = joinStrings(rep.Degraded)
+	}
+	return BindingBlocked, payload, nil
 }
 
 func (s *Service) agentStatusOf(ctx context.Context, agentID string) (string, bool, error) {

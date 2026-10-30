@@ -307,16 +307,21 @@ func TestReleaseDrainGateBlocked(t *testing.T) {
 	}
 }
 
-// fakeReadiness 准入门测试件（0.5.5 预埋）。
+// fakeReadiness 准入门测试件（0.5.4 预埋；0.5.5 升级为报告签名）。
 type fakeReadiness struct {
 	mu      sync.Mutex
 	missing []string
+	degraded []string
 }
 
-func (f *fakeReadiness) Check(context.Context, Binding) (bool, []string, error) {
+func (f *fakeReadiness) Check(context.Context, Binding) (ReadinessReport, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return len(f.missing) == 0, append([]string(nil), f.missing...), nil
+	return ReadinessReport{
+		Ready:     len(f.missing) == 0,
+		Missing:   append([]string(nil), f.missing...),
+		Degraded:  append([]string(nil), f.degraded...),
+	}, nil
 }
 
 // TestPrepareReadinessBlocked 准入门非空 → blocked（0.5.4 生产不可达，

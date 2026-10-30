@@ -26,6 +26,11 @@ export type SlotInstanceCreate = Schemas["SlotInstanceCreate"];
 export type SlotInstanceView = Schemas["SlotInstanceView"];
 export type BindingView = Schemas["BindingView"];
 export type BindingReleaseResult = Schemas["BindingReleaseResult"];
+export type BindingEventView = Schemas["BindingEvent"];
+/** 0.5.5 职责准入（ADR-0022）：授权档案与 readiness report。 */
+export type AgentGrantView = Schemas["AgentGrantView"];
+export type AgentGrantPut = Schemas["AgentGrantPut"];
+export type ReadinessReportView = Schemas["ReadinessReportView"];
 export type TaskItem = Schemas["TaskItem"];
 export type SearchHit = Schemas["SearchHit"];
 export type RuntimeOptions = Schemas["RuntimeOptions"];
@@ -509,6 +514,28 @@ export const api = {
   },
   releaseSlotBinding(bindingID: string, handoffNote?: string): Promise<BindingReleaseResult> {
     return post(`/v1/slots/bindings/${encodeURIComponent(bindingID)}/release`, handoffNote ? { handoff_note: handoffNote } : {});
+  },
+  /** 0.5.5 重试任职准备（blocked → preparing → 门 → ready/blocked）。 */
+  retrySlotBinding(bindingID: string): Promise<BindingView> {
+    return post(`/v1/slots/bindings/${encodeURIComponent(bindingID)}/retry`, {});
+  },
+  /** 0.5.5 任职事件流（blocked 缺失/降级清单读取）。 */
+  listSlotBindingEvents(bindingID: string): Promise<{ events: BindingEventView[] }> {
+    return request(`/v1/slots/bindings/${encodeURIComponent(bindingID)}/events`);
+  },
+  /** 0.5.5 授权档案读取（404 grant_not_found = 未设置，空授权安全缺省）。 */
+  getSlotGrant(agentID: string): Promise<AgentGrantView> {
+    return request(`/v1/slots/grants/${encodeURIComponent(agentID)}`);
+  },
+  /** 0.5.5 授权档案全量替换（显式空数组 = 清空）。 */
+  putSlotGrant(agentID: string, req: AgentGrantPut): Promise<AgentGrantView> {
+    return request(`/v1/slots/grants/${encodeURIComponent(agentID)}`, { method: "PUT", body: JSON.stringify(req) });
+  },
+  /** 0.5.5 准入试算（只读无副作用；未就绪也是 200——报告不是错误）。 */
+  getSlotReadiness(instanceID: string, agentID: string, version?: number): Promise<ReadinessReportView> {
+    const q = new URLSearchParams({ agent_id: agentID });
+    if (version !== undefined) q.set("slot_spec_version", String(version));
+    return request(`/v1/slots/instances/${encodeURIComponent(instanceID)}/readiness?${q.toString()}`);
   },
   /** 0.5.1 生命周期转移（ADR-0018）：suspend/resume/retire（retire 经承诺门）。 */
   transitionAgent(agentID: string, action: AgentLifecycleAction, reason?: string): Promise<AgentLifecycleResult> {

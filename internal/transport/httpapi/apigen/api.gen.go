@@ -513,6 +513,27 @@ func (e ExternalRefKind) Valid() bool {
 	}
 }
 
+// Defines values for GrantRuntimeWorkspaceAccess.
+const (
+	GrantRuntimeWorkspaceAccessNone      GrantRuntimeWorkspaceAccess = "none"
+	GrantRuntimeWorkspaceAccessRead      GrantRuntimeWorkspaceAccess = "read"
+	GrantRuntimeWorkspaceAccessReadWrite GrantRuntimeWorkspaceAccess = "read_write"
+)
+
+// Valid indicates whether the value is a known member of the GrantRuntimeWorkspaceAccess enum.
+func (e GrantRuntimeWorkspaceAccess) Valid() bool {
+	switch e {
+	case GrantRuntimeWorkspaceAccessNone:
+		return true
+	case GrantRuntimeWorkspaceAccessRead:
+		return true
+	case GrantRuntimeWorkspaceAccessReadWrite:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for HarnessUpdateCheckChannel.
 const (
 	Mosaic     HarnessUpdateCheckChannel = "mosaic"
@@ -648,6 +669,27 @@ func (e ParticipantViewKind) Valid() bool {
 	case ParticipantViewKindHuman:
 		return true
 	case ParticipantViewKindSystem:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReadinessReportViewEffectiveWorkspaceAccess.
+const (
+	ReadinessReportViewEffectiveWorkspaceAccessNone      ReadinessReportViewEffectiveWorkspaceAccess = "none"
+	ReadinessReportViewEffectiveWorkspaceAccessRead      ReadinessReportViewEffectiveWorkspaceAccess = "read"
+	ReadinessReportViewEffectiveWorkspaceAccessReadWrite ReadinessReportViewEffectiveWorkspaceAccess = "read_write"
+)
+
+// Valid indicates whether the value is a known member of the ReadinessReportViewEffectiveWorkspaceAccess enum.
+func (e ReadinessReportViewEffectiveWorkspaceAccess) Valid() bool {
+	switch e {
+	case ReadinessReportViewEffectiveWorkspaceAccessNone:
+		return true
+	case ReadinessReportViewEffectiveWorkspaceAccessRead:
+		return true
+	case ReadinessReportViewEffectiveWorkspaceAccessReadWrite:
 		return true
 	default:
 		return false
@@ -794,19 +836,19 @@ func (e RuntimeOptionsDefaultSource) Valid() bool {
 
 // Defines values for RuntimeRequirementsWorkspaceAccess.
 const (
-	None      RuntimeRequirementsWorkspaceAccess = "none"
-	Read      RuntimeRequirementsWorkspaceAccess = "read"
-	ReadWrite RuntimeRequirementsWorkspaceAccess = "read_write"
+	RuntimeRequirementsWorkspaceAccessNone      RuntimeRequirementsWorkspaceAccess = "none"
+	RuntimeRequirementsWorkspaceAccessRead      RuntimeRequirementsWorkspaceAccess = "read"
+	RuntimeRequirementsWorkspaceAccessReadWrite RuntimeRequirementsWorkspaceAccess = "read_write"
 )
 
 // Valid indicates whether the value is a known member of the RuntimeRequirementsWorkspaceAccess enum.
 func (e RuntimeRequirementsWorkspaceAccess) Valid() bool {
 	switch e {
-	case None:
+	case RuntimeRequirementsWorkspaceAccessNone:
 		return true
-	case Read:
+	case RuntimeRequirementsWorkspaceAccessRead:
 		return true
-	case ReadWrite:
+	case RuntimeRequirementsWorkspaceAccessReadWrite:
 		return true
 	default:
 		return false
@@ -1419,6 +1461,28 @@ type AgentEvent struct {
 // AgentEventEventType created 含 v7 存量回填
 type AgentEventEventType string
 
+// AgentGrantPut 授权档案全量替换体（0.5.5 / ADR-0022）——显式空数组 = 清空该类授权；无档案即空授权（安全缺省）。
+type AgentGrantPut struct {
+	Context []string `json:"context"`
+
+	// Runtime 授权侧运行能力（与模板 RuntimeRequirements 对偶：能力名集合 + 工作区权限级）。
+	Runtime GrantRuntime `json:"runtime"`
+	Skills  []SkillRef   `json:"skills"`
+	Tools   []string     `json:"tools"`
+}
+
+// AgentGrantView 授权档案视图（PUT 后返回；GET 未设置时 404 grant_not_found）。
+type AgentGrantView struct {
+	AgentId string   `json:"agent_id"`
+	Context []string `json:"context"`
+
+	// Runtime 授权侧运行能力（与模板 RuntimeRequirements 对偶：能力名集合 + 工作区权限级）。
+	Runtime   GrantRuntime `json:"runtime"`
+	Skills    []SkillRef   `json:"skills"`
+	Tools     []string     `json:"tools"`
+	UpdatedAt time.Time    `json:"updated_at"`
+}
+
 // AttachedDoc 房间附着文档投影项（RFC-0014 §2.4；重复附着以最新事实覆盖 attached_by/attached_at，detach 出集）。
 type AttachedDoc struct {
 	AttachedAt time.Time `json:"attached_at"`
@@ -1467,7 +1531,7 @@ type BindingEvent struct {
 	EventType  BindingEventEventType `json:"event_type"`
 	OccurredAt time.Time             `json:"occurred_at"`
 
-	// Payload 事件体——created: {agent_id, slot_instance_id, slot_spec_version}；status_changed: {from, to, handoff_note}
+	// Payload 事件体——created: {agent_id, slot_instance_id, slot_spec_version}；status_changed: {from, to, handoff_note}；blocked 转移含 {missing, degraded}（0.5.5 准入门产出）
 	Payload map[string]interface{} `json:"payload"`
 
 	// Seq 全表单调流序
@@ -2046,6 +2110,15 @@ type FeishuCallbackRequest struct {
 	Code string `json:"code"`
 }
 
+// GrantRuntime 授权侧运行能力（与模板 RuntimeRequirements 对偶：能力名集合 + 工作区权限级）。
+type GrantRuntime struct {
+	Capabilities    []string                    `json:"capabilities"`
+	WorkspaceAccess GrantRuntimeWorkspaceAccess `json:"workspace_access"`
+}
+
+// GrantRuntimeWorkspaceAccess defines model for GrantRuntime.WorkspaceAccess.
+type GrantRuntimeWorkspaceAccess string
+
 // HandoffRequirements 交接必备件（换人/升级排空后切换的前提清单）。
 type HandoffRequirements struct {
 	Required []string `json:"required"`
@@ -2332,6 +2405,32 @@ type ParticipantView struct {
 
 // ParticipantViewKind defines model for ParticipantView.Kind.
 type ParticipantViewKind string
+
+// ReadinessReportView readiness report（ADR-0022 / RFC-0018 §5.2）：ready = missing 为空；
+// missing = 必需项缺失（blocked 依据）；degraded = 选配缺失（按声明
+// 降级执行）；effective_workspace_access = min(授权级, 模板要求)。
+type ReadinessReportView struct {
+	AgentId string `json:"agent_id"`
+
+	// Degraded 选配降级项（不阻塞）
+	Degraded                 []string                                    `json:"degraded"`
+	EffectiveWorkspaceAccess ReadinessReportViewEffectiveWorkspaceAccess `json:"effective_workspace_access"`
+
+	// Missing 缺失项（skill:… / tool:… / context:… / runtime:… / workspace_access:…）
+	Missing []string `json:"missing"`
+	Ready   bool     `json:"ready"`
+
+	// Satisfied 满足项（必需与选配均列）
+	Satisfied      []string `json:"satisfied"`
+	SlotInstanceId string   `json:"slot_instance_id"`
+	SlotSpecId     string   `json:"slot_spec_id"`
+
+	// SlotSpecVersion 试算钉住的模板版本
+	SlotSpecVersion int `json:"slot_spec_version"`
+}
+
+// ReadinessReportViewEffectiveWorkspaceAccess defines model for ReadinessReportView.EffectiveWorkspaceAccess.
+type ReadinessReportViewEffectiveWorkspaceAccess string
 
 // ReceiptListView 上下文回执流水（GET /v1/rooms/{id}/receipts，v1.70 展示对齐——AR-16 正式面）。
 type ReceiptListView struct {
@@ -3244,6 +3343,14 @@ type ListSlotBindingsParams struct {
 	SlotInstanceId *string `form:"slot_instance_id,omitempty" json:"slot_instance_id,omitempty"`
 }
 
+// GetSlotInstanceReadinessParams defines parameters for GetSlotInstanceReadiness.
+type GetSlotInstanceReadinessParams struct {
+	AgentId string `form:"agent_id" json:"agent_id"`
+
+	// SlotSpecVersion 缺省取谱系最新版（与 prepare 钉版同规则）；显式越界 409
+	SlotSpecVersion *int `form:"slot_spec_version,omitempty" json:"slot_spec_version,omitempty"`
+}
+
 // RequestRestoreJSONBody defines parameters for RequestRestore.
 type RequestRestoreJSONBody struct {
 	BackupId string                        `json:"backup_id"`
@@ -3312,6 +3419,9 @@ type PrepareSlotBindingJSONRequestBody = BindingPrepare
 
 // ReleaseSlotBindingJSONRequestBody defines body for ReleaseSlotBinding for application/json ContentType.
 type ReleaseSlotBindingJSONRequestBody = BindingRelease
+
+// PutSlotGrantJSONRequestBody defines body for PutSlotGrant for application/json ContentType.
+type PutSlotGrantJSONRequestBody = AgentGrantPut
 
 // CreateSlotInstanceJSONRequestBody defines body for CreateSlotInstance for application/json ContentType.
 type CreateSlotInstanceJSONRequestBody = SlotInstanceCreate
@@ -3531,6 +3641,15 @@ type ServerInterface interface {
 	// ReleaseSlotBinding 释放任职（active → draining → released；ready → released）
 	// (POST /v1/slots/bindings/{binding_id}/release)
 	ReleaseSlotBinding(w http.ResponseWriter, r *http.Request, bindingId string)
+	// RetrySlotBinding 重试任职准备（blocked → preparing → 门 → ready/blocked）
+	// (POST /v1/slots/bindings/{binding_id}/retry)
+	RetrySlotBinding(w http.ResponseWriter, r *http.Request, bindingId string)
+	// GetSlotGrant Agent 授权档案（用户授权侧；0.5.5 / ADR-0022）
+	// (GET /v1/slots/grants/{agent_id})
+	GetSlotGrant(w http.ResponseWriter, r *http.Request, agentId string)
+	// PutSlotGrant 全量替换 Agent 授权档案（写门）
+	// (PUT /v1/slots/grants/{agent_id})
+	PutSlotGrant(w http.ResponseWriter, r *http.Request, agentId string)
 	// ListSlotInstances 职责实例列表（0.5.3 / ADR-0020）
 	// (GET /v1/slots/instances)
 	ListSlotInstances(w http.ResponseWriter, r *http.Request)
@@ -3540,6 +3659,9 @@ type ServerInterface interface {
 	// GetSlotInstance 职责实例详情
 	// (GET /v1/slots/instances/{slot_instance_id})
 	GetSlotInstance(w http.ResponseWriter, r *http.Request, slotInstanceId string)
+	// GetSlotInstanceReadiness 准入试算（只读无副作用；0.5.5 / ADR-0022）
+	// (GET /v1/slots/instances/{slot_instance_id}/readiness)
+	GetSlotInstanceReadiness(w http.ResponseWriter, r *http.Request, slotInstanceId string, params GetSlotInstanceReadinessParams)
 	// ListSlotSpecs 职责模板谱系列表（0.5.2 / ADR-0019）
 	// (GET /v1/slots/specs)
 	ListSlotSpecs(w http.ResponseWriter, r *http.Request)
@@ -5318,6 +5440,84 @@ func (siw *ServerInterfaceWrapper) ReleaseSlotBinding(w http.ResponseWriter, r *
 	handler.ServeHTTP(w, r)
 }
 
+// RetrySlotBinding operation middleware
+func (siw *ServerInterfaceWrapper) RetrySlotBinding(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "binding_id" -------------
+	var bindingId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "binding_id", r.PathValue("binding_id"), &bindingId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "binding_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RetrySlotBinding(w, r, bindingId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSlotGrant operation middleware
+func (siw *ServerInterfaceWrapper) GetSlotGrant(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "agent_id" -------------
+	var agentId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "agent_id", r.PathValue("agent_id"), &agentId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agent_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSlotGrant(w, r, agentId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutSlotGrant operation middleware
+func (siw *ServerInterfaceWrapper) PutSlotGrant(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "agent_id" -------------
+	var agentId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "agent_id", r.PathValue("agent_id"), &agentId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agent_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutSlotGrant(w, r, agentId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListSlotInstances operation middleware
 func (siw *ServerInterfaceWrapper) ListSlotInstances(w http.ResponseWriter, r *http.Request) {
 
@@ -5363,6 +5563,61 @@ func (siw *ServerInterfaceWrapper) GetSlotInstance(w http.ResponseWriter, r *htt
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetSlotInstance(w, r, slotInstanceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSlotInstanceReadiness operation middleware
+func (siw *ServerInterfaceWrapper) GetSlotInstanceReadiness(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "slot_instance_id" -------------
+	var slotInstanceId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "slot_instance_id", r.PathValue("slot_instance_id"), &slotInstanceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "slot_instance_id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetSlotInstanceReadinessParams
+
+	// ------------- Required query parameter "agent_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "agent_id", r.URL.Query(), &params.AgentId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "agent_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agent_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "slot_spec_version" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "slot_spec_version", r.URL.Query(), &params.SlotSpecVersion, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "slot_spec_version"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "slot_spec_version", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSlotInstanceReadiness(w, r, slotInstanceId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5748,10 +6003,14 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/instances", wrapper.ListSlotInstances)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/slots/instances", wrapper.CreateSlotInstance)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/instances/{slot_instance_id}", wrapper.GetSlotInstance)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/instances/{slot_instance_id}/readiness", wrapper.GetSlotInstanceReadiness)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/grants/{agent_id}", wrapper.GetSlotGrant)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/v1/slots/grants/{agent_id}", wrapper.PutSlotGrant)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/bindings", wrapper.ListSlotBindings)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/slots/bindings", wrapper.PrepareSlotBinding)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/slots/bindings/{binding_id}/activate", wrapper.ActivateSlotBinding)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/slots/bindings/{binding_id}/release", wrapper.ReleaseSlotBinding)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/slots/bindings/{binding_id}/retry", wrapper.RetrySlotBinding)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/bindings/{binding_id}", wrapper.GetSlotBinding)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/bindings/{binding_id}/events", wrapper.ListSlotBindingEvents)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)

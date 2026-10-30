@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增职责准入——能力核对、权限交集与 readiness report（0.5.5，0.5 长期 Agent 与职责领域第六件（收官件）；负责人指令 2026-10-30："继续开发0.5.5版本"；ADR-0022）：任职从"恒 ready"变为真实准入。**AgentGrant 授权档案**（用户授权侧，migration v12 `slot_agent_grants`，一 Agent 一档 upsert 全量替换）：技能（ref@vN）/工具/上下文域/运行能力/工作区权限；**无档案 = 空授权**（安全缺省）——模板声明的一切必需项缺失即 blocked，未声明要求的职责不受影响（无隐式门槛）；Agent 须存在、任意生命周期状态可存档（授权是数据，行为许可仍是 prepare/activate 的 agent_not_active 两时点校验）；不建 grant 事件流（单用户 owner-token 本地应用，权衡记 ADR-0022）。**EvaluateReadiness 交集单源**（纯函数，门/试算/报告共用）：skills 模板列出即必需（授权同 ref 且 version ≥ 引用版——工作方法向后兼容）；tools/context/runtime.required 缺失 → blocked；tools/context.optional 缺失 → **降级有报告**（AT-07）；工作区权限格栅 none < read < read_write——授权 ≥ 要求即过，**有效权限 = min(授权, 模板要求)**（交集语义，授权直通不成立）；模板未声明 runtime 时不构成约束。**ReadinessChecker 端口实装**：签名升级为返回完整报告（缺失/降级/有效权限）；`GrantReadinessChecker`（实例 → 谱系 → 钉住版内容 → 档案 → 交集）由 app 装配注入，生产从此有真实 blocked；blocked 事件 payload 记 `missing`+`degraded` 两键；**不自动换人不自动扩权**（AT-07）——修复路径唯一：owner 改授权档案 → 重试。**API 四端点**（契约冻结）：`GET/PUT /v1/slots/grants/{agent_id}`（未设置 404 grant_not_found = 可编辑空表单非错误态；非法档案 400 invalid_grant）、`GET /v1/slots/instances/{id}/readiness`（**试算**：只读无副作用，未就绪也是 200——报告不是错误；版本三态与 prepare 同规则：省略钉最新、显式 <1 → 400、越界 409）、`POST /v1/slots/bindings/{id}/retry`（blocked → preparing → 门 → ready/blocked 单事务重试——ADR-0021 v0.2 #3 预留路径的 HTTP 暴露；非 blocked 409）；写面过生产写门。**UI**：职责区新增"Agent 授权档案"块（Agent 下拉 + 技能/工具/上下文/运行能力/权限表单，未设置与读取失败两态区分，换 Agent 弃置未保存编辑）；实例任职行新增**准入试算**（就绪/缺失/降级/有效权限即时报告，换 Agent 或版本即失效）与 **blocked 任职展示**（事件取证缺失/降级清单 + 重试准备按钮）。设计与测试先行：ADR-0022 + OpenAPI 契约冻结（apigen/TS 双链重生成）→ UT 先红（纯函数表驱动：四类核对 × 满足/缺失/降级、权限格栅、无档案/无要求、skill 版本边界；PutGrant 校验族；AT-07 域内全链）、SQLite IT（v12 新库 + v0.5.4 真旧库升级 + 并发 upsert 恰一行无半写 + SpecByVersion + blocked→retry 事件序列）、四端点测试先红后绿；vet（it st）+ `-race` + `-tags it/st`（串行全绿）+ SPA tsc/build 全绿；真机冒烟 19 项（AT-07 全链：无授权 blocked 事件含 missing+degraded → 未补授权重试仍 blocked → 补授权（选配缺）retry ready 降级有报告 → 激活；试算无副作用；版本三态 400/409；不自动换人；单 active 409 回归；授权与任职重启持久）ALL-PASS。0.5 领域线至此收官（0.5.0–0.5.5）；后续：0.6 Mission 域（排空门实装与在途工作处置）。
+
 ## [0.5.4] - 2026-10-30
 
 ### Added

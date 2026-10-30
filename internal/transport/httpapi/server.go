@@ -1612,6 +1612,168 @@ func (s *server) ListSlotBindingEvents(w http.ResponseWriter, r *http.Request, b
 	writeJSON(w, http.StatusOK, map[string]any{"events": out})
 }
 
+// GetSlotInstanceReadiness 准入试算（只读无副作用；未就绪也是 200——报告
+// 不是错误）。版本三态与 prepare 同规则：省略钉最新、显式 <1 → 400、越界
+// 409。
+func (s *server) GetSlotInstanceReadiness(w http.ResponseWriter, r *http.Request, slotInstanceID string, params apigen.GetSlotInstanceReadinessParams) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	if params.AgentId == "" {
+		writeError(w, http.StatusBadRequest, "invalid_binding", "agent_id 查询参数必填")
+		return
+	}
+	version := 0
+	if params.SlotSpecVersion != nil {
+		if *params.SlotSpecVersion < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_binding", "slot_spec_version 显式提供时须 ≥1（省略则钉最新）")
+			return
+		}
+		version = int(*params.SlotSpecVersion)
+	}
+	res, err := s.deps.Slots.Readiness(r.Context(), slotInstanceID, params.AgentId, version)
+	if err != nil {
+		writeBindingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, readinessView(res))
+}
+
+// GetSlotGrant 授权档案读取；未设置 404 grant_not_found（空授权安全缺省，
+// UI 可编辑空表单——非错误态）。
+func (s *server) GetSlotGrant(w http.ResponseWriter, r *http.Request, agentID string) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	g, ok, err := s.deps.Slots.Grant(r.Context(), agentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "slot_read_failed", err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "grant_not_found", "授权档案未设置（空授权安全缺省）")
+		return
+	}
+	writeJSON(w, http.StatusOK, grantView(g))
+}
+
+// PutSlotGrant 全量替换授权档案（写门；显式空数组 = 清空，无三态歧义）。
+func (s *server) PutSlotGrant(w http.ResponseWriter, r *http.Request, agentID string) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.AgentGrantPut
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	g, err := s.deps.Slots.PutGrant(r.Context(), agentID, slot.AgentGrant{
+		Skills:  slotSkillRefsOf(req.Skills),
+		Tools:   req.Tools,
+		Context: req.Context,
+		Runtime: slot.AgentGrantRuntime{
+			Capabilities:    req.Runtime.Capabilities,
+			WorkspaceAccess: string(req.Runtime.WorkspaceAccess),
+		},
+	})
+	if err != nil {
+		writeBindingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, grantView(g))
+}
+
+// RetrySlotBinding 重试任职准备（blocked → preparing → 门 → ready/blocked；
+// 单事务——ADR-0021 v0.2 #3 路径暴露）。
+func (s *server) RetrySlotBinding(w http.ResponseWriter, r *http.Request, bindingID string) {
+	if s.deps.Slots == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	b, err := s.deps.Slots.RetryPrepare(r.Context(), bindingID)
+	if err != nil {
+		writeBindingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, b)
+}
+
+// grantView slot.AgentGrant → apigen.AgentGrantView。
+func grantView(g slot.AgentGrant) apigen.AgentGrantView {
+	ts, _ := time.Parse(time.RFC3339, g.UpdatedAt)
+	return apigen.AgentGrantView{
+		AgentId:  g.AgentID,
+		Skills:   skillRefsOf(g.Skills),
+		Tools:    g.Tools,
+		Context:  g.Context,
+		Runtime:  apigen.GrantRuntime{Capabilities: g.Runtime.Capabilities, WorkspaceAccess: apigen.GrantRuntimeWorkspaceAccess(g.Runtime.WorkspaceAccess)},
+		UpdatedAt: ts,
+	}
+}
+
+// skillRefsOf []slot.SkillRef → []apigen.SkillRef。
+func skillRefsOf(src []slot.SkillRef) []apigen.SkillRef {
+	out := make([]apigen.SkillRef, 0, len(src))
+	for _, sk := range src {
+		out = append(out, apigen.SkillRef{Ref: sk.Ref, Version: sk.Version})
+	}
+	return out
+}
+
+// slotSkillRefsOf []apigen.SkillRef → []slot.SkillRef（请求方向）。
+func slotSkillRefsOf(src []apigen.SkillRef) []slot.SkillRef {
+	out := make([]slot.SkillRef, 0, len(src))
+	for _, sk := range src {
+		out = append(out, slot.SkillRef{Ref: sk.Ref, Version: sk.Version})
+	}
+	return out
+}
+
+// readinessView slot.ReadinessResult → apigen.ReadinessReportView。
+func readinessView(res slot.ReadinessResult) apigen.ReadinessReportView {
+	rep := res.Report
+	satisfied := rep.Satisfied
+	if satisfied == nil {
+		satisfied = []string{}
+	}
+	missing := rep.Missing
+	if missing == nil {
+		missing = []string{}
+	}
+	degraded := rep.Degraded
+	if degraded == nil {
+		degraded = []string{}
+	}
+	return apigen.ReadinessReportView{
+		SlotInstanceId:           res.SlotInstanceID,
+		AgentId:                  res.AgentID,
+		SlotSpecId:               res.SlotSpecID,
+		SlotSpecVersion:          res.SlotSpecVersion,
+		Ready:                    rep.Ready,
+		Satisfied:                satisfied,
+		Missing:                  missing,
+		Degraded:                 degraded,
+		EffectiveWorkspaceAccess: apigen.ReadinessReportViewEffectiveWorkspaceAccess(rep.EffectiveWorkspaceAccess),
+	}
+}
+
 // writeBindingError 任职域错误映射。
 func writeBindingError(w http.ResponseWriter, err error) {
 	switch {
@@ -1633,6 +1795,10 @@ func writeBindingError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "invalid_transition", err.Error())
 	case errors.Is(err, slot.ErrInvalidBinding):
 		writeError(w, http.StatusBadRequest, "invalid_binding", err.Error())
+	case errors.Is(err, slot.ErrInvalidGrant):
+		writeError(w, http.StatusBadRequest, "invalid_grant", err.Error())
+	case errors.Is(err, slot.ErrGrantNotFound):
+		writeError(w, http.StatusNotFound, "grant_not_found", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "slot_write_failed", err.Error())
 	}

@@ -5,7 +5,7 @@
 // 分层规矩：房间讨论策略在房间内调（右侧信息面板）；本页子导航纯前端态（刷新回
 // 默认 Agent 区）。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type BackupSummary, type Executable, type IdentityAgent, type MonitorView, type SettingsDoc, type SlotSpecContent, type SlotSpecSummary, type SlotSpecView, type SlotInstanceView, type BindingView } from "../api/client";
+import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type BackupSummary, type Executable, type IdentityAgent, type MonitorView, type SettingsDoc, type SlotSpecContent, type SlotSpecSummary, type SlotSpecView, type SlotInstanceView, type BindingView, type ReadinessReportView } from "../api/client";
 import { AppLogo } from "../components/AppLogo";
 import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
 import { UpdateEditor } from "../components/UpdateEditor";
@@ -1053,6 +1053,13 @@ export function SettingsPage() {
                 </ul>
               )}
 
+              <h3 className="mb-1 mt-6 text-sm font-medium">Agent 授权档案</h3>
+              <p className="mb-3 text-xs text-faint">
+                职责准入的用户授权侧（ADR-0022 / 0.5.5）：技能、工具、上下文域、运行能力与工作区权限。
+                无档案 = 空授权（安全缺省）——有要求模板的任职将 blocked，补授权后重试。
+              </p>
+              <AgentGrants />
+
               <h3 className="mb-1 mt-6 text-sm font-medium">职责实例</h3>
               <p className="mb-3 text-xs text-faint">
                 某作用域内实际承担的一份具体职责（ADR-0020）：同一模板可实例化多份，换人后实例保留
@@ -1882,8 +1889,219 @@ function SlotVersionsDetails({ slotSpecID, rev }: { slotSpecID: string; rev: num
   );
 }
 
-/** 实例任职管理（ADR-0021 / 0.5.4）：展开即拉取；任职（Agent 下拉 + 钉版本）、
- * 激活（单 active——冲突可见 409）、释放（交接备注输入）。 */
+/** Agent 授权档案（ADR-0022 / 0.5.5）：用户授权侧——技能（每行 ref@vN）、
+ * 工具/上下文域/运行能力（每行一项）、工作区权限级。PUT 全量替换（显式清空
+ * = 空授权）；未设置（404 grant_not_found）与读取失败两态区分。 */
+function AgentGrants() {
+  const [agents, setAgents] = useState<{ agent_id: string; display_name: string; status: string }[]>([]);
+  const [agentID, setAgentID] = useState("");
+  const [skills, setSkills] = useState("");
+  const [tools, setTools] = useState("");
+  const [context, setContext] = useState("");
+  const [caps, setCaps] = useState("");
+  const [access, setAccess] = useState<"none" | "read" | "read_write">("none");
+  const [configured, setConfigured] = useState(false);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [agentsErr, setAgentsErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const seq = useRef(0);
+
+  // 换 Agent 即弃置未保存编辑（表单随档案重置）；请求序号拒旧响应
+  useEffect(() => {
+    if (!open || !agentID) return;
+    const cur = ++seq.current;
+    setMsg(null);
+    setLoadErr(null);
+    setSavedAt(null);
+    api
+      .getSlotGrant(agentID)
+      .then((g) => {
+        if (seq.current !== cur) return;
+        setConfigured(true);
+        setSkills(g.skills.map((s) => `${s.ref}@v${s.version}`).join("\n"));
+        setTools(g.tools.join("\n"));
+        setContext(g.context.join("\n"));
+        setCaps(g.runtime.capabilities.join("\n"));
+        setAccess(g.runtime.workspace_access);
+      })
+      .catch((e) => {
+        if (seq.current !== cur) return;
+        if (e instanceof ApiError && e.code === "grant_not_found") {
+          setConfigured(false); // 未设置 = 空授权安全缺省（可编辑空表单，非错误态）
+          setSkills("");
+          setTools("");
+          setContext("");
+          setCaps("");
+          setAccess("none");
+          return;
+        }
+        setLoadErr(e instanceof Error ? e.message : String(e));
+      });
+  }, [open, agentID]);
+
+  const [agentsRev, setAgentsRev] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    api
+      .identityAgents()
+      .then((a) => {
+        setAgents(a.agents);
+        setAgentID((prev) => prev || a.agents[0]?.agent_id || "");
+      })
+      .catch((e) => setAgentsErr(e instanceof Error ? e.message : String(e)));
+  }, [open, agentsRev]);
+
+  const save = async () => {
+    const sk: { ref: string; version: number }[] = [];
+    for (const line of skills.split("\n").map((x) => x.trim()).filter(Boolean)) {
+      const m = line.match(/^(.+)@v(\d+)$/);
+      if (!m) {
+        setMsg(`技能行格式须为 ref@vN（${line}）`);
+        return;
+      }
+      sk.push({ ref: m[1], version: Number(m[2]) });
+    }
+    setBusy(true);
+    setMsg(null);
+    try {
+      const g = await api.putSlotGrant(agentID, {
+        skills: sk,
+        tools: splitGrantLines(tools),
+        context: splitGrantLines(context),
+        runtime: { capabilities: splitGrantLines(caps), workspace_access: access },
+      });
+      setConfigured(true);
+      setSavedAt(g.updated_at);
+    } catch (e) {
+      setMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const current = agents.find((a) => a.agent_id === agentID);
+  return (
+    <details onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)} className="rounded-xl border border-border">
+      <summary className="cursor-pointer select-none px-3 py-2 text-xs">
+        {current ? current.display_name : "选择 Agent"}
+        {current ? `（${current.status}）` : ""}——{configured ? "已设置" : "未设置（空授权）"}
+        {savedAt ? ` · 保存于 ${absoluteTime(savedAt)}` : ""}
+      </summary>
+      <div className="flex flex-col gap-2 px-3 pb-3">
+        {agentsErr ? (
+          <p className="text-xs text-danger">
+            {agentsErr}
+            <button
+              type="button"
+              onClick={() => {
+                setAgentsErr(null);
+                setAgentsRev((r) => r + 1);
+              }}
+              className="ml-2 underline"
+            >
+              重试
+            </button>
+          </p>
+        ) : agents.length === 0 ? (
+          <p className="text-xs text-faint">尚无 Agent 身份——先在上方「Agent 身份与生命周期」建立。</p>
+        ) : (
+          <>
+            <div className="flex items-center gap-2 text-xs">
+              <select
+                value={agentID}
+                onChange={(e) => setAgentID(e.target.value)}
+                className="rounded border border-border bg-surface-2 px-1.5 py-1 outline-none"
+              >
+                {agents.map((a) => (
+                  <option key={a.agent_id} value={a.agent_id}>
+                    {a.display_name}（{a.status}）
+                  </option>
+                ))}
+              </select>
+            </div>
+            {loadErr ? (
+              <p className="text-xs text-danger">档案读取失败：{loadErr}</p>
+            ) : (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <label className="flex flex-col gap-1">
+                  <span className="text-faint">技能（每行 ref@vN，如 workspace/skills/evidence-review@v1）</span>
+                  <textarea
+                    value={skills}
+                    onChange={(e) => setSkills(e.target.value)}
+                    rows={3}
+                    className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-faint">工具（每行一项，如 documents.read）</span>
+                  <textarea
+                    value={tools}
+                    onChange={(e) => setTools(e.target.value)}
+                    rows={3}
+                    className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-faint">上下文域（每行一项，如 mission.contract）</span>
+                  <textarea
+                    value={context}
+                    onChange={(e) => setContext(e.target.value)}
+                    rows={2}
+                    className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-faint">运行能力（每行一项，如 execute）</span>
+                  <textarea
+                    value={caps}
+                    onChange={(e) => setCaps(e.target.value)}
+                    rows={2}
+                    className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-faint">工作区权限（有效权限 = min(授权, 模板要求)）</span>
+                  <select
+                    value={access}
+                    onChange={(e) => setAccess(e.target.value as "none" | "read" | "read_write")}
+                    className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-xs outline-none"
+                  >
+                    <option value="none">none（无工作区）</option>
+                    <option value="read">read（只读）</option>
+                    <option value="read_write">read_write（读写）</option>
+                  </select>
+                </label>
+              </div>
+            )}
+            {msg && <p className="text-xs text-danger">{msg}</p>}
+            <div>
+              <button
+                type="button"
+                disabled={busy || !agentID || loadErr !== null}
+                onClick={() => void save()}
+                className="rounded-lg bg-surface-3 px-3 py-1.5 text-xs text-text transition-opacity hover:opacity-85 disabled:opacity-40"
+              >
+                {busy ? "保存中…" : "保存授权（全量替换）"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </details>
+  );
+}
+
+/** splitGrantLines 授权档案表单：每行一项，去空白滤空行。 */
+function splitGrantLines(s: string): string[] {
+  return s.split("\n").map((x) => x.trim()).filter(Boolean);
+}
+
+/** 实例任职管理（ADR-0021 / 0.5.4 + ADR-0022 准入 / 0.5.5）：展开即拉取；
+ * 任职（Agent 下拉 + 钉版本 + 准入试算）、blocked 缺失展示与重试、激活
+ * （单 active——冲突可见 409）、释放（交接备注输入）。 */
 function InstanceBindings({ instanceID, specLatest }: { instanceID: string; specLatest: number }) {
   const [open, setOpen] = useState(false);
   const [bindings, setBindings] = useState<BindingView[] | null>(null);
@@ -1894,11 +2112,17 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [rev, setRev] = useState(0);
+  // 0.5.5 准入试算（只读报告；换 Agent/版本即失效）
+  const [probe, setProbe] = useState<ReadinessReportView | null>(null);
+  const [probeBusy, setProbeBusy] = useState(false);
+  // 0.5.5 blocked 任职的事件取证（缺失/降级可见）
+  const [blockedInfo, setBlockedInfo] = useState<Record<string, { missing?: string; degraded?: string }>>({});
   const seq = useRef(0);
 
   useEffect(() => {
     if (!open) return;
     const cur = ++seq.current;
+    setProbe(null);
     void Promise.all([api.listSlotBindings(instanceID), api.identityAgents()])
       .then(([b, a]) => {
         if (seq.current !== cur) return;
@@ -1906,6 +2130,24 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
         const active = a.agents.filter((x) => x.status === "active");
         setAgents(active.map((x) => ({ agent_id: x.agent_id, display_name: x.display_name })));
         setAgentID((prev) => prev || active[0]?.agent_id || "");
+        // blocked 任职：拉事件取 missing/degraded（准入受阻原因可见；事件不可达仅少展示详情）
+        for (const bd of b.bindings.filter((x) => x.status === "blocked")) {
+          void api
+            .listSlotBindingEvents(bd.binding_id)
+            .then((ev) => {
+              if (seq.current !== cur) return;
+              const last = [...ev.events]
+                .reverse()
+                .find((e) => (e.payload as Record<string, unknown>)["to"] === "blocked");
+              if (!last) return;
+              const pl = last.payload as Record<string, string>;
+              setBlockedInfo((prevMap) => ({
+                ...prevMap,
+                [bd.binding_id]: { missing: pl["missing"], degraded: pl["degraded"] },
+              }));
+            })
+            .catch(() => undefined);
+        }
       })
       .catch((e) => {
         if (seq.current !== cur) return;
@@ -1926,8 +2168,24 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
     }
   };
 
+  // 准入试算：只读无副作用（不建任职记录）
+  const runProbe = async () => {
+    setProbeBusy(true);
+    setMsg(null);
+    try {
+      const v = version.trim() ? Number(version.trim()) : undefined;
+      setProbe(await api.getSlotReadiness(instanceID, agentID, v !== undefined && v > 0 ? v : undefined));
+    } catch (e) {
+      setProbe(null);
+      setMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
+    } finally {
+      setProbeBusy(false);
+    }
+  };
+
   const activeBinding = (bindings ?? []).find((b) => b.status === "active");
   const readyOnes = (bindings ?? []).filter((b) => b.status === "ready");
+  const blockedOnes = (bindings ?? []).filter((b) => b.status === "blocked");
   const draining = (bindings ?? []).filter((b) => b.status === "draining");
   // 最近交接按释放时间（updated_at）取最新（审校 P2#1）——非创建序末项；
   // 接口保持创建序不变
@@ -1972,6 +2230,24 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
                 排空中（{agentNameOf(agents, b.agent_id)}）——在途工作清空后重试释放
               </p>
             ))}
+            {blockedOnes.map((b) => (
+              <div key={b.binding_id} className="flex flex-col gap-0.5 rounded-lg bg-surface-2 px-2 py-1.5 text-[11px]">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-warn">准备受阻：{agentNameOf(agents, b.agent_id)}</span>
+                  <ExeBadge>v{b.slot_spec_version}</ExeBadge>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void act(() => api.retrySlotBinding(b.binding_id))}
+                    className="rounded bg-surface-3 px-2 py-px disabled:opacity-40"
+                  >
+                    重试准备
+                  </button>
+                </div>
+                {blockedInfo[b.binding_id]?.missing && <p className="text-dim">缺失：{blockedInfo[b.binding_id]!.missing}</p>}
+                {blockedInfo[b.binding_id]?.degraded && <p className="text-faint">降级：{blockedInfo[b.binding_id]!.degraded}</p>}
+              </div>
+            ))}
             {readyOnes.length > 0 && (
               <div className="flex flex-col gap-1">
                 {readyOnes.map((b) => (
@@ -1998,8 +2274,11 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
             <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
               <select
                 value={agentID}
-                onChange={(e) => setAgentID(e.target.value)}
-                className="rounded border border-border bg-surface-2 px-1.5 py-px outline-none"
+                onChange={(e) => {
+                  setAgentID(e.target.value);
+                  setProbe(null);
+                }}
+                className="rounded border border-border bg-surface-2 px-1 py-px outline-none"
               >
                 {agents.map((a) => (
                   <option key={a.agent_id} value={a.agent_id}>
@@ -2009,10 +2288,21 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
               </select>
               <input
                 value={version}
-                onChange={(e) => setVersion(e.target.value)}
+                onChange={(e) => {
+                  setVersion(e.target.value);
+                  setProbe(null);
+                }}
                 placeholder={`钉版本（空 = 最新 v${specLatest}）`}
-                className="w-32 rounded border border-border bg-surface-2 px-1.5 py-px outline-none"
+                className="w-32 rounded border border-border bg-surface-2 px-1 py-px outline-none"
               />
+              <button
+                type="button"
+                disabled={probeBusy || !agentID}
+                onClick={() => void runProbe()}
+                className="rounded bg-surface-3 px-2 py-px disabled:opacity-40"
+              >
+                {probeBusy ? "试算中…" : "准入试算"}
+              </button>
               <button
                 type="button"
                 disabled={busy || !agentID}
@@ -2030,6 +2320,18 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
                 建任职
               </button>
             </div>
+            {probe && (
+              <div
+                className={probe.ready ? "rounded bg-surface-2 px-2 py-1 text-[11px] text-dim" : "rounded bg-surface-2 px-2 py-1 text-[11px] text-warn"}
+                title={`试算钉住 v${probe.slot_spec_version}（${probe.slot_spec_id}）`}
+              >
+                <span className="font-medium">{probe.ready ? "就绪" : "未就绪"}</span>
+                （v{probe.slot_spec_version} · 有效权限 {probe.effective_workspace_access}）
+                {probe.missing.length > 0 && <p>缺失：{probe.missing.join("；")}</p>}
+                {probe.degraded.length > 0 && <p className="text-faint">降级：{probe.degraded.join("；")}</p>}
+                {probe.satisfied.length > 0 && <p className="text-faint">满足 {probe.satisfied.length} 项（就绪/降级明细见事件）</p>}
+              </div>
+            )}
           </>
         )}
       </div>
