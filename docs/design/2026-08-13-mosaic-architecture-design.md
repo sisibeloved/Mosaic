@@ -8,7 +8,7 @@
 |---|---|
 | 产品 | Mosaic |
 | 目标版本 | v0.1.0（MVP） |
-| 文档版本 | v0.6 |
+| 文档版本 | v1.2 |
 | 状态 | Draft |
 | 密级 | 公开 |
 
@@ -36,6 +36,7 @@
 | v0.9 | 2026-08-25 | Mosaic 项目组 / ZCode | RFC-0001/0002 首轮审校对齐：消息事件统一为 message.posted（actor.kind 区分）；对外续传/快照改 opaque 视图游标（全局 seq 仅内部，随 RFC-0001 v0.4，落地细节回填待 RFC Approved）；Agent 接入改分级晋级表述（RFC-0002 v0.5）；ADR-0006/0007 状态随 RFC 评审改为 Proposed |
 | v1.0 | 2026-09-16 | Mosaic 项目组 / Kimi Code | RFC-0014 / ADR-0014：协作文档落地——文档作为全局资产（飞书形态）成为第二权威事实源，per-doc 事件流与房间日志并存（同一 SQLite 库），"Room Event Log 唯一权威"表述相应修订；RFC-0009 Artifact 治理的首个落地子集（仅文档，表格后置） |
 | v1.1 | 2026-10-28 | Mosaic 项目组 / ZCode | [RFC-0018](rfc/2026-10-28-rfc-0018-personal-agent-swarm.md) 获负责人批准：AR-003 增补 Mission 授权委派边界；§6.3/§6.4/§6.5 增补长期 Agent 域边界注（身份、会话与记忆分域）；Agent / Mission / Slot / Runtime 为新增领域对象，实施按交付计划 v2.00 自 0.5.0 起分阶段推进，各阶段落地时回填对应小节 |
+| v1.2 | 2026-10-30 | Mosaic 项目组 / Codex | 按最新讨论同步 RFC-0018 v0.6 的轻量级智能体网关设计：§6.4.1 增加内嵌 Dispatch、确定性寻址与事项续接优先、可选语义候选、领域职责及跨设备边界。属于设计增补，候选接口和实施依赖以 RFC 为准，不表示网关已交付 |
 
 > 演进提案已批准（2026-10-28）：[RFC-0018：长期 Agent、Slot 与圆桌到 Swarm 的协作闭环](rfc/2026-10-28-rfc-0018-personal-agent-swarm.md) 为 Approved 基线，定义跨房间的身份、职责、事务、记忆与 Runtime 边界，其 §2.2 列明对本架构及现行协议的修订。本文相应小节按各领域版本落地进度回填；未落地小节仍以本文既有表述描述现行实现。
 
@@ -863,6 +864,23 @@ Cancel(runId)
 Agent 发言的模型调用由外部 Harness 直连其 Provider 完成（OQ-20）：Mosaic 不持有 Provider 凭据、不做请求级代理；Model Gateway 收缩为 Mosaic 自用模型通道（embedding 与投影/检索等内部用途），与 Agent 发言流量隔离。供应商切换不改变 Agent Profile 身份；实际模型以 Profile 声明与 Harness 自报的 run 级元数据记录（`model.binding.changed`），保持可追踪性。
 
 > **长期 Agent 域边界注（v1.1 / RFC-0018）**：本节的讨论型 Runtime 语义不变。RFC-0018 批准后，Agent 身份独立于可执行程序与座位（AgentID 权威注册表，0.5.0 起）；Environment / Runtime / Lease 成为独立领域对象，支持执行型任务与按需启停（落地于 0.6 领域版本起）。Harness 适配层与能力协商（IF-ADAPTER / IF-HARNESS 边界）沿用本节框架，执行型任务类型经能力协商声明，不支持时明确报能力缺失。
+
+#### 6.4.1 轻量级智能体网关（目标设计增补）
+
+[RFC-0018 §4.4–4.8](rfc/2026-10-28-rfc-0018-personal-agent-swarm.md#44-轻量级智能体网关的职责边界) 在既有 HTTP / Agent 入口后增加进程内 `Dispatch`，负责请求属于哪个事项、目标是谁、如何送达及结果返回位置。它与 API / Realtime Gateway 的协议入口、Model Gateway 的自用模型通道、Tool & Approval Gateway 的工具调用职责分开，不新增独立服务、企业鉴权体系或长期总管 Agent。
+
+请求先按类型进入讨论、私聊或任务路径，再按“显式目标 → 明确续接 → Room 默认入口 → 无目标新事项的候选选择”解析。普通 Room 消息保持原讨论机制，私聊复用 private Room 与作用域 Session；任务职责按 `scope → SlotInstance → active Binding → AgentID → Runtime` 解析，已分配 Mission 的负责人不随目录变化自动改派。语义选择默认关闭，启用后只为缺少明确目标的新事项提供有限候选。
+
+| 职责 | 权威组件与边界 |
+|---|---|
+| 寻址、续接、路由理由与投递关联 | Dispatch；拟落 `internal/dispatch`，聚合 `IF-DISPATCH`，不另建身份或任务事实源 |
+| 讨论与私聊消息 | Room；全局路由不筛掉圆桌成员、不把普通发言自动升级为 Mission |
+| 契约、负责人、委派与验收 | Mission / Scheduler；负责人依据 Mission 授权组织 Swarm，配额与 DAG 在领域层检查 |
+| 目录、准入、上下文及运行面 | Registry / Binding、Context、Runtime；区分职责适合、授权满足与当前可执行，投递和领取时复核 |
+
+解析只返回目标与预检结果；只有领域事务提交后才标“已提交”，只有有效 Run 才标“执行中”。响应丢失复用原幂等回执，超时不自动换人重做；责任改派走任务交接，结果按 Run / generation 回到原事项。手动导入另一设备的备份只提供历史状态，不提供在线 Runtime；无远程通道时显示待交接 / 待送达。
+
+目标逻辑图、接口与时序见 RFC-0018 §4.1–4.3、§10，候选请求和回执见 §11.2.1，实施依赖及 AT-14–AT-20 见 §13。本文后续 MVP 视图保留历史基线；新增网关按该 RFC 的目标视图落地后再回填实现映射。
 
 ### 6.5 记忆与检索
 

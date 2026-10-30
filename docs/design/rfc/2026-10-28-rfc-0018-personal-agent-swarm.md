@@ -4,7 +4,7 @@
 
 **创建日期 (Created):** 2026-10-28
 
-**更新日期 (Updated):** 2026-10-29（v0.5 发行映射同步）
+**更新日期 (Updated):** 2026-10-30（v0.6 轻量级智能体网关设计增补）
 
 **作者 (Authors):** Mosaic 项目组 / Codex
 
@@ -15,9 +15,9 @@
 | 项目 | 内容 |
 |---|---|
 | 上游输入 | [讨论圆桌与 Swarm 衔接](chatgpt-conversation://6ae16fe6-7a50-83e8-a508-df53e8373021)（ChatGPT 内部引用，普通浏览器或仓库文档查看器可能无法打开）；尤其是用户关于自管 Agent、独立生命周期、可迁移记忆与上下文、Runtime 与 Slot 的四点要求 |
-| 输入边界 | 本次可读取的是聊天引用附带的截断预览，未取得完整聊天；本文将可见的明确要求转成设计，对新增机制给出提案，不将未读部分推定为已决事项 |
+| 输入边界 | 初稿依据引用附带的截断预览；v0.6 于 2026-10-30 通过 `read_thread` 读取上述会话返回的 5 轮可用对话，纳入最新的内嵌智能体网关讨论及个人使用、手动备份合并的约束。§4.4–4.8、§10.3 及相关验收为本次要求的设计增补，接口与默认策略仍为候选，不表示已实现或另行承诺发行版本 |
 | 开放问题来源 | 无对应架构 §11.5 清单项；本提案来自上述产品讨论，既有技术类 OQ 已由先前 RFC 承接 |
-| 代码基线 | v0.4.1，`f9346c3aee790d05b2e09985111dcd740f0828c4`；现状以本地代码核查为准 |
+| 代码基线 | 初稿：v0.4.1，`f9346c3aee790d05b2e09985111dcd740f0828c4`；网关增补复核：`72eda6917f3d951c1ab16299b314b7f1b32cbffb`，已包含 0.5.5 职责准入实现，差异见 §2.1 |
 | 范围 | 个人本地版的架构演进、领域契约、迁移策略与分阶段验收；未来远程运行保留接口 |
 | 与既有文档关系 | 扩展 RFC-0002、0007、0008、0009、0010、0012，承接 ADR-0013 稳定身份及 ADR-0014 独立资产事件流；具体修订见 §2.2 |
 | 生效条件 | 已获批准（见状态行）。各领域版本（0.5–0.9）落地时按 §2.2 同步修订对应基线，并按 §13 分阶段验收；批准不等于已实现，现行实现以各小版本交付为准 |
@@ -25,6 +25,8 @@
 ## 0.1 核心决定
 
 Mosaic 自己管理长期 Agent 的身份、记忆、承诺和运行生命周期。Agent 通过 Slot 承接职责，在 Room 中讨论并形成决策，由 Mission 保存执行契约，负责人按需组织 Swarm，结果回到原讨论及任务中心验收。外部封闭 Personal Agent 的互联不作为前置依赖；已有 CLI、模型和 Harness 继续提供执行能力。
+
+在既有 HTTP / Agent 入口之后内嵌轻量级智能体网关，负责请求寻址、事项续接、就绪核对、分发及返回位置关联。语义选择仅处理缺少明确目标的请求；Room 管讨论，Mission 管任务与责任，负责人组织 Swarm，Runtime 管执行。网关主要由确定性代码组成，复用现有领域服务，不新增常驻“总管 Agent”或独立部署服务。
 
 “即嵌即走”定义为：一个 Agent 可在能力与授权满足时接入版本化 Slot；更换 Agent、Harness 或环境后，可从持久任务状态、授权记忆与交接包恢复工作。它不承诺跨模型保留相同隐式推理、无损搬运 CLI 内部会话，也不承诺零准备时间。
 
@@ -39,6 +41,7 @@ Mosaic 自己管理长期 Agent 的身份、记忆、承诺和运行生命周期
 | R3 | 记忆与上下文可迁移，参考最新实践 | 分域记忆、来源与时效、Context Receipt、Checkpoint、可校验迁移包 | AT-04、AT-05、AT-06 |
 | R4 | Runtime 管理、可选环境管理员、职责与工具提炼为 Slot | SlotSpec / Binding / Environment / Runtime 分离；受限环境维护职责 | AT-07、AT-08、AT-09 |
 | R5 | 圆桌自然衔接负责人带领的 Swarm | 交办卡、Mission 契约、长期协作者与临时 Worker 两种委派、产物验收 | AT-10、AT-11、AT-12 |
+| R6 | 按最新讨论补充个人版轻量级智能体网关 | 内嵌寻址与分发；先保持身份和事项连续性，再按需语义选择；复用调用约束、上下文与回传 | AT-14–AT-20 |
 
 ## 1.2 用户可见的闭环
 
@@ -57,12 +60,13 @@ Mosaic 自己管理长期 Agent 的身份、记忆、承诺和运行生命周期
 - 首版引入多租户、分布式共识、跨组织 Agent 市场或强制云端常驻。
 - 自动把每次讨论收束变成执行任务，或把 Agent 的口头承诺当作已启动的工作。
 - 将全部历史、私有记忆、登录凭据和机器镜像作为一个不可分割对象迁移。
+- 为网关新增企业登录、多租户、组织角色、计费或全局常驻 Hub；首版不引入完整 LLM / MCP / A2A 代理基础设施，不让路由器自行拆解任务或组织 Swarm。
 
 # 2. 现有基础与需要改变的边界
 
 ## 2.1 已核查的实现
 
-以下是代码基线的实际能力，不等于本 RFC 的目标能力已具备。
+下表保留初稿 v0.4.1 的差距基线，不等于当前实现全貌或本 RFC 的目标能力已具备；网关增补所需的现状另列于表后。
 
 | 当前基础 | 代码 / 规范依据 | 可复用部分与缺口 |
 |---|---|---|
@@ -78,6 +82,8 @@ Mosaic 自己管理长期 Agent 的身份、记忆、承诺和运行生命周期
 
 另外，`internal/contextx/context.go` 的 `TasklistProtocol` 仍提示“没有后台执行”。引入 Mission 后须按执行能力与任务类型提供提示词，避免新旧行为互相矛盾。
 
+**2026-10-30 网关增补复核：**独立身份与 SlotSpec / SlotInstance / Binding 已落地。`internal/app/app.go` 已注入 [GrantReadinessChecker](../../../internal/slot/readiness.go)，按 [ADR-0022](../adr/ADR-0022-readiness-admission.md) 对用户授权档案和钉住版本的职责模板求交集；不能沿用讨论时“生产准入检查尚未注入”的旧判断。但该检查尚不代表本机文件、登录态、实时工具能力与执行租约都已就绪，Runtime 实测及 Mission 范围仍需后续接入。`internal/room/runs.go` 的任务仍依赖房间座位和 local 连接，`internal/agent/supervisor.go` 仍按 Profile × Room 隔离会话；拟新增的 `internal/dispatch` 与 Mission / Session 寻址契约不是当前已有接口。
+
 ## 2.2 规范兼容与修订清单
 
 | 原约定 | 本提案的变化 | 保留项 / 生效方式 |
@@ -90,8 +96,9 @@ Mosaic 自己管理长期 Agent 的身份、记忆、承诺和运行生命周期
 | ADR-0013：BotID 附着可执行项 | 独立 AgentID，保留 BotID / ParticipantID / ProfileID 的映射 | 不重写旧事件，不以显示名猜测合并身份 |
 | RFC-0012：tasklist 为房间承诺投影 | 显式提升为 Mission 后，由 Mission 管理执行状态 | 旧 tasklist 格式及旧终态保持原义，不自动批量启动 |
 | RFC-0008/0009/0010：授权、工具、数据生命周期 | 增加 Binding 权限交集、迁移、派生记忆删除、运行回执 | 沿用 owner 写门、最小权限和删除留痕原则；不导出密钥 |
+| Gateway 为 HTTP / Agent 命令入口 | 入口后增加进程内 Dispatch，统一目标解析与投递关联 | 原入口保留协议校验和身份边界；Model Gateway、Tool Gateway 职责不变；普通 Room 发言不进入全局专家筛选 |
 
-批准本 RFC 时应同步修订架构说明书 §3（含 AR-003）/§6.3/§6.4/§6.5 与上述 RFC 的相应边界。现阶段仅登记提案链接，不将 Draft 伪装为已生效基线。
+原批准基线的架构边界已按领域逐步回填；网关增补同步登记于架构说明书 §6.4.1。后续实现时同步修订相应协议与 Schema，不把本文的候选接口标为已交付。
 
 # 3. 概念、所有权与生命周期
 
@@ -156,6 +163,10 @@ graph TB
       UI["Web / 桌面界面"]
       Gateway["HTTP / Agent 命令与授权入口"]
     end
+    subgraph Routing["请求解析与分发组件"]
+      Dispatch["轻量级智能体网关 Dispatch"]
+      Semantic["可选语义选择端口"]
+    end
     subgraph Collaboration["协作组件"]
       Room["Room 服务"]
       Mission["Goal / Mission 服务"]
@@ -165,7 +176,7 @@ graph TB
       AgentRegistry["Agent 注册与 Slot / Binding"]
     end
     subgraph Knowledge["知识组件"]
-      Context["Context / Checkpoint 服务"]
+      Context["Context / Session / Checkpoint 服务"]
       Memory["分域记忆服务"]
       Assets["文档与产物服务"]
     end
@@ -180,11 +191,17 @@ graph TB
   Harness["外部 Harness 与工具进程"]
   Provider["模型供应方 / 外部业务系统"]
   UI --> Gateway
-  Gateway --> Room
-  Gateway --> Mission
+  Gateway --> Dispatch
   Gateway --> AgentRegistry
   Gateway --> Memory
   Gateway --> Runtime
+  Dispatch --> Room
+  Dispatch --> Mission
+  Dispatch --> AgentRegistry
+  Dispatch --> Context
+  Dispatch --> Runtime
+  Dispatch --> Semantic
+  Dispatch --> Store
   Room --> Mission
   Room --> Context
   Mission --> Scheduler
@@ -212,20 +229,27 @@ graph TB
 graph TB
   UI["Web / 桌面界面"] -->|IF-USER：管理、交办、验收、观察| Gateway["HTTP / Agent 命令与授权入口"]
   Harness["外部 Harness 与工具进程"] -->|IF-AGENT：承接、委派、查询、交付| Gateway
-  Gateway -->|IF-ROOM：讨论与结果引用| Room["Room 服务"]
-  Gateway -->|IF-MISSION：契约、工作图、验收| Mission["Goal / Mission 服务"]
+  Gateway -->|IF-DISPATCH：解析、投递、回执| Dispatch["轻量级智能体网关"]
+  Dispatch -->|IF-ROOM：发言、私聊、来源查询| Room["Room 服务"]
+  Dispatch -->|IF-MISSION：交办、续接、委派、交付| Mission["Goal / Mission 服务"]
+  Dispatch -->|IF-IDENTITY：身份、实例、任职及准入报告| AgentRegistry["Agent 注册与 Slot / Binding"]
+  Dispatch -->|IF-CONTEXT：Session 寻址、输入要求| Context["Context / Session / Checkpoint 服务"]
+  Dispatch -->|IF-RUNTIME：当前能力与就绪检查| Runtime["环境 / Runtime / Lease 管理"]
+  Dispatch -->|IF-ROUTE-SELECT：受限候选选择| Semantic["可选语义选择端口"]
   Gateway -->|IF-IDENTITY：身份、任职、授权| AgentRegistry["Agent 注册与 Slot / Binding"]
   Gateway -->|IF-MEMORY：查询、策展、纠错| Memory["分域记忆服务"]
   Gateway -->|IF-RUNTIME：检查、维护、排空| Runtime["环境 / Runtime / Lease 管理"]
   Room -->|IF-MISSION：从决定交办| Mission
   Mission -->|IF-SCHEDULE：入队、唤醒、取消| Scheduler["持久调度与收件箱"]
-  Scheduler -->|IF-CONTEXT：组装、检查点| Context["Context / Checkpoint 服务"]
+  Scheduler -->|IF-CONTEXT：组装、检查点| Context
   Scheduler -->|IF-RUNTIME：分配、提交、停止| Runtime
   Runtime -->|IF-ADAPTER：探测、执行、取消| Adapter["Harness 适配与能力协商"]
   Adapter -->|IF-HARNESS：原生协议| Harness
 ```
 
-具体命令见 §11。`IF-ADAPTER` 是 Mosaic 内部统一适配端口，`IF-HARNESS` 是适配器调用外部 Harness 的原生协议边界。Harness 的回调始终由 Gateway 验证身份与作用域；Runtime 管理器提供资源与执行事实，Mission 决定工作是否完成。环境管理员也通过同一入口调用受限维护接口。
+具体命令见 §11。`IF-ADAPTER` 是 Mosaic 内部统一适配端口，`IF-HARNESS` 是适配器调用外部 Harness 的原生协议边界。Harness 的回调由 Gateway 验证身份与作用域，Dispatch 按已绑定的 Run 路由，不重新做语义选择；Runtime 管理器提供资源与执行事实，Mission 决定工作是否完成。环境管理员通过相同身份边界调用受限维护接口。
+
+`IF-DISPATCH` 聚合 `Resolve / Dispatch / GetReceipt`，调用方不需要了解 CLI 路径。`IF-ROUTE-SELECT` 只接收经过可见性过滤的请求摘要和有限候选，返回候选 ID 或弃权；它没有领域写入、工具执行或直接投递权限。管理类确定命令可继续直接调用既有领域服务，不必经过语义判断。
 
 ## 4.3 逻辑元素到代码、构建与部署
 
@@ -233,14 +257,86 @@ graph TB
 |---|---|---|
 | UI | `apps/web/src`，扩展 `components/chat/TasksTab.tsx` | 既有 Vite 构建，嵌入服务端与桌面壳 |
 | Gateway / Room | `internal/transport/httpapi`、`internal/room` | 既有 Go 服务；Room 保留讨论引擎 |
-| AgentRegistry | `internal/harness` 保留可执行发现；拟新增 `internal/personalagent`、`internal/slot` | 同一 Go 进程；注册表迁移为独立身份与执行位置映射 |
+| Dispatch / Semantic | 拟新增 `internal/dispatch`；选择器为可插拔端口 | 同一 Go 进程，在 HTTP 层后装配；默认确定性路径，无需单独安装或后台守护进程 |
+| AgentRegistry | `internal/harness` 保留可执行发现；现有 `internal/personalagent`、`internal/slot` | 同一 Go 进程；复用身份、职责与准入查询，不另建专家名录 |
 | Mission / Scheduler | 拟新增 `internal/mission`、`internal/scheduler`；复用 `internal/monitor` | 同一 Go 进程；持久队列恢复依赖 Store |
-| Context / Memory / Assets | `internal/contextx`、拟新增 `internal/memory`，既有 `internal/doc` | 同一 Go 进程；不增加默认云端记忆服务 |
+| Context / Session / Memory / Assets | `internal/contextx`、`internal/agent` 的会话映射、拟新增 `internal/memory`，既有 `internal/doc` | Session 续接元数据扩展至任务作用域；私聊仍复用既有 private Room，不增加一份聊天事实源 |
 | Runtime / Adapter | 拟新增 `internal/runtime`；复用 `internal/agent`、`internal/harness` | Go 管理器与现有外部 CLI 子进程；先支持本机 / 已有 WSL 路径 |
 | Store | `internal/storage/sqlite` 及本地内容文件 | 沿用现有数据库与备份介质，新增版本化迁移 |
 | Harness / Provider | 用户安装的 Harness 及其模型连接、业务工具 | 外部依赖，不打包模型服务或复制用户认证信息 |
 
 装配继续由 `internal/app` 完成，交付仍是 `cmd/mosaic-server` 与 `apps/desktop`。远端连接、容器隔离可作为后续 RuntimeProvider 插件；能力和凭据就绪前不调度到这些环境。
+
+## 4.4 轻量级智能体网关的职责边界
+
+网关回答四件事：请求属于哪个事项、交给哪个对象、怎样送达、结果回到哪里。HTTP / Agent 入口完成协议与调用身份校验后，把规范化请求交给 Dispatch；未来 IM 适配器和事件入口也复用这一端口。个人版沿用本地 owner 与受限 Agent 调用上下文，区分用户交办、Agent 委派及事件唤醒即可，不增加企业鉴权产品。
+
+| 网关负责 | 依赖的权威服务 | 网关不能替代的裁定 |
+|---|---|---|
+| Agent、Slot、Mission、Session 统一寻址 | AgentRegistry、Slot / Binding、Mission、Session 元数据 | 身份注册、任职变更、负责人转移 |
+| 识别新事项或已有事项的后续 | Room 回复关系、Mission / WorkItem、Session 作用域 | 自动新建任务、合并会话或改写任务契约 |
+| 核对职责匹配、授权与当前可执行性 | Binding 准入、Runtime 探测、Scheduler 配额 | 扩权、启动进程、领取租约或宣布资源已预留 |
+| 提交最小上下文要求和结果返回位置 | Context、Memory、Mission、Room | 复制候选 Agent 的私有记忆、判定交付或验收完成 |
+| 携带幂等键、委派链、时限与预算 | 领域命令事务、Scheduler、Runtime | 另建一套任务状态机、无界重试、自行组织 Swarm |
+| 保存简短路由理由并支持用户纠正 | RouteDecision、领域命令回执 | 把路由回执当执行事实，或让模型评分覆盖用户指定 |
+
+此处的智能体网关是应用层分发模块。现有 Model Gateway 的 Mosaic 自用模型职责、Tool & Approval Gateway 的工具检查职责不变；Agent 的模型访问仍由 Harness 负责。可选语义选择可复用已配置的自用模型能力或受限 Harness 适配端口，但不因此代理所有 Agent 调用。
+
+## 4.5 寻址优先级与事项连续性
+
+先区分请求类型，再解析目标。入口携带 `room_message / direct_message / mission_create / mission_update / delegation / result / wake` 等类型；结构化操作可直接指定，普通文本只能提出类型建议，不能靠一句模型判断把 Room 发言变成已启动的 Mission。暂停、取消、结果回传及已绑定的唤醒走确定命令路径。
+
+| 顺序 | 判定依据 | 处理规则 |
+|---|---|---|
+| 1. 显式目标 | UI 选定的 Agent / SlotInstance / Mission / Session，或已解析的具名引用 | 校验目标与当前作用域。目标不可用时保留原目标并说明原因；同名或矛盾引用需要澄清，不能偷偷改派 |
+| 2. 明确续接 | 任务卡、回复关系、会话绑定、既有负责人 | 回到同一 Mission / WorkItem / Session；“再加 Windows 和绑核结果”不触发重新选专家。多个可能事项时保持未分配并询问一个必要问题 |
+| 3. Room 默认路径 | 仍属于当前房间的普通讨论消息 | 进入 Room 协议；`@Agent` 在房间内表示定向关注，不改变其他参与者资格。网关不先筛掉圆桌成员 |
+| 4. 无明确目标的新事项 | 当前项目与事项范围、职责要求、可见候选 | 先做规则与硬条件筛选；仍需选择时才使用 §4.7 的可选语义选择 |
+
+上述优先级不能跨过业务所有权：显式指定 Agent B，同时引用由 A 负责的 Mission，不等于已把责任交给 B；必须明确是协作、向 B 咨询还是责任交接，再进入相应领域命令。文档引用仅提供上下文来源，不能仅凭文档作者推断任务负责人。普通私聊直接解析 Agent 并定位其 private Room / Session，无须强制创建 Slot 或 Mission。
+
+任务型职责寻址使用 `当前 scope → SlotInstance → active Binding → AgentID → 候选 Runtime`。SlotSpec 只作版本化模板，同名模板在不同项目下可有多个实例；禁止跨项目猜选任职者。没有 active Binding 时返回待任职，不能自动激活一个 ready Binding。已分配 Mission 固定其负责人、Binding 与执行代次，职责后来换人不自动转移在途工作；交接沿用 §8、§10.2。
+
+Session 按 Agent × scope × Binding 校验；普通私聊允许 Binding 为空，任务续接必须验证所属 Mission / WorkItem。原生 CLI session ID 只是恢复提示，不能用它越过作用域或直接选择另一身份。用户明确另起事项时新建独立 Session，不把当前对话的私有上下文默认带过去。
+
+## 4.6 就绪检查、投递与交接回传
+
+候选需要分别记录三种判断：**职责适合**（模板描述与请求匹配）、**授权满足**（Binding 的有效权限交集）、**当前可执行**（文件、登录态、工具、Runtime 健康、隔离能力与调度资源）。active Binding 或一次旧的 readiness report 不能代替后两者的实时复核。语义匹配度不能抵消任何必需项缺失。
+
+解析阶段只做预检，不占用执行资源。投递前重读 Agent 状态、Binding、任务版本和授权；调度领取时再按 §11.1 校验并预留预算、领取 Lease。解析后发生任职变更、授权撤销或任务修订时，返回 `route_stale` 及需重新解析的对象，不自动套用新任职者。暂时忙碌可由 Scheduler 排队；缺工具、缺文件或运行面离线时保留目标，显示对应等待原因。
+
+执行就绪检查只阻止启动执行，不阻止有权用户保存草稿、补充任务契约或发出停止 / 取消命令。目标与操作权限合法时，这些变更先由领域服务持久化；缺执行条件记录为等待原因。不能要求环境在线才能记录用户的新要求，也不能把“变更已保存”显示为已开始执行。
+
+目标确定后，网关提交目标、来源决定、验收条件、证据引用、Checkpoint 引用和返回位置给既有服务；由 Context 按 §7.3 形成有版本的 Manifest / Receipt。路由阶段只读取授权的目录与必要事项摘要，不为了选人先组装所有候选的私有记忆。必需输入缺失时保留 draft / blocked，不能发出一个只有最后一句话的空壳交办。
+
+用户状态依次取自对应权威对象：`已确定目标`来自 RouteDecision；`待输入 / 待环境`来自就绪报告与任务等待状态；`已提交`须有领域提交回执；`已接收`须有 offer 承接或调度领取事实；`执行中`须有有效 Run；`已交付 / 待验收`来自 Mission。网关提供关联视图，不维护一条独立的任务推进状态机。没有长期协作者 offer 的单 Agent 任务，不虚构一条 Agent 已承诺承接的记录。
+
+返回位置只允许已授权的 Room / Thread / Mission / WorkItem / Session 对象引用，不接受任意回调 URL。子项交付回到父 WorkItem 与负责人，再由 Mission 统一交付；Room 只接收允许公开的摘要和成果引用。来源房间被暂停或删除时按 §10.2 处理，返回位置失效不触发重跑。结果、错误与取消回执按 RunID / generation 固定回原事项，绝不重新语义分类。
+
+## 4.7 可选语义选择与人工改派
+
+确定性路径可在没有路由模型的情况下完整使用。初版语义模块只为没有明确目标的新事项提供候选，用户沿用现有“交办”动作选定目标；不增加所有请求都必须经过的审批步骤。以后若允许按用户预设规则自动投递，必须另行确定适用范围及误派验收，不能把模型自报置信度直接当授权。
+
+选择过程固定为：过滤可见范围和硬约束 → 提供有限候选的身份、职责、技能与输入输出描述 → 输出候选 ID、简短公开理由或弃权 → 确定性代码复核候选及当前版本。候选资料从现有目录派生，不另存可漂移的“专家名录”；模板说明、请求正文和文档内容都视为数据，不能改变路由规则或授予工具权限。
+
+每次 RouteDecision 最多进行一次语义调用。候选默认上限 20、选择超时默认 5 秒、入口正文上限沿用 256 KiB 并取适配器更小值；这些是待实现基准验证的初始策略参数，不是已测性能。达到候选上限仍有歧义时请求缩小范围，不把截断后的唯一结果当作全局唯一匹配。超时、模型不可用、候选外 ID 或非法结构均保持未分配，保留手动选目标入口；不循环调用其他模型猜测，不阻塞既有 Room 发言与明确目标投递。
+
+| 用户纠正或运行变化 | 处理方式 |
+|---|---|
+| 尚未提交时改目标 | 产生新版本 RouteDecision，展示新目标与理由；原候选不保留执行权 |
+| 已提交后从 A 改为 B | 走 Mission 责任交接或 WorkItem 重新委派，处理在途 Run、Checkpoint 与未知动作；不能只改路由缓存 |
+| 同 Agent 使用已配置备用模型 | Harness 按已允许策略处理并记录实际模型；复核能力与上下文兼容性 |
+| 同 Agent 更换 Runtime | 走 §8.3 的排空、检查点与执行代次切换，不能因超时同时派发到两处 |
+
+路由回执展示“当前项目的性能验证职责、任职者、沿用任务、目标环境、缺失项”等可核查依据，不展示模型内部推理。人工纠正可作为显式路由偏好保存；首版不自动训练，也不把一次改派泛化为跨项目永久偏好。
+
+## 4.8 本地部署、跨设备与失败语义
+
+每台 Mosaic 内嵌自己的 Dispatch，不依赖一台常驻 Hub。按照 [RFC-0019](2026-10-28-rfc-0019-encrypted-backup-merge.md) 手动导入的数据是历史状态，不能证明另一设备在线，更不自动建立远程调用、续租或结果通道。导入的 RouteDecision、回执与 Runtime 信息只作历史；激活与本机能力检查通过后，才能创建新的本地投递。
+
+尚无受支持的远端传输时，对另一设备的交办保留为待交接，界面显示“待送达”；网关返回 `remote_delivery_unavailable`，Mission 保留相应等待原因，不显示 running。跨设备投递、确认、取消、去重及单执行权交接由后续 Runtime / 同步协议承接，不在本次网关设计中新增网盘任务队列或自动抢占。
+
+请求时限与投递失败不等于没有执行。已有持久提交回执时按同一幂等键查回原结果；可能已产生外部副作用而没有终态时保持 `unknown / reconciliation`，复用 §11.3 的核验流程。网关不因超时重新选 Agent、另开 Mission 或重发一个新的执行键。并发、总 Run 数、重试和委派深度由 Scheduler / Mission 检查，网关携带约束与委派链；父子循环仍由 DAG 规则拒绝。
 
 # 5. Slot：职责模板、任职与装配
 
@@ -471,6 +567,7 @@ sequenceDiagram
   participant UI as Web / 桌面界面
   participant Gateway as HTTP / Agent 命令与授权入口
   participant Room as Room 服务
+  participant Dispatch as 轻量级智能体网关
   participant Mission as Goal / Mission 服务
   participant Scheduler as 持久调度与收件箱
   participant Context as Context / Checkpoint 服务
@@ -479,10 +576,15 @@ sequenceDiagram
   participant Harness as 外部 Harness 与工具进程
   participant Store as SQLite 事件、投影、outbox 与内容存储
   UI->>Gateway: 交办(source_refs, owner, acceptance, idempotency_key)
-  Gateway->>Room: 读取并校验决策版本与可见性
-  Room->>Mission: 创建带来源的 MissionContract
-  Mission->>Store: 同事务写 Mission、交办引用与调度 outbox
-  Mission-->>UI: Mission 卡片和当前状态
+  Gateway->>Dispatch: 规范化调用主体、事项和目标
+  Dispatch->>Room: 读取并校验决策版本与可见性
+  Room-->>Dispatch: 来源决定与可公开引用
+  Note over Dispatch,Mission: 按 §4.5–4.6 解析目标并核对版本、授权与就绪条件
+  Dispatch->>Mission: 创建带来源与 route_id 的 MissionContract
+  Mission->>Store: 同事务写 Mission、交办引用、投递回执与调度 outbox
+  Mission-->>Dispatch: 领域提交回执
+  Dispatch-->>Gateway: 已提交及 Mission 引用
+  Gateway-->>UI: Mission 卡片和当前状态
   Scheduler->>Store: 领取待执行工作项并预留配额
   Scheduler->>Context: BuildExecutionInput(contract, binding, checkpoint)
   Context-->>Scheduler: ContextManifest、输入与 Receipt
@@ -492,13 +594,16 @@ sequenceDiagram
   Runtime->>Adapter: SubmitExecutionTask
   Adapter->>Harness: 通过原生接口执行
   Harness->>Gateway: SubmitResult(run_id, generation, artifact_refs, receipts)
-  Gateway->>Mission: 校验交付与当前执行代次
+  Gateway->>Dispatch: 已验证调用主体的结构化结果
+  Dispatch->>Mission: 按 Run 固定寻址，校验交付与当前执行代次
   Mission->>Store: 保存工作项结果与交付回执
   Harness->>Gateway: RequestReview(mission_id, delivery_package_ref, expected_version)
-  Gateway->>Mission: 校验负责人权限、交付包与任务版本
+  Gateway->>Dispatch: 按 MissionID 提请验收
+  Dispatch->>Mission: 校验负责人权限、交付包与任务版本
   Mission->>Store: 保存 reviewing 状态及通知 outbox
   UI->>Gateway: 验收或退回(mission_id, expected_version)
-  Gateway->>Mission: RecordReview
+  Gateway->>Dispatch: 规范化验收命令
+  Dispatch->>Mission: RecordReview
   Mission->>Store: 保存验收事实与返回目标引用
   Room->>Store: 消费结果通知并按发布条件写引用卡片
 ```
@@ -515,6 +620,44 @@ Mission 的结果先持久化，再通知 Room。Room 暂停/归档时保留任�
 
 触及决策的 falsifier / reopen trigger 时，负责人提交 `reopen_request`，标出受影响决定、证据和需停止的工作项；系统暂停依赖该假设的执行，把问题交回 Room。已发生的外部动作保留，不能用新决定覆盖旧回执。不存在可用 Room 时进入任务中心待决，不能借“需要讨论”无限挂起而不展示原因。
 
+## 10.3 网关续接与目标变化
+
+以下以用户在已有任务卡补充“再加 Windows 和绑核结果”为例。请求沿用原 Mission，任务范围变更由 Mission 校验；网关不因出现 Windows 而另选负责人，也不把用户补充直接写入某个 CLI 的私有会话。
+
+```mermaid
+sequenceDiagram
+  participant UI as 任务卡
+  participant Gateway as HTTP / Agent 命令与授权入口
+  participant Dispatch as 轻量级智能体网关
+  participant Mission as Goal / Mission 服务
+  participant Registry as Agent 注册与 Slot / Binding
+  participant Runtime as 环境 / Runtime / Lease 管理
+  participant Store as SQLite
+  UI->>Gateway: mission_update(mission_id, expected_version, request_id, 补充要求)
+  Gateway->>Dispatch: 规范化请求与可信调用上下文
+  Dispatch->>Store: 查询相同主体、作用域、幂等键的投递回执
+  alt 已提交相同请求
+    Store-->>Dispatch: 原回执与目标引用
+    Dispatch-->>Gateway: 返回原回执，不重路由
+  else 首次提交
+    Dispatch->>Mission: 查询当前负责人、Binding、Session 与任务版本
+    Mission-->>Dispatch: 固定的事项关系
+    Dispatch->>Registry: 复核身份、任职及当前授权
+    Dispatch->>Runtime: 预检所需环境与工具，不领取租约
+    alt 目标或任务版本变化，或调用者无修改权限
+      Dispatch-->>Gateway: route_stale 或权限错误，保持原事项
+    else 可提交变更
+      Dispatch->>Mission: revise_mission(expected_version, route_id, 补充要求, 就绪报告)
+      Mission->>Store: 原子提交变更、投递回执与等待原因或调度意图
+      Mission-->>Dispatch: 新版本与受影响工作项
+      Dispatch-->>Gateway: 已提交，执行进度由 Mission 提供
+    end
+  end
+  Gateway-->>UI: 显示续接结果或需要处理的原因
+```
+
+调度器随后重新组装受影响工作的输入、核验授权与预算；正在执行的范围变更按任务版本与安全边界处理，不让旧 Run 把新验收条件误标为完成。停止与取消不要求 Runtime 就绪才受理：先持久化停止意图，离线时显示待确认，实际停止仍需执行端回执。
+
 # 11. 数据、接口与一致性
 
 ## 11.1 权威存储
@@ -527,12 +670,17 @@ Mission 的结果先持久化，再通知 Room。Room 暂停/归档时保留任�
 
 外部执行与通知采用至少一次投递、幂等消费；不承诺端到端 exactly-once。SSE 新增按领域订阅及授权后的 opaque cursor，不向客户端暴露其他对象的全局序号或对象存在性；断线后先重取权威状态再续传。
 
+网关新增的候选记录为 `route_decisions` 与 `dispatch_receipts`：前者解释选择，后者关联领域命令，不复制 Mission、Binding 或 Run 的权威状态。已投递的目标命令、幂等回执、路由关联和 outbox 必须同事务提交；Dispatch 经领域应用端口参与事务，不直接写其他模块私有表。未投递候选可按短期保留策略清理，已投递回执随目标命令及其幂等保留期保存；清理正文后保留必要的请求键与摘要墓碑，旧键只可查回或返回已过期，不能变成新执行。
+
 ## 11.2 候选命令和回执
 
 下表是拟议契约，尚未加入当前 HTTP / Agent API。正式实现须同步 JSON Schema、OpenAPI、Go / TypeScript 类型、正反夹具与能力协商，不先发未声明的协议字段。
 
 | 命令 / 查询 | 关键输入 | 返回或拒绝条件 |
 |---|---|---|
+| `resolve_request` | 请求类型、scope、显式目标或续接引用、正文引用、返回位置 | RouteDecision；只解析和预检，不创建任务或启动执行；歧义返回 needs_input |
+| `dispatch_request` | route_id、decision_version、目标预期版本、幂等键 | 复核后返回 DispatchReceipt；决策过期或目标变化拒绝，不自动改派；执行条件不足不启动，契约保存与控制命令仍按 §4.6 受理 |
+| `get_dispatch_receipt` | request_id 或投递幂等键、当前调用作用域 | 返回原投递结果及领域对象引用；不存在回执不等于外部动作一定未发生 |
 | `create_agent / suspend_agent / retire_agent` | profile、预期版本、承诺处置计划 | AgentID、状态；未处置承诺禁止完成退役 |
 | `prepare_binding / activate_binding / release_binding` | Agent、SlotInstance、模板版本、scope、授权 | BindingID、readiness report；必需能力缺失或排空未完成则拒绝激活 |
 | `create_mission` | 契约、来源、返回目标、幂等键 | MissionID、版本；来源或验收缺失则保留 draft 或拒绝 |
@@ -549,7 +697,19 @@ Mission 的结果先持久化，再通知 Room。Room 暂停/归档时保留任�
 
 写命令共用 `command_id、idempotency_key、expected_version`；服务端从认证会话或有效 Run/Binding 推导 actor，拒绝客户端自称 system。相同主体、作用域、幂等键与相同请求重放原回执；同键不同载荷冲突。受限 Agent token 只允许指定动作、对象、代次与有效期，不把本地 owner token 交给 Worker。
 
-建议错误语义：`version_conflict、capability_missing、grant_required、dependency_cycle、quota_exceeded、source_unavailable、stale_generation、action_outcome_unknown`，每项携可理解说明与可恢复动作。UI 不以通用“重试”掩盖结果未知。
+建议错误语义：`version_conflict、capability_missing、grant_required、dependency_cycle、quota_exceeded、source_unavailable、stale_generation、action_outcome_unknown`；网关补充 `target_ambiguous、target_unavailable、route_stale、route_timeout、remote_delivery_unavailable`。每项携可理解说明与可恢复动作；无权访问的对象不能通过错误详情泄露存在性。UI 不以通用“重试”掩盖结果未知。
+
+### 11.2.1 网关请求、决策与回执
+
+| 契约 | 候选字段与约束 |
+|---|---|
+| RouteRequest | `schema_version、request_id、idempotency_key、entrypoint、kind、scope、target_refs、reply_to、session_id、source_refs、text_ref、return_refs、expected_versions、deadline、budget_ref、delegation_chain`；按请求类型校验必需字段，正文与附件有界。`caller_context` 由入口根据认证或有效 Run 推导，不能由请求正文自称 human / system |
+| RouteDecision | `route_id、decision_version、request_digest、status、selection_source、target_refs、observed_versions、readiness_ref、reason_code、reason_summary、policy_version、expires_at`；status 为 resolved / needs_input / blocked，选择来源为 explicit / continuation / room_default / slot_match / semantic / user_override；resolved 仅表示目标确定 |
+| DispatchReceipt | `receipt_id、caller_ref、scope、idempotency_key、request_id、request_digest、route_id、decision_version、domain_command_id、target_refs、return_refs、committed_at`；仅表示领域命令已提交，后续执行状态通过目标对象查询；预检拒绝返回决策或命令错误，不生成已提交回执。不得凭该回执伪造 Run 成功或 Agent 承接 |
+
+先验证调用主体与作用域，再查已提交的幂等回执；以 `(caller_ref, scope, idempotency_key)` 唯一约束兜底并发，相同请求返回原目标，不能因 Binding 换人而把重试变成一次新派单。同键异载荷拒绝。首次投递必须核对决策版本、请求摘要、有效期、当前授权和对象版本；新决策只提出新的选择，不获得额外执行权限。版本变化时重做解析，不能静默使用过期缓存。对已提交事项的改派使用独立领域命令及其新幂等键，关联原回执。
+
+时限、预算和委派链来自可信父任务或用户配置，并由 Mission / Scheduler 检查；子请求只能收紧上限。回执保存必要引用和公开理由，不复制完整 Prompt、候选私有记忆或密钥；可见性、撤权与删除传播沿用 §11.4。
 
 ## 11.3 崩溃、副作用与恢复
 
@@ -584,10 +744,13 @@ Mission 的结果先持久化，再通知 Room。Room 暂停/归档时保留任�
 | 目标与任务 | 跨房间工作、子任务图、负责人/协作者、预算、下一步、验收与历史 |
 | 环境 | 健康、运行范围、占用任务、工具能力、管理员与维护历史；排空、修复、替换 |
 | 记忆面板 | 分域浏览、来源/有效期、纠错、删除及迁移预览；避免将私有域混进房间公共列表 |
+| 现有交办入口与任务卡 | 目标 Agent / 职责、沿用事项、目标环境、选择理由、缺失项及返回位置；未提交时改目标，已提交后进入交接操作，不新增“网关管理”主导航 |
 
 Room 归档/删除页显示仍在继续的独立 Mission，并提供单独处理入口；默认不替用户取消。停止 Agent 时区分“停止接单”“暂停相关任务”“退役并转交责任”，避免一个按钮意外销毁未交付工作。
 
 记录调度延迟、等待原因、工具/环境缺失、重试与 unknown 数、记忆命中/遗漏、输入裁剪、迁移就绪和恢复失败原因。Trace 通过 MissionID / WorkItemID / RunID 关联；公开日志脱敏，诊断不能默认输出完整 Prompt、凭据或跨域正文。
+
+网关诊断增加 RequestID / RouteID / 领域命令回执的关联，分别统计确定性寻址耗时、语义调用耗时、弃权、人工改派、陈旧决策拒绝、重复提交与待送达数量。“已选目标”和“已提交执行”必须分别统计；不记录未授权候选名单或命中数。
 
 # 13. 落地阶段、迁移与验收
 
@@ -605,6 +768,16 @@ Room 归档/删除页显示仍在继续的独立 Mission，并提供单独处理
 | P5 按证据扩展 | 根据召回评测选语义/图后端；远端 RuntimeProvider、更多格式适配 | 有可复现收益和平台/安全验收才引入；不阻塞 P1–P4 |
 
 P1 已须有基本执行隔离、租约与身份授权，AT-07 全部准入检查在 P1 验收；强制隔离能力不满足时拒绝激活，不能把安全边界推迟到环境管理员阶段。P4 对维护或替换后的环境重新检查这些条件。P2 之前不可宣传跨 Harness 便携恢复；P4 之前不可宣传长期无人值守管理。
+
+网关按依赖分步接入已有阶段，不在本次设计增补中挪动发行号或把新增能力标为已完成：
+
+| 接入顺序 | 依赖与交付边界 | 网关验收 |
+|---|---|---|
+| 确定性寻址与分发 | 复用 0.5 身份 / 职责；随 P1 的 Mission、本地 Runtime、投递回执落地；私聊和 Room 继续兼容原路径 | AT-14/15/16/18，恢复后沿用原目标 |
+| 上下文交接与续接 | P1 的 Manifest / Receipt 与 P2 的 Session / Checkpoint；阶段未具备的恢复能力明确返回缺失 | AT-20，并回归 AT-04/07/10 |
+| 委派及持久唤醒入口 | P3 / P4 固定携带事项、委派链与配额；不因新增入口绕过 DAG 或暂停状态 | 回归 AT-09/11/12/18 |
+| 可选语义候选 | 确定性路径稳定后独立启用；模型选型、默认参数及具体小版本在交付计划中另定 | AT-17；关闭模块仍能完成前述确定性场景 |
+| 跨设备投递 | 本阶段只兑现 AT-19 的待交接边界；真正传输依赖后续远端 Runtime / 同步协议 | 数据导入不启动执行，不能以文件可见充当送达确认 |
 
 ## 13.2 存量升级与回退
 
@@ -635,12 +808,21 @@ P1 已须有基本执行隔离、租约与身份授权，AT-07 全部准入检�
 | AT-11 | A 委派长期 B，并创建临时 C；取消 B 的当前子项 | B 的其他任务继续；C 回收；预算/环检测生效，父等待不饿死子任务 |
 | AT-12 | 在副作用后、回执前崩溃，旧代次结果迟到 | unknown 可核验；无盲重试；旧结果只审计；重复投递不产生重复交付 |
 | AT-13 | 两个并发修订、重复幂等键和导入同身份 | CAS 冲突明确；同键异载荷拒绝；不出现两个 active 任职者/执行代次 |
+| AT-14 | 任务卡追加“Windows 和绑核结果”、Agent 私聊、Room 普通发言及房内 @ | 续接同一事项与身份；私聊不强制生成 Mission；Room 不被全局语义选择排除成员；上述路径不调用语义模型 |
+| AT-15 | 同模板跨项目多实例、无 active 任职、解析后 Binding 换人、显式 B 与 A 的任务冲突 | 仅在正确 scope 内解析；歧义/无任职需处理；陈旧决策拒绝；不静默改负责人、跨项目投递或自动激活任职 |
+| AT-16 | 职责匹配且授权报告 ready，但文件缺失、Runtime 离线、Agent suspended 或授权已撤销 | 分别展示适合/授权/可执行检查；硬条件不满足不执行；有权用户仍可保存任务补充或取消意图，执行等待或停止待确认，不被就绪检查拦住 |
+| AT-17 | 无目标新请求；关闭/超时语义模型；候选描述带越权指令；返回候选外 ID | 默认只建议候选；弃权后可手动指定；无私有记忆泄漏，无越权或副作用；既有 Room 与确定性路径可继续使用 |
+| AT-18 | 投递响应丢失后重试、同键异载荷、重复回调、执行超时后重选建议 | 原回执和目标稳定；同键异载荷拒绝；只有一次有效调度；未知副作用不自动换人重跑，取消及旧代次规则仍有效 |
+| AT-19 | 导入另一 PC 的 Agent、Runtime、路由回执及在途任务 | 历史状态不形成在线连接或新执行；待交接显示待送达；本机激活和能力检查独立执行，不复活旧投递 |
+| AT-20 | 投递后人工改派、跨身份交接、返回房间已暂停或删除 | 改派走领域交接，私有记忆不随路由复制；回传先保存 Mission 结果再按可见性投递，返回位置失效不重跑任务 |
 
 测试层次：状态机与权限/版本单测，SQLite/outbox/恢复集成测试，UI 的交办—协作—验收端到端测试，以及真实 Harness 的跨环境续办和取消验证。模拟器通过不能替代后两者。
 
 性能目标沿用 RFC-0007 的检索 P95 < 300ms、上下文组装 P95 < 500ms（不含模型），适用基准暂定 1 万条记忆、10 万条历史事件、20 个活跃 Mission、4 路并发，控制输入在声明上限内。P0 固定硬件、冷/热缓存与中英文查询集并记录基线；目标不是已测成绩。长事务、索引重建和后台策展不得持续阻塞聊天写入，比较启用前后的聊天延迟与队列积压。
 
 记忆质量至少评估有来源支持的召回准确性、必需事实覆盖、时间冲突处理、删除有效性及跨域泄漏（必须为零）。新增向量/图方案需在同一任务集与输入预算下证明收益，并报告延迟、资源和部署代价。
+
+网关评测固定显式目标、续接、同名职责、多候选、无目标、注入文本与撤权竞态样例，分别报告路由正确率、未分配率、人工纠正率及新增延迟；明确目标被静默改派、重复执行和跨域泄漏必须为零。语义模式与关闭模式使用同一批请求比较，记录候选规模和时限；不把语义命中率替代任务成功率，不以新增模型调用拖慢所有聊天入口。
 
 ## 13.4 风险与放弃方案
 
@@ -656,6 +838,9 @@ P1 已须有基本执行隔离、租约与身份授权，AT-07 全部准入检�
 | 多权威流增加复杂度 | 需要跨对象版本、删除追踪与恢复演练；延续同库事务和 outbox，暂不分布式化 |
 | 原生 CLI 绕过工具控制 | 无法保证动作审计和强隔离；能力矩阵诚实声明，严格 Slot 拒绝不合格 Runtime |
 | 老客户端/旧二进制不认识新对象 | API 能力协商、只读兼容投影、显式迁移版本；不进行危险的无条件降级 |
+| 每条消息都由模型重选专家 | 破坏任务连续性和圆桌参与；显式寻址、续接及普通 Room 发言绕过语义选择 |
+| 网关复制身份、任务与能力状态 | 形成第二权威与陈旧可用性；查询原领域、投递时重验，只保存决策和命令关联 |
+| 模型超时或运行失败后自动改派 | 可能重复外部副作用、混淆身份；可选选择器弃权，已提交任务按原回执与 unknown 核验处理 |
 
 ## 13.5 评审待定项与默认提案
 
@@ -670,6 +855,8 @@ P1 已须有基本执行隔离、租约与身份授权，AT-07 全部准入检�
 | 各 Harness 的强制隔离与恢复分级 | 每家逐项实测并公开；原生会话恢复不是最低准入要求 | P1/P2 前 |
 | 外部记忆后端与 .af 等格式互通 | 暂不默认引入，仅做显式转换器，输出损失清单 | P5 |
 | 远端常驻执行及离线接管 | 本地优先；另立认证、租约、回执协议设计后开放 | P5 |
+| 语义选择器、候选上限与时限 | 默认关闭、启用后只建议；先按 20 候选 / 5 秒 / 一次调用测量，按真实误派与延迟调整，不新增必需模型账户 | 可选语义能力实施前 |
+| 自动语义投递的适用范围 | 首版使用现有交办动作选定目标；后续依据明确用户策略和独立误派验收裁定 | 不阻塞确定性网关 |
 
 # 14. 近期记忆系统参考与设计依据
 
@@ -700,3 +887,4 @@ P1 已须有基本执行隔离、租约与身份授权，AT-07 全部准入检�
 | v0.3 | 2026-10-28 | 按负责人裁定对齐 Roadmap：P0 作为 0.5 开工门槛，P1 拆为 0.5 / 0.6，P2–P4 映射 0.7–0.9，0.10 对话优化为 1.0.0 前最后一个领域；领域内第三段每次只交付一个特性，P5 留作 1.0 后条件扩展；版本规划不代表设计批准或功能实现，保持 Draft |
 | v0.4 | 2026-10-28 | 负责人批准（指令见状态行），状态 Draft → Approved；P0 门槛随 0.5.0 开工执行（RFC 批准、契约冻结、基线 fixture 与 §2.2 对齐），实施细节按各领域小版本另立 ADR 登记 |
 | v0.5 | 2026-10-29 | 同步交付计划 v2.15 的现行发行映射：0.10 为个人数据备份与多设备同步，分别保留 RFC-0019 与同步 RFC 的开工批准门；对话优化顺移至 0.11，仍是 1.0.0 前最后一个领域。P0–P5 的设计范围与验收保持原裁定。 |
+| v0.6 | 2026-10-30 | 根据已读取的最新网关讨论增补内嵌 Dispatch：确定性寻址优先、任务与会话续接、Slot 任职解析、分层就绪检查、可选语义候选、上下文与回传、幂等与人工改派、跨设备待送达边界；补充逻辑/接口/时序视图、候选请求回执、分阶段依赖和 AT-14–AT-20。复核 0.5.5 已注入授权准入检查，区别于实时执行能力；本次为设计增补，未实现、未新增发行承诺。 |
