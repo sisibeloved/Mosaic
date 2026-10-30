@@ -8,6 +8,7 @@
 //   /settings        → 设置页（全局层：左子导航 Agent/自动化/数据/外观/通用；
 //                      v1.72 个人中心并入，不含任何房间态）
 // v1.74：/contacts 退役——联系人收敛进侧栏私聊组（在席 Agent 即私聊入口）。
+import { MissionsPage } from "../pages/MissionsPage";
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppShell } from "./AppShell";
 import { HomePage } from "../pages/HomePage";
@@ -26,6 +27,7 @@ export const router = createBrowserRouter([
       { path: "/rooms/:roomId", element: <RoomPage /> },
       { path: "/docs", element: <DocsHomePage /> },
       { path: "/docs/:docId", element: <DocEditorPage /> },
+      { path: "/missions", element: <MissionsPage /> },
       { path: "/settings", element: <SettingsPage /> },
       { path: "*", element: <Navigate to="/" replace /> },
     ],

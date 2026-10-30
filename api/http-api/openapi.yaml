@@ -2118,6 +2118,245 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /v1/missions:
+    get:
+      operationId: listMissions
+      summary: Mission 契约列表（0.6.0 / ADR-0023）
+      description: |
+        Mission 是可验收的一次交办（RFC-0018 §3.1）——独立事实源，归
+        Workspace，不挂 Room。创建序摘要；执行/验收态随 0.6.5+ 扩展。
+      responses:
+        "200":
+          description: 契约摘要列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [missions]
+                properties:
+                  missions:
+                    type: array
+                    items: { $ref: "#/components/schemas/MissionSummary" }
+        "503":
+          description: Mission 域未装配（mission_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      operationId: createMission
+      summary: 创建 Mission 契约（完备 → ready；缺失 → draft）
+      description: |
+        完备性判定单源（ADR-0023）：objective/scope/验收/交付物/来源齐备且
+        已指派 owner → ready；否则保留 draft（保存明确请求，不捏造共识）。
+        owner 须为存在的 Agent（任意生命周期——责任归属事实，行为能力由
+        执行/交接时点校验）。
+      security: [{ OwnerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MissionCreate" }
+      responses:
+        "201":
+          description: 已创建（draft 或 ready）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MissionView" }
+        "400":
+          description: 契约不合法（invalid_mission——必填/上限/模式/预算界限）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: owner Agent 不存在（agent_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: Mission 域未装配（mission_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/missions/{mission_id}:
+    get:
+      operationId: getMission
+      summary: Mission 契约详情（当前契约 + 状态 + 版本）
+      parameters:
+        - name: mission_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MissionView" }
+        "404":
+          description: Mission 不存在（mission_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: Mission 域未装配（mission_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/missions/{mission_id}/revise:
+    post:
+      operationId: reviseMission
+      summary: 修订契约（全量替换 + 版本追加；CAS）
+      description: |
+        expected_version CAS（AT-13）：并发修订恰一胜者，败者 409
+        version_conflict 拿回当前版本可见重试。完备性重判：draft 补齐 →
+        ready（status_changed 事件）；canceled 终态拒修订。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: mission_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MissionRevise" }
+      responses:
+        "200":
+          description: 修订后契约（新版本）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MissionView" }
+        "400":
+          description: 契约不合法（invalid_mission）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Mission 或 owner Agent 不存在（mission_not_found / agent_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 版本冲突（version_conflict）或终态拒修订（invalid_transition）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: Mission 域未装配（mission_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/missions/{mission_id}/cancel:
+    post:
+      operationId: cancelMission
+      summary: 取消 Mission（CAS；唯一终态）
+      description: |
+        0.6.0 无在途工作，draft/ready 单步至 canceled（在途处置版随
+        0.6.6）；canceled 不被修订或迟到回调翻转（§3.2）。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: mission_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MissionCancel" }
+      responses:
+        "200":
+          description: 已取消
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MissionView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Mission 不存在（mission_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 版本冲突（version_conflict）或已终态（invalid_transition）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: Mission 域未装配（mission_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/missions/{mission_id}/versions:
+    get:
+      operationId: listMissionVersions
+      summary: 契约不可变版本列表（升序）
+      parameters:
+        - name: mission_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 版本列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [versions]
+                properties:
+                  versions:
+                    type: array
+                    items: { $ref: "#/components/schemas/MissionView" }
+        "404":
+          description: Mission 不存在（mission_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: Mission 域未装配（mission_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/missions/{mission_id}/events:
+    get:
+      operationId: listMissionEvents
+      summary: Mission 事件流（只读审计面）
+      parameters:
+        - name: mission_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 事件列表（seq 升序）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items: { $ref: "#/components/schemas/MissionEvent" }
+        "404":
+          description: Mission 不存在（mission_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: Mission 域未装配（mission_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/harness/executables:
     get:
       operationId: listHarnessExecutables
@@ -3922,6 +4161,180 @@ components:
           items: { type: string }
           description: 选配降级项（不阻塞）
         effective_workspace_access: { type: string, enum: [none, read, read_write] }
+    MissionBudget:
+      type: object
+      required: [concurrency, max_runs, max_wall_clock_seconds, max_retries, max_delegation_depth]
+      additionalProperties: false
+      description: 预算（RFC-0018 §6.1：并发、总 Run 数、墙钟时长、重试与委派深度）——0.6.0 为契约声明事实，运行时强制随 0.6.5 Scheduler 落；缺省 {1, 32, 86400, 0, 0}（单 Agent、不重试、不委派起步）。
+      properties:
+        concurrency: { type: integer, minimum: 1, maximum: 8 }
+        max_runs: { type: integer, minimum: 1, maximum: 1000 }
+        max_wall_clock_seconds: { type: integer, minimum: 60, maximum: 2592000, description: 墙钟上限（秒） }
+        max_retries: { type: integer, minimum: 0, maximum: 10 }
+        max_delegation_depth: { type: integer, minimum: 0, maximum: 8 }
+    MissionContractContent:
+      type: object
+      required: [objective, scope, acceptance_criteria, deliverable_specs, source_refs]
+      additionalProperties: false
+      description: |
+        MissionContract 内容（RFC-0018 §6.1 的 0.6.0 子集 / ADR-0023）。
+        完备性（→ ready）= objective/scope/验收/交付物/来源齐备且已指派
+        owner_agent_id；缺失保留 draft（保存明确请求，不捏造共识）。
+        decision_ref / context_manifest_ref 随 0.6.1/0.6.2 增列（对象
+        未存在不落空壳字段）。delegation 缺省 = 不允许委派（安全缺省）。
+      properties:
+        objective: { type: string, minLength: 1, maxLength: 512, description: 目标（可验收的一次交办） }
+        scope: { type: string, minLength: 1, maxLength: 512, description: 范围 }
+        constraints:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 256 }
+        acceptance_criteria:
+          type: array
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 256 }
+          description: 验收标准（空 = draft——验收缺失保留草稿）
+        deliverable_specs:
+          type: array
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 256 }
+          description: 交付物规范（空 = draft）
+        source_refs:
+          type: array
+          maxItems: 16
+          items: { type: string, pattern: "^[A-Za-z0-9/_.:#@-]{1,128}$" }
+          description: 来源引用（房间事件/文档修订/决策版本——0.6.0 自由引用串，引用校验随 0.6.1 房间交办）
+        return_targets:
+          type: array
+          maxItems: 8
+          items: { type: string, maxLength: 128 }
+          description: 返回位置（0.6.10 执行结果回房消费；可空）
+        budget: { $ref: "#/components/schemas/MissionBudget" }
+        delegation: { $ref: "#/components/schemas/DelegationPolicy" }
+        reviewer: { type: string, maxLength: 64, description: 验收人；空 = 请求人（本地 owner）自验——负责人自述不算验收（§6.1） }
+    MissionCreate:
+      type: object
+      required: [objective, scope, acceptance_criteria, deliverable_specs, source_refs]
+      additionalProperties: false
+      description: 创建 Mission 契约请求体。
+      properties:
+        owner_agent_id: { type: string, pattern: "^ag_[0-9A-Za-z_-]+$", description: 负责人（缺省 unassigned——完备性未过停 draft） }
+        objective: { type: string, minLength: 1, maxLength: 512 }
+        scope: { type: string, minLength: 1, maxLength: 512 }
+        constraints:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 256 }
+        acceptance_criteria:
+          type: array
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 256 }
+        deliverable_specs:
+          type: array
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 256 }
+        source_refs:
+          type: array
+          maxItems: 16
+          items: { type: string, pattern: "^[A-Za-z0-9/_.:#@-]{1,128}$" }
+        return_targets:
+          type: array
+          maxItems: 8
+          items: { type: string, maxLength: 128 }
+        budget: { $ref: "#/components/schemas/MissionBudget" }
+        delegation: { $ref: "#/components/schemas/DelegationPolicy" }
+        reviewer: { type: string, maxLength: 64 }
+    MissionRevise:
+      type: object
+      required: [expected_version, objective, scope, acceptance_criteria, deliverable_specs, source_refs]
+      additionalProperties: false
+      description: 修订请求体（全量替换 + 版本追加；expected_version CAS——AT-13 并发修订冲突明确拒绝）。
+      properties:
+        expected_version: { type: integer, minimum: 1, description: 调用方所见 contract_version；不匹配 409 version_conflict }
+        owner_agent_id: { type: string, pattern: "^ag_[0-9A-Za-z_-]+$" }
+        objective: { type: string, minLength: 1, maxLength: 512 }
+        scope: { type: string, minLength: 1, maxLength: 512 }
+        constraints:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 256 }
+        acceptance_criteria:
+          type: array
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 256 }
+        deliverable_specs:
+          type: array
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 256 }
+        source_refs:
+          type: array
+          maxItems: 16
+          items: { type: string, pattern: "^[A-Za-z0-9/_.:#@-]{1,128}$" }
+        return_targets:
+          type: array
+          maxItems: 8
+          items: { type: string, maxLength: 128 }
+        budget: { $ref: "#/components/schemas/MissionBudget" }
+        delegation: { $ref: "#/components/schemas/DelegationPolicy" }
+        reviewer: { type: string, maxLength: 64 }
+    MissionCancel:
+      type: object
+      required: [expected_version]
+      additionalProperties: false
+      description: 取消请求体（0.6.0 无在途工作单步终态；在途处置版随 0.6.6）。
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, maxLength: 200, description: 可选原因（记入 status_changed 事件 payload） }
+    MissionView:
+      type: object
+      required: [mission_id, contract_version, status, owner_agent_id, requester, reviewer, objective, scope, constraints, acceptance_criteria, deliverable_specs, source_refs, return_targets, budget, delegation, created_at, updated_at]
+      description: |
+        Mission 契约（ADR-0023 / 0.6.0）。status：draft（契约不完备——
+        验收/来源/交付物缺失或 unassigned）/ ready（完备可受领，执行随
+        0.6.5）/ canceled（唯一终态）。requester 当前恒本地 owner（多入口
+        请求方随网关/委派扩展）。
+      properties:
+        mission_id: { type: string, description: "mi_ 前缀生成式" }
+        contract_version: { type: integer, minimum: 1, description: 当前契约版本（修订 +1） }
+        status: { type: string, enum: [draft, ready, canceled] }
+        owner_agent_id: { type: string, description: 负责人（空 = 显式 unassigned，§3.3 不变量） }
+        requester: { type: string, description: 请求人（0.6.0 恒 owner——本地单用户） }
+        reviewer: { type: string, description: 验收人（空 = 请求人自验） }
+        objective: { type: string }
+        scope: { type: string }
+        constraints: { type: array, items: { type: string } }
+        acceptance_criteria: { type: array, items: { type: string } }
+        deliverable_specs: { type: array, items: { type: string } }
+        source_refs: { type: array, items: { type: string } }
+        return_targets: { type: array, items: { type: string } }
+        budget: { $ref: "#/components/schemas/MissionBudget" }
+        delegation: { $ref: "#/components/schemas/DelegationPolicy" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time, description: 最近修订/转移时间 }
+    MissionSummary:
+      type: object
+      required: [mission_id, contract_version, status, owner_agent_id, objective, created_at, updated_at]
+      description: Mission 契约摘要。
+      properties:
+        mission_id: { type: string }
+        contract_version: { type: integer }
+        status: { type: string, enum: [draft, ready, canceled] }
+        owner_agent_id: { type: string }
+        objective: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    MissionEvent:
+      type: object
+      required: [seq, mission_id, event_type, payload, occurred_at]
+      description: mission_events 流事件（migration v13；seq 升序即流序）。
+      properties:
+        seq: { type: integer, format: int64, description: 全表单调流序 }
+        mission_id: { type: string }
+        event_type: { type: string, enum: [created, contract_revised, status_changed] }
+        payload:
+          type: object
+          description: "事件体——created: {contract_version, status}；contract_revised: {from_version, to_version}；status_changed: {from, to, reason}"
+        occurred_at: { type: string, format: date-time }
     SlotInstanceView:
       type: object
       required: [slot_instance_id, slot_spec_id, scope, title, knowledge_namespace, created_from_version, created_at, spec]

@@ -40,6 +40,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/extdocs"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
+	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/room"
 	"github.com/sisibeloved/Mosaic/internal/settings"
@@ -297,6 +298,10 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	slotSvc := slot.New(store, slot.WithNow(clock),
 		slot.WithAgentLookup(identityAgentLookup{identitySvc}),
 		slot.WithReadiness(slot.NewGrantReadinessChecker(store)))
+	// Mission 契约域（RFC-0018 §6.1 / ADR-0023，0.6.0）：独立事实源 + CAS 修订。
+	// owner 存在性经 AgentLookup 端口（AgentByID——任意生命周期可指派）。
+	missionSvc := mission.New(store, mission.WithNow(clock),
+		mission.WithAgentLookup(missionAgentLookup{identitySvc}))
 	scanDone := make(chan struct{})
 	go func() {
 		defer close(scanDone)
@@ -345,6 +350,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		ProbeRunner:      harness.NewHostRunner(),
 		Identity:         identitySvc,
 		Slots:            slotSvc,
+		Missions:         missionSvc,
 		Logger:           logger,
 		Dev:              opts.Dev,
 		Budget:           budgetLimits,
@@ -762,6 +768,17 @@ func countRooms(store *sqlite.Store) (int, error) {
 		return 0, err
 	}
 	return len(rooms), nil
+}
+
+// missionAgentLookup mission.AgentLookup 的身份域适配（owner 存在性）。
+type missionAgentLookup struct{ svc *personalagent.Service }
+
+func (l missionAgentLookup) AgentExists(ctx context.Context, agentID string) (bool, error) {
+	_, ok, err := l.svc.AgentByID(ctx, agentID)
+	if err != nil {
+		return false, err
+	}
+	return ok, nil
 }
 
 // identityAgentLookup slot.AgentLookup 的身份域适配（任职前置校验：

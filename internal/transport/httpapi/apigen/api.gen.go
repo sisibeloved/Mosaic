@@ -618,6 +618,69 @@ func (e MemoryViewCapsulesClosureType) Valid() bool {
 	}
 }
 
+// Defines values for MissionEventEventType.
+const (
+	MissionEventEventTypeContractRevised MissionEventEventType = "contract_revised"
+	MissionEventEventTypeCreated         MissionEventEventType = "created"
+	MissionEventEventTypeStatusChanged   MissionEventEventType = "status_changed"
+)
+
+// Valid indicates whether the value is a known member of the MissionEventEventType enum.
+func (e MissionEventEventType) Valid() bool {
+	switch e {
+	case MissionEventEventTypeContractRevised:
+		return true
+	case MissionEventEventTypeCreated:
+		return true
+	case MissionEventEventTypeStatusChanged:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MissionSummaryStatus.
+const (
+	MissionSummaryStatusCanceled MissionSummaryStatus = "canceled"
+	MissionSummaryStatusDraft    MissionSummaryStatus = "draft"
+	MissionSummaryStatusReady    MissionSummaryStatus = "ready"
+)
+
+// Valid indicates whether the value is a known member of the MissionSummaryStatus enum.
+func (e MissionSummaryStatus) Valid() bool {
+	switch e {
+	case MissionSummaryStatusCanceled:
+		return true
+	case MissionSummaryStatusDraft:
+		return true
+	case MissionSummaryStatusReady:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MissionViewStatus.
+const (
+	MissionViewStatusCanceled MissionViewStatus = "canceled"
+	MissionViewStatusDraft    MissionViewStatus = "draft"
+	MissionViewStatusReady    MissionViewStatus = "ready"
+)
+
+// Valid indicates whether the value is a known member of the MissionViewStatus enum.
+func (e MissionViewStatus) Valid() bool {
+	switch e {
+	case MissionViewStatusCanceled:
+		return true
+	case MissionViewStatusDraft:
+		return true
+	case MissionViewStatusReady:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for MonitorCreateKind.
 const (
 	MonitorCreateKindScript MonitorCreateKind = "script"
@@ -2313,6 +2376,141 @@ type MemoryView struct {
 // MemoryViewCapsulesClosureType defines model for MemoryView.Capsules.ClosureType.
 type MemoryViewCapsulesClosureType string
 
+// MissionBudget 预算（RFC-0018 §6.1：并发、总 Run 数、墙钟时长、重试与委派深度）——0.6.0 为契约声明事实，运行时强制随 0.6.5 Scheduler 落；缺省 {1, 32, 86400, 0, 0}（单 Agent、不重试、不委派起步）。
+type MissionBudget struct {
+	Concurrency        int `json:"concurrency"`
+	MaxDelegationDepth int `json:"max_delegation_depth"`
+	MaxRetries         int `json:"max_retries"`
+	MaxRuns            int `json:"max_runs"`
+
+	// MaxWallClockSeconds 墙钟上限（秒）
+	MaxWallClockSeconds int `json:"max_wall_clock_seconds"`
+}
+
+// MissionCancel 取消请求体（0.6.0 无在途工作单步终态；在途处置版随 0.6.6）。
+type MissionCancel struct {
+	ExpectedVersion int `json:"expected_version"`
+
+	// Reason 可选原因（记入 status_changed 事件 payload）
+	Reason *string `json:"reason,omitempty"`
+}
+
+// MissionCreate 创建 Mission 契约请求体。
+type MissionCreate struct {
+	AcceptanceCriteria []string `json:"acceptance_criteria"`
+
+	// Budget 预算（RFC-0018 §6.1：并发、总 Run 数、墙钟时长、重试与委派深度）——0.6.0 为契约声明事实，运行时强制随 0.6.5 Scheduler 落；缺省 {1, 32, 86400, 0, 0}（单 Agent、不重试、不委派起步）。
+	Budget      *MissionBudget `json:"budget,omitempty"`
+	Constraints *[]string      `json:"constraints,omitempty"`
+
+	// Delegation 委派策略；缺省语义 = 不允许委派（安全缺省）。
+	Delegation       *DelegationPolicy `json:"delegation,omitempty"`
+	DeliverableSpecs []string          `json:"deliverable_specs"`
+	Objective        string            `json:"objective"`
+
+	// OwnerAgentId 负责人（缺省 unassigned——完备性未过停 draft）
+	OwnerAgentId  *string   `json:"owner_agent_id,omitempty"`
+	ReturnTargets *[]string `json:"return_targets,omitempty"`
+	Reviewer      *string   `json:"reviewer,omitempty"`
+	Scope         string    `json:"scope"`
+	SourceRefs    []string  `json:"source_refs"`
+}
+
+// MissionEvent mission_events 流事件（migration v13；seq 升序即流序）。
+type MissionEvent struct {
+	EventType  MissionEventEventType `json:"event_type"`
+	MissionId  string                `json:"mission_id"`
+	OccurredAt time.Time             `json:"occurred_at"`
+
+	// Payload 事件体——created: {contract_version, status}；contract_revised: {from_version, to_version}；status_changed: {from, to, reason}
+	Payload map[string]interface{} `json:"payload"`
+
+	// Seq 全表单调流序
+	Seq int64 `json:"seq"`
+}
+
+// MissionEventEventType defines model for MissionEvent.EventType.
+type MissionEventEventType string
+
+// MissionRevise 修订请求体（全量替换 + 版本追加；expected_version CAS——AT-13 并发修订冲突明确拒绝）。
+type MissionRevise struct {
+	AcceptanceCriteria []string `json:"acceptance_criteria"`
+
+	// Budget 预算（RFC-0018 §6.1：并发、总 Run 数、墙钟时长、重试与委派深度）——0.6.0 为契约声明事实，运行时强制随 0.6.5 Scheduler 落；缺省 {1, 32, 86400, 0, 0}（单 Agent、不重试、不委派起步）。
+	Budget      *MissionBudget `json:"budget,omitempty"`
+	Constraints *[]string      `json:"constraints,omitempty"`
+
+	// Delegation 委派策略；缺省语义 = 不允许委派（安全缺省）。
+	Delegation       *DelegationPolicy `json:"delegation,omitempty"`
+	DeliverableSpecs []string          `json:"deliverable_specs"`
+
+	// ExpectedVersion 调用方所见 contract_version；不匹配 409 version_conflict
+	ExpectedVersion int       `json:"expected_version"`
+	Objective       string    `json:"objective"`
+	OwnerAgentId    *string   `json:"owner_agent_id,omitempty"`
+	ReturnTargets   *[]string `json:"return_targets,omitempty"`
+	Reviewer        *string   `json:"reviewer,omitempty"`
+	Scope           string    `json:"scope"`
+	SourceRefs      []string  `json:"source_refs"`
+}
+
+// MissionSummary Mission 契约摘要。
+type MissionSummary struct {
+	ContractVersion int                  `json:"contract_version"`
+	CreatedAt       time.Time            `json:"created_at"`
+	MissionId       string               `json:"mission_id"`
+	Objective       string               `json:"objective"`
+	OwnerAgentId    string               `json:"owner_agent_id"`
+	Status          MissionSummaryStatus `json:"status"`
+	UpdatedAt       time.Time            `json:"updated_at"`
+}
+
+// MissionSummaryStatus defines model for MissionSummary.Status.
+type MissionSummaryStatus string
+
+// MissionView Mission 契约（ADR-0023 / 0.6.0）。status：draft（契约不完备——
+// 验收/来源/交付物缺失或 unassigned）/ ready（完备可受领，执行随
+// 0.6.5）/ canceled（唯一终态）。requester 当前恒本地 owner（多入口
+// 请求方随网关/委派扩展）。
+type MissionView struct {
+	AcceptanceCriteria []string `json:"acceptance_criteria"`
+
+	// Budget 预算（RFC-0018 §6.1：并发、总 Run 数、墙钟时长、重试与委派深度）——0.6.0 为契约声明事实，运行时强制随 0.6.5 Scheduler 落；缺省 {1, 32, 86400, 0, 0}（单 Agent、不重试、不委派起步）。
+	Budget      MissionBudget `json:"budget"`
+	Constraints []string      `json:"constraints"`
+
+	// ContractVersion 当前契约版本（修订 +1）
+	ContractVersion int       `json:"contract_version"`
+	CreatedAt       time.Time `json:"created_at"`
+
+	// Delegation 委派策略；缺省语义 = 不允许委派（安全缺省）。
+	Delegation       DelegationPolicy `json:"delegation"`
+	DeliverableSpecs []string         `json:"deliverable_specs"`
+
+	// MissionId mi_ 前缀生成式
+	MissionId string `json:"mission_id"`
+	Objective string `json:"objective"`
+
+	// OwnerAgentId 负责人（空 = 显式 unassigned，§3.3 不变量）
+	OwnerAgentId string `json:"owner_agent_id"`
+
+	// Requester 请求人（0.6.0 恒 owner——本地单用户）
+	Requester     string   `json:"requester"`
+	ReturnTargets []string `json:"return_targets"`
+
+	// Reviewer 验收人（空 = 请求人自验）
+	Reviewer   string            `json:"reviewer"`
+	Scope      string            `json:"scope"`
+	SourceRefs []string          `json:"source_refs"`
+	Status     MissionViewStatus `json:"status"`
+
+	// UpdatedAt 最近修订/转移时间
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// MissionViewStatus defines model for MissionView.Status.
+type MissionViewStatus string
+
 // MonitorCreate defines model for MonitorCreate.
 type MonitorCreate struct {
 	Args        *[]string         `json:"args,omitempty"`
@@ -3402,6 +3600,15 @@ type CreateIdentityAgentJSONRequestBody = ManualAgentRequest
 // TransitionAgentLifecycleJSONRequestBody defines body for TransitionAgentLifecycle for application/json ContentType.
 type TransitionAgentLifecycleJSONRequestBody = LifecycleTransitionRequest
 
+// CreateMissionJSONRequestBody defines body for CreateMission for application/json ContentType.
+type CreateMissionJSONRequestBody = MissionCreate
+
+// CancelMissionJSONRequestBody defines body for CancelMission for application/json ContentType.
+type CancelMissionJSONRequestBody = MissionCancel
+
+// ReviseMissionJSONRequestBody defines body for ReviseMission for application/json ContentType.
+type ReviseMissionJSONRequestBody = MissionRevise
+
 // CreateMonitorJSONRequestBody defines body for CreateMonitor for application/json ContentType.
 type CreateMonitorJSONRequestBody = MonitorCreate
 
@@ -3569,6 +3776,27 @@ type ServerInterface interface {
 	// TransitionAgentLifecycle Agent 生命周期转移（0.5.1 / ADR-0018）
 	// (POST /v1/identity/agents/{agent_id}/lifecycle)
 	TransitionAgentLifecycle(w http.ResponseWriter, r *http.Request, agentId string)
+	// ListMissions Mission 契约列表（0.6.0 / ADR-0023）
+	// (GET /v1/missions)
+	ListMissions(w http.ResponseWriter, r *http.Request)
+	// CreateMission 创建 Mission 契约（完备 → ready；缺失 → draft）
+	// (POST /v1/missions)
+	CreateMission(w http.ResponseWriter, r *http.Request)
+	// GetMission Mission 契约详情（当前契约 + 状态 + 版本）
+	// (GET /v1/missions/{mission_id})
+	GetMission(w http.ResponseWriter, r *http.Request, missionId string)
+	// CancelMission 取消 Mission（CAS；唯一终态）
+	// (POST /v1/missions/{mission_id}/cancel)
+	CancelMission(w http.ResponseWriter, r *http.Request, missionId string)
+	// ListMissionEvents Mission 事件流（只读审计面）
+	// (GET /v1/missions/{mission_id}/events)
+	ListMissionEvents(w http.ResponseWriter, r *http.Request, missionId string)
+	// ReviseMission 修订契约（全量替换 + 版本追加；CAS）
+	// (POST /v1/missions/{mission_id}/revise)
+	ReviseMission(w http.ResponseWriter, r *http.Request, missionId string)
+	// ListMissionVersions 契约不可变版本列表（升序）
+	// (GET /v1/missions/{mission_id}/versions)
+	ListMissionVersions(w http.ResponseWriter, r *http.Request, missionId string)
 	// ListMonitors 监控源列表（含运行态水位）
 	// (GET /v1/monitors)
 	ListMonitors(w http.ResponseWriter, r *http.Request)
@@ -4798,6 +5026,164 @@ func (siw *ServerInterfaceWrapper) TransitionAgentLifecycle(w http.ResponseWrite
 	handler.ServeHTTP(w, r)
 }
 
+// ListMissions operation middleware
+func (siw *ServerInterfaceWrapper) ListMissions(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMissions(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateMission operation middleware
+func (siw *ServerInterfaceWrapper) CreateMission(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateMission(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetMission operation middleware
+func (siw *ServerInterfaceWrapper) GetMission(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMission(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CancelMission operation middleware
+func (siw *ServerInterfaceWrapper) CancelMission(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CancelMission(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMissionEvents operation middleware
+func (siw *ServerInterfaceWrapper) ListMissionEvents(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMissionEvents(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReviseMission operation middleware
+func (siw *ServerInterfaceWrapper) ReviseMission(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReviseMission(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMissionVersions operation middleware
+func (siw *ServerInterfaceWrapper) ListMissionVersions(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMissionVersions(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListMonitors operation middleware
 func (siw *ServerInterfaceWrapper) ListMonitors(w http.ResponseWriter, r *http.Request) {
 
@@ -6013,6 +6399,13 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/slots/bindings/{binding_id}/retry", wrapper.RetrySlotBinding)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/bindings/{binding_id}", wrapper.GetSlotBinding)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/bindings/{binding_id}/events", wrapper.ListSlotBindingEvents)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions", wrapper.ListMissions)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions", wrapper.CreateMission)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}", wrapper.GetMission)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/revise", wrapper.ReviseMission)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/cancel", wrapper.CancelMission)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/versions", wrapper.ListMissionVersions)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/events", wrapper.ListMissionEvents)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/enable", wrapper.EnableHarnessExecutable)

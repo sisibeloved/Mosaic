@@ -27,6 +27,12 @@ export type SlotInstanceView = Schemas["SlotInstanceView"];
 export type BindingView = Schemas["BindingView"];
 export type BindingReleaseResult = Schemas["BindingReleaseResult"];
 export type BindingEventView = Schemas["BindingEvent"];
+/** 0.6.0 Mission 契约（ADR-0023，契约 api/http-api/openapi.yaml）。 */
+export type MissionSummary = Schemas["MissionSummary"];
+export type MissionView = Schemas["MissionView"];
+export type MissionEvent = Schemas["MissionEvent"];
+export type MissionCreateRequest = Schemas["MissionCreate"];
+export type MissionReviseRequest = Schemas["MissionRevise"];
 /** 0.5.5 职责准入（ADR-0022）：授权档案与 readiness report。 */
 export type AgentGrantView = Schemas["AgentGrantView"];
 export type AgentGrantPut = Schemas["AgentGrantPut"];
@@ -530,6 +536,33 @@ export const api = {
   /** 0.5.5 授权档案全量替换（显式空数组 = 清空）。 */
   putSlotGrant(agentID: string, req: AgentGrantPut): Promise<AgentGrantView> {
     return request(`/v1/slots/grants/${encodeURIComponent(agentID)}`, { method: "PUT", body: JSON.stringify(req) });
+  },
+  /** 0.6.0 Mission 契约列表（创建序摘要）。 */
+  listMissions(): Promise<{ missions: MissionSummary[] }> {
+    return request("/v1/missions");
+  },
+  /** 0.6.0 创建契约（完备 → ready；缺失 → draft）。 */
+  createMission(req: MissionCreateRequest): Promise<MissionView> {
+    return post("/v1/missions", req);
+  },
+  getMission(missionID: string): Promise<MissionView> {
+    return request(`/v1/missions/${encodeURIComponent(missionID)}`);
+  },
+  /** 0.6.0 修订契约（全量替换 + 版本追加；expected_version CAS）。 */
+  reviseMission(missionID: string, req: MissionReviseRequest): Promise<MissionView> {
+    return post(`/v1/missions/${encodeURIComponent(missionID)}/revise`, req);
+  },
+  cancelMission(missionID: string, expectedVersion: number, reason?: string): Promise<MissionView> {
+    return post(`/v1/missions/${encodeURIComponent(missionID)}/cancel`, {
+      expected_version: expectedVersion,
+      ...(reason ? { reason } : {}),
+    });
+  },
+  listMissionVersions(missionID: string): Promise<{ versions: MissionView[] }> {
+    return request(`/v1/missions/${encodeURIComponent(missionID)}/versions`);
+  },
+  listMissionEvents(missionID: string): Promise<{ events: MissionEvent[] }> {
+    return request(`/v1/missions/${encodeURIComponent(missionID)}/events`);
   },
   /** 0.5.5 准入试算（只读无副作用；未就绪也是 200——报告不是错误）。 */
   getSlotReadiness(instanceID: string, agentID: string, version?: number): Promise<ReadinessReportView> {

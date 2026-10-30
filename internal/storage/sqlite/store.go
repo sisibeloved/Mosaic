@@ -23,6 +23,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
+	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/slot"
 
 	_ "modernc.org/sqlite"
@@ -297,6 +298,43 @@ CREATE TABLE IF NOT EXISTS slot_agent_grants (
   updated_at           TEXT NOT NULL
 );
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (12, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+
+-- v13（RFC-0018 §3.1/§3.2/§6.1 / ADR-0023，0.6.0）：Mission 契约独立事实源。
+-- missions 为投影（修订/取消 = 单事务[校验→投影→版本行→事件]）；CAS 经
+-- BEGIN IMMEDIATE 临界区（读在写锁内，败者 version_conflict 可见拒绝）。
+-- mission_contract_versions 不可变版本行（修订即追加，无 UPDATE-外/DELETE
+-- 路径）；mission_events 为 append-only 流。objective 列为列表摘要冗余，
+-- 契约全文在 content JSON（写入单源）。
+CREATE TABLE IF NOT EXISTS missions (
+  mission_id       TEXT PRIMARY KEY,
+  contract_version INTEGER NOT NULL,
+  status           TEXT NOT NULL,
+  owner_agent_id   TEXT NOT NULL DEFAULT '',
+  requester        TEXT NOT NULL DEFAULT 'owner',
+  objective        TEXT NOT NULL,
+  content          TEXT NOT NULL,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mission_contract_versions (
+  mission_id       TEXT NOT NULL,
+  version          INTEGER NOT NULL,
+  status           TEXT NOT NULL,
+  owner_agent_id   TEXT NOT NULL,
+  requester        TEXT NOT NULL DEFAULT 'owner',
+  content          TEXT NOT NULL,
+  created_at       TEXT NOT NULL,
+  PRIMARY KEY (mission_id, version)
+);
+CREATE TABLE IF NOT EXISTS mission_events (
+  seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+  mission_id  TEXT NOT NULL,
+  event_type  TEXT NOT NULL,
+  payload     TEXT NOT NULL,
+  occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mission_events_mission ON mission_events(mission_id, seq);
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (13, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 `
 
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
@@ -2373,6 +2411,271 @@ SELECT agent_id, skills, tools, context, runtime_capabilities, workspace_access,
 		}
 	}
 	return g, true, nil
+}
+
+// ---- Mission 契约域（RFC-0018 §3.1/§3.2/§6.1 / ADR-0023，0.6.0；v13 表，端口实现）----
+
+// missionCols missions 投影读取列。
+const missionCols = `mission_id, contract_version, status, owner_agent_id, requester, objective, content, created_at, updated_at`
+
+func scanMission(row interface{ Scan(...any) error }) (mission.Mission, error) {
+	var m mission.Mission
+	var content string
+	if err := row.Scan(&m.MissionID, &m.ContractVersion, &m.Status, &m.OwnerAgentID,
+		&m.Requester, &m.Objective, &content, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		return mission.Mission{}, err
+	}
+	if err := json.Unmarshal([]byte(content), &m.Content); err != nil {
+		return mission.Mission{}, fmt.Errorf("sqlite: mission content unmarshal: %w", err)
+	}
+	return m, nil
+}
+
+func appendMissionEvent(ctx context.Context, q identityExec, missionID, eventType string, payload map[string]string, occurredAt string) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("sqlite: mission event marshal: %w", err)
+	}
+	if _, err := q.ExecContext(ctx, `
+INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+		missionID, eventType, string(raw), occurredAt); err != nil {
+		return fmt.Errorf("sqlite: append mission event: %w", err)
+	}
+	return nil
+}
+
+// Create 投影 v1 + 不可变版本行 + created 事件，单事务。
+func (s *Store) CreateMission(ctx context.Context, m mission.Mission) (mission.Mission, error) {
+	raw, err := json.Marshal(m.Content)
+	if err != nil {
+		return mission.Mission{}, fmt.Errorf("sqlite: mission content marshal: %w", err)
+	}
+	err = s.identityWriteTx(ctx, func(q identityExec) error {
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO missions (`+missionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.MissionID, m.ContractVersion, m.Status, m.OwnerAgentID, m.Requester,
+			m.Objective, string(raw), m.CreatedAt, m.UpdatedAt); err != nil {
+			return fmt.Errorf("sqlite: create mission: %w", err)
+		}
+		if err := insertMissionVersion(ctx, q, m, string(raw)); err != nil {
+			return err
+		}
+		return appendMissionEvent(ctx, q, m.MissionID, mission.EventCreated, map[string]string{
+			"contract_version": strconv.Itoa(m.ContractVersion), "status": m.Status,
+		}, m.CreatedAt)
+	})
+	if err != nil {
+		return mission.Mission{}, err
+	}
+	return m, nil
+}
+
+func insertMissionVersion(ctx context.Context, q identityExec, m mission.Mission, content string) error {
+	if _, err := q.ExecContext(ctx, `
+INSERT INTO mission_contract_versions (mission_id, version, status, owner_agent_id, requester, content, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		m.MissionID, m.ContractVersion, m.Status, m.OwnerAgentID, m.Requester,
+		content, m.UpdatedAt); err != nil {
+		return fmt.Errorf("sqlite: insert mission version: %w", err)
+	}
+	return nil
+}
+
+// Revise CAS 修订：版本匹配且非终态才落新版本行 + 投影 + 事件，单事务；
+// ok=false = 版本不匹配或已终态（服务方重读区分，ADR-0023）。
+func (s *Store) ReviseMission(ctx context.Context, missionID string, expectedVersion int, next mission.Mission) (mission.Mission, bool, error) {
+	raw, err := json.Marshal(next.Content)
+	if err != nil {
+		return mission.Mission{}, false, fmt.Errorf("sqlite: mission content marshal: %w", err)
+	}
+	ok := false // 事务内判定（不得事后按版本号推断——CAS 败者会被误判胜）
+	err = s.identityWriteTx(ctx, func(q identityExec) error {
+		var version int
+		var status string
+		err := q.QueryRowContext(ctx,
+			`SELECT contract_version, status FROM missions WHERE mission_id = ?`, missionID).Scan(&version, &status)
+		if errors.Is(err, sql.ErrNoRows) {
+			return mission.ErrMissionNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("sqlite: revise probe: %w", err)
+		}
+		if version != expectedVersion || status == mission.StatusCanceled {
+			return nil // ok=false：败因由服务层重读分辨
+		}
+		if _, err := q.ExecContext(ctx, `
+UPDATE missions SET contract_version = ?, status = ?, owner_agent_id = ?, objective = ?, content = ?, updated_at = ?
+ WHERE mission_id = ?`,
+			next.ContractVersion, next.Status, next.OwnerAgentID, next.Objective,
+			string(raw), next.UpdatedAt, missionID); err != nil {
+			return fmt.Errorf("sqlite: revise mission: %w", err)
+		}
+		if err := insertMissionVersion(ctx, q, next, string(raw)); err != nil {
+			return err
+		}
+		if err := appendMissionEvent(ctx, q, missionID, mission.EventContractRevised, map[string]string{
+			"from_version": strconv.Itoa(expectedVersion), "to_version": strconv.Itoa(next.ContractVersion),
+		}, next.UpdatedAt); err != nil {
+			return err
+		}
+		if status != next.Status {
+			if err := appendMissionEvent(ctx, q, missionID, mission.EventStatusChanged, map[string]string{
+				"from": status, "to": next.Status,
+			}, next.UpdatedAt); err != nil {
+				return err
+			}
+		}
+		ok = true
+		return nil
+	})
+	if err != nil {
+		return mission.Mission{}, false, err
+	}
+	if !ok {
+		return mission.Mission{}, false, nil
+	}
+	return next, true, nil
+}
+
+// Cancel CAS 取消：版本匹配且非终态才置 canceled + status_changed 事件，
+// 单事务；ok=false 同 Revise。
+func (s *Store) CancelMission(ctx context.Context, missionID string, expectedVersion int, reason, occurredAt string) (mission.Mission, bool, error) {
+	var out mission.Mission
+	ok := false
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		var version int
+		var status string
+		err := q.QueryRowContext(ctx,
+			`SELECT contract_version, status FROM missions WHERE mission_id = ?`, missionID).Scan(&version, &status)
+		if errors.Is(err, sql.ErrNoRows) {
+			return mission.ErrMissionNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("sqlite: cancel probe: %w", err)
+		}
+		if version != expectedVersion || status == mission.StatusCanceled {
+			return nil
+		}
+		if _, err := q.ExecContext(ctx,
+			`UPDATE missions SET status = ?, updated_at = ? WHERE mission_id = ?`,
+			mission.StatusCanceled, occurredAt, missionID); err != nil {
+			return fmt.Errorf("sqlite: cancel mission: %w", err)
+		}
+		payload := map[string]string{"from": status, "to": mission.StatusCanceled}
+		if reason != "" {
+			payload["reason"] = reason
+		}
+		if err := appendMissionEvent(ctx, q, missionID, mission.EventStatusChanged, payload, occurredAt); err != nil {
+			return err
+		}
+		ok = true
+		return nil
+	})
+	if err != nil || !ok {
+		return mission.Mission{}, ok, err
+	}
+	got, found, err := s.MissionByID(ctx, missionID)
+	if err != nil || !found {
+		return mission.Mission{}, false, err
+	}
+	_ = out
+	return got, true, nil
+}
+
+// MissionByID 单查契约；未知 ok=false。
+func (s *Store) MissionByID(ctx context.Context, missionID string) (mission.Mission, bool, error) {
+	m, err := scanMission(s.db.QueryRowContext(ctx,
+		`SELECT `+missionCols+` FROM missions WHERE mission_id = ?`, missionID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return mission.Mission{}, false, nil
+	}
+	if err != nil {
+		return mission.Mission{}, false, fmt.Errorf("sqlite: mission by id: %w", err)
+	}
+	return m, true, nil
+}
+
+// List 契约摘要（创建序）。
+func (s *Store) ListMissions(ctx context.Context) ([]mission.Summary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT mission_id, contract_version, status, owner_agent_id, objective, created_at, updated_at
+  FROM missions ORDER BY rowid`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: mission list: %w", err)
+	}
+	defer rows.Close()
+	out := []mission.Summary{}
+	for rows.Next() {
+		var sum mission.Summary
+		if err := rows.Scan(&sum.MissionID, &sum.ContractVersion, &sum.Status,
+			&sum.OwnerAgentID, &sum.Objective, &sum.CreatedAt, &sum.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("sqlite: scan mission summary: %w", err)
+		}
+		out = append(out, sum)
+	}
+	return out, rows.Err()
+}
+
+// Versions 不可变版本行升序；未知 ok=false。
+func (s *Store) MissionVersions(ctx context.Context, missionID string) ([]mission.Mission, bool, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT mission_id, version, status, owner_agent_id, requester, content, created_at
+  FROM mission_contract_versions WHERE mission_id = ? ORDER BY version`, missionID)
+	if err != nil {
+		return nil, false, fmt.Errorf("sqlite: mission versions: %w", err)
+	}
+	defer rows.Close()
+	out := []mission.Mission{}
+	for rows.Next() {
+		var m mission.Mission
+		var content string
+		if err := rows.Scan(&m.MissionID, &m.ContractVersion, &m.Status,
+			&m.OwnerAgentID, &m.Requester, &content, &m.CreatedAt); err != nil {
+			return nil, false, fmt.Errorf("sqlite: scan mission version: %w", err)
+		}
+		if err := json.Unmarshal([]byte(content), &m.Content); err != nil {
+			return nil, false, fmt.Errorf("sqlite: mission version unmarshal: %w", err)
+		}
+		m.UpdatedAt = m.CreatedAt // 版本行时间对齐该版本
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(out) == 0 {
+		return nil, false, nil
+	}
+	return out, true, nil
+}
+
+// Events 事件流（seq 升序）；未知 ok=false。
+func (s *Store) MissionEvents(ctx context.Context, missionID string) ([]mission.Event, bool, error) {
+	var exists bool
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM missions WHERE mission_id = ?)`, missionID).Scan(&exists); err != nil {
+		return nil, false, fmt.Errorf("sqlite: mission exists: %w", err)
+	}
+	if !exists {
+		return nil, false, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT seq, mission_id, event_type, payload, occurred_at
+  FROM mission_events WHERE mission_id = ? ORDER BY seq`, missionID)
+	if err != nil {
+		return nil, false, fmt.Errorf("sqlite: mission events: %w", err)
+	}
+	defer rows.Close()
+	out := []mission.Event{}
+	for rows.Next() {
+		var ev mission.Event
+		var payload string
+		if err := rows.Scan(&ev.Seq, &ev.MissionID, &ev.EventType, &payload, &ev.OccurredAt); err != nil {
+			return nil, false, fmt.Errorf("sqlite: scan mission event: %w", err)
+		}
+		ev.Payload = json.RawMessage(payload)
+		out = append(out, ev)
+	}
+	return out, true, rows.Err()
 }
 
 // ---- 职责实例域（RFC-0018 §3.1/§5.2 / ADR-0020，0.5.3；v10 表，端口实现）----

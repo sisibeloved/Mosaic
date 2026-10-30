@@ -26,6 +26,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/monitor"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
+	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
@@ -47,7 +48,9 @@ type Deps struct {
 	// Identity 独立 Agent 身份域（RFC-0018 / ADR-0017，0.5.0；nil 时身份端点 503）。
 	Identity *personalagent.Service
 	// Slots 职责模板域（RFC-0018 §5 / ADR-0019，0.5.2；nil 时职责端点 503）。
-	Slots  *slot.Service
+	Slots *slot.Service
+	// Missions Mission 契约域（RFC-0018 §6.1 / ADR-0023，0.6.0；nil 时端点 503）。
+	Missions *mission.Service
 	Logger *slog.Logger
 	// 开发者模式（M1 v1.8）：Dev 开启才注册 /v1/debug 只读端点与 UI 调试面板。
 	Dev    bool
@@ -1803,6 +1806,318 @@ func readinessView(res slot.ReadinessResult) apigen.ReadinessReportView {
 		Missing:                  missing,
 		Degraded:                 degraded,
 		EffectiveWorkspaceAccess: apigen.ReadinessReportViewEffectiveWorkspaceAccess(rep.EffectiveWorkspaceAccess),
+	}
+}
+
+// ---- Mission 契约面（RFC-0018 §6.1 / ADR-0023，0.6.0；apigen.ServerInterface）----
+
+func (s *server) missionUnavailable(w http.ResponseWriter) bool {
+	if s.deps.Missions == nil {
+		writeError(w, http.StatusServiceUnavailable, "mission_unavailable", "Mission 域未装配")
+		return true
+	}
+	return false
+}
+
+// ListMissions 契约摘要列表（创建序）。
+func (s *server) ListMissions(w http.ResponseWriter, r *http.Request) {
+	if s.missionUnavailable(w) {
+		return
+	}
+	sums, err := s.deps.Missions.ListMissions(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "mission_read_failed", err.Error())
+		return
+	}
+	out := make([]apigen.MissionSummary, 0, len(sums))
+	for _, sum := range sums {
+		ts, _ := time.Parse(time.RFC3339, sum.CreatedAt)
+		us, _ := time.Parse(time.RFC3339, sum.UpdatedAt)
+		out = append(out, apigen.MissionSummary{
+			MissionId: sum.MissionID, ContractVersion: sum.ContractVersion,
+			Status: apigen.MissionSummaryStatus(sum.Status), OwnerAgentId: sum.OwnerAgentID,
+			Objective: sum.Objective, CreatedAt: ts, UpdatedAt: us,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"missions": out})
+}
+
+// CreateMission 建契约（完备 → ready；缺失 → draft）。
+func (s *server) CreateMission(w http.ResponseWriter, r *http.Request) {
+	if s.missionUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.MissionCreate
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	m, err := s.deps.Missions.Create(r.Context(), derefStr(req.OwnerAgentId), missionContentOf(req.Budget, req.Constraints, req.Delegation, req.Objective, req.Scope, req.Reviewer, req.AcceptanceCriteria, req.DeliverableSpecs, req.SourceRefs, req.ReturnTargets))
+	if err != nil {
+		writeMissionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, missionView(m))
+}
+
+// GetMission 契约详情。
+func (s *server) GetMission(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.missionUnavailable(w) {
+		return
+	}
+	m, ok, err := s.deps.Missions.Get(r.Context(), missionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "mission_read_failed", err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "mission_not_found", "Mission 不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, missionView(m))
+}
+
+// ReviseMission 修订契约（全量替换 + 版本追加；CAS）。
+func (s *server) ReviseMission(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.missionUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.MissionRevise
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	if req.ExpectedVersion < 1 {
+		writeError(w, http.StatusBadRequest, "invalid_mission", "expected_version 须 ≥1")
+		return
+	}
+	m, err := s.deps.Missions.Revise(r.Context(), missionID, int(req.ExpectedVersion), derefStr(req.OwnerAgentId),
+		missionContentOf(req.Budget, req.Constraints, req.Delegation, req.Objective, req.Scope, req.Reviewer, req.AcceptanceCriteria, req.DeliverableSpecs, req.SourceRefs, req.ReturnTargets))
+	if err != nil {
+		writeMissionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, missionView(m))
+}
+
+// CancelMission 取消（CAS；唯一终态）。
+func (s *server) CancelMission(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.missionUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.MissionCancel
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	if req.ExpectedVersion < 1 {
+		writeError(w, http.StatusBadRequest, "invalid_mission", "expected_version 须 ≥1")
+		return
+	}
+	m, err := s.deps.Missions.Cancel(r.Context(), missionID, int(req.ExpectedVersion), derefStr(req.Reason))
+	if err != nil {
+		writeMissionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, missionView(m))
+}
+
+// ListMissionVersions 不可变版本列表（升序）。
+func (s *server) ListMissionVersions(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.missionUnavailable(w) {
+		return
+	}
+	vs, ok, err := s.deps.Missions.MissionVersions(r.Context(), missionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "mission_read_failed", err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "mission_not_found", "Mission 不存在")
+		return
+	}
+	out := make([]apigen.MissionView, 0, len(vs))
+	for _, v := range vs {
+		out = append(out, missionView(v))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"versions": out})
+}
+
+// ListMissionEvents 事件流（seq 升序）。
+func (s *server) ListMissionEvents(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.missionUnavailable(w) {
+		return
+	}
+	evs, ok, err := s.deps.Missions.MissionEvents(r.Context(), missionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "mission_read_failed", err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "mission_not_found", "Mission 不存在")
+		return
+	}
+	out := make([]apigen.MissionEvent, 0, len(evs))
+	for _, ev := range evs {
+		ts, err := time.Parse(time.RFC3339, ev.OccurredAt)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "mission_read_failed", fmt.Sprintf("事件时间 %q: %v", ev.OccurredAt, err))
+			return
+		}
+		var payload map[string]interface{}
+		if len(ev.Payload) > 0 {
+			if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+				writeError(w, http.StatusInternalServerError, "mission_read_failed", err.Error())
+				return
+			}
+		}
+		out = append(out, apigen.MissionEvent{
+			Seq: ev.Seq, MissionId: ev.MissionID,
+			EventType: apigen.MissionEventEventType(ev.EventType),
+			Payload: payload, OccurredAt: ts,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": out})
+}
+
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func derefStrSlice(p *[]string) []string {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+// missionContentOf 请求 → 契约内容（缺省归一在域内单源）。
+func missionContentOf(budget *apigen.MissionBudget, constraints *[]string, delegation *apigen.DelegationPolicy, objective, scope string, reviewer *string, acceptance, deliverables, sources []string, returns *[]string) mission.Content {
+	c := mission.Content{
+		Objective:          objective,
+		Scope:              scope,
+		Constraints:        derefStrSlice(constraints),
+		AcceptanceCriteria: acceptance,
+		DeliverableSpecs:   deliverables,
+		SourceRefs:         sources,
+		ReturnTargets:      derefStrSlice(returns),
+	}
+	if reviewer != nil {
+		c.Reviewer = *reviewer
+	}
+	if budget != nil {
+		c.Budget = mission.Budget{
+			Concurrency: budget.Concurrency, MaxRuns: budget.MaxRuns,
+			MaxWallClockSeconds: budget.MaxWallClockSeconds,
+			MaxRetries: budget.MaxRetries, MaxDelegationDepth: budget.MaxDelegationDepth,
+		}
+	}
+	if delegation != nil {
+		allowed := make([]string, 0, len(delegation.Allowed))
+		for _, a := range delegation.Allowed {
+			allowed = append(allowed, string(a))
+		}
+		c.Delegation = mission.DelegationPolicy{Allowed: allowed, MaxDepth: delegation.MaxDepth}
+	}
+	return c
+}
+
+// missionView mission.Mission → apigen.MissionView（内容平铺）。
+func missionView(m mission.Mission) apigen.MissionView {
+	ts, _ := time.Parse(time.RFC3339, m.CreatedAt)
+	us, _ := time.Parse(time.RFC3339, m.UpdatedAt)
+	constraints := m.Constraints
+	if constraints == nil {
+		constraints = []string{}
+	}
+	acceptance := m.AcceptanceCriteria
+	if acceptance == nil {
+		acceptance = []string{}
+	}
+	deliverables := m.DeliverableSpecs
+	if deliverables == nil {
+		deliverables = []string{}
+	}
+	sources := m.SourceRefs
+	if sources == nil {
+		sources = []string{}
+	}
+	returns := m.ReturnTargets
+	if returns == nil {
+		returns = []string{}
+	}
+	allowed := make([]apigen.DelegationPolicyAllowed, 0, len(m.Delegation.Allowed))
+	for _, a := range m.Delegation.Allowed {
+		allowed = append(allowed, apigen.DelegationPolicyAllowed(a))
+	}
+	return apigen.MissionView{
+		MissionId: m.MissionID, ContractVersion: m.ContractVersion,
+		Status: apigen.MissionViewStatus(m.Status), OwnerAgentId: m.OwnerAgentID,
+		Requester: m.Requester, Reviewer: m.Reviewer,
+		Objective: m.Objective, Scope: m.Scope,
+		Constraints: constraints, AcceptanceCriteria: acceptance,
+		DeliverableSpecs: deliverables, SourceRefs: sources, ReturnTargets: returns,
+		Budget: apigen.MissionBudget{
+			Concurrency: m.Budget.Concurrency, MaxRuns: m.Budget.MaxRuns,
+			MaxWallClockSeconds: m.Budget.MaxWallClockSeconds,
+			MaxRetries: m.Budget.MaxRetries, MaxDelegationDepth: m.Budget.MaxDelegationDepth,
+		},
+		Delegation: apigen.DelegationPolicy{Allowed: allowed, MaxDepth: m.Delegation.MaxDepth},
+		CreatedAt:  ts, UpdatedAt: us,
+	}
+}
+
+// writeMissionError 契约域错误映射。
+func writeMissionError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, mission.ErrMissionNotFound):
+		writeError(w, http.StatusNotFound, "mission_not_found", err.Error())
+	case errors.Is(err, mission.ErrAgentNotFound):
+		writeError(w, http.StatusNotFound, "agent_not_found", err.Error())
+	case errors.Is(err, mission.ErrInvalidMission):
+		writeError(w, http.StatusBadRequest, "invalid_mission", err.Error())
+	case errors.Is(err, mission.ErrVersionConflict):
+		writeError(w, http.StatusConflict, "version_conflict", err.Error())
+	case errors.Is(err, mission.ErrInvalidTransition):
+		writeError(w, http.StatusConflict, "invalid_transition", err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "mission_write_failed", err.Error())
 	}
 }
 

@@ -322,6 +322,18 @@ export function AppShell() {
               {/* 工作区资产（与上方会话列表分区）：文档是内容面，与设置等运维入口分家。 */}
               <div className="mt-2 border-t border-border pt-2">
                 <NavLink
+                  to="/missions"
+                  title="任务（Mission 契约——交办/版本/事件，0.6）"
+                  className={({ isActive }) =>
+                    `flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors ${
+                      isActive ? "bg-surface-3" : "hover:bg-surface-2"
+                    }`
+                  }
+                >
+                  <IconTarget />
+                  <span className="truncate text-sm">任务</span>
+                </NavLink>
+                <NavLink
                   to="/docs"
                   title="文档（工作区文档主页——列表/检索/编辑器）"
                   className={({ isActive }) =>
@@ -489,6 +501,15 @@ function IconGroup() {
       <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
       <circle cx="9" cy="7" r="4" />
       <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  );
+}
+
+function IconTarget() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <circle cx="8" cy="8" r="5.5" />
+      <circle cx="8" cy="8" r="2.5" />
     </svg>
   );
 }

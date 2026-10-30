@@ -1346,6 +1346,128 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/missions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Mission 契约列表（0.6.0 / ADR-0023）
+         * @description Mission 是可验收的一次交办（RFC-0018 §3.1）——独立事实源，归
+         *     Workspace，不挂 Room。创建序摘要；执行/验收态随 0.6.5+ 扩展。
+         */
+        get: operations["listMissions"];
+        put?: never;
+        /**
+         * 创建 Mission 契约（完备 → ready；缺失 → draft）
+         * @description 完备性判定单源（ADR-0023）：objective/scope/验收/交付物/来源齐备且
+         *     已指派 owner → ready；否则保留 draft（保存明确请求，不捏造共识）。
+         *     owner 须为存在的 Agent（任意生命周期——责任归属事实，行为能力由
+         *     执行/交接时点校验）。
+         */
+        post: operations["createMission"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/missions/{mission_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Mission 契约详情（当前契约 + 状态 + 版本） */
+        get: operations["getMission"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/missions/{mission_id}/revise": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 修订契约（全量替换 + 版本追加；CAS）
+         * @description expected_version CAS（AT-13）：并发修订恰一胜者，败者 409
+         *     version_conflict 拿回当前版本可见重试。完备性重判：draft 补齐 →
+         *     ready（status_changed 事件）；canceled 终态拒修订。
+         */
+        post: operations["reviseMission"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/missions/{mission_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 取消 Mission（CAS；唯一终态）
+         * @description 0.6.0 无在途工作，draft/ready 单步至 canceled（在途处置版随
+         *     0.6.6）；canceled 不被修订或迟到回调翻转（§3.2）。
+         */
+        post: operations["cancelMission"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/missions/{mission_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 契约不可变版本列表（升序） */
+        get: operations["listMissionVersions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/missions/{mission_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Mission 事件流（只读审计面） */
+        get: operations["listMissionEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/harness/executables": {
         parameters: {
             query?: never;
@@ -2745,6 +2867,142 @@ export interface components {
             degraded: string[];
             /** @enum {string} */
             effective_workspace_access: "none" | "read" | "read_write";
+        };
+        /** @description 预算（RFC-0018 §6.1：并发、总 Run 数、墙钟时长、重试与委派深度）——0.6.0 为契约声明事实，运行时强制随 0.6.5 Scheduler 落；缺省 {1, 32, 86400, 0, 0}（单 Agent、不重试、不委派起步）。 */
+        MissionBudget: {
+            concurrency: number;
+            max_runs: number;
+            /** @description 墙钟上限（秒） */
+            max_wall_clock_seconds: number;
+            max_retries: number;
+            max_delegation_depth: number;
+        };
+        /**
+         * @description MissionContract 内容（RFC-0018 §6.1 的 0.6.0 子集 / ADR-0023）。
+         *     完备性（→ ready）= objective/scope/验收/交付物/来源齐备且已指派
+         *     owner_agent_id；缺失保留 draft（保存明确请求，不捏造共识）。
+         *     decision_ref / context_manifest_ref 随 0.6.1/0.6.2 增列（对象
+         *     未存在不落空壳字段）。delegation 缺省 = 不允许委派（安全缺省）。
+         */
+        MissionContractContent: {
+            /** @description 目标（可验收的一次交办） */
+            objective: string;
+            /** @description 范围 */
+            scope: string;
+            constraints?: string[];
+            /** @description 验收标准（空 = draft——验收缺失保留草稿） */
+            acceptance_criteria: string[];
+            /** @description 交付物规范（空 = draft） */
+            deliverable_specs: string[];
+            /** @description 来源引用（房间事件/文档修订/决策版本——0.6.0 自由引用串，引用校验随 0.6.1 房间交办） */
+            source_refs: string[];
+            /** @description 返回位置（0.6.10 执行结果回房消费；可空） */
+            return_targets?: string[];
+            budget?: components["schemas"]["MissionBudget"];
+            delegation?: components["schemas"]["DelegationPolicy"];
+            /** @description 验收人；空 = 请求人（本地 owner）自验——负责人自述不算验收（§6.1） */
+            reviewer?: string;
+        };
+        /** @description 创建 Mission 契约请求体。 */
+        MissionCreate: {
+            /** @description 负责人（缺省 unassigned——完备性未过停 draft） */
+            owner_agent_id?: string;
+            objective: string;
+            scope: string;
+            constraints?: string[];
+            acceptance_criteria: string[];
+            deliverable_specs: string[];
+            source_refs: string[];
+            return_targets?: string[];
+            budget?: components["schemas"]["MissionBudget"];
+            delegation?: components["schemas"]["DelegationPolicy"];
+            reviewer?: string;
+        };
+        /** @description 修订请求体（全量替换 + 版本追加；expected_version CAS——AT-13 并发修订冲突明确拒绝）。 */
+        MissionRevise: {
+            /** @description 调用方所见 contract_version；不匹配 409 version_conflict */
+            expected_version: number;
+            owner_agent_id?: string;
+            objective: string;
+            scope: string;
+            constraints?: string[];
+            acceptance_criteria: string[];
+            deliverable_specs: string[];
+            source_refs: string[];
+            return_targets?: string[];
+            budget?: components["schemas"]["MissionBudget"];
+            delegation?: components["schemas"]["DelegationPolicy"];
+            reviewer?: string;
+        };
+        /** @description 取消请求体（0.6.0 无在途工作单步终态；在途处置版随 0.6.6）。 */
+        MissionCancel: {
+            expected_version: number;
+            /** @description 可选原因（记入 status_changed 事件 payload） */
+            reason?: string;
+        };
+        /**
+         * @description Mission 契约（ADR-0023 / 0.6.0）。status：draft（契约不完备——
+         *     验收/来源/交付物缺失或 unassigned）/ ready（完备可受领，执行随
+         *     0.6.5）/ canceled（唯一终态）。requester 当前恒本地 owner（多入口
+         *     请求方随网关/委派扩展）。
+         */
+        MissionView: {
+            /** @description mi_ 前缀生成式 */
+            mission_id: string;
+            /** @description 当前契约版本（修订 +1） */
+            contract_version: number;
+            /** @enum {string} */
+            status: "draft" | "ready" | "canceled";
+            /** @description 负责人（空 = 显式 unassigned，§3.3 不变量） */
+            owner_agent_id: string;
+            /** @description 请求人（0.6.0 恒 owner——本地单用户） */
+            requester: string;
+            /** @description 验收人（空 = 请求人自验） */
+            reviewer: string;
+            objective: string;
+            scope: string;
+            constraints: string[];
+            acceptance_criteria: string[];
+            deliverable_specs: string[];
+            source_refs: string[];
+            return_targets: string[];
+            budget: components["schemas"]["MissionBudget"];
+            delegation: components["schemas"]["DelegationPolicy"];
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * Format: date-time
+             * @description 最近修订/转移时间
+             */
+            updated_at: string;
+        };
+        /** @description Mission 契约摘要。 */
+        MissionSummary: {
+            mission_id: string;
+            contract_version: number;
+            /** @enum {string} */
+            status: "draft" | "ready" | "canceled";
+            owner_agent_id: string;
+            objective: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description mission_events 流事件（migration v13；seq 升序即流序）。 */
+        MissionEvent: {
+            /**
+             * Format: int64
+             * @description 全表单调流序
+             */
+            seq: number;
+            mission_id: string;
+            /** @enum {string} */
+            event_type: "created" | "contract_revised" | "status_changed";
+            /** @description 事件体——created: {contract_version, status}；contract_revised: {from_version, to_version}；status_changed: {from, to, reason} */
+            payload: Record<string, never>;
+            /** Format: date-time */
+            occurred_at: string;
         };
         /**
          * @description 职责实例（ADR-0020 / 0.5.3）。spec 为模板现势连接（现算）；实例自身
@@ -5868,6 +6126,336 @@ export interface operations {
                 };
             };
             /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listMissions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 契约摘要列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        missions: components["schemas"]["MissionSummary"][];
+                    };
+                };
+            };
+            /** @description Mission 域未装配（mission_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createMission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MissionCreate"];
+            };
+        };
+        responses: {
+            /** @description 已创建（draft 或 ready） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionView"];
+                };
+            };
+            /** @description 契约不合法（invalid_mission——必填/上限/模式/预算界限） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description owner Agent 不存在（agent_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description Mission 域未装配（mission_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getMission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionView"];
+                };
+            };
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Mission 域未装配（mission_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    reviseMission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MissionRevise"];
+            };
+        };
+        responses: {
+            /** @description 修订后契约（新版本） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionView"];
+                };
+            };
+            /** @description 契约不合法（invalid_mission） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Mission 或 owner Agent 不存在（mission_not_found / agent_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 版本冲突（version_conflict）或终态拒修订（invalid_transition） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description Mission 域未装配（mission_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    cancelMission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MissionCancel"];
+            };
+        };
+        responses: {
+            /** @description 已取消 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 版本冲突（version_conflict）或已终态（invalid_transition） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description Mission 域未装配（mission_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listMissionVersions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 版本列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        versions: components["schemas"]["MissionView"][];
+                    };
+                };
+            };
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Mission 域未装配（mission_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listMissionEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 事件列表（seq 升序） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        events: components["schemas"]["MissionEvent"][];
+                    };
+                };
+            };
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Mission 域未装配（mission_unavailable） */
             503: {
                 headers: {
                     [name: string]: unknown;
