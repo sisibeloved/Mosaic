@@ -108,9 +108,16 @@ type Store interface {
 	SaveDecision(ctx context.Context, d Decision) error
 	// DecisionByID 单查决策；未知 ok=false。
 	DecisionByID(ctx context.Context, routeID string) (Decision, bool, error)
-	// SaveReceipt 回执落库；撞 (caller, scope, key) 唯一约束时返回已存回执
-	// 与 conflict=true（调用方比对路由决胜负——并发孪生恰一胜者）。
-	SaveReceipt(ctx context.Context, r Receipt) (existing Receipt, conflict bool, err error)
+	// ClaimKey 原子认领幂等键并绑定摘要（审校 P1：在领域创建之前——
+	// pending 回执行，domain_command_id 空）。撞键返回已存行：
+	//   conflict=true   摘要不同（异载荷——写入前退出，零副作用）
+	//   finalized=true  摘要相同且已完结（直接重放原回执——审校 P2#4，
+	//                   同键同摘要即同一请求，路由不同也重放）
+	//   双 false        摘要相同的 pending 认领（并发孪生/崩溃恢复重驱动）
+	ClaimKey(ctx context.Context, r Receipt) (existing Receipt, conflict bool, finalized bool, err error)
+	// FinalizeReceipt 填 domain_command_id/committed_at（幂等 UPDATE——
+	// 认领者创建成功后完结回执）。
+	FinalizeReceipt(ctx context.Context, r Receipt) error
 	// ReceiptByKey 幂等键查回执；未投递 ok=false。
 	ReceiptByKey(ctx context.Context, callerRef, scope, key string) (Receipt, bool, error)
 }
@@ -232,26 +239,39 @@ func (s *Service) precheck(ctx context.Context, req ResolveRequest) (code, summa
 	return "", "", true
 }
 
-// Dispatch 复核投递：幂等检查（先于一切复核——已提交回执直接重放）→
-// 决策载入（过期/复核失败 route_stale 重新解析）→ 执行 mission 创建 →
-// 回执落库（唯一约束兜底并发孪生）。回执仅表示领域命令已提交；
-// replayed=true 为幂等重放（非新投递）。
+// Dispatch 复核投递（审校 P1/P2#4 版）：决策载入与时效检查 → **原子认领
+// 幂等键并绑定摘要**（异摘要创建前退出零副作用；同摘要已完结重放原回执
+// ——路由不同亦然，摘要即请求身份；pending 同摘要重驱动恢复）→ 复核预检
+// （变化 route_stale）→ 执行 mission 创建（决策存档请求）→ 完结回执。
+// 已接受的两事务恢复窗口保留：创建后完结前崩溃 → 重试命中 pending 认领
+// 重驱动，映射撞键回显已建 mission_id 可见恢复，不产生重复派单。
 func (s *Service) Dispatch(ctx context.Context, cmd DispatchCmd) (Receipt, bool, error) {
 	if !idempotencyKeyPattern.MatchString(cmd.IdempotencyKey) {
 		return Receipt{}, false, fmt.Errorf("%w: idempotency_key 须 [A-Za-z0-9._:-]{1,128}", ErrInvalidRequest)
 	}
-	// 幂等先查：同键同路由 → 重放原回执；同键异路由 → 冲突（重试不得变新派单）
-	if prior, found, err := s.store.ReceiptByKey(ctx, CallerOwner, ScopeWorkspace, cmd.IdempotencyKey); err != nil {
-		return Receipt{}, false, err
-	} else if found {
-		if prior.RouteID != cmd.RouteID {
-			return Receipt{}, false, fmt.Errorf("%w: 键 %s 已绑定路由 %s", ErrIdempotencyConflict, cmd.IdempotencyKey, prior.RouteID)
-		}
-		return prior, true, nil // 幂等重放
-	}
 	d, found, err := s.store.DecisionByID(ctx, cmd.RouteID)
 	if err != nil {
 		return Receipt{}, false, err
+	}
+
+	// 已提交回执先于决策时效查验（§11.2.1 次序）：重试不得因决策此后
+	// 过期/blocked 而失去重放（审校复核——投递成功改变预检状态是常态）
+	prior, hasPrior, err := s.store.ReceiptByKey(ctx, CallerOwner, ScopeWorkspace, cmd.IdempotencyKey)
+	if err != nil {
+		return Receipt{}, false, err
+	}
+	if hasPrior {
+		if !found {
+			// 键已绑定而路由未知：不可能是合法重放（重放携带原路由）
+			return Receipt{}, false, fmt.Errorf("%w: 键 %s 已绑定其他请求", ErrIdempotencyConflict, cmd.IdempotencyKey)
+		}
+		if prior.RequestDigest != d.RequestDigest {
+			return Receipt{}, false, fmt.Errorf("%w: 键 %s 已绑定摘要 %s（异载荷）", ErrIdempotencyConflict, cmd.IdempotencyKey, prior.RequestDigest[:min(12, len(prior.RequestDigest))])
+		}
+		if prior.DomainCommandID != "" {
+			return prior, true, nil // 同摘要已完结 → 重放原回执（P2#4：路由不同亦然）
+		}
+		// pending 同摘要 → 恢复重驱动（落到下方认领与创建）
 	}
 	if !found {
 		return Receipt{}, false, ErrRouteNotFound
@@ -260,9 +280,36 @@ func (s *Service) Dispatch(ctx context.Context, cmd DispatchCmd) (Receipt, bool,
 		return Receipt{}, false, fmt.Errorf("%w: 决策已过期（%s），请重新解析", ErrRouteStale, d.ExpiresAt)
 	}
 	if d.Status != "resolved" {
-		// blocked 决策不可投递（执行条件不足不启动——§11.2）
+		// blocked 决策不可投递（执行条件不足不启动——§11.2）；未认领键
 		return Receipt{}, false, fmt.Errorf("%w: 决策为 blocked（%s：%s），不满足执行条件", ErrRouteStale, d.ReasonCode, d.ReasonSummary)
 	}
+
+	// 原子认领（先于一切领域副作用）：摘要在此刻绑定幂等键——并发孪生/
+	// 异摘要在此处分胜负（审校 P1：异摘要创建前退出零副作用）
+	claim := Receipt{
+		ReceiptID:       s.newReceiptID(),
+		CallerRef:       CallerOwner,
+		Scope:           ScopeWorkspace,
+		IdempotencyKey:  cmd.IdempotencyKey,
+		RequestID:       cmd.RequestID,
+		RequestDigest:   d.RequestDigest,
+		RouteID:         d.RouteID,
+		DecisionVersion: d.DecisionVersion,
+		TargetRefs:      d.TargetRefs,
+		CommittedAt:     "",
+	}
+	existing, conflict, finalized, err := s.store.ClaimKey(ctx, claim)
+	if err != nil {
+		return Receipt{}, false, err
+	}
+	if conflict {
+		return Receipt{}, false, fmt.Errorf("%w: 键 %s 已绑定摘要 %s（异载荷）", ErrIdempotencyConflict, cmd.IdempotencyKey, existing.RequestDigest[:min(12, len(existing.RequestDigest))])
+	}
+	if finalized {
+		return existing, true, nil // 同摘要已完结 → 重放（并发路径兜底）
+	}
+	// pending 同摘要：本调用即认领持有者或恢复重驱动，继续
+
 	if code, summary, ok := s.precheck(ctx, d.Request); !ok {
 		// 映射被占（含崩溃窗口孤儿）单列可见恢复；其余状态变化 → 重新解析
 		if code == "source_already_mapped" {
@@ -272,43 +319,22 @@ func (s *Service) Dispatch(ctx context.Context, cmd DispatchCmd) (Receipt, bool,
 	}
 	m, err := s.missions.Create(ctx, d.Request.OwnerAgentID, d.Request.Contract, &d.Request.RoomSource)
 	if err != nil {
-		// 并发孪生：同键同路由回执已存在则重放胜者（重试不得变新派单，
-		// 也不得因竞态把孪生当失败）；非孪生占用（崩溃窗口孤儿或他人先占）
-		// 原样上抛（source_already_mapped 携已建 mission_id 可见恢复）
+		// 孪生已创建（pending 认领未完结的恢复重驱动）：完结回执后重放
 		if errors.Is(err, mission.ErrSourceAlreadyMapped) {
-			if prior, found, rerr := s.store.ReceiptByKey(ctx, CallerOwner, ScopeWorkspace, cmd.IdempotencyKey); rerr == nil && found && prior.RouteID == cmd.RouteID {
+			if prior, found, rerr := s.store.ReceiptByKey(ctx, CallerOwner, ScopeWorkspace, cmd.IdempotencyKey); rerr == nil && found && prior.RequestDigest == d.RequestDigest && prior.DomainCommandID != "" {
 				return prior, true, nil
 			}
 		}
 		return Receipt{}, false, err
 	}
-	now := s.now()
-	r := Receipt{
-		ReceiptID:       s.newReceiptID(),
-		CallerRef:       CallerOwner,
-		Scope:           ScopeWorkspace,
-		IdempotencyKey:  cmd.IdempotencyKey,
-		RequestID:       cmd.RequestID,
-		RequestDigest:   d.RequestDigest,
-		RouteID:         d.RouteID,
-		DecisionVersion: d.DecisionVersion,
-		DomainCommandID: m.MissionID,
-		TargetRefs:      d.TargetRefs,
-		ReturnRefs:      d.Request.Contract.ReturnTargets,
-		CommittedAt:     now,
-	}
-	existing, conflict, err := s.store.SaveReceipt(ctx, r)
-	if err != nil {
+	out := claim
+	out.DomainCommandID = m.MissionID
+	out.ReturnRefs = d.Request.Contract.ReturnTargets
+	out.CommittedAt = s.now()
+	if err := s.store.FinalizeReceipt(ctx, out); err != nil {
 		return Receipt{}, false, err
 	}
-	if conflict {
-		// 并发孪生：同键同路由 → 重放胜者回执；异路由 → 冲突
-		if existing.RouteID == cmd.RouteID {
-			return existing, true, nil
-		}
-		return Receipt{}, false, fmt.Errorf("%w: 键 %s 已绑定路由 %s", ErrIdempotencyConflict, cmd.IdempotencyKey, existing.RouteID)
-	}
-	return r, false, nil
+	return out, false, nil
 }
 
 // ReceiptByKey 回执查询（get_dispatch_receipt）。

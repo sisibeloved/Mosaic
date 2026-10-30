@@ -116,46 +116,63 @@ func TestDispatchStoreIT(t *testing.T) {
 		TargetRefs: []string{"room:r1:tsk_c"}, ReturnRefs: []string{"room:r1"},
 		CommittedAt: "t",
 	}
-	if _, conflict, err := store.SaveReceipt(ctx, r); err != nil || conflict {
-		t.Fatalf("首存回执: conflict=%v err=%v", conflict, err)
+	// 认领 → 完结两段（审校 P1）：pending（domain_command_id 空）→ finalize
+	ex0, conflict0, finalized0, err := store.ClaimKey(ctx, r)
+	if err != nil || conflict0 || finalized0 || ex0.ReceiptID != "" {
+		t.Fatalf("首认领: ex=%+v conflict=%v finalized=%v err=%v", ex0, conflict0, finalized0, err)
 	}
-	// 同键二存 → conflict + 已存回执
-	ex, conflict, err := store.SaveReceipt(ctx, dispatch.Receipt{
+	if err := store.FinalizeReceipt(ctx, r); err != nil {
+		t.Fatalf("完结: %v", err)
+	}
+	// 同键异摘要 → conflict（写入前退出，零副作用）
+	ex, conflict, finalized, err := store.ClaimKey(ctx, dispatch.Receipt{
 		ReceiptID: "dpr_it_2", CallerRef: dispatch.CallerOwner, Scope: dispatch.ScopeWorkspace,
-		IdempotencyKey: "k1", RouteID: "rd_other", CommittedAt: "t2",
+		IdempotencyKey: "k1", RequestDigest: "other-digest", RouteID: "rd_other", CommittedAt: "t2",
 	})
-	if err != nil || !conflict || ex.ReceiptID != "dpr_it_1" {
-		t.Fatalf("撞键应返回已存回执: ex=%+v conflict=%v err=%v", ex, conflict, err)
+	if err != nil || !conflict || finalized || ex.ReceiptID != "dpr_it_1" {
+		t.Fatalf("异摘要应 conflict+已存回执: ex=%+v conflict=%v finalized=%v err=%v", ex, conflict, finalized, err)
+	}
+	// 同键同摘要已完结 → finalized 重放（P2#4）
+	same := r
+	same.ReceiptID = "dpr_it_3"
+	exR, conflictR, finalizedR, err := store.ClaimKey(ctx, same)
+	if err != nil || conflictR || !finalizedR || exR.DomainCommandID != "mi_x" {
+		t.Fatalf("同摘要应 finalized 重放: ex=%+v conflict=%v finalized=%v err=%v", exR, conflictR, finalizedR, err)
 	}
 	byKey, ok, _ := store.ReceiptByKey(ctx, dispatch.CallerOwner, dispatch.ScopeWorkspace, "k1")
 	if !ok || byKey.ReceiptID != "dpr_it_1" || byKey.ReturnRefs[0] != "room:r1" {
 		t.Fatalf("按键查回执: %+v", byKey)
 	}
 
-	// 并发同键孪生：恰一胜者
+	// 并发同键同摘要认领：恰一胜者（其余 pending 同摘要——重驱动恢复路径）
 	var wg sync.WaitGroup
-	var wins, conflicts atomic.Int64
+	var wins, sameDigest atomic.Int64
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, conflict, err := store.SaveReceipt(ctx, dispatch.Receipt{
+			ex, conflict, finalized, err := store.ClaimKey(ctx, dispatch.Receipt{
 				ReceiptID: "dpr_race_" + strings.Repeat("a", i+1),
 				CallerRef: dispatch.CallerOwner, Scope: dispatch.ScopeWorkspace,
-				IdempotencyKey: "race", CommittedAt: "t",
+				IdempotencyKey: "race", RequestDigest: "race-digest", CommittedAt: "t",
 			})
-			if err != nil {
-				t.Errorf("并发回执: %v", err)
-			} else if conflict {
-				conflicts.Add(1)
-			} else {
-				wins.Add(1)
+			switch {
+			case err != nil:
+				t.Errorf("并发认领: %v", err)
+			case conflict || finalized:
+				t.Errorf("并发首认领阶段不得 conflict/finalized: %v %v", conflict, finalized)
+			case ex.ReceiptID == "":
+				wins.Add(1) // 认领胜者（INSERT 成功——返回行空）
+			case ex.RequestDigest == "race-digest":
+				sameDigest.Add(1) // pending 同摘要（重驱动恢复路径）
+			default:
+				t.Errorf("并发认领意外返回行: %+v", ex)
 			}
 		}(i)
 	}
 	wg.Wait()
-	if wins.Load() != 1 || conflicts.Load() != 7 {
-		t.Fatalf("恰一胜者: wins=%d conflicts=%d", wins.Load(), conflicts.Load())
+	if wins.Load() != 1 || sameDigest.Load() != 7 {
+		t.Fatalf("恰一认领胜者: wins=%d pending=%d", wins.Load(), sameDigest.Load())
 	}
 }
 

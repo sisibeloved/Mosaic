@@ -2794,50 +2794,6 @@ SELECT route_id, decision_version, request_digest, status, selection_source, rea
 	return d, true, nil
 }
 
-// SaveReceipt 回执落库；撞 (caller, scope, key) 唯一约束 → 已存回执与
-// conflict=true（BEGIN IMMEDIATE 临界区内先查后插——并发孪生恰一胜者）。
-func (s *Store) SaveReceipt(ctx context.Context, r dispatch.Receipt) (dispatch.Receipt, bool, error) {
-	targets, err := json.Marshal(r.TargetRefs)
-	if err != nil {
-		return dispatch.Receipt{}, false, fmt.Errorf("sqlite: receipt targets marshal: %w", err)
-	}
-	returns, err := json.Marshal(r.ReturnRefs)
-	if err != nil {
-		return dispatch.Receipt{}, false, fmt.Errorf("sqlite: receipt returns marshal: %w", err)
-	}
-	conflict := false
-	var existing dispatch.Receipt
-	err = s.identityWriteTx(ctx, func(q identityExec) error {
-		// 事务内读取经同一事务连接——不得再借池连接（池上限 4 × 持连接
-		// 等写锁 = 死锁，busy_timeout 才解开；并发孪生 IT 实证）
-		row := q.QueryRowContext(ctx, `
-SELECT receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, committed_at
-  FROM dispatch_receipts WHERE caller_ref = ? AND scope = ? AND idempotency_key = ?`,
-			r.CallerRef, r.Scope, r.IdempotencyKey)
-		ex, found, err := scanReceipt(row)
-		if err != nil {
-			return fmt.Errorf("sqlite: receipt probe: %w", err)
-		}
-		if found {
-			existing = ex
-			conflict = true
-			return nil
-		}
-		if _, err := q.ExecContext(ctx, `
-INSERT INTO dispatch_receipts (receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, committed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			r.ReceiptID, r.CallerRef, r.Scope, r.IdempotencyKey, r.RequestID, r.RequestDigest,
-			r.RouteID, r.DecisionVersion, r.DomainCommandID, string(targets), string(returns), r.CommittedAt); err != nil {
-			return fmt.Errorf("sqlite: save receipt: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		return dispatch.Receipt{}, false, err
-	}
-	return existing, conflict, nil
-}
-
 // scanReceipt 单行回执扫描（池连接与事务连接共用；ErrNoRows → found=false）。
 func scanReceipt(row interface{ Scan(...any) error }) (dispatch.Receipt, bool, error) {
 	var r dispatch.Receipt
@@ -2857,6 +2813,69 @@ func scanReceipt(row interface{ Scan(...any) error }) (dispatch.Receipt, bool, e
 		return dispatch.Receipt{}, false, fmt.Errorf("sqlite: receipt returns unmarshal: %w", err)
 	}
 	return r, true, nil
+}
+
+// ClaimKey 原子认领幂等键（审校 P1）：pending 回执行（domain_command_id
+// 空）经 (caller, scope, key) 唯一约束一次落库——异摘要冲突在写入前退出
+// （零领域副作用）；同摘要已完结 → finalized 重放；pending → 重驱动恢复。
+// 事务内读取经同一事务连接（池上限 4 × 持连接等锁死锁教训）。
+func (s *Store) ClaimKey(ctx context.Context, r dispatch.Receipt) (dispatch.Receipt, bool, bool, error) {
+	targets, err := json.Marshal(r.TargetRefs)
+	if err != nil {
+		return dispatch.Receipt{}, false, false, fmt.Errorf("sqlite: receipt targets marshal: %w", err)
+	}
+	var existing dispatch.Receipt
+	conflict, finalized := false, false
+	err = s.identityWriteTx(ctx, func(q identityExec) error {
+		row := q.QueryRowContext(ctx, `
+SELECT receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, committed_at
+  FROM dispatch_receipts WHERE caller_ref = ? AND scope = ? AND idempotency_key = ?`,
+			r.CallerRef, r.Scope, r.IdempotencyKey)
+		ex, found, err := scanReceipt(row)
+		if err != nil {
+			return fmt.Errorf("sqlite: claim probe: %w", err)
+		}
+		if found {
+			existing = ex
+			if ex.RequestDigest != r.RequestDigest {
+				conflict = true
+			} else {
+				finalized = ex.DomainCommandID != ""
+			}
+			return nil
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO dispatch_receipts (receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, committed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, '[]', '')`,
+			r.ReceiptID, r.CallerRef, r.Scope, r.IdempotencyKey, r.RequestID, r.RequestDigest,
+			r.RouteID, r.DecisionVersion, string(targets)); err != nil {
+			return fmt.Errorf("sqlite: claim key: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return dispatch.Receipt{}, false, false, err
+	}
+	return existing, conflict, finalized, nil
+}
+
+// FinalizeReceipt 完结回执（幂等 UPDATE：填 domain_command_id/committed_at/
+// return_refs——认领者创建成功后调用）。
+func (s *Store) FinalizeReceipt(ctx context.Context, r dispatch.Receipt) error {
+	returns, err := json.Marshal(r.ReturnRefs)
+	if err != nil {
+		return fmt.Errorf("sqlite: receipt returns marshal: %w", err)
+	}
+	return s.identityWriteTx(ctx, func(q identityExec) error {
+		if _, err := q.ExecContext(ctx, `
+UPDATE dispatch_receipts SET request_id = ?, domain_command_id = ?, return_refs = ?, committed_at = ?
+ WHERE caller_ref = ? AND scope = ? AND idempotency_key = ?`,
+			r.RequestID, r.DomainCommandID, string(returns), r.CommittedAt,
+			r.CallerRef, r.Scope, r.IdempotencyKey); err != nil {
+			return fmt.Errorf("sqlite: finalize receipt: %w", err)
+		}
+		return nil
+	})
 }
 
 // ReceiptByKey 幂等键查回执；未投递 ok=false。

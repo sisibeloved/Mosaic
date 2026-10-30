@@ -786,22 +786,28 @@ func countRooms(store *sqlite.Store) (int, error) {
 type roomTaskLookup struct{ reader room.EventReader }
 
 func (l roomTaskLookup) RoomTaskExists(ctx context.Context, roomID, taskID string) (bool, error) {
+	// 跨页累积全量有序历史后统一重建（审校 P2#3）：TasksOf 是因果序单遍
+	// 重建——参与者索引（@指派解析）与既有申报状态都可能在前页，逐页
+	// 重建会把真实任务判不存在/派生错 ID。
+	var all []room.StoredEvent
 	cursor := ""
 	for {
 		events, next, err := l.reader.EventsAfter(ctx, roomID, cursor, 500)
 		if err != nil {
 			return false, err
 		}
-		for _, t := range room.TasksOf(events) {
-			if t.TaskID == taskID {
-				return true, nil
-			}
-		}
+		all = append(all, events...)
 		if next == "" {
-			return false, nil
+			break
 		}
 		cursor = next
 	}
+	for _, t := range room.TasksOf(all) {
+		if t.TaskID == taskID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // missionAgentLookup mission.AgentLookup 的身份域适配（owner 存在性）。

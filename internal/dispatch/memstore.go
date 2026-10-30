@@ -32,15 +32,25 @@ func (m *MemStore) DecisionByID(_ context.Context, routeID string) (Decision, bo
 	return d, ok, nil
 }
 
-func (m *MemStore) SaveReceipt(_ context.Context, r Receipt) (Receipt, bool, error) {
+func (m *MemStore) ClaimKey(_ context.Context, r Receipt) (Receipt, bool, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := r.CallerRef + "|" + r.Scope + "|" + r.IdempotencyKey
 	if ex, taken := m.receipts[key]; taken {
-		return ex, true, nil
+		if ex.RequestDigest != r.RequestDigest {
+			return ex, true, false, nil // 异摘要：写入前退出
+		}
+		return ex, false, ex.DomainCommandID != "", nil // 同摘要：完结即重放；pending 重驱动
 	}
 	m.receipts[key] = r
-	return Receipt{}, false, nil
+	return Receipt{}, false, false, nil
+}
+
+func (m *MemStore) FinalizeReceipt(_ context.Context, r Receipt) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.receipts[r.CallerRef+"|"+r.Scope+"|"+r.IdempotencyKey] = r
+	return nil
 }
 
 func (m *MemStore) ReceiptByKey(_ context.Context, callerRef, scope, key string) (Receipt, bool, error) {

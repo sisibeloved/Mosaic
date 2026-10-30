@@ -2191,17 +2191,18 @@ func (s *server) ResolveDispatch(w http.ResponseWriter, r *http.Request) {
 	if !s.guardWrite(w, r, true) {
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	// 契约字段校验与直接创建同源（审校 P2#5：两条入口一致——必填五键
+	// 存在性 + 显式预算严格界限；缺失/全零 400，不得经网关以空列表或
+	// 默认预算入库）
+	body, presence, ok := s.readMissionBody(w, r)
+	if !ok {
+		return
+	}
 	var req apigen.DispatchResolveRequest
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
-			return
-		}
-		writeError(w, http.StatusBadRequest, "invalid_request", "请求体不合法："+err.Error())
+	if !decodeMissionStrict(w, body, presence, &req) {
+		return
+	}
+	if !missionBudgetPresentStrict(w, presence, req.Budget) {
 		return
 	}
 	if req.RoomSource.RoomId == "" || req.RoomSource.TaskId == "" {

@@ -208,3 +208,22 @@ func TestDispatchEndpoints(t *testing.T) {
 	}
 	_ = ctx
 }
+
+// TestDispatchResolveContractChecks（审校 P2#5）：网关入口与直接创建同源
+// 校验——缺必填键 / 显式全零预算 → 400，不得以空列表或默认预算入库。
+func TestDispatchResolveContractChecks(t *testing.T) {
+	ts := dispatchTestServer(t)
+
+	// 缺验收键 → 400 bad_request
+	missing := postSlot(t, ts.URL+"/v1/dispatch/resolve",
+		`{"kind":"create_mission","room_source":{"room_id":"r1","task_id":"tsk_a"},"objective":"o","scope":"s","deliverable_specs":["d"],"source_refs":["r:1"]}`)
+	if code, _ := errOf(t, missing); missing.StatusCode != http.StatusBadRequest || code != "bad_request" {
+		t.Fatalf("缺验收键应 400 bad_request: %d %s", missing.StatusCode, code)
+	}
+	// 显式全零预算 → 400 invalid_mission
+	zero := postSlot(t, ts.URL+"/v1/dispatch/resolve",
+		`{"kind":"create_mission","room_source":{"room_id":"r1","task_id":"tsk_a"},"objective":"o","scope":"s","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"],"budget":{"concurrency":0,"max_runs":0,"max_wall_clock_seconds":0,"max_retries":0,"max_delegation_depth":0}}`)
+	if code, _ := errOf(t, zero); zero.StatusCode != http.StatusBadRequest || code != "invalid_mission" {
+		t.Fatalf("全零预算应 400 invalid_mission: %d %s", zero.StatusCode, code)
+	}
+}

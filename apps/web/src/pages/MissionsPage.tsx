@@ -72,6 +72,14 @@ export function MissionsPage() {
   };
 
   const submitCreate = () => {
+    // 来源半填拦截（审校 P2#2）：两项须同时为空或同时非空——半填静默丢
+    // 失来源不可事后补（映射为创建事实不可修订）
+    const hasRoom = form.room.trim() !== "";
+    const hasTask = form.task.trim() !== "";
+    if (hasRoom !== hasTask) {
+      setMsg("房间来源须同时填写 room_id 与 task_id（或同时留空）——来源创建后不可补");
+      return;
+    }
     const b = {
       concurrency: Number(budget.concurrency), max_runs: Number(budget.max_runs),
       max_wall_clock_seconds: Number(budget.max_wall_clock_seconds),

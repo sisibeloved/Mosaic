@@ -145,13 +145,22 @@ func TestDispatchHappyPathAndIdempotency(t *testing.T) {
 			t.Fatalf("幂等重放失真: %+v %v", r2, err)
 		}
 	}
-	// 同键异路由 → 冲突
+	// 同一请求重新解析（任务卡已映射 → blocked，但摘要相同）→ 同键重试
+	// 应重放原回执（审校 P2#4：摘要即请求身份，路由不同亦重放；投递成功
+	// 改变预检状态是常态，重试不得因此失去重放）
 	d2, _ := svc.Resolve(ctx, ResolveRequest{Kind: KindCreateMission,
-		RoomSource: mission.RoomSource{RoomID: "r1", TaskID: "tsk_a"}, Contract: contract()})
-	//（任务卡已映射 → 该解析本应 blocked；改走另一来源验证冲突语义）
-	// 直接验证：同键异路由用不存在决策路径已被覆盖，这里验证键冲突分支
-	if _, _, err := svc.Dispatch(ctx, DispatchCmd{RouteID: d2.RouteID, IdempotencyKey: "key-1"}); !errors.Is(err, ErrIdempotencyConflict) {
-		t.Fatalf("同键异路由应冲突: %v", err)
+		RoomSource: mission.RoomSource{RoomID: "r1", TaskID: "tsk_a"}, OwnerAgentID: "ag_a", Contract: contract()})
+	r3, replayed3, err := svc.Dispatch(ctx, DispatchCmd{RouteID: d2.RouteID, IdempotencyKey: "key-1"})
+	if err != nil || !replayed3 || r3.ReceiptID != r1.ReceiptID {
+		t.Fatalf("同摘要异路由应重放: replayed=%v err=%v", replayed3, err)
+	}
+	// 真正的异载荷（不同契约）同键 → 冲突
+	diffContract := contract()
+	diffContract.Objective = "不同请求"
+	d4, _ := svc.Resolve(ctx, ResolveRequest{Kind: KindCreateMission,
+		RoomSource: mission.RoomSource{RoomID: "r1", TaskID: "tsk_a"}, Contract: diffContract})
+	if _, _, err := svc.Dispatch(ctx, DispatchCmd{RouteID: d4.RouteID, IdempotencyKey: "key-1"}); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("同键异载荷应冲突: %v", err)
 	}
 	// 回执查询
 	got, found, _ := svc.ReceiptByKey(ctx, "key-1")
@@ -229,5 +238,98 @@ func TestDispatchConcurrentSameKey(t *testing.T) {
 	ms, _ := mem.ListMissions(ctx)
 	if len(ms) != 1 {
 		t.Fatalf("同键应恰一 Mission: %d", len(ms))
+	}
+}
+
+// TestDispatchKeyClaimIsolation（审校 P1）：同键异源并发——旧代码在首投
+// 落回执前双方都通过幂等检查、各自创建 Mission；修复后后到者在创建前于
+// 键认领处退出。门控证明双向确定：创建器进入即报数。
+type gatedMissions struct {
+	inner   Missions
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *gatedMissions) Create(ctx context.Context, owner string, c mission.Content, src *mission.RoomSource) (mission.Mission, error) {
+	g.entered <- struct{}{}
+	<-g.release
+	return g.inner.Create(ctx, owner, c, src)
+}
+
+func TestDispatchKeyClaimIsolation(t *testing.T) {
+	svc, mem := newFixture(t)
+	ctx := context.Background()
+	srcFake := fakeSources{tasks: map[[2]string]bool{{"r1", "tsk_a"}: true, {"r1", "tsk_b"}: true}}
+	mem2 := mission.NewMemStore()
+	agents := &fakeAgents{ids: map[string]bool{"ag_a": true}}
+	var n atomic.Int64
+	mSvc := mission.New(mem2,
+		mission.WithNow(func() string { return "2026-10-30T12:00:00.000Z" }),
+		mission.WithNewMissionID(func() string { return "mi_c" + itoa(n.Add(1)) }),
+		mission.WithAgentLookup(agents), mission.WithSourceLookup(srcFake))
+	gated := &gatedMissions{inner: mSvc, entered: make(chan struct{}, 4), release: make(chan struct{})}
+	svc.missions = gated
+	svc.lookups.Sources = srcFake
+	svc.lookups.Mapped = mSvc.SourceMapped
+
+	reqA := ResolveRequest{Kind: KindCreateMission,
+		RoomSource: mission.RoomSource{RoomID: "r1", TaskID: "tsk_a"}, Contract: contract()}
+	reqB := ResolveRequest{Kind: KindCreateMission,
+		RoomSource: mission.RoomSource{RoomID: "r1", TaskID: "tsk_b"}, Contract: contract()}
+	dA, _ := svc.Resolve(ctx, reqA)
+	dB, _ := svc.Resolve(ctx, reqB)
+
+	// A 投递：进入创建即挂起（回执未落）
+	errCh := make(chan error, 1)
+	go func() {
+		_, _, err := svc.Dispatch(ctx, DispatchCmd{RouteID: dA.RouteID, IdempotencyKey: "same"})
+		errCh <- err
+	}()
+	<-gated.entered
+
+	// B 同键异源：应在创建前退出（创建器不出现第二次进入），零副作用
+	bErr := make(chan error, 1)
+	go func() {
+		_, _, err := svc.Dispatch(ctx, DispatchCmd{RouteID: dB.RouteID, IdempotencyKey: "same"})
+		bErr <- err
+	}()
+	select {
+	case <-gated.entered:
+		close(gated.release)
+		t.Fatal("同键异源不得进入创建（应在键认领处退出）")
+	case err := <-bErr:
+		if !errors.Is(err, ErrIdempotencyConflict) {
+			t.Fatalf("同键异源应冲突退出: %v", err)
+		}
+	}
+	close(gated.release)
+	if err := <-errCh; err != nil {
+		t.Fatalf("首投: %v", err)
+	}
+	ms, _ := mem2.ListMissions(ctx)
+	if len(ms) != 1 {
+		t.Fatalf("同键异源不得产生第二份 Mission: %d", len(ms))
+	}
+	_ = mem
+}
+
+// TestDispatchSameDigestDifferentRouteReplay（审校 P2#4）：同一请求解析两次
+// 得两个路由（摘要相同）——首投后，第二路由同键重试应重放原回执。
+func TestDispatchSameDigestDifferentRouteReplay(t *testing.T) {
+	svc, _ := newFixture(t)
+	ctx := context.Background()
+	req := request()
+	d1, _ := svc.Resolve(ctx, req)
+	d2, _ := svc.Resolve(ctx, req)
+	if d1.RequestDigest != d2.RequestDigest || d1.RouteID == d2.RouteID {
+		t.Fatalf("同请求两次解析应同摘要异路由: %+v vs %+v", d1, d2)
+	}
+	r1, _, err := svc.Dispatch(ctx, DispatchCmd{RouteID: d1.RouteID, IdempotencyKey: "k"})
+	if err != nil {
+		t.Fatalf("首投: %v", err)
+	}
+	r2, replayed, err := svc.Dispatch(ctx, DispatchCmd{RouteID: d2.RouteID, IdempotencyKey: "k"})
+	if err != nil || !replayed || r2.ReceiptID != r1.ReceiptID {
+		t.Fatalf("同摘要异路由应重放原回执: replayed=%v err=%v %+v", replayed, err, r2)
 	}
 }
