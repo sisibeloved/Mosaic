@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-10-30
+
 ### Added
 
 - 新增 Binding 任职状态机与交接（0.5.4，0.5 长期 Agent 与职责领域第五件；负责人指令 2026-10-29："开发0.5.4版本"；ADR-0021）：职责有了"谁在承担"的可审计事实。**状态机**（RFC-0018 §3.2）：`preparing →（readiness 门）ready → active →（排空门）released`，准备失败 `→ blocked → preparing`（0.5.5 起真实）；released 唯一终态留审计；非法转移 409 可见拒绝。**单 active 不变量**（§3.1/§13.5，AT-13）：同实例最多一位在任，库级部分唯一索引（`WHERE status='active'`）兜底——并发激活恰一胜者（8 路交替施压 IT 与真机实测恒 ≤1 在任）；冲突 409 `active_binding_exists`，不静默换人。**固定版本**（§5.2）：Binding 创建即钉 `slot_spec_version`（缺省取谱系最新，显式须 ∈ [1, latest]），模板后续演进不改变在任——升级 = 旧任职排空释放 + 新任职。**双门端口预埋**：`ReadinessChecker`（0.5.5 权限交集/能力核对）与 `DrainChecker`（0.6 在途工作）缺省恒通过/恒空——prepare 一次调用至 ready、release 两段事件与终态**同一事务一次提交**（0.5.1 P2#4 教训不复现），注入非空门时停留 blocked/draining 并返回清单（UT 钉住）。**前置校验**：Agent 须存在且 active（prepare 与 activate 两时点——挂起/退役不接任职，409 `agent_not_active`；AgentLookup 端口由 app 装配注入身份服务，slot 不 import personalagent）。**交接位**：release 接受可选 `handoff_note`（≤4KB，记入事件与投影），接续方经实例任职列表读取最近交接（交接包自动汇编随 0.6/0.7）。**存储（migration v11）**：slot_bindings 投影 + binding_events append-only 流（created/status_changed；建行与 created 事件同事务；转移单事务[校验→投影→事件]——BEGIN IMMEDIATE 全库约定）。**API 六端点**（契约冻结，§11 命令对齐）：prepare（404 instance/agent_not_found、409 agent_not_active/invalid_spec_version）、activate、release、列表（实例过滤）、详情、事件流；写面过生产写门。**UI**：实例行"任职"管理块——在任者徽标与钉住版本、释放（交接备注输入）、就绪列表激活（冲突如实 409）、建任职（Agent 下拉 + 钉版本）、最近交接展示。设计与测试先行：ADR-0021 + OpenAPI 契约冻结（apigen/TS 双链重生成）→ UT 9 例（版本钉住/Agent 门两时点/单 active/排空门停留与重试/准入门 blocked 与重试（0.5.5 预留）/终态全拒/并发恰一/过滤）、SQLite IT（v11 新库 + v0.5.3 真旧库升级 + 部分唯一索引 8 轮交替并发实测恒 1 + 释放取消整体回滚）、端点全链先红后绿；vet（it st）+ `-race` 全量 + `-tags it/st` + SPA 全绿；真机冒烟（全链 + 挂起 Agent 拒任 + 并发激活恰一在任 + 4 任职重启持久）ALL-PASS。0.5.4 仅状态机与交接位：能力核对/权限交集/readiness report（0.5.5）、排空实际处置与交接包（0.6/0.7）随后交付。

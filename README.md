@@ -8,6 +8,7 @@
 
   [![CI](https://github.com/sisibeloved/Mosaic/actions/workflows/ci.yml/badge.svg)](https://github.com/sisibeloved/Mosaic/actions/workflows/ci.yml)
   [![Release](https://img.shields.io/github/v/release/sisibeloved/Mosaic)](https://github.com/sisibeloved/Mosaic/releases)
+  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
   [![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
   [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-3f6212?label=%E5%B9%B3%E5%8F%B0)](README.md#界面形态)
 </div>
@@ -82,7 +83,7 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 文档
 
-- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.5.3）
+- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.5.4）
 - [架构设计说明书](docs/design/2026-08-13-mosaic-architecture-design.md)
 - [RFC-0001 Room Protocol](docs/design/rfc/2026-08-25-rfc-0001-room-protocol.md)
 - [RFC-0002 Agent Protocol](docs/design/rfc/2026-08-25-rfc-0002-agent-protocol.md)
@@ -94,11 +95,11 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 当前状态与路线图
 
-当前版本 **v0.5.3**（2026-10-29，0.5 长期 Agent 与职责领域第四件——SlotInstance 职责实例与独立知识命名空间（RFC-0018 §3.1/§5.2 / ADR-0020）：si_ 实例引用模板谱系不钉版、slotns_ 全局唯一终身稳定知识命名空间、存档标题与模板现势连接分离、三端点与设置页职责实例区，见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收；0.5 系列后续为 Binding 与准入（0.5.4–0.5.5）。
+当前版本 **v0.5.4**（2026-10-30，0.5 长期 Agent 与职责领域第五件——Binding 任职状态机与交接（RFC-0018 §3.2/§5.2 / ADR-0021）：preparing/ready/active/draining/released/blocked 状态机、单 active 部分唯一索引、固定模板版本、Readiness/Drain 双端口预埋、交接位与六端点、设置页任职管理，见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收；0.5 系列仅剩职责准入（0.5.5）。
 
 后续版本采用 `大版本.领域中版本.特性小版本`（`X.Y.Z`）：**第三段每次只交付一个特性，第二段按领域聚合成系统能力**。领域中版本是版本线，不另发只用于汇总的版本；各小版本及验收口径见[交付与进度规划](docs/plan/2026-08-25-delivery-plan.md#02-当前-roadmap)。
 
-- **0.5 长期 Agent 与职责领域**（`0.5.0–0.5.5`，**0.5.0–0.5.3 已交付**）：独立 Agent 身份与生命周期、SlotSpec / SlotInstance、Binding 与职责准入。
+- **0.5 长期 Agent 与职责领域**（`0.5.0–0.5.5`，**0.5.0–0.5.4 已交付**）：独立 Agent 身份与生命周期、SlotSpec / SlotInstance、Binding 与职责准入。
 - **0.6 Mission 与本地执行领域**（`0.6.0–0.6.12`）：独立 Mission、房间交办、本地 Runtime / Lease、单 Agent 执行、交付验收与责任交接。
 - **0.7 记忆与可移植恢复领域**（`0.7.0–0.7.9`）：分域记忆、Checkpoint、跨 Harness 续办、Portable Agent Bundle 与删除传播。
 - **0.8 有界 Swarm 协作领域**（`0.8.0–0.8.8`）：WorkItem DAG、长期 Agent 委派、临时 Worker、配额、取消隔离与结果汇总。
@@ -111,8 +112,10 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 贡献
 
-项目目标是开源，但许可证尚未最终确定；在许可证决策完成前暂不接受外部代码贡献。欢迎通过 Issue 反馈问题与建议。
+欢迎通过 Issue 反馈问题、提出建议，也欢迎提交 Pull Request 参与贡献。
+
+提交代码前，请确保相关测试通过；对于较大的功能或架构变更，建议先通过 Issue 讨论方案。所有贡献均依据 [MIT License](LICENSE) 授权。
 
 ## License
 
-尚未确定，将在 v1.0.0 发布前完成决策并更新本节。
+本项目采用 [MIT License](LICENSE) 开源。
