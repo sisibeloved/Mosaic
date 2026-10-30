@@ -268,7 +268,9 @@ export function MissionsPage() {
         </ul>
       )}
 
-      {selected && <MissionDetail missionID={selected} agents={agents} onChanged={() => setRev((r) => r + 1)} />}
+      {selected && (
+        <MissionDetail key={selected} missionID={selected} agents={agents} onChanged={() => setRev((r) => r + 1)} />
+      )}
     </div>
   );
 }
@@ -310,7 +312,11 @@ function MissionDetail({
       });
   };
 
-  useEffect(load, [missionID]); // rev 由父层 keyed 重挂载或 onChanged 后手动 load
+  useEffect(load, [missionID]); // 父层按 missionID key 重挂载；onChanged 后手动 load
+
+  // 写入归属守卫（审校 P1#1）：详情加载完成且归属当前任务才允许修订/取消——
+  // 迟到响应或异常状态下绝不把写请求发给错误目标
+  const owned = detail !== null && detail.mission_id === missionID;
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -366,7 +372,7 @@ function MissionDetail({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || !owned}
             onClick={() => {
               setReviseOpen((o) => !o);
               setForm({
@@ -390,8 +396,13 @@ function MissionDetail({
           />
           <button
             type="button"
-            disabled={busy}
-            onClick={() => void act(() => api.cancelMission(missionID, detail.contract_version, cancelReason.trim() || undefined))}
+            disabled={busy || !owned}
+            onClick={() =>
+              void act(async () => {
+                if (detail.mission_id !== missionID) throw new Error("详情未就绪，已阻止写入");
+                await api.cancelMission(missionID, detail.contract_version, cancelReason.trim() || undefined);
+              })
+            }
             className="rounded-lg bg-surface-3 px-2 py-1 text-danger disabled:opacity-40"
           >
             取消交办
@@ -454,10 +465,13 @@ function MissionDetail({
           <div>
             <button
               type="button"
-              disabled={busy || !form.objective.trim() || !form.scope.trim()}
+              disabled={busy || !owned || !form.objective.trim() || !form.scope.trim()}
               onClick={() =>
-                void act(() =>
-                  api.reviseMission(missionID, {
+                void act(async () => {
+                  if (detail.mission_id !== missionID) throw new Error("详情未就绪，已阻止写入");
+                  // 全量替换语义：未编辑字段从当前契约快照保留（审校 P1#2——
+                  // 漏传即清空，预算/约束/返回位/验收人/委派不得被缺省重置）
+                  await api.reviseMission(missionID, {
                     expected_version: detail.contract_version,
                     ...(form.owner ? { owner_agent_id: form.owner } : {}),
                     objective: form.objective.trim(),
@@ -465,8 +479,13 @@ function MissionDetail({
                     acceptance_criteria: splitLines(form.acceptance),
                     deliverable_specs: splitLines(form.deliverables),
                     source_refs: splitLines(form.sources),
-                  }),
-                )
+                    constraints: detail.constraints,
+                    return_targets: detail.return_targets,
+                    budget: detail.budget,
+                    delegation: detail.delegation,
+                    ...(detail.reviewer ? { reviewer: detail.reviewer } : {}),
+                  });
+                })
               }
               className="rounded-lg bg-accent px-3 py-1.5 text-accent-contrast disabled:opacity-40"
             >

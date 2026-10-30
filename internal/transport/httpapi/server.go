@@ -1850,17 +1850,15 @@ func (s *server) CreateMission(w http.ResponseWriter, r *http.Request) {
 	if !s.guardWrite(w, r, true) {
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	body, presence, ok := s.readMissionBody(w, r)
+	if !ok {
+		return
+	}
 	var req apigen.MissionCreate
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
-			return
-		}
-		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+	if !decodeMissionStrict(w, body, presence, &req) {
+		return
+	}
+	if !missionBudgetPresentStrict(w, presence, req.Budget) {
 		return
 	}
 	m, err := s.deps.Missions.Create(r.Context(), derefStr(req.OwnerAgentId), missionContentOf(req.Budget, req.Constraints, req.Delegation, req.Objective, req.Scope, req.Reviewer, req.AcceptanceCriteria, req.DeliverableSpecs, req.SourceRefs, req.ReturnTargets))
@@ -1896,17 +1894,15 @@ func (s *server) ReviseMission(w http.ResponseWriter, r *http.Request, missionID
 	if !s.guardWrite(w, r, true) {
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	body, presence, ok := s.readMissionBody(w, r)
+	if !ok {
+		return
+	}
 	var req apigen.MissionRevise
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
-			return
-		}
-		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+	if !decodeMissionStrict(w, body, presence, &req) {
+		return
+	}
+	if !missionBudgetPresentStrict(w, presence, req.Budget) {
 		return
 	}
 	if req.ExpectedVersion < 1 {
@@ -2011,6 +2007,65 @@ func (s *server) ListMissionEvents(w http.ResponseWriter, r *http.Request, missi
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": out})
+}
+
+// readMissionBody 契约请求体读取（审校 P2#3）：必填五键（objective/scope/
+// acceptance_criteria/deliverable_specs/source_refs）缺失或 null → 400
+// bad_request——半体请求不得静默清空既有内容（显式空数组才是清空语义）。
+func (s *server) readMissionBody(w http.ResponseWriter, r *http.Request) ([]byte, map[string]json.RawMessage, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return nil, nil, false
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体读取失败："+err.Error())
+		return nil, nil, false
+	}
+	var presence map[string]json.RawMessage
+	if err := json.Unmarshal(body, &presence); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return nil, nil, false
+	}
+	for _, k := range []string{"objective", "scope", "acceptance_criteria", "deliverable_specs", "source_refs"} {
+		raw, ok := presence[k]
+		if !ok || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			writeError(w, http.StatusBadRequest, "bad_request", "必填字段缺失或为 null："+k+"（清空请显式传空数组）")
+			return nil, nil, false
+		}
+	}
+	return body, presence, true
+}
+
+// decodeMissionStrict 严格解码（DisallowUnknownFields；预算检查须在解码后
+// 单独做——实参求值序会先于解码读取指针）。
+func decodeMissionStrict(w http.ResponseWriter, body []byte, presence map[string]json.RawMessage, dst any) bool {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return false
+	}
+	return true
+}
+
+// missionBudgetPresentStrict budget 键在场时按界限校验（审校 P2#3：显式
+// 全零等无效预算 400 invalid_mission，不得当省略套默认——缺省只在键缺席
+// 时成立）。
+func missionBudgetPresentStrict(w http.ResponseWriter, presence map[string]json.RawMessage, budget *apigen.MissionBudget) bool {
+	if raw, present := presence["budget"]; present && budget != nil && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		if err := mission.ValidateBudget(mission.Budget{
+			Concurrency: budget.Concurrency, MaxRuns: budget.MaxRuns,
+			MaxWallClockSeconds: budget.MaxWallClockSeconds,
+			MaxRetries:          budget.MaxRetries, MaxDelegationDepth: budget.MaxDelegationDepth,
+		}); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_mission", err.Error())
+			return false
+		}
+	}
+	return true
 }
 
 func derefStr(s *string) string {

@@ -411,6 +411,10 @@ func validateLines(field string, lines []string, maxItems, maxLen int, allowBlan
 	return nil
 }
 
+// ValidateBudget 显式预算校验（导出供 HTTP 边界使用——审校 P2#3：请求体
+// 显式携带 budget 键时即使全零也按界限拒绝，不得当省略套默认）。
+func ValidateBudget(b Budget) error { return validateBudget(b) }
+
 // validateBudget 显式预算须五项齐备且在界限内（零值整体 = 缺省，不混并）。
 func validateBudget(b Budget) error {
 	if b.Concurrency < 1 || b.Concurrency > 8 {

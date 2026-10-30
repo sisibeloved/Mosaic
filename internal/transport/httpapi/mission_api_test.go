@@ -221,6 +221,99 @@ func TestMissionEndpoints(t *testing.T) {
 	}
 }
 
+// TestMissionRequiredFieldsAndBudget 半体修订与非法预算（审校 P2#3）：
+// 必填键缺失/null → 400 bad_request 且原契约不动；显式全零预算 → 400
+// invalid_mission（不得当省略套默认）。
+func TestMissionRequiredFieldsAndBudget(t *testing.T) {
+	ts := missionTestServer(t)
+
+	agentResp := postSlot(t, ts.URL+"/v1/identity/agents", `{"display_name":"负责人"}`)
+	var agDoc struct {
+		AgentID string `json:"agent_id"`
+	}
+	_ = json.NewDecoder(agentResp.Body).Decode(&agDoc)
+	agentResp.Body.Close()
+
+	// 基线：完整契约 v1（显式非默认预算）
+	resp := postSlot(t, ts.URL+"/v1/missions", `{
+		"objective":"o","scope":"s","owner_agent_id":"`+agDoc.AgentID+`",
+		"constraints":["c"],"acceptance_criteria":["a"],"deliverable_specs":["d"],
+		"source_refs":["r:1"],"return_targets":["room:x"],"reviewer":"rv",
+		"budget":{"concurrency":2,"max_runs":2,"max_wall_clock_seconds":600,"max_retries":0,"max_delegation_depth":0}}`)
+	var base struct {
+		MissionID string `json:"mission_id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&base)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("基线创建: %d", resp.StatusCode)
+	}
+
+	// 1) 修订缺必填键 → 400 bad_request
+	for name, body := range map[string]string{
+		"缺验收键":  `{"expected_version":1,"objective":"o2","scope":"s","deliverable_specs":["d"],"source_refs":["r:1"]}`,
+		"缺来源键":  `{"expected_version":1,"objective":"o2","scope":"s","acceptance_criteria":["a"],"deliverable_specs":["d"]}`,
+		"验收 null": `{"expected_version":1,"objective":"o2","scope":"s","acceptance_criteria":null,"deliverable_specs":["d"],"source_refs":["r:1"]}`,
+	} {
+		r := postSlot(t, ts.URL+"/v1/missions/"+base.MissionID+"/revise", body)
+		if r.StatusCode != http.StatusBadRequest || errCodeOf(t, r) != "bad_request" {
+			t.Fatalf("%s 应 400 bad_request: %d %s", name, r.StatusCode, errCodeOf(t, r))
+		}
+	}
+
+	// 2) 显式全零预算 → 400 invalid_mission（不得静默套默认）
+	r2 := postSlot(t, ts.URL+"/v1/missions/"+base.MissionID+"/revise",
+		`{"expected_version":1,"objective":"o2","scope":"s","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"],"budget":{"concurrency":0,"max_runs":0,"max_wall_clock_seconds":0,"max_retries":0,"max_delegation_depth":0}}`)
+	if r2.StatusCode != http.StatusBadRequest || errCodeOf(t, r2) != "invalid_mission" {
+		t.Fatalf("全零预算应 400 invalid_mission: %d %s", r2.StatusCode, errCodeOf(t, r2))
+	}
+	// 创建面同样
+	r3 := postSlot(t, ts.URL+"/v1/missions",
+		`{"objective":"o","scope":"s","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"],"budget":{"concurrency":0,"max_runs":0,"max_wall_clock_seconds":0,"max_retries":0,"max_delegation_depth":0}}`)
+	if r3.StatusCode != http.StatusBadRequest || errCodeOf(t, r3) != "invalid_mission" {
+		t.Fatalf("创建全零预算应 400: %d %s", r3.StatusCode, errCodeOf(t, r3))
+	}
+
+	// 3) 原契约未被半体/非法请求触碰：预算/约束/返回位/验收人保持
+	get, _ := http.Get(ts.URL + "/v1/missions/" + base.MissionID)
+	var doc struct {
+		ContractVersion int      `json:"contract_version"`
+		Constraints     []string `json:"constraints"`
+		ReturnTargets   []string `json:"return_targets"`
+		Reviewer        string   `json:"reviewer"`
+		Budget          struct {
+			Concurrency         int `json:"concurrency"`
+			MaxRuns             int `json:"max_runs"`
+			MaxWallClockSeconds int `json:"max_wall_clock_seconds"`
+		} `json:"budget"`
+	}
+	_ = json.NewDecoder(get.Body).Decode(&doc)
+	get.Body.Close()
+	if doc.ContractVersion != 1 || len(doc.Constraints) != 1 || len(doc.ReturnTargets) != 1 ||
+		doc.Reviewer != "rv" || doc.Budget.Concurrency != 2 || doc.Budget.MaxRuns != 2 || doc.Budget.MaxWallClockSeconds != 600 {
+		t.Fatalf("无效请求不得改动原契约: %+v", doc)
+	}
+
+	// 4) 合法显式预算修订 → 200 且预算按请求落（不被缺省覆盖）
+	r4 := postSlot(t, ts.URL+"/v1/missions/"+base.MissionID+"/revise",
+		`{"expected_version":1,"objective":"o2","scope":"s","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"],"constraints":["c"],"return_targets":["room:x"],"reviewer":"rv","budget":{"concurrency":1,"max_runs":3,"max_wall_clock_seconds":1200,"max_retries":0,"max_delegation_depth":0}}`)
+	if r4.StatusCode != http.StatusOK {
+		t.Fatalf("合法修订: %d", r4.StatusCode)
+	}
+	r4.Body.Close()
+	get2, _ := http.Get(ts.URL + "/v1/missions/" + base.MissionID)
+	var doc2 struct {
+		Budget struct {
+			MaxRuns int `json:"max_runs"`
+		} `json:"budget"`
+	}
+	_ = json.NewDecoder(get2.Body).Decode(&doc2)
+	get2.Body.Close()
+	if doc2.Budget.MaxRuns != 3 {
+		t.Fatalf("显式预算应按请求落: %+v", doc2.Budget)
+	}
+}
+
 // TestMissionConcurrentReviseAPI 并发修订恰一胜者（端点层，AT-13）。
 func TestMissionConcurrentReviseAPI(t *testing.T) {
 	ts := missionTestServer(t)
