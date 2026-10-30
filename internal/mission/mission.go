@@ -48,6 +48,9 @@ var (
 	ErrVersionConflict = errors.New("mission: 契约版本冲突")
 	// ErrInvalidTransition 终态拒修订/重复取消。
 	ErrInvalidTransition = errors.New("mission: 非法契约转移")
+	// ErrSourceAlreadyMapped 房间来源已被交办（ADR-0024：(room_id, task_id)
+	// 全局唯一映射——同一任务卡至多交办一次，撞键回显已映射 mission_id）。
+	ErrSourceAlreadyMapped = errors.New("mission: 房间来源已被交办")
 )
 
 // Budget 预算（§6.1：并发、总 Run 数、墙钟、重试与委派深度）——0.6.0 为
@@ -89,11 +92,12 @@ type Content struct {
 
 // Mission 契约投影行（schema: MissionView——内容字段经嵌入平铺）。
 type Mission struct {
-	MissionID       string `json:"mission_id"`
-	ContractVersion int    `json:"contract_version"`
-	Status          string `json:"status"`
-	OwnerAgentID    string `json:"owner_agent_id"` // 空 = 显式 unassigned（§3.3）
-	Requester       string `json:"requester"`
+	MissionID       string      `json:"mission_id"`
+	ContractVersion int         `json:"contract_version"`
+	Status          string      `json:"status"`
+	OwnerAgentID    string      `json:"owner_agent_id"` // 空 = 显式 unassigned（§3.3）
+	Requester       string      `json:"requester"`
+	RoomSource      *RoomSource `json:"room_source"` // 房间交办来源（非房间交办 null；创建事实）
 	Content
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
@@ -126,11 +130,28 @@ type AgentLookup interface {
 	AgentExists(ctx context.Context, agentID string) (bool, error)
 }
 
+// SourceLookup 房间域查询端口（ADR-0024 / 0.6.1）：房间任务卡存在性——
+// app 装配注入适配（EventReader 分页读全量事件 → room.TasksOf 纯函数重建）。
+type SourceLookup interface {
+	// RoomTaskExists 房间任务卡是否存在于当前投影。
+	RoomTaskExists(ctx context.Context, roomID, taskID string) (bool, error)
+}
+
+// RoomSource 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一
+// 映射——映射为创建事实，修订不可改（换来源 = 新交办）。
+type RoomSource struct {
+	RoomID string `json:"room_id"`
+	TaskID string `json:"task_id"`
+}
+
 // Store 持久化端口（SQLite 实现：internal/storage/sqlite；测试件：memstore）。
 // 一切写路径单事务 [校验→投影→版本行→事件]（BEGIN IMMEDIATE 全库约定）。
 type Store interface {
-	// Create 投影 v1 + 不可变版本行 + created 事件，单事务。
-	CreateMission(ctx context.Context, m Mission) (Mission, error)
+	// CreateMission 投影 v1 + 不可变版本行 + created 事件（+ 可选房间来源
+	// 映射），单事务；来源撞键 → ErrSourceAlreadyMapped（携已映射 mission_id）。
+	CreateMission(ctx context.Context, m Mission, src *RoomSource) (Mission, error)
+	// MissionIDBySource 来源映射查询；未映射 ok=false。
+	MissionIDBySource(ctx context.Context, roomID, taskID string) (string, bool, error)
 	// Revise CAS 修订：contract_version 匹配且非终态才落新版本行 + 投影更新
 	// + contract_revised（及完备性变化时 status_changed）事件，单事务；
 	// ok=false = 版本不匹配或已终态（服务方重读区分）。
@@ -150,10 +171,11 @@ type Store interface {
 
 // Service 契约服务：校验单源 + 完备性判定单源 + CAS 编排。
 type Service struct {
-	store         Store
-	now           func() string
-	newMissionID  func() string
-	agentLookup   AgentLookup // nil = owner 存在性校验不可用（创建/修订拒带 owner）
+	store        Store
+	now          func() string
+	newMissionID func() string
+	agentLookup  AgentLookup  // nil = owner 存在性校验不可用（创建/修订拒带 owner）
+	sourceLookup SourceLookup // nil = 房间来源校验不可用（创建拒带 room_source）
 }
 
 // Option 装配选项（测试注入确定性时钟/ID 生成器）。
@@ -167,6 +189,9 @@ func WithNewMissionID(f func() string) Option { return func(s *Service) { s.newM
 
 // WithAgentLookup 注入身份域查询端口。
 func WithAgentLookup(l AgentLookup) Option { return func(s *Service) { s.agentLookup = l } }
+
+// WithSourceLookup 注入房间域来源查询端口（ADR-0024 / 0.6.1）。
+func WithSourceLookup(l SourceLookup) Option { return func(s *Service) { s.sourceLookup = l } }
 
 // New 构造服务。
 func New(store Store, opts ...Option) *Service {
@@ -190,14 +215,20 @@ func newMissionID() string {
 	return "mi_" + strconv.FormatInt(time.Now().UnixMilli(), 36) + hex.EncodeToString(b[:])
 }
 
-// Create 建契约（= create_mission，§11.2）：校验 → owner 存在性 → 完备性
-// 判定（draft/ready）→ 投影 v1 + 版本行 + created 事件单事务。
-func (s *Service) Create(ctx context.Context, ownerAgentID string, c Content) (Mission, error) {
-	if err := validateContent(c); err != nil {
+// Create 建契约（= create_mission，§11.2）：校验 → owner/来源存在性 →
+// 完备性判定（draft/ready）→ 投影 v1 + 版本行 + created 事件（+ 可选来源
+// 映射）单事务。
+func (s *Service) Create(ctx context.Context, ownerAgentID string, c Content, src *RoomSource) (Mission, error) {
+	if err := ValidateContent(c); err != nil {
 		return Mission{}, err
 	}
 	if ownerAgentID != "" {
 		if err := s.checkOwner(ctx, ownerAgentID); err != nil {
+			return Mission{}, err
+		}
+	}
+	if src != nil {
+		if err := s.checkSource(ctx, src); err != nil {
 			return Mission{}, err
 		}
 	}
@@ -215,14 +246,41 @@ func (s *Service) Create(ctx context.Context, ownerAgentID string, c Content) (M
 	if statusOf(m) == StatusReady {
 		m.Status = StatusReady
 	}
-	return s.store.CreateMission(ctx, m)
+	out, err := s.store.CreateMission(ctx, m, src)
+	if err != nil {
+		return Mission{}, err
+	}
+	if src != nil {
+		roomSrc := *src
+		out.RoomSource = &roomSrc
+	}
+	return out, nil
+}
+
+// checkSource 房间来源校验（ADR-0024）：task_id 形如 tsk_*；房间任务卡须
+// 存在于当前投影（SourceLookup 未装配时带来源的请求不可用——宁拒不放行）。
+func (s *Service) checkSource(ctx context.Context, src *RoomSource) error {
+	if !taskIDPattern.MatchString(src.TaskID) || src.RoomID == "" || len(src.RoomID) > 64 {
+		return fmt.Errorf("%w: room_source 须为有效房间与 tsk_ 任务卡", ErrInvalidMission)
+	}
+	if s.sourceLookup == nil {
+		return fmt.Errorf("mission: 未装配 SourceLookup（房间来源校验不可用）")
+	}
+	ok, err := s.sourceLookup.RoomTaskExists(ctx, src.RoomID, src.TaskID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: 房间任务卡不存在（%s / %s）", ErrInvalidMission, src.RoomID, src.TaskID)
+	}
+	return nil
 }
 
 // Revise 修订契约（= revise_mission）：全量替换 + 版本追加；expected_version
 // CAS——败者 ErrVersionConflict（可见重试）；终态拒修订；完备性重判
 //（draft ↔ ready 双向，事件留痕）。
 func (s *Service) Revise(ctx context.Context, missionID string, expectedVersion int, ownerAgentID string, c Content) (Mission, error) {
-	if err := validateContent(c); err != nil {
+	if err := ValidateContent(c); err != nil {
 		return Mission{}, err
 	}
 	if ownerAgentID != "" {
@@ -292,6 +350,11 @@ func (s *Service) MissionEvents(ctx context.Context, missionID string) ([]Event,
 	return s.store.MissionEvents(ctx, missionID)
 }
 
+// SourceMapped 来源映射查询（dispatch 预检/复核用）；未映射 ok=false。
+func (s *Service) SourceMapped(ctx context.Context, roomID, taskID string) (string, bool, error) {
+	return s.store.MissionIDBySource(ctx, roomID, taskID)
+}
+
 // checkOwner owner 存在性（AgentLookup 未装配时带 owner 的请求不可用——
 // 宁拒不放行，避免无校验落库）。
 func (s *Service) checkOwner(ctx context.Context, agentID string) error {
@@ -340,7 +403,12 @@ func statusOf(m Mission) string {
 
 var (
 	sourceRefPattern = regexp.MustCompile(`^[A-Za-z0-9/_.:#@-]{1,128}$`)
+	taskIDPattern    = regexp.MustCompile(`^tsk_[0-9A-Za-z_-]+$`)
 )
+
+// ValidateContent 契约内容校验（导出供 dispatch 预检共用——ADR-0024：
+// 解析与创建同一校验单源）。
+func ValidateContent(c Content) error { return validateContent(c) }
 
 func validateContent(c Content) error {
 	if n := utf8.RuneCountInString(strings.TrimSpace(c.Objective)); n < 1 || n > 512 {

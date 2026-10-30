@@ -4,6 +4,7 @@ package mission
 // CAS 串行化、创建序摘要、事件 append-only）。
 
 import (
+	"fmt"
 	"context"
 	"encoding/json"
 	"strconv"
@@ -11,26 +12,47 @@ import (
 )
 
 type MemStore struct {
-	mu       sync.Mutex
-	missions []Mission          // 创建序投影
-	versions map[string][]Mission // 升序版本行
-	events   map[string][]Event
-	seq      int64
+	mu        sync.Mutex
+	missions  []Mission            // 创建序投影
+	versions  map[string][]Mission // 升序版本行
+	events    map[string][]Event
+	sources   map[[2]string]string // (room_id, task_id) → mission_id（ADR-0024 唯一映射）
+	bySource  map[string][2]string // mission_id → (room_id, task_id)
+	seq       int64
 }
 
 func NewMemStore() *MemStore {
-	return &MemStore{versions: map[string][]Mission{}, events: map[string][]Event{}}
+	return &MemStore{
+		versions: map[string][]Mission{}, events: map[string][]Event{},
+		sources: map[[2]string]string{}, bySource: map[string][2]string{},
+	}
 }
 
-func (m *MemStore) CreateMission(_ context.Context, ms Mission) (Mission, error) {
+func (m *MemStore) CreateMission(_ context.Context, ms Mission, src *RoomSource) (Mission, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if src != nil {
+		key := [2]string{src.RoomID, src.TaskID}
+		if ex, taken := m.sources[key]; taken {
+			return Mission{}, fmt.Errorf("%w: (%s, %s) 已映射 %s", ErrSourceAlreadyMapped, src.RoomID, src.TaskID, ex)
+		}
+		m.sources[key] = ms.MissionID
+		m.bySource[ms.MissionID] = key
+	}
 	m.missions = append(m.missions, ms)
 	m.versions[ms.MissionID] = append(m.versions[ms.MissionID], snapshot(ms))
 	m.appendEventLocked(ms.MissionID, EventCreated, map[string]string{
 		"contract_version": strconv.Itoa(ms.ContractVersion), "status": ms.Status,
 	}, ms.CreatedAt)
 	return ms, nil
+}
+
+// MissionIDBySource 来源映射查询；未映射 ok=false。
+func (m *MemStore) MissionIDBySource(_ context.Context, roomID, taskID string) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id, ok := m.sources[[2]string{roomID, taskID}]
+	return id, ok, nil
 }
 
 func (m *MemStore) ReviseMission(_ context.Context, missionID string, expectedVersion int, next Mission) (Mission, bool, error) {
@@ -88,7 +110,12 @@ func (m *MemStore) MissionByID(_ context.Context, missionID string) (Mission, bo
 	if !ok {
 		return Mission{}, false, nil
 	}
-	return m.missions[idx], true, nil
+	out := m.missions[idx]
+	if key, has := m.bySource[missionID]; has {
+		rs := RoomSource{RoomID: key[0], TaskID: key[1]}
+		out.RoomSource = &rs
+	}
+	return out, true, nil
 }
 
 func (m *MemStore) ListMissions(_ context.Context) ([]Summary, error) {
@@ -112,7 +139,14 @@ func (m *MemStore) MissionVersions(_ context.Context, missionID string) ([]Missi
 	if !ok {
 		return nil, false, nil
 	}
-	return append([]Mission(nil), vs...), true, nil
+	out := append([]Mission(nil), vs...)
+	if key, has := m.bySource[missionID]; has {
+		for i := range out {
+			rs := RoomSource{RoomID: key[0], TaskID: key[1]}
+			out[i].RoomSource = &rs
+		}
+	}
+	return out, true, nil
 }
 
 func (m *MemStore) MissionEvents(_ context.Context, missionID string) ([]Event, bool, error) {

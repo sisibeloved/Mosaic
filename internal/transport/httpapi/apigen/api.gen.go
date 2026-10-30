@@ -192,6 +192,21 @@ func (e DelegationPolicyAllowed) Valid() bool {
 	}
 }
 
+// Defines values for DispatchResolveRequestKind.
+const (
+	CreateMission DispatchResolveRequestKind = "create_mission"
+)
+
+// Valid indicates whether the value is a known member of the DispatchResolveRequestKind enum.
+func (e DispatchResolveRequestKind) Valid() bool {
+	switch e {
+	case CreateMission:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DocBlockType.
 const (
 	Code      DocBlockType = "code"
@@ -840,6 +855,39 @@ func (e RoomCommandCommandKind) Valid() bool {
 	case ResumeThread:
 		return true
 	case RunTask:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RouteDecisionViewSelectionSource.
+const (
+	RoomDefault RouteDecisionViewSelectionSource = "room_default"
+)
+
+// Valid indicates whether the value is a known member of the RouteDecisionViewSelectionSource enum.
+func (e RouteDecisionViewSelectionSource) Valid() bool {
+	switch e {
+	case RoomDefault:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RouteDecisionViewStatus.
+const (
+	RouteDecisionViewStatusBlocked  RouteDecisionViewStatus = "blocked"
+	RouteDecisionViewStatusResolved RouteDecisionViewStatus = "resolved"
+)
+
+// Valid indicates whether the value is a known member of the RouteDecisionViewStatus enum.
+func (e RouteDecisionViewStatus) Valid() bool {
+	switch e {
+	case RouteDecisionViewStatusBlocked:
+		return true
+	case RouteDecisionViewStatusResolved:
 		return true
 	default:
 		return false
@@ -1793,6 +1841,74 @@ type DevNote struct {
 	Type       string                 `json:"type"`
 }
 
+// DispatchReceiptView 投递回执（RFC-0018 §11.2.1 的 0.6.1 子集）：仅表示领域命令已提交
+// （domain_command_id = mission_id），后续执行状态经 Mission 查询——
+// 不得凭回执伪造 Run 成功或 Agent 承接。replayed=true 为幂等重放。
+type DispatchReceiptView struct {
+	// CallerRef 0.6.1 恒 owner（服务端推导）
+	CallerRef       string    `json:"caller_ref"`
+	CommittedAt     time.Time `json:"committed_at"`
+	DecisionVersion int       `json:"decision_version"`
+
+	// DomainCommandId 领域命令对象（0.6.1 = mission_id）
+	DomainCommandId string `json:"domain_command_id"`
+	IdempotencyKey  string `json:"idempotency_key"`
+
+	// ReceiptId dpr_ 前缀生成式
+	ReceiptId string `json:"receipt_id"`
+
+	// Replayed true = 幂等重放原回执（非新投递）
+	Replayed      bool   `json:"replayed"`
+	RequestDigest string `json:"request_digest"`
+
+	// RequestId 调用方请求标识（未提供为空串）
+	RequestId  string   `json:"request_id"`
+	ReturnRefs []string `json:"return_refs"`
+	RouteId    string   `json:"route_id"`
+
+	// Scope 0.6.1 恒 workspace
+	Scope      string   `json:"scope"`
+	TargetRefs []string `json:"target_refs"`
+}
+
+// DispatchRequest 投递请求——执行决策存档的请求（不重发内容）；幂等键 (caller_ref, scope, idempotency_key) 全局唯一。
+type DispatchRequest struct {
+	IdempotencyKey string `json:"idempotency_key"`
+
+	// RequestId 可选调用方请求标识（入回执，不作幂等键）
+	RequestId *string `json:"request_id,omitempty"`
+	RouteId   string  `json:"route_id"`
+}
+
+// DispatchResolveRequest 网关解析请求（RFC-0018 §11.2.1 RouteRequest 的 0.6.1 确定性子集 /
+// ADR-0024）：kind 当前仅 create_mission（房间交办）。caller_ref/scope
+// 由服务端从写门推导（owner/workspace），请求体不得自称。契约字段与
+// MissionCreate 同构——解析通过后由决策存档并作为投递输入。
+type DispatchResolveRequest struct {
+	AcceptanceCriteria []string `json:"acceptance_criteria"`
+
+	// Budget 预算（RFC-0018 §6.1：并发、总 Run 数、墙钟时长、重试与委派深度）——0.6.0 为契约声明事实，运行时强制随 0.6.5 Scheduler 落；缺省 {1, 32, 86400, 0, 0}（单 Agent、不重试、不委派起步）。
+	Budget      *MissionBudget `json:"budget,omitempty"`
+	Constraints *[]string      `json:"constraints,omitempty"`
+
+	// Delegation 委派策略；缺省语义 = 不允许委派（安全缺省）。
+	Delegation       *DelegationPolicy          `json:"delegation,omitempty"`
+	DeliverableSpecs []string                   `json:"deliverable_specs"`
+	Kind             DispatchResolveRequestKind `json:"kind"`
+	Objective        string                     `json:"objective"`
+	OwnerAgentId     *string                    `json:"owner_agent_id,omitempty"`
+	ReturnTargets    *[]string                  `json:"return_targets,omitempty"`
+	Reviewer         *string                    `json:"reviewer,omitempty"`
+
+	// RoomSource 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一映射——同一任务卡至多交办一次（撞键 409 source_already_mapped）；映射为创建事实，修订不可改（换来源 = 新交办）。
+	RoomSource RoomSource `json:"room_source"`
+	Scope      string     `json:"scope"`
+	SourceRefs []string   `json:"source_refs"`
+}
+
+// DispatchResolveRequestKind defines model for DispatchResolveRequest.Kind.
+type DispatchResolveRequestKind string
+
 // DocBlock 块模型（RFC-0014 §2.2；RFC-0016 增补元数据）：level 仅 heading（1..6，缺省导出按 2）、lang 仅 code（≤48 runes）；text 自带标记（# 前缀/fence）导出透传优先——存量数据零迁移。
 type DocBlock struct {
 	// BlockId 稳定块 ID（锚定操作/冲突重放/卡片摘要的基础）
@@ -2395,7 +2511,7 @@ type MissionCancel struct {
 	Reason *string `json:"reason,omitempty"`
 }
 
-// MissionCreate 创建 Mission 契约请求体。
+// MissionCreate 创建 Mission 契约请求体。room_source 为房间交办来源（0.6.1 / ADR-0024）：房间与任务卡须存在、(room_id, task_id) 全局唯一——撞键 409 source_already_mapped；修订不可改来源。
 type MissionCreate struct {
 	AcceptanceCriteria []string `json:"acceptance_criteria"`
 
@@ -2412,8 +2528,11 @@ type MissionCreate struct {
 	OwnerAgentId  *string   `json:"owner_agent_id,omitempty"`
 	ReturnTargets *[]string `json:"return_targets,omitempty"`
 	Reviewer      *string   `json:"reviewer,omitempty"`
-	Scope         string    `json:"scope"`
-	SourceRefs    []string  `json:"source_refs"`
+
+	// RoomSource 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一映射——同一任务卡至多交办一次（撞键 409 source_already_mapped）；映射为创建事实，修订不可改（换来源 = 新交办）。
+	RoomSource *RoomSource `json:"room_source,omitempty"`
+	Scope      string      `json:"scope"`
+	SourceRefs []string    `json:"source_refs"`
 }
 
 // MissionEvent mission_events 流事件（migration v13；seq 升序即流序）。
@@ -2468,10 +2587,11 @@ type MissionSummary struct {
 // MissionSummaryStatus defines model for MissionSummary.Status.
 type MissionSummaryStatus string
 
-// MissionView Mission 契约（ADR-0023 / 0.6.0）。status：draft（契约不完备——
-// 验收/来源/交付物缺失或 unassigned）/ ready（完备可受领，执行随
-// 0.6.5）/ canceled（唯一终态）。requester 当前恒本地 owner（多入口
-// 请求方随网关/委派扩展）。
+// MissionView Mission 契约（ADR-0023 / 0.6.0 + ADR-0024 房间来源 / 0.6.1）。
+// status：draft（契约不完备——验收/来源/交付物缺失或 unassigned）/
+// ready（完备可受领，执行随 0.6.5）/ canceled（唯一终态）。requester
+// 当前恒本地 owner（多入口请求方随网关/委派扩展）。room_source 为
+// 房间交办来源（无来源为 null；创建事实不可修订）。
 type MissionView struct {
 	AcceptanceCriteria []string `json:"acceptance_criteria"`
 
@@ -2499,7 +2619,10 @@ type MissionView struct {
 	ReturnTargets []string `json:"return_targets"`
 
 	// Reviewer 验收人（空 = 请求人自验）
-	Reviewer   string            `json:"reviewer"`
+	Reviewer string `json:"reviewer"`
+
+	// RoomSource 房间交办来源（非房间交办为 null）
+	RoomSource *RoomSource       `json:"room_source,omitempty"`
 	Scope      string            `json:"scope"`
 	SourceRefs []string          `json:"source_refs"`
 	Status     MissionViewStatus `json:"status"`
@@ -2674,6 +2797,12 @@ type RoomList struct {
 	Rooms []RoomSummary `json:"rooms"`
 }
 
+// RoomSource 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一映射——同一任务卡至多交办一次（撞键 409 source_already_mapped）；映射为创建事实，修订不可改（换来源 = 新交办）。
+type RoomSource struct {
+	RoomId string `json:"room_id"`
+	TaskId string `json:"task_id"`
+}
+
 // RoomSummary defines model for RoomSummary.
 type RoomSummary struct {
 	// Agents roster 投影摘要（room.created.agents 物化快照 + participant.admitted 链；旧房间历史推导；缺省 = 旧版全席房间）——侧栏私聊/群聊分型依据（单元素即私聊房）
@@ -2693,6 +2822,40 @@ type RoomSummary struct {
 	Paused bool   `json:"paused"`
 	RoomId string `json:"room_id"`
 }
+
+// RouteDecisionView 路由决策（RFC-0018 §11.2.1 的 0.6.1 子集）：resolved 仅表示目标与
+// 预检通过（不表示执行）；blocked 携可理解原因与可恢复动作。决策
+// 10 分钟内可投递，过期/目标变化重新解析。
+type RouteDecisionView struct {
+	// DecisionVersion 0.6.1 恒 1（重解析版本随续接域引入）
+	DecisionVersion int       `json:"decision_version"`
+	ExpiresAt       time.Time `json:"expires_at"`
+
+	// ReasonCode blocked 原因：room_not_found / task_not_found / source_already_mapped / agent_not_found / invalid_mission；resolved 为空串
+	ReasonCode string `json:"reason_code"`
+
+	// ReasonSummary 可理解说明（含已映射 mission_id 等恢复信息）
+	ReasonSummary string `json:"reason_summary"`
+
+	// RequestDigest 解析请求规范化 JSON 的 SHA-256（十六进制）
+	RequestDigest string `json:"request_digest"`
+
+	// RouteId rd_ 前缀生成式
+	RouteId string `json:"route_id"`
+
+	// SelectionSource 0.6.1 仅房间缺省路径（语义/续接随后续版本）
+	SelectionSource RouteDecisionViewSelectionSource `json:"selection_source"`
+	Status          RouteDecisionViewStatus          `json:"status"`
+
+	// TargetRefs 目标引用（room:任务卡 → Mission）
+	TargetRefs []string `json:"target_refs"`
+}
+
+// RouteDecisionViewSelectionSource 0.6.1 仅房间缺省路径（语义/续接随后续版本）
+type RouteDecisionViewSelectionSource string
+
+// RouteDecisionViewStatus defines model for RouteDecisionView.Status.
+type RouteDecisionViewStatus string
 
 // RunView 任务执行视图（M4-1）：status ∈ requested | running | completed | failed | canceled | unknown；迟到审计（late）不改终态。
 type RunView struct {
@@ -3421,6 +3584,11 @@ type UnsupportedMediaType = Error
 // GetHealthz200JSONResponseBodyStatus defines parameters for GetHealthz.
 type GetHealthz200JSONResponseBodyStatus string
 
+// GetDispatchReceiptParams defines parameters for GetDispatchReceipt.
+type GetDispatchReceiptParams struct {
+	IdempotencyKey string `form:"idempotency_key" json:"idempotency_key"`
+}
+
 // ListDocsParams defines parameters for ListDocs.
 type ListDocsParams struct {
 	// CreatedBy 创建者筛选（participant_id；缺省 = 全部）
@@ -3558,6 +3726,12 @@ type RequestRestoreJSONBody struct {
 // RequestRestoreJSONBodyConfirm defines parameters for RequestRestore.
 type RequestRestoreJSONBodyConfirm bool
 
+// DispatchRequestJSONRequestBody defines body for DispatchRequest for application/json ContentType.
+type DispatchRequestJSONRequestBody = DispatchRequest
+
+// ResolveDispatchJSONRequestBody defines body for ResolveDispatch for application/json ContentType.
+type ResolveDispatchJSONRequestBody = DispatchResolveRequest
+
 // CreateDocJSONRequestBody defines body for CreateDoc for application/json ContentType.
 type CreateDocJSONRequestBody = DocCommand
 
@@ -3653,6 +3827,15 @@ type ServerInterface interface {
 	// ListAgents 当前在席 Agent 座位（建房选择的候选集）+ 已发现未启用项
 	// (GET /v1/agents)
 	ListAgents(w http.ResponseWriter, r *http.Request)
+	// DispatchRequest 网关投递（复核 + 幂等 + 建契约 + 回执）
+	// (POST /v1/dispatch/dispatch)
+	DispatchRequest(w http.ResponseWriter, r *http.Request)
+	// GetDispatchReceipt 按幂等键查投递回执
+	// (GET /v1/dispatch/receipts)
+	GetDispatchReceipt(w http.ResponseWriter, r *http.Request, params GetDispatchReceiptParams)
+	// ResolveDispatch 网关解析（只预检不创建；0.6.1 / ADR-0024 首切片）
+	// (POST /v1/dispatch/resolve)
+	ResolveDispatch(w http.ResponseWriter, r *http.Request)
 	// ListDocs 文档列表（RFC-0014 §2.8 文档主页）
 	// (GET /v1/docs)
 	ListDocs(w http.ResponseWriter, r *http.Request, params ListDocsParams)
@@ -3953,6 +4136,67 @@ func (siw *ServerInterfaceWrapper) ListAgents(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListAgents(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DispatchRequest operation middleware
+func (siw *ServerInterfaceWrapper) DispatchRequest(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DispatchRequest(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetDispatchReceipt operation middleware
+func (siw *ServerInterfaceWrapper) GetDispatchReceipt(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetDispatchReceiptParams
+
+	// ------------- Required query parameter "idempotency_key" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "idempotency_key", r.URL.Query(), &params.IdempotencyKey, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "idempotency_key"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "idempotency_key", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetDispatchReceipt(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResolveDispatch operation middleware
+func (siw *ServerInterfaceWrapper) ResolveDispatch(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResolveDispatch(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -6406,6 +6650,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/cancel", wrapper.CancelMission)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/versions", wrapper.ListMissionVersions)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/events", wrapper.ListMissionEvents)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/dispatch/resolve", wrapper.ResolveDispatch)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/dispatch/dispatch", wrapper.DispatchRequest)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/dispatch/receipts", wrapper.GetDispatchReceipt)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/enable", wrapper.EnableHarnessExecutable)

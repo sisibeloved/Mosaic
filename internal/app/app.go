@@ -40,6 +40,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/extdocs"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
+	"github.com/sisibeloved/Mosaic/internal/dispatch"
 	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/room"
@@ -300,8 +301,17 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		slot.WithReadiness(slot.NewGrantReadinessChecker(store)))
 	// Mission 契约域（RFC-0018 §6.1 / ADR-0023，0.6.0）：独立事实源 + CAS 修订。
 	// owner 存在性经 AgentLookup 端口（AgentByID——任意生命周期可指派）。
+	roomTasks := roomTaskLookup{reader: store}
 	missionSvc := mission.New(store, mission.WithNow(clock),
-		mission.WithAgentLookup(missionAgentLookup{identitySvc}))
+		mission.WithAgentLookup(missionAgentLookup{identitySvc}),
+		mission.WithSourceLookup(roomTasks))
+	// 网关首切片（ADR-0024 / 0.6.1）：确定性解析 → 复核投递 → 回执；
+	// caller/scope 服务端推导（owner/workspace），幂等键库级唯一。
+	dispatchSvc := dispatch.New(store, missionSvc, dispatch.Lookups{
+		Agents:  missionAgentLookup{identitySvc},
+		Sources: roomTasks,
+		Mapped:  missionSvc.SourceMapped,
+	}, dispatch.WithNow(clock))
 	scanDone := make(chan struct{})
 	go func() {
 		defer close(scanDone)
@@ -351,6 +361,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Identity:         identitySvc,
 		Slots:            slotSvc,
 		Missions:         missionSvc,
+		Dispatch:         dispatchSvc,
 		Logger:           logger,
 		Dev:              opts.Dev,
 		Budget:           budgetLimits,
@@ -768,6 +779,29 @@ func countRooms(store *sqlite.Store) (int, error) {
 		return 0, err
 	}
 	return len(rooms), nil
+}
+
+// roomTaskLookup mission.SourceLookup 的房间域适配（ADR-0024 / 0.6.1）：
+// EventReader 分页读全量事件 → room.TasksOf 纯函数重建任务清单 → 存在性。
+type roomTaskLookup struct{ reader room.EventReader }
+
+func (l roomTaskLookup) RoomTaskExists(ctx context.Context, roomID, taskID string) (bool, error) {
+	cursor := ""
+	for {
+		events, next, err := l.reader.EventsAfter(ctx, roomID, cursor, 500)
+		if err != nil {
+			return false, err
+		}
+		for _, t := range room.TasksOf(events) {
+			if t.TaskID == taskID {
+				return true, nil
+			}
+		}
+		if next == "" {
+			return false, nil
+		}
+		cursor = next
+	}
 }
 
 // missionAgentLookup mission.AgentLookup 的身份域适配（owner 存在性）。

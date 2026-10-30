@@ -17,13 +17,14 @@ import (
 	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/contextx"
+	"github.com/sisibeloved/Mosaic/internal/dispatch"
 	"github.com/sisibeloved/Mosaic/internal/doc"
 	"github.com/sisibeloved/Mosaic/internal/extdocs"
+	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
-	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/slot"
 
 	_ "modernc.org/sqlite"
@@ -335,6 +336,50 @@ CREATE TABLE IF NOT EXISTS mission_events (
 );
 CREATE INDEX IF NOT EXISTS idx_mission_events_mission ON mission_events(mission_id, seq);
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (13, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+
+-- v14（RFC-0018 §4.4–4.8/§6.1/§11.2 / ADR-0024，0.6.1）：房间交办与网关
+-- 首切片。mission_sources 为 (room_id, task_id) → mission_id 唯一映射
+--（同一任务卡至多交办一次；映射为创建事实）；dispatch_decisions 存路由
+-- 决策（含请求全文——投递以存档为准）；dispatch_receipts 为投递回执，
+-- (caller_ref, scope, idempotency_key) 唯一约束兜底幂等（同键重放/异载荷
+-- 拒绝；并发孪生恰一胜者）。
+CREATE TABLE IF NOT EXISTS mission_sources (
+  room_id    TEXT NOT NULL,
+  task_id    TEXT NOT NULL,
+  mission_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (room_id, task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mission_sources_mission ON mission_sources(mission_id);
+CREATE TABLE IF NOT EXISTS dispatch_decisions (
+  route_id         TEXT PRIMARY KEY,
+  decision_version INTEGER NOT NULL,
+  request_digest   TEXT NOT NULL,
+  status           TEXT NOT NULL,
+  selection_source TEXT NOT NULL,
+  reason_code      TEXT NOT NULL DEFAULT '',
+  reason_summary   TEXT NOT NULL DEFAULT '',
+  target_refs      TEXT NOT NULL DEFAULT '[]',
+  request          TEXT NOT NULL,
+  expires_at       TEXT NOT NULL,
+  created_at       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS dispatch_receipts (
+  receipt_id       TEXT PRIMARY KEY,
+  caller_ref       TEXT NOT NULL,
+  scope            TEXT NOT NULL,
+  idempotency_key  TEXT NOT NULL,
+  request_id       TEXT NOT NULL DEFAULT '',
+  request_digest   TEXT NOT NULL,
+  route_id         TEXT NOT NULL,
+  decision_version INTEGER NOT NULL,
+  domain_command_id TEXT NOT NULL,
+  target_refs      TEXT NOT NULL DEFAULT '[]',
+  return_refs      TEXT NOT NULL DEFAULT '[]',
+  committed_at     TEXT NOT NULL,
+  UNIQUE (caller_ref, scope, idempotency_key)
+);
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (14, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 `
 
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
@@ -2444,32 +2489,6 @@ INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES
 	return nil
 }
 
-// Create 投影 v1 + 不可变版本行 + created 事件，单事务。
-func (s *Store) CreateMission(ctx context.Context, m mission.Mission) (mission.Mission, error) {
-	raw, err := json.Marshal(m.Content)
-	if err != nil {
-		return mission.Mission{}, fmt.Errorf("sqlite: mission content marshal: %w", err)
-	}
-	err = s.identityWriteTx(ctx, func(q identityExec) error {
-		if _, err := q.ExecContext(ctx, `
-INSERT INTO missions (`+missionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			m.MissionID, m.ContractVersion, m.Status, m.OwnerAgentID, m.Requester,
-			m.Objective, string(raw), m.CreatedAt, m.UpdatedAt); err != nil {
-			return fmt.Errorf("sqlite: create mission: %w", err)
-		}
-		if err := insertMissionVersion(ctx, q, m, string(raw)); err != nil {
-			return err
-		}
-		return appendMissionEvent(ctx, q, m.MissionID, mission.EventCreated, map[string]string{
-			"contract_version": strconv.Itoa(m.ContractVersion), "status": m.Status,
-		}, m.CreatedAt)
-	})
-	if err != nil {
-		return mission.Mission{}, err
-	}
-	return m, nil
-}
-
 func insertMissionVersion(ctx context.Context, q identityExec, m mission.Mission, content string) error {
 	if _, err := q.ExecContext(ctx, `
 INSERT INTO mission_contract_versions (mission_id, version, status, owner_agent_id, requester, content, created_at)
@@ -2582,6 +2601,79 @@ func (s *Store) CancelMission(ctx context.Context, missionID string, expectedVer
 	return got, true, nil
 }
 
+// CreateMission 投影 v1 + 版本行 + created 事件（+ 可选来源映射），单事务；
+// 来源撞键 → ErrSourceAlreadyMapped（携已映射 mission_id——先查后插同临界
+// 区，并发交办串行化恰一胜者）。
+func (s *Store) CreateMission(ctx context.Context, m mission.Mission, src *mission.RoomSource) (mission.Mission, error) {
+	raw, err := json.Marshal(m.Content)
+	if err != nil {
+		return mission.Mission{}, fmt.Errorf("sqlite: mission content marshal: %w", err)
+	}
+	err = s.identityWriteTx(ctx, func(q identityExec) error {
+		if src != nil {
+			var existing string
+			err := q.QueryRowContext(ctx,
+				`SELECT mission_id FROM mission_sources WHERE room_id = ? AND task_id = ?`, src.RoomID, src.TaskID).Scan(&existing)
+			if err == nil {
+				return fmt.Errorf("%w: (%s, %s) 已映射 %s", mission.ErrSourceAlreadyMapped, src.RoomID, src.TaskID, existing)
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("sqlite: source probe: %w", err)
+			}
+			if _, err := q.ExecContext(ctx,
+				`INSERT INTO mission_sources (room_id, task_id, mission_id, created_at) VALUES (?, ?, ?, ?)`,
+				src.RoomID, src.TaskID, m.MissionID, m.CreatedAt); err != nil {
+				return fmt.Errorf("sqlite: insert mission source: %w", err)
+			}
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO missions (`+missionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.MissionID, m.ContractVersion, m.Status, m.OwnerAgentID, m.Requester,
+			m.Objective, string(raw), m.CreatedAt, m.UpdatedAt); err != nil {
+			return fmt.Errorf("sqlite: create mission: %w", err)
+		}
+		if err := insertMissionVersion(ctx, q, m, string(raw)); err != nil {
+			return err
+		}
+		return appendMissionEvent(ctx, q, m.MissionID, mission.EventCreated, map[string]string{
+			"contract_version": strconv.Itoa(m.ContractVersion), "status": m.Status,
+		}, m.CreatedAt)
+	})
+	if err != nil {
+		return mission.Mission{}, err
+	}
+	if src != nil {
+		rs := *src
+		m.RoomSource = &rs
+	}
+	return m, nil
+}
+
+// MissionIDBySource 来源映射查询；未映射 ok=false。
+func (s *Store) MissionIDBySource(ctx context.Context, roomID, taskID string) (string, bool, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT mission_id FROM mission_sources WHERE room_id = ? AND task_id = ?`, roomID, taskID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("sqlite: mission by source: %w", err)
+	}
+	return id, true, nil
+}
+
+// sourceOf 来源回填（详情与版本行共用）。
+func (s *Store) sourceOf(ctx context.Context, missionID string) *mission.RoomSource {
+	var roomID, taskID string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT room_id, task_id FROM mission_sources WHERE mission_id = ?`, missionID).Scan(&roomID, &taskID)
+	if err != nil {
+		return nil
+	}
+	return &mission.RoomSource{RoomID: roomID, TaskID: taskID}
+}
+
 // MissionByID 单查契约；未知 ok=false。
 func (s *Store) MissionByID(ctx context.Context, missionID string) (mission.Mission, bool, error) {
 	m, err := scanMission(s.db.QueryRowContext(ctx,
@@ -2592,6 +2684,7 @@ func (s *Store) MissionByID(ctx context.Context, missionID string) (mission.Miss
 	if err != nil {
 		return mission.Mission{}, false, fmt.Errorf("sqlite: mission by id: %w", err)
 	}
+	m.RoomSource = s.sourceOf(ctx, missionID)
 	return m, true, nil
 }
 
@@ -2645,7 +2738,163 @@ SELECT mission_id, version, status, owner_agent_id, requester, content, created_
 	if len(out) == 0 {
 		return nil, false, nil
 	}
+	if rs := s.sourceOf(ctx, missionID); rs != nil {
+		for i := range out {
+			out[i].RoomSource = rs
+		}
+	}
 	return out, true, nil
+}
+
+// ---- 网关首切片域（RFC-0018 §11.2/§11.2.1 / ADR-0024，0.6.1；v14 表）----
+
+// SaveDecision 决策落库。
+func (s *Store) SaveDecision(ctx context.Context, d dispatch.Decision) error {
+	targets, err := json.Marshal(d.TargetRefs)
+	if err != nil {
+		return fmt.Errorf("sqlite: decision targets marshal: %w", err)
+	}
+	req, err := json.Marshal(d.Request)
+	if err != nil {
+		return fmt.Errorf("sqlite: decision request marshal: %w", err)
+	}
+	return s.identityWriteTx(ctx, func(q identityExec) error {
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO dispatch_decisions (route_id, decision_version, request_digest, status, selection_source, reason_code, reason_summary, target_refs, request, expires_at, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			d.RouteID, d.DecisionVersion, d.RequestDigest, d.Status, d.SelectionSource,
+			d.ReasonCode, d.ReasonSummary, string(targets), string(req), d.ExpiresAt, d.CreatedAt); err != nil {
+			return fmt.Errorf("sqlite: save decision: %w", err)
+		}
+		return nil
+	})
+}
+
+// DecisionByID 单查决策；未知 ok=false。
+func (s *Store) DecisionByID(ctx context.Context, routeID string) (dispatch.Decision, bool, error) {
+	var d dispatch.Decision
+	var targets, req string
+	err := s.db.QueryRowContext(ctx, `
+SELECT route_id, decision_version, request_digest, status, selection_source, reason_code, reason_summary, target_refs, request, expires_at, created_at
+  FROM dispatch_decisions WHERE route_id = ?`, routeID).
+		Scan(&d.RouteID, &d.DecisionVersion, &d.RequestDigest, &d.Status, &d.SelectionSource,
+			&d.ReasonCode, &d.ReasonSummary, &targets, &req, &d.ExpiresAt, &d.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return dispatch.Decision{}, false, nil
+	}
+	if err != nil {
+		return dispatch.Decision{}, false, fmt.Errorf("sqlite: decision by id: %w", err)
+	}
+	if err := json.Unmarshal([]byte(targets), &d.TargetRefs); err != nil {
+		return dispatch.Decision{}, false, fmt.Errorf("sqlite: decision targets unmarshal: %w", err)
+	}
+	if err := json.Unmarshal([]byte(req), &d.Request); err != nil {
+		return dispatch.Decision{}, false, fmt.Errorf("sqlite: decision request unmarshal: %w", err)
+	}
+	return d, true, nil
+}
+
+// SaveReceipt 回执落库；撞 (caller, scope, key) 唯一约束 → 已存回执与
+// conflict=true（BEGIN IMMEDIATE 临界区内先查后插——并发孪生恰一胜者）。
+func (s *Store) SaveReceipt(ctx context.Context, r dispatch.Receipt) (dispatch.Receipt, bool, error) {
+	targets, err := json.Marshal(r.TargetRefs)
+	if err != nil {
+		return dispatch.Receipt{}, false, fmt.Errorf("sqlite: receipt targets marshal: %w", err)
+	}
+	returns, err := json.Marshal(r.ReturnRefs)
+	if err != nil {
+		return dispatch.Receipt{}, false, fmt.Errorf("sqlite: receipt returns marshal: %w", err)
+	}
+	conflict := false
+	var existing dispatch.Receipt
+	err = s.identityWriteTx(ctx, func(q identityExec) error {
+		// 事务内读取经同一事务连接——不得再借池连接（池上限 4 × 持连接
+		// 等写锁 = 死锁，busy_timeout 才解开；并发孪生 IT 实证）
+		row := q.QueryRowContext(ctx, `
+SELECT receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, committed_at
+  FROM dispatch_receipts WHERE caller_ref = ? AND scope = ? AND idempotency_key = ?`,
+			r.CallerRef, r.Scope, r.IdempotencyKey)
+		ex, found, err := scanReceipt(row)
+		if err != nil {
+			return fmt.Errorf("sqlite: receipt probe: %w", err)
+		}
+		if found {
+			existing = ex
+			conflict = true
+			return nil
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO dispatch_receipts (receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, committed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ReceiptID, r.CallerRef, r.Scope, r.IdempotencyKey, r.RequestID, r.RequestDigest,
+			r.RouteID, r.DecisionVersion, r.DomainCommandID, string(targets), string(returns), r.CommittedAt); err != nil {
+			return fmt.Errorf("sqlite: save receipt: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return dispatch.Receipt{}, false, err
+	}
+	return existing, conflict, nil
+}
+
+// scanReceipt 单行回执扫描（池连接与事务连接共用；ErrNoRows → found=false）。
+func scanReceipt(row interface{ Scan(...any) error }) (dispatch.Receipt, bool, error) {
+	var r dispatch.Receipt
+	var targets, returns string
+	err := row.Scan(&r.ReceiptID, &r.CallerRef, &r.Scope, &r.IdempotencyKey, &r.RequestID, &r.RequestDigest,
+		&r.RouteID, &r.DecisionVersion, &r.DomainCommandID, &targets, &returns, &r.CommittedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return dispatch.Receipt{}, false, nil
+	}
+	if err != nil {
+		return dispatch.Receipt{}, false, err
+	}
+	if err := json.Unmarshal([]byte(targets), &r.TargetRefs); err != nil {
+		return dispatch.Receipt{}, false, fmt.Errorf("sqlite: receipt targets unmarshal: %w", err)
+	}
+	if err := json.Unmarshal([]byte(returns), &r.ReturnRefs); err != nil {
+		return dispatch.Receipt{}, false, fmt.Errorf("sqlite: receipt returns unmarshal: %w", err)
+	}
+	return r, true, nil
+}
+
+// ReceiptByKey 幂等键查回执；未投递 ok=false。
+func (s *Store) ReceiptByKey(ctx context.Context, callerRef, scope, key string) (dispatch.Receipt, bool, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT receipt_id FROM dispatch_receipts WHERE caller_ref = ? AND scope = ? AND idempotency_key = ?`,
+		callerRef, scope, key).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return dispatch.Receipt{}, false, nil
+	}
+	if err != nil {
+		return dispatch.Receipt{}, false, fmt.Errorf("sqlite: receipt by key: %w", err)
+	}
+	return s.receiptByID(ctx, id)
+}
+
+func (s *Store) receiptByID(ctx context.Context, receiptID string) (dispatch.Receipt, bool, error) {
+	var r dispatch.Receipt
+	var targets, returns string
+	err := s.db.QueryRowContext(ctx, `
+SELECT receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, committed_at
+  FROM dispatch_receipts WHERE receipt_id = ?`, receiptID).
+		Scan(&r.ReceiptID, &r.CallerRef, &r.Scope, &r.IdempotencyKey, &r.RequestID, &r.RequestDigest,
+			&r.RouteID, &r.DecisionVersion, &r.DomainCommandID, &targets, &returns, &r.CommittedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return dispatch.Receipt{}, false, nil
+	}
+	if err != nil {
+		return dispatch.Receipt{}, false, fmt.Errorf("sqlite: receipt by id: %w", err)
+	}
+	if err := json.Unmarshal([]byte(targets), &r.TargetRefs); err != nil {
+		return dispatch.Receipt{}, false, fmt.Errorf("sqlite: receipt targets unmarshal: %w", err)
+	}
+	if err := json.Unmarshal([]byte(returns), &r.ReturnRefs); err != nil {
+		return dispatch.Receipt{}, false, fmt.Errorf("sqlite: receipt returns unmarshal: %w", err)
+	}
+	return r, true, nil
 }
 
 // Events 事件流（seq 升序）；未知 ok=false。

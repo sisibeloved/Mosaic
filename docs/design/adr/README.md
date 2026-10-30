@@ -31,3 +31,4 @@ ADR 记录**实现与工具选型**级决策。三层文档分工：架构级约
 | [ADR-0021](ADR-0021-binding-lifecycle.md) | Binding 任职状态机与交接（0.5.4）：preparing/ready/active/draining/released/blocked、单 active 部分唯一索引、固定模板版本、Readiness/Drain 双端口预埋（0.5.5/0.6 挂靠）、交接位 handoff_note | Accepted |
 | [ADR-0022](ADR-0022-readiness-admission.md) | 职责准入（0.5.5）：AgentGrant 授权档案、EvaluateReadiness 交集单源（必需缺失 blocked / 选配降级 / workspace 格栅）、ReadinessChecker 实装、试算与 blocked 重试端点（AT-07） | Accepted |
 | [ADR-0023](ADR-0023-mission-contract.md) | MissionContract 独立事实源（0.6.0）：不可变契约版本行 + CAS 修订（version_conflict）、契约状态子集 draft/ready/canceled（完备性判定单源）、budget/delegation 安全缺省、/missions 任务中心首屏；Dispatch 排布裁定（首切片随 0.6.1） | Accepted |
+| [ADR-0024](ADR-0024-room-dispatch-first-slice.md) | 房间交办与 Dispatch 首切片（0.6.1）：room_source 结构化来源 + (room_id, task_id) 唯一映射（409 冲突可见）；resolve/dispatch/回执两段式 + (caller_ref, scope, idempotency_key) 幂等约束；决策存档请求为投递输入；确定性路径 only | Accepted |

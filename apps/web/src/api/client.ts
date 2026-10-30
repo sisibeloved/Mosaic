@@ -537,6 +537,27 @@ export const api = {
   putSlotGrant(agentID: string, req: AgentGrantPut): Promise<AgentGrantView> {
     return request(`/v1/slots/grants/${encodeURIComponent(agentID)}`, { method: "PUT", body: JSON.stringify(req) });
   },
+  /** 0.6.1 网关解析（只预检不创建；blocked 也是 200 决策）。 */
+  resolveDispatch(req: {
+    kind: "create_mission";
+    room_source: { room_id: string; task_id: string };
+    owner_agent_id?: string;
+    objective: string;
+    scope: string;
+    acceptance_criteria: string[];
+    deliverable_specs: string[];
+    source_refs: string[];
+  }): Promise<import("./schema.gen").components["schemas"]["RouteDecisionView"]> {
+    return post("/v1/dispatch/resolve", req);
+  },
+  /** 0.6.1 网关投递（复核 + 幂等 + 建契约 + 回执）。 */
+  dispatchRequest(routeID: string, idempotencyKey: string, requestID?: string): Promise<import("./schema.gen").components["schemas"]["DispatchReceiptView"]> {
+    return post("/v1/dispatch/dispatch", { route_id: routeID, idempotency_key: idempotencyKey, ...(requestID ? { request_id: requestID } : {}) });
+  },
+  /** 0.6.1 按幂等键查投递回执。 */
+  getDispatchReceipt(idempotencyKey: string): Promise<import("./schema.gen").components["schemas"]["DispatchReceiptView"]> {
+    return request(`/v1/dispatch/receipts?idempotency_key=${encodeURIComponent(idempotencyKey)}`);
+  },
   /** 0.6.0 Mission 契约列表（创建序摘要）。 */
   listMissions(): Promise<{ missions: MissionSummary[] }> {
     return request("/v1/missions");

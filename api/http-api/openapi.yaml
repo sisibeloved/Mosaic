@@ -2357,6 +2357,114 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /v1/dispatch/resolve:
+    post:
+      operationId: resolveDispatch
+      summary: 网关解析（只预检不创建；0.6.1 / ADR-0024 首切片）
+      description: |
+        确定性解析（RFC-0018 §4.4/§11.2.1 的 0.6.1 子集）：房间/任务卡存在、
+        (room_id, task_id) 映射未被占、owner（若指定）存在、契约内容合法 →
+        resolved；任一不满足 → blocked（reason_code 指明）。恒 200——blocked
+        是决策不是错误。决策落库（rd_，expires_at = 解析 +10 分钟）；投递执行
+        决策存档的请求，不采信客户端重发内容。caller_ref/scope 由服务端推导。
+      security: [{ OwnerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DispatchResolveRequest" }
+      responses:
+        "200":
+          description: 路由决策（resolved / blocked）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RouteDecisionView" }
+        "400":
+          description: 请求不合法（invalid_request——结构/枚举/必填）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: 网关域未装配（dispatch_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/dispatch/dispatch:
+    post:
+      operationId: dispatchRequest
+      summary: 网关投递（复核 + 幂等 + 建契约 + 回执）
+      description: |
+        复核决策（未过期且当前状态仍满足预检——目标变化 409 route_stale 重新
+        解析）→ 幂等检查（同键同摘要 200 重放原回执；同键异摘要 409
+        idempotency_conflict）→ 执行 mission 创建（含来源映射）→ 回执落库
+        （(caller_ref, scope, idempotency_key) 唯一）。回执仅表示领域命令已
+        提交，执行状态经 Mission 查询；重试不得变成新派单。
+      security: [{ OwnerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DispatchRequest" }
+      responses:
+        "200":
+          description: 投递回执（首投或幂等重放）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DispatchReceiptView" }
+        "400":
+          description: 请求不合法（invalid_request）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: 决策不存在（route_not_found）或 owner 不存在（agent_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 决策过期/目标变化（route_stale）、同键异载荷（idempotency_conflict）或来源已被交办（source_already_mapped）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: 网关域未装配（dispatch_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/dispatch/receipts:
+    get:
+      operationId: getDispatchReceipt
+      summary: 按幂等键查投递回执
+      description: |
+        重放原投递结果与领域对象引用。404 receipt_not_found 不等于领域动作
+        一定未发生（崩溃窗口语义见 ADR-0024）。
+      parameters:
+        - name: idempotency_key
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        "200":
+          description: 回执
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DispatchReceiptView" }
+        "404":
+          description: 回执不存在（receipt_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: 网关域未装配（dispatch_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/harness/executables:
     get:
       operationId: listHarnessExecutables
@@ -4161,6 +4269,101 @@ components:
           items: { type: string }
           description: 选配降级项（不阻塞）
         effective_workspace_access: { type: string, enum: [none, read, read_write] }
+    RoomSource:
+      type: object
+      required: [room_id, task_id]
+      additionalProperties: false
+      description: 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一映射——同一任务卡至多交办一次（撞键 409 source_already_mapped）；映射为创建事实，修订不可改（换来源 = 新交办）。
+      properties:
+        room_id: { type: string, minLength: 1, maxLength: 64 }
+        task_id: { type: string, pattern: "^tsk_[0-9A-Za-z_-]+$" }
+    DispatchResolveRequest:
+      type: object
+      required: [kind, room_source, objective, scope, acceptance_criteria, deliverable_specs, source_refs]
+      additionalProperties: false
+      description: |
+        网关解析请求（RFC-0018 §11.2.1 RouteRequest 的 0.6.1 确定性子集 /
+        ADR-0024）：kind 当前仅 create_mission（房间交办）。caller_ref/scope
+        由服务端从写门推导（owner/workspace），请求体不得自称。契约字段与
+        MissionCreate 同构——解析通过后由决策存档并作为投递输入。
+      properties:
+        kind: { type: string, enum: [create_mission] }
+        room_source: { $ref: "#/components/schemas/RoomSource" }
+        owner_agent_id: { type: string, pattern: "^ag_[0-9A-Za-z_-]+$" }
+        objective: { type: string, minLength: 1, maxLength: 512 }
+        scope: { type: string, minLength: 1, maxLength: 512 }
+        constraints:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 256 }
+        acceptance_criteria:
+          type: array
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 256 }
+        deliverable_specs:
+          type: array
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 256 }
+        source_refs:
+          type: array
+          maxItems: 16
+          items: { type: string, pattern: "^[A-Za-z0-9/_.:#@-]{1,128}$" }
+        return_targets:
+          type: array
+          maxItems: 8
+          items: { type: string, maxLength: 128 }
+        budget: { $ref: "#/components/schemas/MissionBudget" }
+        delegation: { $ref: "#/components/schemas/DelegationPolicy" }
+        reviewer: { type: string, maxLength: 64 }
+    RouteDecisionView:
+      type: object
+      required: [route_id, decision_version, request_digest, status, selection_source, reason_code, reason_summary, target_refs, expires_at]
+      description: |
+        路由决策（RFC-0018 §11.2.1 的 0.6.1 子集）：resolved 仅表示目标与
+        预检通过（不表示执行）；blocked 携可理解原因与可恢复动作。决策
+        10 分钟内可投递，过期/目标变化重新解析。
+      properties:
+        route_id: { type: string, description: "rd_ 前缀生成式" }
+        decision_version: { type: integer, minimum: 1, description: 0.6.1 恒 1（重解析版本随续接域引入） }
+        request_digest: { type: string, description: 解析请求规范化 JSON 的 SHA-256（十六进制） }
+        status: { type: string, enum: [resolved, blocked] }
+        selection_source: { type: string, enum: [room_default], description: 0.6.1 仅房间缺省路径（语义/续接随后续版本） }
+        reason_code:
+          type: string
+          description: "blocked 原因：room_not_found / task_not_found / source_already_mapped / agent_not_found / invalid_mission；resolved 为空串"
+        reason_summary: { type: string, description: 可理解说明（含已映射 mission_id 等恢复信息） }
+        target_refs: { type: array, items: { type: string }, description: 目标引用（room:任务卡 → Mission） }
+        expires_at: { type: string, format: date-time }
+    DispatchRequest:
+      type: object
+      required: [route_id, idempotency_key]
+      additionalProperties: false
+      description: 投递请求——执行决策存档的请求（不重发内容）；幂等键 (caller_ref, scope, idempotency_key) 全局唯一。
+      properties:
+        route_id: { type: string, pattern: "^rd_[0-9A-Za-z_-]+$" }
+        idempotency_key: { type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$" }
+        request_id: { type: string, maxLength: 128, description: 可选调用方请求标识（入回执，不作幂等键） }
+    DispatchReceiptView:
+      type: object
+      required: [receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, committed_at, replayed]
+      description: |
+        投递回执（RFC-0018 §11.2.1 的 0.6.1 子集）：仅表示领域命令已提交
+        （domain_command_id = mission_id），后续执行状态经 Mission 查询——
+        不得凭回执伪造 Run 成功或 Agent 承接。replayed=true 为幂等重放。
+      properties:
+        receipt_id: { type: string, description: "dpr_ 前缀生成式" }
+        caller_ref: { type: string, description: 0.6.1 恒 owner（服务端推导） }
+        scope: { type: string, description: 0.6.1 恒 workspace }
+        idempotency_key: { type: string }
+        request_id: { type: string, description: 调用方请求标识（未提供为空串） }
+        request_digest: { type: string }
+        route_id: { type: string }
+        decision_version: { type: integer }
+        domain_command_id: { type: string, description: 领域命令对象（0.6.1 = mission_id） }
+        target_refs: { type: array, items: { type: string } }
+        return_refs: { type: array, items: { type: string } }
+        committed_at: { type: string, format: date-time }
+        replayed: { type: boolean, description: true = 幂等重放原回执（非新投递） }
     MissionBudget:
       type: object
       required: [concurrency, max_runs, max_wall_clock_seconds, max_retries, max_delegation_depth]
@@ -4216,8 +4419,9 @@ components:
       type: object
       required: [objective, scope, acceptance_criteria, deliverable_specs, source_refs]
       additionalProperties: false
-      description: 创建 Mission 契约请求体。
+      description: 创建 Mission 契约请求体。room_source 为房间交办来源（0.6.1 / ADR-0024）：房间与任务卡须存在、(room_id, task_id) 全局唯一——撞键 409 source_already_mapped；修订不可改来源。
       properties:
+        room_source: { $ref: "#/components/schemas/RoomSource" }
         owner_agent_id: { type: string, pattern: "^ag_[0-9A-Za-z_-]+$", description: 负责人（缺省 unassigned——完备性未过停 draft） }
         objective: { type: string, minLength: 1, maxLength: 512 }
         scope: { type: string, minLength: 1, maxLength: 512 }
@@ -4289,12 +4493,17 @@ components:
       type: object
       required: [mission_id, contract_version, status, owner_agent_id, requester, reviewer, objective, scope, constraints, acceptance_criteria, deliverable_specs, source_refs, return_targets, budget, delegation, created_at, updated_at]
       description: |
-        Mission 契约（ADR-0023 / 0.6.0）。status：draft（契约不完备——
-        验收/来源/交付物缺失或 unassigned）/ ready（完备可受领，执行随
-        0.6.5）/ canceled（唯一终态）。requester 当前恒本地 owner（多入口
-        请求方随网关/委派扩展）。
+        Mission 契约（ADR-0023 / 0.6.0 + ADR-0024 房间来源 / 0.6.1）。
+        status：draft（契约不完备——验收/来源/交付物缺失或 unassigned）/
+        ready（完备可受领，执行随 0.6.5）/ canceled（唯一终态）。requester
+        当前恒本地 owner（多入口请求方随网关/委派扩展）。room_source 为
+        房间交办来源（无来源为 null；创建事实不可修订）。
       properties:
         mission_id: { type: string, description: "mi_ 前缀生成式" }
+        room_source:
+          nullable: true
+          allOf: [{ $ref: "#/components/schemas/RoomSource" }]
+          description: 房间交办来源（非房间交办为 null）
         contract_version: { type: integer, minimum: 1, description: 当前契约版本（修订 +1） }
         status: { type: string, enum: [draft, ready, canceled] }
         owner_agent_id: { type: string, description: 负责人（空 = 显式 unassigned，§3.3 不变量） }

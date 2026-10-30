@@ -2,6 +2,7 @@
 // draft）、列表、详情（当前契约 + 版本历史 + 事件流）、修订（CAS 冲突可见）、
 // 取消。请求序号守卫与错误态纪律沿用 0.5 系列教训。
 import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   api,
   ApiError,
@@ -26,9 +27,13 @@ export function MissionsPage() {
   const [listErr, setListErr] = useState<string | null>(null);
   const [agents, setAgents] = useState<{ agent_id: string; display_name: string }[]>([]);
   const [formOpen, setFormOpen] = useState(false);
-  const [form, setForm] = useState({
-    objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "", owner: "", reviewer: "",
-  });
+  const [searchParams] = useSearchParams();
+  const [form, setForm] = useState(() => ({
+    objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "",
+    owner: "", reviewer: "",
+    // 交办入口预填（任务卡「交办」跳转 ?room=&task=——ADR-0024 / 0.6.1）
+    room: searchParams.get("room") ?? "", task: searchParams.get("task") ?? "",
+  }));
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [budget, setBudget] = useState({ concurrency: "1", max_runs: "32", max_wall_clock_seconds: "86400", max_retries: "0", max_delegation_depth: "0" });
   const [busy, setBusy] = useState(false);
@@ -76,6 +81,9 @@ export function MissionsPage() {
       const m = await api.createMission({
         objective: form.objective.trim(),
         scope: form.scope.trim(),
+        ...(form.room.trim() && form.task.trim()
+          ? { room_source: { room_id: form.room.trim(), task_id: form.task.trim() } }
+          : {}),
         ...(form.owner ? { owner_agent_id: form.owner } : {}),
         acceptance_criteria: splitLines(form.acceptance),
         deliverable_specs: splitLines(form.deliverables),
@@ -86,7 +94,7 @@ export function MissionsPage() {
       });
       setSelected(m.mission_id);
       setFormOpen(false);
-      setForm({ objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "", owner: "", reviewer: "" });
+      setForm({ objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "", owner: "", reviewer: "", room: "", task: "" });
     });
   };
 
@@ -163,6 +171,26 @@ export function MissionsPage() {
                 value={form.returns}
                 onChange={(e) => setForm({ ...form, returns: e.target.value })}
                 rows={2}
+                className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
+              />
+            </label>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className="flex flex-col gap-1 text-xs">
+              <span className="text-faint">房间来源 room_id（可空——填写后与任务卡唯一映射，同卡不可重复交办）</span>
+              <input
+                value={form.room}
+                onChange={(e) => setForm({ ...form, room: e.target.value })}
+                placeholder="如 rm_xxx"
+                className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs">
+              <span className="text-faint">任务卡 task_id（tsk_ 前缀，可空）</span>
+              <input
+                value={form.task}
+                onChange={(e) => setForm({ ...form, task: e.target.value })}
+                placeholder="如 tsk_xxx"
                 className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
               />
             </label>
@@ -354,6 +382,11 @@ function MissionDetail({
         <span className="rounded bg-surface-3 px-1.5 py-px text-[10px] text-dim">v{detail.contract_version}</span>
         <span className="text-faint">
           负责人：{detail.owner_agent_id || "unassigned"} · 验收人：{detail.reviewer || "请求人自验"}
+          {detail.room_source && (
+            <span className="ml-1 rounded bg-surface-3 px-1.5 py-px font-mono text-[10px]" title="房间交办来源（创建事实，不可修订）">
+              {detail.room_source.room_id}/{detail.room_source.task_id}
+            </span>
+          )}
         </span>
       </div>
       <p className="text-sm">{detail.objective}</p>

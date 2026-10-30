@@ -1468,6 +1468,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/dispatch/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 网关解析（只预检不创建；0.6.1 / ADR-0024 首切片）
+         * @description 确定性解析（RFC-0018 §4.4/§11.2.1 的 0.6.1 子集）：房间/任务卡存在、
+         *     (room_id, task_id) 映射未被占、owner（若指定）存在、契约内容合法 →
+         *     resolved；任一不满足 → blocked（reason_code 指明）。恒 200——blocked
+         *     是决策不是错误。决策落库（rd_，expires_at = 解析 +10 分钟）；投递执行
+         *     决策存档的请求，不采信客户端重发内容。caller_ref/scope 由服务端推导。
+         */
+        post: operations["resolveDispatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/dispatch/dispatch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 网关投递（复核 + 幂等 + 建契约 + 回执）
+         * @description 复核决策（未过期且当前状态仍满足预检——目标变化 409 route_stale 重新
+         *     解析）→ 幂等检查（同键同摘要 200 重放原回执；同键异摘要 409
+         *     idempotency_conflict）→ 执行 mission 创建（含来源映射）→ 回执落库
+         *     （(caller_ref, scope, idempotency_key) 唯一）。回执仅表示领域命令已
+         *     提交，执行状态经 Mission 查询；重试不得变成新派单。
+         */
+        post: operations["dispatchRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/dispatch/receipts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 按幂等键查投递回执
+         * @description 重放原投递结果与领域对象引用。404 receipt_not_found 不等于领域动作
+         *     一定未发生（崩溃窗口语义见 ADR-0024）。
+         */
+        get: operations["getDispatchReceipt"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/harness/executables": {
         parameters: {
             query?: never;
@@ -2868,6 +2937,95 @@ export interface components {
             /** @enum {string} */
             effective_workspace_access: "none" | "read" | "read_write";
         };
+        /** @description 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一映射——同一任务卡至多交办一次（撞键 409 source_already_mapped）；映射为创建事实，修订不可改（换来源 = 新交办）。 */
+        RoomSource: {
+            room_id: string;
+            task_id: string;
+        };
+        /**
+         * @description 网关解析请求（RFC-0018 §11.2.1 RouteRequest 的 0.6.1 确定性子集 /
+         *     ADR-0024）：kind 当前仅 create_mission（房间交办）。caller_ref/scope
+         *     由服务端从写门推导（owner/workspace），请求体不得自称。契约字段与
+         *     MissionCreate 同构——解析通过后由决策存档并作为投递输入。
+         */
+        DispatchResolveRequest: {
+            /** @enum {string} */
+            kind: "create_mission";
+            room_source: components["schemas"]["RoomSource"];
+            owner_agent_id?: string;
+            objective: string;
+            scope: string;
+            constraints?: string[];
+            acceptance_criteria: string[];
+            deliverable_specs: string[];
+            source_refs: string[];
+            return_targets?: string[];
+            budget?: components["schemas"]["MissionBudget"];
+            delegation?: components["schemas"]["DelegationPolicy"];
+            reviewer?: string;
+        };
+        /**
+         * @description 路由决策（RFC-0018 §11.2.1 的 0.6.1 子集）：resolved 仅表示目标与
+         *     预检通过（不表示执行）；blocked 携可理解原因与可恢复动作。决策
+         *     10 分钟内可投递，过期/目标变化重新解析。
+         */
+        RouteDecisionView: {
+            /** @description rd_ 前缀生成式 */
+            route_id: string;
+            /** @description 0.6.1 恒 1（重解析版本随续接域引入） */
+            decision_version: number;
+            /** @description 解析请求规范化 JSON 的 SHA-256（十六进制） */
+            request_digest: string;
+            /** @enum {string} */
+            status: "resolved" | "blocked";
+            /**
+             * @description 0.6.1 仅房间缺省路径（语义/续接随后续版本）
+             * @enum {string}
+             */
+            selection_source: "room_default";
+            /** @description blocked 原因：room_not_found / task_not_found / source_already_mapped / agent_not_found / invalid_mission；resolved 为空串 */
+            reason_code: string;
+            /** @description 可理解说明（含已映射 mission_id 等恢复信息） */
+            reason_summary: string;
+            /** @description 目标引用（room:任务卡 → Mission） */
+            target_refs: string[];
+            /** Format: date-time */
+            expires_at: string;
+        };
+        /** @description 投递请求——执行决策存档的请求（不重发内容）；幂等键 (caller_ref, scope, idempotency_key) 全局唯一。 */
+        DispatchRequest: {
+            route_id: string;
+            idempotency_key: string;
+            /** @description 可选调用方请求标识（入回执，不作幂等键） */
+            request_id?: string;
+        };
+        /**
+         * @description 投递回执（RFC-0018 §11.2.1 的 0.6.1 子集）：仅表示领域命令已提交
+         *     （domain_command_id = mission_id），后续执行状态经 Mission 查询——
+         *     不得凭回执伪造 Run 成功或 Agent 承接。replayed=true 为幂等重放。
+         */
+        DispatchReceiptView: {
+            /** @description dpr_ 前缀生成式 */
+            receipt_id: string;
+            /** @description 0.6.1 恒 owner（服务端推导） */
+            caller_ref: string;
+            /** @description 0.6.1 恒 workspace */
+            scope: string;
+            idempotency_key: string;
+            /** @description 调用方请求标识（未提供为空串） */
+            request_id: string;
+            request_digest: string;
+            route_id: string;
+            decision_version: number;
+            /** @description 领域命令对象（0.6.1 = mission_id） */
+            domain_command_id: string;
+            target_refs: string[];
+            return_refs: string[];
+            /** Format: date-time */
+            committed_at: string;
+            /** @description true = 幂等重放原回执（非新投递） */
+            replayed: boolean;
+        };
         /** @description 预算（RFC-0018 §6.1：并发、总 Run 数、墙钟时长、重试与委派深度）——0.6.0 为契约声明事实，运行时强制随 0.6.5 Scheduler 落；缺省 {1, 32, 86400, 0, 0}（单 Agent、不重试、不委派起步）。 */
         MissionBudget: {
             concurrency: number;
@@ -2903,8 +3061,9 @@ export interface components {
             /** @description 验收人；空 = 请求人（本地 owner）自验——负责人自述不算验收（§6.1） */
             reviewer?: string;
         };
-        /** @description 创建 Mission 契约请求体。 */
+        /** @description 创建 Mission 契约请求体。room_source 为房间交办来源（0.6.1 / ADR-0024）：房间与任务卡须存在、(room_id, task_id) 全局唯一——撞键 409 source_already_mapped；修订不可改来源。 */
         MissionCreate: {
+            room_source?: components["schemas"]["RoomSource"];
             /** @description 负责人（缺省 unassigned——完备性未过停 draft） */
             owner_agent_id?: string;
             objective: string;
@@ -2941,14 +3100,17 @@ export interface components {
             reason?: string;
         };
         /**
-         * @description Mission 契约（ADR-0023 / 0.6.0）。status：draft（契约不完备——
-         *     验收/来源/交付物缺失或 unassigned）/ ready（完备可受领，执行随
-         *     0.6.5）/ canceled（唯一终态）。requester 当前恒本地 owner（多入口
-         *     请求方随网关/委派扩展）。
+         * @description Mission 契约（ADR-0023 / 0.6.0 + ADR-0024 房间来源 / 0.6.1）。
+         *     status：draft（契约不完备——验收/来源/交付物缺失或 unassigned）/
+         *     ready（完备可受领，执行随 0.6.5）/ canceled（唯一终态）。requester
+         *     当前恒本地 owner（多入口请求方随网关/委派扩展）。room_source 为
+         *     房间交办来源（无来源为 null；创建事实不可修订）。
          */
         MissionView: {
             /** @description mi_ 前缀生成式 */
             mission_id: string;
+            /** @description 房间交办来源（非房间交办为 null） */
+            room_source?: components["schemas"]["RoomSource"] | null;
             /** @description 当前契约版本（修订 +1） */
             contract_version: number;
             /** @enum {string} */
@@ -6456,6 +6618,154 @@ export interface operations {
                 };
             };
             /** @description Mission 域未装配（mission_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    resolveDispatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchResolveRequest"];
+            };
+        };
+        responses: {
+            /** @description 路由决策（resolved / blocked） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RouteDecisionView"];
+                };
+            };
+            /** @description 请求不合法（invalid_request——结构/枚举/必填） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 网关域未装配（dispatch_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    dispatchRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchRequest"];
+            };
+        };
+        responses: {
+            /** @description 投递回执（首投或幂等重放） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DispatchReceiptView"];
+                };
+            };
+            /** @description 请求不合法（invalid_request） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 决策不存在（route_not_found）或 owner 不存在（agent_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 决策过期/目标变化（route_stale）、同键异载荷（idempotency_conflict）或来源已被交办（source_already_mapped） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 网关域未装配（dispatch_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getDispatchReceipt: {
+        parameters: {
+            query: {
+                idempotency_key: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 回执 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DispatchReceiptView"];
+                };
+            };
+            /** @description 回执不存在（receipt_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 网关域未装配（dispatch_unavailable） */
             503: {
                 headers: {
                     [name: string]: unknown;

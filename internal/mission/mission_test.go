@@ -50,7 +50,7 @@ func TestCreateCompletenessTwoStates(t *testing.T) {
 	svc, _ := newSvc(t, fakeAgents{ids: map[string]bool{"ag_a": true}})
 	ctx := context.Background()
 
-	m, err := svc.Create(ctx, "ag_a", fullContent())
+	m, err := svc.Create(ctx, "ag_a", fullContent(), nil)
 	if err != nil || m.Status != StatusReady || m.ContractVersion != 1 {
 		t.Fatalf("完备契约应 ready v1: %+v %v", m, err)
 	}
@@ -65,13 +65,13 @@ func TestCreateCompletenessTwoStates(t *testing.T) {
 	} {
 		c := fullContent()
 		mutate(&c)
-		m2, err := svc.Create(ctx, "ag_a", c)
+		m2, err := svc.Create(ctx, "ag_a", c, nil)
 		if err != nil || m2.Status != StatusDraft {
 			t.Fatalf("%s 应 draft: %+v %v", name, m2, err)
 		}
 	}
 	// unassigned（owner 空串）→ draft
-	m2, err := svc.Create(ctx, "", fullContent())
+	m2, err := svc.Create(ctx, "", fullContent(), nil)
 	if err != nil || m2.Status != StatusDraft {
 		t.Fatalf("unassigned 应 draft: %+v %v", m2, err)
 	}
@@ -94,7 +94,7 @@ func TestCreateValidation(t *testing.T) {
 	} {
 		c := fullContent()
 		mutate(&c)
-		if _, err := svc.Create(ctx, "ag_a", c); !errors.Is(err, ErrInvalidMission) {
+		if _, err := svc.Create(ctx, "ag_a", c, nil); !errors.Is(err, ErrInvalidMission) {
 			t.Errorf("%s 应 ErrInvalidMission，得到 %v", name, err)
 		}
 	}
@@ -103,19 +103,19 @@ func TestCreateValidation(t *testing.T) {
 	c := fullContent()
 	c.Budget = Budget{Concurrency: 2, MaxRuns: 64, MaxWallClockSeconds: 7200, MaxRetries: 1, MaxDelegationDepth: 1}
 	c.Delegation = DelegationPolicy{Allowed: []string{"existing_agent"}, MaxDepth: 1}
-	if _, err := svc.Create(ctx, "ag_a", c); err != nil {
+	if _, err := svc.Create(ctx, "ag_a", c, nil); err != nil {
 		t.Fatalf("合法预算/委派应通过: %v", err)
 	}
 
 	// 未知 owner / 未装配 lookup
-	if _, err := svc.Create(ctx, "ag_none", fullContent()); !errors.Is(err, ErrAgentNotFound) {
+	if _, err := svc.Create(ctx, "ag_none", fullContent(), nil); !errors.Is(err, ErrAgentNotFound) {
 		t.Errorf("未知 owner 应 ErrAgentNotFound: %v", err)
 	}
 	bare := New(NewMemStore(), WithNow(fixedNow))
-	if _, err := bare.Create(ctx, "ag_a", fullContent()); err == nil || !strings.Contains(err.Error(), "AgentLookup") {
+	if _, err := bare.Create(ctx, "ag_a", fullContent(), nil); err == nil || !strings.Contains(err.Error(), "AgentLookup") {
 		t.Errorf("未装配 lookup 带 owner 应拒绝: %v", err)
 	}
-	if _, err := bare.Create(ctx, "", fullContent()); err != nil {
+	if _, err := bare.Create(ctx, "", fullContent(), nil); err != nil {
 		t.Errorf("未装配 lookup 无 owner 应可用（draft）: %v", err)
 	}
 }
@@ -123,7 +123,7 @@ func TestCreateValidation(t *testing.T) {
 // TestDefaultNormalize 缺省填充：预算零值 → 安全缺省；空切片 → []。
 func TestDefaultNormalize(t *testing.T) {
 	svc, _ := newSvc(t, fakeAgents{ids: map[string]bool{"ag_a": true}})
-	m, err := svc.Create(context.Background(), "ag_a", fullContent())
+	m, err := svc.Create(context.Background(), "ag_a", fullContent(), nil)
 	if err != nil {
 		t.Fatalf("建契约: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestDefaultNormalize(t *testing.T) {
 func TestReviseCAS(t *testing.T) {
 	svc, _ := newSvc(t, fakeAgents{ids: map[string]bool{"ag_a": true}})
 	ctx := context.Background()
-	m, _ := svc.Create(ctx, "ag_a", fullContent())
+	m, _ := svc.Create(ctx, "ag_a", fullContent(), nil)
 
 	var wg sync.WaitGroup
 	var wins, conflicts atomic.Int64
@@ -178,7 +178,7 @@ func TestReviseCAS(t *testing.T) {
 func TestReviseCompletenessTransition(t *testing.T) {
 	svc, _ := newSvc(t, fakeAgents{ids: map[string]bool{"ag_a": true}})
 	ctx := context.Background()
-	m, err := svc.Create(ctx, "", fullContent()) // unassigned → draft
+	m, err := svc.Create(ctx, "", fullContent(), nil) // unassigned → draft
 	if err != nil || m.Status != StatusDraft {
 		t.Fatalf("unassigned 应 draft: %+v %v", m, err)
 	}
@@ -208,7 +208,7 @@ func TestReviseCompletenessTransition(t *testing.T) {
 func TestCancelTerminal(t *testing.T) {
 	svc, _ := newSvc(t, fakeAgents{ids: map[string]bool{"ag_a": true}})
 	ctx := context.Background()
-	m, _ := svc.Create(ctx, "ag_a", fullContent())
+	m, _ := svc.Create(ctx, "ag_a", fullContent(), nil)
 
 	if _, err := svc.Cancel(ctx, m.MissionID, 9, ""); !errors.Is(err, ErrVersionConflict) {
 		t.Fatalf("错误版本应冲突: %v", err)
@@ -238,7 +238,7 @@ func TestCancelTerminal(t *testing.T) {
 func TestVersionsAndEvents(t *testing.T) {
 	svc, _ := newSvc(t, fakeAgents{ids: map[string]bool{"ag_a": true}})
 	ctx := context.Background()
-	m, _ := svc.Create(ctx, "", fullContent())
+	m, _ := svc.Create(ctx, "", fullContent(), nil)
 	c2 := fullContent()
 	c2.Objective = "v2"
 	svc.Revise(ctx, m.MissionID, 1, "ag_a", c2) // draft → ready

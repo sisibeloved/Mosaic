@@ -48,7 +48,7 @@ func TestMissionStoreIT(t *testing.T) {
 		t.Fatalf("migration v13 未登记: %d", v13)
 	}
 
-	m, err := store.CreateMission(ctx, missionRow(mission.StatusReady, "ag_it"))
+	m, err := store.CreateMission(ctx, missionRow(mission.StatusReady, "ag_it"), nil)
 	if err != nil || m.Status != mission.StatusReady {
 		t.Fatalf("建契约: %+v %v", m, err)
 	}
@@ -109,7 +109,7 @@ func TestMissionConcurrentReviseIT(t *testing.T) {
 	store, _ := openTempStore(t)
 	defer store.Close()
 	ctx := context.Background()
-	m, err := store.CreateMission(ctx, missionRow(mission.StatusReady, "ag_it"))
+	m, err := store.CreateMission(ctx, missionRow(mission.StatusReady, "ag_it"), nil)
 	if err != nil {
 		t.Fatalf("建契约: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestMissionLegacyUpgradeIT(t *testing.T) {
 	}
 	defer upgraded.Close()
 	ctx := context.Background()
-	if _, err := upgraded.CreateMission(ctx, missionRow(mission.StatusDraft, "")); err != nil {
+	if _, err := upgraded.CreateMission(ctx, missionRow(mission.StatusDraft, ""), nil); err != nil {
 		t.Fatalf("升级后建契约: %v", err)
 	}
 	var v13 int

@@ -249,6 +249,7 @@ export function RoomPanel({
               runs={runs}
               participants={participants}
               busyTaskID={taskBusy}
+              roomID={roomID ?? ""}
               onResolve={onResolveTask}
               onRun={onRun}
               onCancelRun={onCancelRun}

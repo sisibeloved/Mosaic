@@ -5,6 +5,7 @@
 // 围栏块，v1.49），完成有两条路：agent 申报 [x] 自动结案、人类裁定；已收束
 // = 全量替换后未再申报（自动）或人工移除。provenance：点任务定位申报消息。
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import type { ParticipantView } from "../../api/client";
 import type { RunItem, TaskItem } from "../../api/room";
 import { copyText } from "../../lib/clipboard";
@@ -126,12 +127,15 @@ export function TasksTab({
   runs,
   participants,
   busyTaskID,
+  roomID,
   onResolve,
   onRun,
   onCancelRun,
   onJumpToEvent,
 }: {
   tasks: TaskItem[];
+  /** 房间 ID（交办为 Mission 跳转预填——ADR-0024 / 0.6.1）。 */
+  roomID: string;
   /** M4-1 任务执行通道：task_id 关联的 run 状态（执行按钮/状态 chip）。 */
   runs: RunItem[];
   participants: ParticipantView[];
@@ -143,6 +147,7 @@ export function TasksTab({
   onCancelRun: (runID: string, reason: string) => void;
   onJumpToEvent: (eventID: string) => void;
 }) {
+  const navigate = useNavigate();
   const pending = tasks.filter((t) => t.status === "pending");
   // M4-1 切片 B：取消在途执行——理由 1..280 留痕（事件载荷可追溯）
   const [canceling, setCanceling] = useState<RunItem | null>(null);
@@ -218,15 +223,25 @@ export function TasksTab({
                             取消
                           </button>
                         ) : (
-                          <button
-                            type="button"
-                            disabled={busyTaskID === t.task_id}
-                            onClick={() => onRun(t.task_id, t.owner, t.text)}
-                            title="发起独立任务执行（run_task）——负责人在专用通道执行并把结果发回房间"
-                            className="rounded-lg bg-accent-soft px-2.5 py-1 text-[11px] text-accent transition-opacity hover:opacity-85 disabled:opacity-40"
-                          >
-                            执行
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              disabled={busyTaskID === t.task_id}
+                              onClick={() => onRun(t.task_id, t.owner, t.text)}
+                              title="发起独立任务执行（run_task）——负责人在专用通道执行并把结果发回房间"
+                              className="rounded-lg bg-accent-soft px-2.5 py-1 text-[11px] text-accent transition-opacity hover:opacity-85 disabled:opacity-40"
+                            >
+                              执行
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => navigate(`/missions?room=${encodeURIComponent(roomID)}&task=${encodeURIComponent(t.task_id)}`)}
+                              title="交办为 Mission（带版本契约；来源 (room_id, task_id) 唯一映射——ADR-0024）"
+                              className="rounded-lg px-2.5 py-1 text-[11px] text-dim transition-colors hover:bg-surface-2 hover:text-text"
+                            >
+                              交办
+                            </button>
+                          </>
                         )}
                         {canceling && canceling.run_id === latest?.run_id && (
                           <span className="flex w-full items-center gap-1.5">

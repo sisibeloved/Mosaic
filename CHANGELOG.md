@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增房间交办与 Dispatch 首切片（0.6.1，0.6 Mission 与本地执行领域第二件；负责人指令 2026-10-30："开始0.6.1"；ADR-0024）：Mission 与房间任务卡建立可审计关联，网关两段式骨架定型。**房间来源唯一映射**（migration v14 `mission_sources`）：MissionCreate 增可选结构化 `room_source {room_id, task_id}`——房间与任务卡经 SourceLookup 端口校验存在（app 装配：EventReader 分页读全量事件 → room.TasksOf 纯函数重建）；(room_id, task_id) 全局唯一，撞键 409 `source_already_mapped` 回显已映射 mission_id（同一任务卡至多交办一次）；映射为创建事实，修订不可改（换来源 = 新交办）；直接创建与网关投递共用同一约束。**网关首切片 internal/dispatch**（RFC-0018 §4.4–4.8/§11.2/§11.2.1 确定性子集，兑现 ADR-0023 排布裁定）：`resolve`（只预检不创建——房间/任务卡存在、映射未占、owner 存在、契约合法 → resolved，任一不满足 → blocked 决策携 reason_code，恒 200；决策落库含请求全文与 SHA-256 摘要，10 分钟有效）；`dispatch`（复核决策未过期且状态仍满足——变化 409 `route_stale` 重新解析；执行**决策存档的请求**而非客户端重发内容；mission 创建后回执落库）；**幂等语义**：(caller_ref, scope, idempotency_key) 库级唯一（caller/scope 服务端推导为 owner/workspace，请求体不得自称）——同键同路由 200 重放原回执（replayed 标注）、同键异路由 409 `idempotency_conflict`、并发孪生恰一胜者（败者重放胜者回执或可见冲突，绝不二次派单）；回执查询按幂等键重放。**两事务窗口如实登记**（ADR-0024）：mission 创建与回执落库分属两事务，崩溃其间留下孤儿 Mission 时重试经映射冲突可见恢复（回显 mission_id），不产生重复派单。**API 三端点**（resolve/dispatch/receipts，写面过生产写门）+ mission 创建扩展（room_source / 冲突映射）。**UI**：房间任务 Tab pending 卡新增「交办」入口（跳转 /missions 预填来源）；MissionsPage 创建表单增房间来源区（room_id + task_id，冲突 409 如实展示）；契约详情来源徽标。设计与测试先行：ADR-0024 + OpenAPI 契约冻结（apigen/TS 双链重生成）→ UT 先红（resolve blocked 族/幂等三态/决策过期/复核变化/并发孪生恰一 Mission）、SQLite IT（v14 新库 + v0.6.0 真旧库升级 + 映射 UNIQUE + 回执唯一并发恰一胜者——顺带修复事务内借池连接的死锁形态：池上限 4 × 持连接等写锁，existing 读取改经事务连接）、端点全链先红后绿；vet（it st）+ -race + -tags it/st（串行）+ SPA 全绿；真机冒烟 12 项（真库注入合法 mosaic-todo 申报驱动任务投影——派生 TaskID 命中证 SourceLookup 全链；resolve resolved/blocked/400、dispatch 回执、幂等重放、同键异路由 409、回执查询、Mission 来源回显、映射冲突回显、重启持久）ALL-PASS。语义选择（AT-17）/续接/IM 入口按 RFC §13 阶段表随后续小版本；执行随 0.6.5。
+
 ## [0.6.0] - 2026-10-30
 
 ### Fixed

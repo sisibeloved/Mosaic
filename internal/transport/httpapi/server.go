@@ -26,6 +26,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/monitor"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
+	"github.com/sisibeloved/Mosaic/internal/dispatch"
 	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
@@ -51,6 +52,8 @@ type Deps struct {
 	Slots *slot.Service
 	// Missions Mission 契约域（RFC-0018 §6.1 / ADR-0023，0.6.0；nil 时端点 503）。
 	Missions *mission.Service
+	// Dispatch 网关首切片域（RFC-0018 §11.2/§11.2.1 / ADR-0024，0.6.1；nil 时端点 503）。
+	Dispatch *dispatch.Service
 	Logger *slog.Logger
 	// 开发者模式（M1 v1.8）：Dev 开启才注册 /v1/debug 只读端点与 UI 调试面板。
 	Dev    bool
@@ -1861,7 +1864,7 @@ func (s *server) CreateMission(w http.ResponseWriter, r *http.Request) {
 	if !missionBudgetPresentStrict(w, presence, req.Budget) {
 		return
 	}
-	m, err := s.deps.Missions.Create(r.Context(), derefStr(req.OwnerAgentId), missionContentOf(req.Budget, req.Constraints, req.Delegation, req.Objective, req.Scope, req.Reviewer, req.AcceptanceCriteria, req.DeliverableSpecs, req.SourceRefs, req.ReturnTargets))
+	m, err := s.deps.Missions.Create(r.Context(), derefStr(req.OwnerAgentId), missionContentOf(req.Budget, req.Constraints, req.Delegation, req.Objective, req.Scope, req.Reviewer, req.AcceptanceCriteria, req.DeliverableSpecs, req.SourceRefs, req.ReturnTargets), roomSourceOf(req.RoomSource))
 	if err != nil {
 		writeMissionError(w, err)
 		return
@@ -2141,10 +2144,14 @@ func missionView(m mission.Mission) apigen.MissionView {
 	for _, a := range m.Delegation.Allowed {
 		allowed = append(allowed, apigen.DelegationPolicyAllowed(a))
 	}
+	var roomSource *apigen.RoomSource
+	if m.RoomSource != nil {
+		roomSource = &apigen.RoomSource{RoomId: m.RoomSource.RoomID, TaskId: m.RoomSource.TaskID}
+	}
 	return apigen.MissionView{
 		MissionId: m.MissionID, ContractVersion: m.ContractVersion,
 		Status: apigen.MissionViewStatus(m.Status), OwnerAgentId: m.OwnerAgentID,
-		Requester: m.Requester, Reviewer: m.Reviewer,
+		Requester: m.Requester, Reviewer: m.Reviewer, RoomSource: roomSource,
 		Objective: m.Objective, Scope: m.Scope,
 		Constraints: constraints, AcceptanceCriteria: acceptance,
 		DeliverableSpecs: deliverables, SourceRefs: sources, ReturnTargets: returns,
@@ -2155,6 +2162,164 @@ func missionView(m mission.Mission) apigen.MissionView {
 		},
 		Delegation: apigen.DelegationPolicy{Allowed: allowed, MaxDepth: m.Delegation.MaxDepth},
 		CreatedAt:  ts, UpdatedAt: us,
+	}
+}
+
+// ---- 网关首切片面（RFC-0018 §11.2/§11.2.1 / ADR-0024，0.6.1；apigen.ServerInterface）----
+
+func (s *server) dispatchUnavailable(w http.ResponseWriter) bool {
+	if s.deps.Dispatch == nil {
+		writeError(w, http.StatusServiceUnavailable, "dispatch_unavailable", "网关域未装配")
+		return true
+	}
+	return false
+}
+
+// roomSourceOf apigen → mission（nil 直传）。
+func roomSourceOf(src *apigen.RoomSource) *mission.RoomSource {
+	if src == nil {
+		return nil
+	}
+	return &mission.RoomSource{RoomID: src.RoomId, TaskID: src.TaskId}
+}
+
+// ResolveDispatch 解析与预检（不创建任务；blocked 也是 200 决策）。
+func (s *server) ResolveDispatch(w http.ResponseWriter, r *http.Request) {
+	if s.dispatchUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.DispatchResolveRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_request", "请求体不合法："+err.Error())
+		return
+	}
+	if req.RoomSource.RoomId == "" || req.RoomSource.TaskId == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "room_source 必填（0.6.1 仅房间交办路径）")
+		return
+	}
+	d, err := s.deps.Dispatch.Resolve(r.Context(), dispatch.ResolveRequest{
+		Kind:         string(req.Kind),
+		RoomSource:   mission.RoomSource{RoomID: req.RoomSource.RoomId, TaskID: req.RoomSource.TaskId},
+		OwnerAgentID: derefStr(req.OwnerAgentId),
+		Contract:     missionContentOf(req.Budget, req.Constraints, req.Delegation, req.Objective, req.Scope, req.Reviewer, req.AcceptanceCriteria, req.DeliverableSpecs, req.SourceRefs, req.ReturnTargets),
+	})
+	if err != nil {
+		writeDispatchError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, decisionView(d))
+}
+
+// DispatchRequest 复核投递（幂等 + 建契约 + 回执；replayed 标注重放）。
+func (s *server) DispatchRequest(w http.ResponseWriter, r *http.Request) {
+	if s.dispatchUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.DispatchRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_request", "请求体不合法："+err.Error())
+		return
+	}
+	receipt, replayed, err := s.deps.Dispatch.Dispatch(r.Context(), dispatch.DispatchCmd{
+		RouteID: req.RouteId, IdempotencyKey: req.IdempotencyKey, RequestID: derefStr(req.RequestId),
+	})
+	if err != nil {
+		writeDispatchError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, receiptView(receipt, replayed))
+}
+
+// GetDispatchReceipt 按幂等键查回执。
+func (s *server) GetDispatchReceipt(w http.ResponseWriter, r *http.Request, params apigen.GetDispatchReceiptParams) {
+	if s.dispatchUnavailable(w) {
+		return
+	}
+	receipt, found, err := s.deps.Dispatch.ReceiptByKey(r.Context(), params.IdempotencyKey)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "dispatch_read_failed", err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "receipt_not_found", "回执不存在（不等于领域动作一定未发生）")
+		return
+	}
+	writeJSON(w, http.StatusOK, receiptView(receipt, true))
+}
+
+// decisionView dispatch.Decision → apigen.RouteDecisionView。
+func decisionView(d dispatch.Decision) apigen.RouteDecisionView {
+	exp, _ := time.Parse(time.RFC3339Nano, d.ExpiresAt)
+	targets := d.TargetRefs
+	if targets == nil {
+		targets = []string{}
+	}
+	return apigen.RouteDecisionView{
+		RouteId: d.RouteID, DecisionVersion: d.DecisionVersion, RequestDigest: d.RequestDigest,
+		Status: apigen.RouteDecisionViewStatus(d.Status), SelectionSource: apigen.RouteDecisionViewSelectionSource(d.SelectionSource),
+		ReasonCode: d.ReasonCode, ReasonSummary: d.ReasonSummary,
+		TargetRefs: targets, ExpiresAt: exp,
+	}
+}
+
+// receiptView dispatch.Receipt → apigen.DispatchReceiptView。
+func receiptView(r dispatch.Receipt, replayed bool) apigen.DispatchReceiptView {
+	ts, _ := time.Parse(time.RFC3339Nano, r.CommittedAt)
+	targets := r.TargetRefs
+	if targets == nil {
+		targets = []string{}
+	}
+	returns := r.ReturnRefs
+	if returns == nil {
+		returns = []string{}
+	}
+	return apigen.DispatchReceiptView{
+		ReceiptId: r.ReceiptID, CallerRef: r.CallerRef, Scope: r.Scope,
+		IdempotencyKey: r.IdempotencyKey, RequestId: r.RequestID, RequestDigest: r.RequestDigest,
+		RouteId: r.RouteID, DecisionVersion: r.DecisionVersion, DomainCommandId: r.DomainCommandID,
+		TargetRefs: targets, ReturnRefs: returns, CommittedAt: ts, Replayed: replayed,
+	}
+}
+
+// writeDispatchError 网关域错误映射。
+func writeDispatchError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, dispatch.ErrInvalidRequest):
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	case errors.Is(err, dispatch.ErrRouteNotFound):
+		writeError(w, http.StatusNotFound, "route_not_found", err.Error())
+	case errors.Is(err, dispatch.ErrRouteStale):
+		writeError(w, http.StatusConflict, "route_stale", err.Error())
+	case errors.Is(err, dispatch.ErrIdempotencyConflict):
+		writeError(w, http.StatusConflict, "idempotency_conflict", err.Error())
+	case errors.Is(err, dispatch.ErrReceiptNotFound):
+		writeError(w, http.StatusNotFound, "receipt_not_found", err.Error())
+	case errors.Is(err, mission.ErrSourceAlreadyMapped):
+		writeError(w, http.StatusConflict, "source_already_mapped", err.Error())
+	default:
+		writeMissionError(w, err) // mission 域错误（agent_not_found/invalid_mission/...）沿用
 	}
 }
 
@@ -2171,6 +2336,8 @@ func writeMissionError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "version_conflict", err.Error())
 	case errors.Is(err, mission.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, "invalid_transition", err.Error())
+	case errors.Is(err, mission.ErrSourceAlreadyMapped):
+		writeError(w, http.StatusConflict, "source_already_mapped", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "mission_write_failed", err.Error())
 	}
