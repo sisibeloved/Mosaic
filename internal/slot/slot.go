@@ -119,8 +119,12 @@ type Store interface {
 	InstanceByID(ctx context.Context, slotInstanceID string) (SlotInstance, bool, error)
 	// LatestByLineage 各谱系最新版聚合（实例列表的现势连接单源）。
 	LatestByLineage(ctx context.Context) (map[string]InstanceSpecNow, error)
-	// CreateBinding 建任职行（preparing + created 事件同事务）。
-	CreateBinding(ctx context.Context, b Binding) (Binding, error)
+	// CreateBinding 建任职（单事务，审校 P2#3）：行（终态 target）+ created
+	// + preparing→target 两事件一次提交——中断/失败零残留。
+	CreateBinding(ctx context.Context, b Binding, target string, targetPayload map[string]string) (Binding, error)
+	// RetryBindingPreparation 单事务重试：blocked → preparing → target 两事件
+	// 一次提交；非 blocked ok=false（Binding 为重读行）。
+	RetryBindingPreparation(ctx context.Context, bindingID, target string, targetPayload map[string]string, occurredAt string) (Binding, bool, error)
 	// BindingByID 单查任职；未知 ok=false。
 	BindingByID(ctx context.Context, bindingID string) (Binding, bool, error)
 	// ListBindings 任职列表（创建序）；instanceID 非空时按实例过滤。

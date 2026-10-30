@@ -37,13 +37,13 @@ func TestSlotBindingStoreIT(t *testing.T) {
 		t.Fatalf("migration v11 未登记: %d", v11)
 	}
 
-	b, err := store.CreateBinding(ctx, bindingRow())
+	b, err := store.CreateBinding(ctx, bindingRow(), slot.BindingReady, nil)
 	if err != nil || b.Status != slot.BindingReady {
 		t.Fatalf("建任职: %+v %v", b, err)
 	}
-	// created 事件同事务
+	// 单事务建任职（审校 P2#3）：created + preparing→ready 两事件一次落
 	evs, _ := store.BindingEvents(ctx, b.BindingID)
-	if len(evs) != 1 || evs[0].EventType != slot.EventCreated {
+	if len(evs) != 2 || evs[0].EventType != slot.EventCreated {
 		t.Fatalf("created 事件: %+v", evs)
 	}
 
@@ -66,7 +66,7 @@ func TestSlotBindingStoreIT(t *testing.T) {
 		t.Fatalf("释放投影: %+v", got)
 	}
 	evs, _ = store.BindingEvents(ctx, b.BindingID)
-	if len(evs) != 4 { // created + ready→active + active→draining + draining→released
+	if len(evs) != 5 { // created + preparing→ready + ready→active + 两段释放
 		t.Fatalf("事件数 %d: %+v", len(evs), evs)
 	}
 
@@ -75,7 +75,7 @@ func TestSlotBindingStoreIT(t *testing.T) {
 		BindingID: "bd_it_2", AgentID: "ag_it", SlotInstanceID: "si_it_2",
 		SlotSpecVersion: 1, Scope: "workspace", Status: slot.BindingReady,
 		CreatedAt: "t", UpdatedAt: "t",
-	})
+	}, slot.BindingReady, nil)
 	only, _ := store.ListBindings(ctx, "si_it_1")
 	if len(only) != 1 || only[0].BindingID != "bd_it_1" {
 		t.Fatalf("过滤: %+v", only)
@@ -96,7 +96,7 @@ func TestSlotBindingSingleActiveIndexIT(t *testing.T) {
 			BindingID: "bd_race_" + strconv.Itoa(i), AgentID: "ag_it", SlotInstanceID: "si_race",
 			SlotSpecVersion: 1, Scope: "workspace", Status: slot.BindingReady,
 			CreatedAt: "t", UpdatedAt: "t",
-		})
+		}, slot.BindingReady, nil)
 	}
 
 	var wg sync.WaitGroup
@@ -152,7 +152,7 @@ func TestSlotBindingReleaseAtomicIT(t *testing.T) {
 	store, _ := openTempStore(t)
 	defer store.Close()
 	ctx := context.Background()
-	b, _ := store.CreateBinding(ctx, bindingRow())
+	b, _ := store.CreateBinding(ctx, bindingRow(), slot.BindingReady, nil)
 	store.TransitionBinding(ctx, b.BindingID, []string{slot.BindingReady}, slot.BindingActive, map[string]string{}, "t")
 
 	canceled, cancel := context.WithCancel(context.Background())
@@ -165,8 +165,8 @@ func TestSlotBindingReleaseAtomicIT(t *testing.T) {
 		t.Fatalf("取消回滚后 status=%s, want active", got.Status)
 	}
 	evs, _ := store.BindingEvents(ctx, b.BindingID)
-	if len(evs) != 2 { // created + ready→active
-		t.Fatalf("取消回滚后事件 %d 条, want 2", len(evs))
+	if len(evs) != 3 { // created + preparing→ready + ready→active（释放整体回滚）
+		t.Fatalf("取消回滚后事件 %d 条, want 3", len(evs))
 	}
 }
 
@@ -197,7 +197,7 @@ func TestSlotBindingLegacyUpgradeIT(t *testing.T) {
 	}
 	defer upgraded.Close()
 	ctx := context.Background()
-	if _, err := upgraded.CreateBinding(ctx, bindingRow()); err != nil {
+	if _, err := upgraded.CreateBinding(ctx, bindingRow(), slot.BindingReady, nil); err != nil {
 		t.Fatalf("升级后建任职: %v", err)
 	}
 	var v11 int
@@ -223,5 +223,55 @@ func TestSlotBindingLegacyUpgradeIT(t *testing.T) {
 	}
 	if _, ok, _ := reopened.BindingByID(ctx, "bd_it_1"); !ok {
 		t.Fatal("重开后任职丢失")
+	}
+}
+
+// TestSlotBindingPrepareAtomicIT（审校 P2#3）：建任职单事务——取消上下文
+// 整体回滚，不留行、不留任何事件（含 preparing 中间态）。
+func TestSlotBindingPrepareAtomicIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := store.CreateBinding(canceled, bindingRow(), slot.BindingReady, nil); err == nil {
+		t.Fatal("取消上下文应报错")
+	}
+	var rows, events int
+	store.db.QueryRow(`SELECT COUNT(*) FROM slot_bindings`).Scan(&rows)
+	store.db.QueryRow(`SELECT COUNT(*) FROM binding_events`).Scan(&events)
+	if rows != 0 || events != 0 {
+		t.Fatalf("取消回滚残留：rows=%d events=%d（要 0/0）", rows, events)
+	}
+
+	// blocked 路径同样单事务（created + preparing→blocked 一次落）
+	if _, err := store.CreateBinding(ctx, slot.Binding{
+		BindingID: "bd_blk_1", AgentID: "ag_it", SlotInstanceID: "si_blk",
+		SlotSpecVersion: 1, Scope: "workspace", Status: slot.BindingBlocked,
+		CreatedAt: "t", UpdatedAt: "t",
+	}, slot.BindingBlocked, map[string]string{"missing": "工具 x 缺失"}); err != nil {
+		t.Fatalf("blocked 建任职: %v", err)
+	}
+	b, ok, _ := store.BindingByID(ctx, "bd_blk_1")
+	if !ok || b.Status != slot.BindingBlocked {
+		t.Fatalf("blocked 终态: %+v", b)
+	}
+	evs, _ := store.BindingEvents(ctx, "bd_blk_1")
+	if len(evs) != 2 {
+		t.Fatalf("blocked 事件 %d 条, want 2", len(evs))
+	}
+	// 单事务重试：blocked → preparing → ready 两事件一次落
+	got, done, err := store.RetryBindingPreparation(ctx, "bd_blk_1", slot.BindingReady, nil, "t2")
+	if err != nil || !done || got.Status != slot.BindingReady {
+		t.Fatalf("重试: %+v %v %v", got, done, err)
+	}
+	evs, _ = store.BindingEvents(ctx, "bd_blk_1")
+	if len(evs) != 4 {
+		t.Fatalf("重试后事件 %d 条, want 4", len(evs))
+	}
+	// 非 blocked 重试拒绝
+	if _, done, err := store.RetryBindingPreparation(ctx, "bd_blk_1", slot.BindingReady, nil, "t3"); err != nil || done {
+		t.Fatalf("非 blocked 重试: %v %v", done, err)
 	}
 }

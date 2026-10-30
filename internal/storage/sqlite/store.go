@@ -2376,8 +2376,10 @@ INSERT INTO binding_events (binding_id, event_type, payload, occurred_at) VALUES
 	return nil
 }
 
-// CreateBinding 建任职行（preparing + created 事件同一事务）。
-func (s *Store) CreateBinding(ctx context.Context, b slot.Binding) (slot.Binding, error) {
+// CreateBinding 建任职（单事务，审校 P2#3）：行直接落终态 target，created 与
+// preparing→target 两事件同一事务一次提交——中断/失败零残留。
+func (s *Store) CreateBinding(ctx context.Context, b slot.Binding, target string, targetPayload map[string]string) (slot.Binding, error) {
+	b.Status = target
 	err := s.identityWriteTx(ctx, func(q identityExec) error {
 		if _, err := q.ExecContext(ctx, `
 INSERT INTO slot_bindings (`+bindingCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -2385,15 +2387,70 @@ INSERT INTO slot_bindings (`+bindingCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			b.Scope, b.Status, b.HandoffNote, b.CreatedAt, b.UpdatedAt); err != nil {
 			return fmt.Errorf("sqlite: create binding: %w", err)
 		}
-		return appendBindingEvent(ctx, q, b.BindingID, slot.EventCreated, map[string]string{
+		if err := appendBindingEvent(ctx, q, b.BindingID, slot.EventCreated, map[string]string{
 			"agent_id": b.AgentID, "slot_instance_id": b.SlotInstanceID,
 			"slot_spec_version": strconv.Itoa(b.SlotSpecVersion),
-		}, b.CreatedAt)
+		}, b.CreatedAt); err != nil {
+			return err
+		}
+		payload := map[string]string{"from": slot.BindingPreparing, "to": target}
+		for k, v := range targetPayload {
+			payload[k] = v
+		}
+		return appendBindingEvent(ctx, q, b.BindingID, slot.EventStatusChanged, payload, b.CreatedAt)
 	})
 	if err != nil {
 		return slot.Binding{}, err
 	}
 	return b, nil
+}
+
+// RetryBindingPreparation 单事务重试（审校 P2#3）：blocked 校验 → 两段事件 →
+// 终态投影一次提交；非 blocked ok=false。
+func (s *Store) RetryBindingPreparation(ctx context.Context, bindingID, target string, targetPayload map[string]string, occurredAt string) (slot.Binding, bool, error) {
+	ok := false
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		var status string
+		err := q.QueryRowContext(ctx,
+			`SELECT status FROM slot_bindings WHERE binding_id = ?`, bindingID).Scan(&status)
+		if errors.Is(err, sql.ErrNoRows) {
+			return slot.ErrBindingNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("sqlite: retry probe: %w", err)
+		}
+		if status != slot.BindingBlocked {
+			return nil
+		}
+		if err := appendBindingEvent(ctx, q, bindingID, slot.EventStatusChanged,
+			map[string]string{"from": slot.BindingBlocked, "to": slot.BindingPreparing}, occurredAt); err != nil {
+			return err
+		}
+		payload := map[string]string{"from": slot.BindingPreparing, "to": target}
+		for k, v := range targetPayload {
+			payload[k] = v
+		}
+		if err := appendBindingEvent(ctx, q, bindingID, slot.EventStatusChanged, payload, occurredAt); err != nil {
+			return err
+		}
+		if _, err := q.ExecContext(ctx,
+			`UPDATE slot_bindings SET status = ?, updated_at = ? WHERE binding_id = ?`, target, occurredAt, bindingID); err != nil {
+			return fmt.Errorf("sqlite: retry project: %w", err)
+		}
+		ok = true
+		return nil
+	})
+	if err != nil {
+		return slot.Binding{}, false, err
+	}
+	if !ok {
+		return slot.Binding{}, false, nil
+	}
+	got, found, err := s.BindingByID(ctx, bindingID)
+	if err != nil || !found {
+		return slot.Binding{}, false, err
+	}
+	return got, true, nil
 }
 
 // BindingByID 单查任职；未知 ok=false。
@@ -2454,8 +2511,16 @@ func (s *Store) TransitionBinding(ctx context.Context, bindingID string, allowed
 		if !allowedFromHas(allowedFrom, from) {
 			return nil
 		}
-		if _, err := q.ExecContext(ctx,
-			`UPDATE slot_bindings SET status = ?, updated_at = ? WHERE binding_id = ?`, to, occurredAt, bindingID); err != nil {
+		update := `UPDATE slot_bindings SET status = ?, updated_at = ?`
+		args := []any{to, occurredAt}
+		if note, has := extras["handoff_note"]; has {
+			// 审校 P2#4：交接备注与状态/事件同事务入投影（ready 直释等路径）
+			update += `, handoff_note = ?`
+			args = append(args, note)
+		}
+		update += ` WHERE binding_id = ?`
+		args = append(args, bindingID)
+		if _, err := q.ExecContext(ctx, update, args...); err != nil {
 			if to == slot.BindingActive && strings.Contains(err.Error(), "UNIQUE constraint failed") {
 				return slot.ErrActiveBindingExists // 单 active 部分唯一索引（AT-13）
 			}

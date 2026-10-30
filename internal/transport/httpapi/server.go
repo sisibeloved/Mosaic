@@ -1498,8 +1498,14 @@ func (s *server) PrepareSlotBinding(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
 		return
 	}
+	// 版本三态（审校 P2#5）：省略（nil）→ 钉谱系最新；显式 <1 → 400（不静默
+	// 换成最新版——可能绑定用户未指定的模板）
 	version := 0
 	if req.SlotSpecVersion != nil {
+		if *req.SlotSpecVersion < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_binding", "slot_spec_version 显式提供时须 ≥1（省略则钉最新）")
+			return
+		}
 		version = int(*req.SlotSpecVersion)
 	}
 	b, err := s.deps.Slots.PrepareBinding(r.Context(), req.SlotInstanceId, req.AgentId, version)
@@ -1594,7 +1600,7 @@ func (s *server) ListSlotBindingEvents(w http.ResponseWriter, r *http.Request, b
 		writeError(w, http.StatusNotFound, "binding_not_found", "任职记录不存在")
 		return
 	}
-	out := make([]apigen.AgentEvent, 0, len(evs))
+	out := make([]apigen.BindingEvent, 0, len(evs))
 	for _, ev := range evs {
 		view, err := bindingEventView(ev)
 		if err != nil {
@@ -1632,23 +1638,23 @@ func writeBindingError(w http.ResponseWriter, err error) {
 	}
 }
 
-// bindingEventView slot.BindingEvent → apigen.AgentEvent 形状（BindingEvent
-// schema 与之同构：seq/event_type/payload/occurred_at + 绑定主体 ID）。
-func bindingEventView(ev slot.BindingEvent) (apigen.AgentEvent, error) {
+// bindingEventView slot.BindingEvent → apigen.BindingEvent（审校 P2#6：主体
+// 字段为 binding_id——任职事件不得借 AgentEvent 的 agent_id 承载）。
+func bindingEventView(ev slot.BindingEvent) (apigen.BindingEvent, error) {
 	ts, err := time.Parse(time.RFC3339, ev.OccurredAt)
 	if err != nil {
-		return apigen.AgentEvent{}, fmt.Errorf("事件时间 %q: %w", ev.OccurredAt, err)
+		return apigen.BindingEvent{}, fmt.Errorf("事件时间 %q: %w", ev.OccurredAt, err)
 	}
 	var payload map[string]interface{}
 	if len(ev.Payload) > 0 {
 		if err := json.Unmarshal(ev.Payload, &payload); err != nil {
-			return apigen.AgentEvent{}, fmt.Errorf("事件 payload: %w", err)
+			return apigen.BindingEvent{}, fmt.Errorf("事件 payload: %w", err)
 		}
 	}
-	return apigen.AgentEvent{
+	return apigen.BindingEvent{
 		Seq:        ev.Seq,
-		AgentId:    ev.BindingID,
-		EventType:  apigen.AgentEventEventType(ev.EventType),
+		BindingId:  ev.BindingID,
+		EventType:  apigen.BindingEventEventType(ev.EventType),
 		OccurredAt: ts,
 		Payload:    payload,
 	}, nil

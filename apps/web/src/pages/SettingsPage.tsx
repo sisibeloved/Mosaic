@@ -1929,12 +1929,17 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
   const activeBinding = (bindings ?? []).find((b) => b.status === "active");
   const readyOnes = (bindings ?? []).filter((b) => b.status === "ready");
   const draining = (bindings ?? []).filter((b) => b.status === "draining");
-  const released = (bindings ?? []).filter((b) => b.status === "released").slice(-1);
+  // 最近交接按释放时间（updated_at）取最新（审校 P2#1）——非创建序末项；
+  // 接口保持创建序不变
+  const released = (bindings ?? [])
+    .filter((b) => b.status === "released")
+    .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))
+    .slice(0, 1);
 
   return (
     <details onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
       <summary className="cursor-pointer select-none text-[11px] text-faint">
-        任职{activeBinding ? `：${agentNameOf(agents, activeBinding.agent_id)}（在任）` : "：空缺"}
+        任职{bindings === null ? "" : activeBinding ? `：${agentNameOf(agents, activeBinding.agent_id)}（在任）` : "：空缺"}
       </summary>
       <div className="mt-1 flex flex-col gap-1.5">
         {msg && <p className="text-[11px] text-danger">{msg}</p>}

@@ -139,12 +139,31 @@ func (s *Service) PrepareBinding(ctx context.Context, slotInstanceID, agentID st
 	if !ok {
 		return Binding{}, ErrNotFound // 谱系缺失（病态，无删除路径）
 	}
-	version := latest.Version
-	if specVersion > 0 {
-		if specVersion > latest.Version {
-			return Binding{}, fmt.Errorf("%w: %d > latest %d（%s）", ErrInvalidSpecVersion, specVersion, latest.Version, inst.SlotSpecID)
+	version := latest.Version // 缺省（0）：钉谱系最新
+	if specVersion != 0 {
+		if specVersion < 1 || specVersion > latest.Version {
+			return Binding{}, fmt.Errorf("%w: %d ∉ [1, %d]（%s）", ErrInvalidSpecVersion, specVersion, latest.Version, inst.SlotSpecID)
 		}
 		version = specVersion
+	}
+	// 门判定前置（审校 P2#3）：建行与 created + preparing→target 两事件
+	// 同一事务一次提交——中断/失败零残留（不留无法推进的 preparing 死记录）
+	ready := true
+	var missing []string
+	if s.readiness != nil {
+		ok, miss, err := s.readiness.Check(ctx, Binding{
+			AgentID: agentID, SlotInstanceID: slotInstanceID, SlotSpecVersion: version, Scope: inst.Scope,
+		})
+		if err != nil {
+			return Binding{}, fmt.Errorf("slot: 准入门: %w", err)
+		}
+		ready, missing = ok, miss
+	}
+	target := BindingReady
+	var payload map[string]string
+	if !ready {
+		target = BindingBlocked
+		payload = map[string]string{"missing": joinStrings(missing)}
 	}
 	b, err := s.store.CreateBinding(ctx, Binding{
 		BindingID:       s.newBindingID(),
@@ -152,14 +171,14 @@ func (s *Service) PrepareBinding(ctx context.Context, slotInstanceID, agentID st
 		SlotInstanceID:  slotInstanceID,
 		SlotSpecVersion: version,
 		Scope:           inst.Scope,
-		Status:          BindingPreparing,
+		Status:          target, // 终态直接落库（created + preparing→target 同事务）
 		CreatedAt:       s.now(),
 		UpdatedAt:       s.now(),
-	})
+	}, target, payload)
 	if err != nil {
 		return Binding{}, fmt.Errorf("slot: 建任职: %w", err)
 	}
-	return s.runReadiness(ctx, b)
+	return b, nil
 }
 
 // RetryPrepare blocked → preparing →（门）ready/blocked（0.5.5 动作；
@@ -175,20 +194,8 @@ func (s *Service) RetryPrepare(ctx context.Context, bindingID string) (Binding, 
 	if b.Status != BindingBlocked {
 		return Binding{}, fmt.Errorf("%w: %s → preparing（仅 blocked 可重试）", ErrInvalidTransition, b.Status)
 	}
-	_, done, err := s.store.TransitionBinding(ctx, bindingID,
-		[]string{BindingBlocked}, BindingPreparing, nil, s.now())
-	if err != nil {
-		return Binding{}, err
-	}
-	if !done {
-		return Binding{}, fmt.Errorf("%w: blocked → preparing", ErrInvalidTransition)
-	}
-	b.Status = BindingPreparing
-	return s.runReadiness(ctx, b)
-}
-
-// runReadiness 门判定：通过 → ready；不通过 → blocked（missing 记入事件）。
-func (s *Service) runReadiness(ctx context.Context, b Binding) (Binding, error) {
+	// 单事务重试（审校 P2#3）：blocked → preparing → target 两事件一次提交，
+	// 中断不留 preparing 死记录
 	ready := true
 	var missing []string
 	if s.readiness != nil {
@@ -204,15 +211,13 @@ func (s *Service) runReadiness(ctx context.Context, b Binding) (Binding, error) 
 		target = BindingBlocked
 		payload = map[string]string{"missing": joinStrings(missing)}
 	}
-	_, done, err := s.store.TransitionBinding(ctx, b.BindingID,
-		[]string{BindingPreparing}, target, payload, s.now())
+	b, done, err := s.store.RetryBindingPreparation(ctx, bindingID, target, payload, s.now())
 	if err != nil {
 		return Binding{}, err
 	}
 	if !done {
-		return Binding{}, fmt.Errorf("%w: preparing → %s", ErrInvalidTransition, target)
+		return Binding{}, fmt.Errorf("%w: blocked → preparing", ErrInvalidTransition)
 	}
-	b.Status = target
 	return b, nil
 }
 

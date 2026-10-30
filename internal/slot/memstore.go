@@ -159,9 +159,10 @@ func (m *MemStore) LatestByLineage(_ context.Context) (map[string]InstanceSpecNo
 
 // ---- Binding 任职（ADR-0021，0.5.4；MemStore 实现）----
 
-func (m *MemStore) CreateBinding(_ context.Context, b Binding) (Binding, error) {
+func (m *MemStore) CreateBinding(_ context.Context, b Binding, target string, targetPayload map[string]string) (Binding, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	b.Status = target // 终态直接落（created + preparing→target 同临界区，审校 P2#3）
 	m.bindings = append(m.bindings, b)
 	payload, _ := json.Marshal(map[string]string{
 		"agent_id": b.AgentID, "slot_instance_id": b.SlotInstanceID,
@@ -172,7 +173,32 @@ func (m *MemStore) CreateBinding(_ context.Context, b Binding) (Binding, error) 
 		Seq: m.bseq, BindingID: b.BindingID, EventType: EventCreated,
 		Payload: payload, OccurredAt: b.CreatedAt,
 	})
+	m.appendBindingChangedLocked(b.BindingID, BindingPreparing, target, targetPayload, b.CreatedAt)
 	return b, nil
+}
+
+// RetryBindingPreparation 单事务重试（端口语义见 slot.go；整体临界区）。
+func (m *MemStore) RetryBindingPreparation(_ context.Context, bindingID, target string, targetPayload map[string]string, occurredAt string) (Binding, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx := -1
+	for i, b := range m.bindings {
+		if b.BindingID == bindingID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return Binding{}, false, ErrNotFound
+	}
+	if m.bindings[idx].Status != BindingBlocked {
+		return Binding{}, false, nil
+	}
+	m.appendBindingChangedLocked(bindingID, BindingBlocked, BindingPreparing, nil, occurredAt)
+	m.appendBindingChangedLocked(bindingID, BindingPreparing, target, targetPayload, occurredAt)
+	m.bindings[idx].Status = target
+	m.bindings[idx].UpdatedAt = occurredAt
+	return m.bindings[idx], true, nil
 }
 
 func (m *MemStore) BindingByID(_ context.Context, bindingID string) (Binding, bool, error) {
@@ -224,6 +250,9 @@ func (m *MemStore) TransitionBinding(_ context.Context, bindingID string, allowe
 	}
 	m.bindings[idx].Status = to
 	m.bindings[idx].UpdatedAt = occurredAt
+	if note, has := extras["handoff_note"]; has { // 审校 P2#4：备注入投影（与事件同临界区）
+		m.bindings[idx].HandoffNote = note
+	}
 	m.appendBindingChangedLocked(bindingID, from, to, extras, occurredAt)
 	return from, true, nil
 }

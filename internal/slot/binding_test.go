@@ -446,3 +446,46 @@ func equalStrs(a, b []string) bool {
 	}
 	return true
 }
+
+// TestReleaseReadyKeepsNoteInProjection（审校 P2#4）：ready 直释与 draining
+// 补终段两条路径的交接备注须与事件、返回值三处一致。
+func TestReleaseReadyKeepsNoteInProjection(t *testing.T) {
+	svc, _ := newBindingService(t)
+	ctx := context.Background()
+	inst := mustInstance(t, svc)
+
+	// ready 直释带备注
+	b, _ := svc.PrepareBinding(ctx, inst, "ag_a", 0)
+	res, err := svc.ReleaseBinding(ctx, b.BindingID, "未上任交接")
+	if err != nil || res.Binding.HandoffNote != "未上任交接" {
+		t.Fatalf("ready 直释: %+v %v", res, err)
+	}
+	got, _, _ := svc.GetBinding(ctx, b.BindingID)
+	if got.HandoffNote != "未上任交接" {
+		t.Fatalf("投影备注丢失: %q", got.HandoffNote)
+	}
+	evs, _, _ := svc.BindingEvents(ctx, b.BindingID)
+	last := statusPayload(t, evs[len(evs)-1])
+	if last["handoff_note"] != "未上任交接" {
+		t.Fatalf("事件备注缺失: %v", last)
+	}
+}
+
+// TestPrepareExplicitVersionBounds（审校 P2#5）：显式 0/-1 拒（省略才可缺省）。
+func TestPrepareExplicitVersionBounds(t *testing.T) {
+	svc, _ := newBindingService(t)
+	ctx := context.Background()
+	inst := mustInstance(t, svc)
+	for _, v := range []int{-1, -100} {
+		if _, err := svc.PrepareBinding(ctx, inst, "ag_a", v); !errors.Is(err, ErrInvalidSpecVersion) {
+			t.Fatalf("显式 %d err = %v, want ErrInvalidSpecVersion", v, err)
+		}
+	}
+	// 省略语义（0）与显式合法版本不受影响
+	if b, err := svc.PrepareBinding(ctx, inst, "ag_a", 0); err != nil || b.SlotSpecVersion != 1 {
+		t.Fatalf("缺省钉最新: %+v %v", b, err)
+	}
+	if b, err := svc.PrepareBinding(ctx, inst, "ag_a", 1); err != nil || b.SlotSpecVersion != 1 {
+		t.Fatalf("显式 v1: %+v %v", b, err)
+	}
+}

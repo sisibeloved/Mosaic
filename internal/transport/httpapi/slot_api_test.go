@@ -6,6 +6,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -689,4 +690,66 @@ func (l identAgents) AgentStatus(ctx context.Context, agentID string) (string, b
 		return "", ok, err
 	}
 	return a.Status, true, nil
+}
+
+// TestSlotBindingVersionThreeStatesAndEventSubject（审校 P2#5/P2#6）：
+// 显式 0/-1 → 400（不静默换最新）；事件流主体字段为 binding_id。
+func TestSlotBindingVersionThreeStatesAndEventSubject(t *testing.T) {
+	ts := bindingTestServer(t)
+	postSlot(t, ts.URL+"/v1/slots/specs", `{"slot_spec_id":"slot.v3","name":"值守","responsibility":"r","deliverables":["d"]}`).Body.Close()
+	inst := postSlot(t, ts.URL+"/v1/slots/instances", `{"slot_spec_id":"slot.v3"}`)
+	var instDoc struct {
+		SlotInstanceID string `json:"slot_instance_id"`
+	}
+	_ = json.NewDecoder(inst.Body).Decode(&instDoc)
+	inst.Body.Close()
+	ag := postSlot(t, ts.URL+"/v1/identity/agents", `{"display_name":"值守者"}`)
+	var agDoc struct {
+		AgentID string `json:"agent_id"`
+	}
+	_ = json.NewDecoder(ag.Body).Decode(&agDoc)
+	ag.Body.Close()
+
+	var errDoc struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	for _, v := range []string{"0", "-1"} {
+		resp := postSlot(t, ts.URL+"/v1/slots/bindings",
+			`{"slot_instance_id":"`+instDoc.SlotInstanceID+`","agent_id":"`+agDoc.AgentID+`","slot_spec_version":`+v+`}`)
+		_ = json.NewDecoder(resp.Body).Decode(&errDoc)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest || errDoc.Error.Code != "invalid_binding" {
+			t.Fatalf("显式 %s: status=%d code=%q", v, resp.StatusCode, errDoc.Error.Code)
+		}
+	}
+
+	// 事件主体：binding_id 携带任职 ID，不出现 agent_id 键（P2#6）
+	b := postSlot(t, ts.URL+"/v1/slots/bindings", `{"slot_instance_id":"`+instDoc.SlotInstanceID+`","agent_id":"`+agDoc.AgentID+`"}`)
+	var bDoc struct {
+		BindingID string `json:"binding_id"`
+	}
+	_ = json.NewDecoder(b.Body).Decode(&bDoc)
+	b.Body.Close()
+	evs, err := http.Get(ts.URL + "/v1/slots/bindings/" + bDoc.BindingID + "/events")
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	raw, _ := io.ReadAll(evs.Body)
+	evs.Body.Close()
+	var evDoc struct {
+		Events []map[string]any `json:"events"`
+	}
+	if err := json.Unmarshal(raw, &evDoc); err != nil || len(evDoc.Events) != 2 {
+		t.Fatalf("events 解码: %v n=%d", err, len(evDoc.Events))
+	}
+	for i, ev := range evDoc.Events {
+		if ev["binding_id"] != bDoc.BindingID {
+			t.Fatalf("事件#%d 主体错: %v", i, ev["binding_id"])
+		}
+		if _, leaked := ev["agent_id"]; leaked {
+			t.Fatalf("事件#%d 泄漏 agent_id 主体键", i)
+		}
+	}
 }
