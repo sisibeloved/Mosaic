@@ -3842,7 +3842,7 @@ export interface components {
             /** @description 当前契约版本（修订 +1） */
             contract_version: number;
             /** @enum {string} */
-            status: "draft" | "ready" | "canceled";
+            status: "draft" | "ready" | "running" | "canceled";
             /** @description 负责人（空 = 显式 unassigned，§3.3 不变量） */
             owner_agent_id: string;
             /** @description 请求人（0.6.0 恒 owner——本地单用户） */
@@ -3871,7 +3871,7 @@ export interface components {
             mission_id: string;
             contract_version: number;
             /** @enum {string} */
-            status: "draft" | "ready" | "canceled";
+            status: "draft" | "ready" | "running" | "canceled";
             owner_agent_id: string;
             objective: string;
             /** Format: date-time */

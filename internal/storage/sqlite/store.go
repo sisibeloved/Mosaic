@@ -2915,15 +2915,17 @@ SELECT mission_id, version, status, owner_agent_id, requester, content, created_
 	return out, true, nil
 }
 
-// TransitionMissionStatus 条件状态投影（0.6.5 / ADR-0028）：状态 == from
-// 才更新 + status_changed 事件（单事务）；不符/未知/终态幂等无操作。
-func (s *Store) TransitionStatus(ctx context.Context, missionID, from, to string, event mission.Event) error {
-	return s.identityWriteTx(ctx, func(q identityExec) error {
+// TransitionStatus 条件状态投影（0.6.5 / ADR-0028）：状态 == from 才更新
+// + status_changed 事件（单事务）；不符/未知/终态幂等无操作 changed=false。
+func (s *Store) TransitionStatus(ctx context.Context, missionID, from, to string, event mission.Event) (bool, error) {
+	changed := false
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		changed = false
 		var current string
 		err := q.QueryRowContext(ctx,
 			`SELECT status FROM missions WHERE mission_id = ?`, missionID).Scan(&current)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil // 幂等无操作（调用方序已知）
+			return nil
 		}
 		if err != nil {
 			return fmt.Errorf("sqlite: transition probe: %w", err)
@@ -2931,18 +2933,24 @@ func (s *Store) TransitionStatus(ctx context.Context, missionID, from, to string
 		if current != from || current == mission.StatusCanceled {
 			return nil
 		}
-		if _, err := q.ExecContext(ctx,
+		res, err := q.ExecContext(ctx,
 			`UPDATE missions SET status = ?, updated_at = ? WHERE mission_id = ?`,
-			to, event.OccurredAt, missionID); err != nil {
+			to, event.OccurredAt, missionID)
+		if err != nil {
 			return fmt.Errorf("sqlite: transition update: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return nil
 		}
 		if _, err := q.ExecContext(ctx, `
 INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
 			missionID, event.EventType, string(event.Payload), event.OccurredAt); err != nil {
 			return fmt.Errorf("sqlite: transition event: %w", err)
 		}
+		changed = true
 		return nil
 	})
+	return changed, err
 }
 
 // ---- 网关首切片域（RFC-0018 §11.2/§11.2.1 / ADR-0024，0.6.1；v14 表）----

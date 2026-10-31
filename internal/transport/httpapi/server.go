@@ -2942,7 +2942,8 @@ func writeRunError(w http.ResponseWriter, err error) {
 func missionRunView(run missionrun.Run) apigen.MissionRunView {
 	req, _ := time.Parse(time.RFC3339, run.RequestedAt)
 	upd, _ := time.Parse(time.RFC3339, run.UpdatedAt)
-	return apigen.MissionRunView{
+	// #10：补齐 started_at / finished_at（可空——未开始/未终态为 nil）
+	v := apigen.MissionRunView{
 		RunId: run.RunID, MissionId: run.MissionID, Attempt: run.Attempt,
 		LeaseId: run.LeaseID, ManifestId: run.ManifestID, RuntimeId: run.RuntimeID,
 		BindingId: run.BindingID, AgentId: run.AgentID,
@@ -2953,6 +2954,13 @@ func missionRunView(run missionrun.Run) apigen.MissionRunView {
 		Generation:  &run.Generation,
 		RequestedAt: req, UpdatedAt: upd,
 	}
+	if run.StartedAt != "" {
+		v.StartedAt = &run.StartedAt
+	}
+	if run.FinishedAt != "" {
+		v.FinishedAt = &run.FinishedAt
+	}
+	return v
 }
 
 func missionRunEventView(e missionrun.Event) apigen.MissionRunEvent {

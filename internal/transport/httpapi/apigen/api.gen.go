@@ -839,6 +839,7 @@ const (
 	MissionSummaryStatusCanceled MissionSummaryStatus = "canceled"
 	MissionSummaryStatusDraft    MissionSummaryStatus = "draft"
 	MissionSummaryStatusReady    MissionSummaryStatus = "ready"
+	MissionSummaryStatusRunning  MissionSummaryStatus = "running"
 )
 
 // Valid indicates whether the value is a known member of the MissionSummaryStatus enum.
@@ -850,6 +851,8 @@ func (e MissionSummaryStatus) Valid() bool {
 		return true
 	case MissionSummaryStatusReady:
 		return true
+	case MissionSummaryStatusRunning:
+		return true
 	default:
 		return false
 	}
@@ -860,6 +863,7 @@ const (
 	MissionViewStatusCanceled MissionViewStatus = "canceled"
 	MissionViewStatusDraft    MissionViewStatus = "draft"
 	MissionViewStatusReady    MissionViewStatus = "ready"
+	MissionViewStatusRunning  MissionViewStatus = "running"
 )
 
 // Valid indicates whether the value is a known member of the MissionViewStatus enum.
@@ -870,6 +874,8 @@ func (e MissionViewStatus) Valid() bool {
 	case MissionViewStatusDraft:
 		return true
 	case MissionViewStatusReady:
+		return true
+	case MissionViewStatusRunning:
 		return true
 	default:
 		return false

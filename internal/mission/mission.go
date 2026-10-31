@@ -174,7 +174,7 @@ type Store interface {
 	// TransitionStatus 条件状态投影（0.6.5 / ADR-0028）：当前状态 == from
 	// 才更新为 to + 事件（单事务）；from 不符/Mission 未知/终态 = 无操作
 	// 成功（幂等——调用方序已知）。canceled 拒转。
-	TransitionStatus(ctx context.Context, missionID, from, to string, event Event) error
+	TransitionStatus(ctx context.Context, missionID, from, to string, event Event) (changed bool, err error)
 }
 
 // Service 契约服务：校验单源 + 完备性判定单源 + CAS 编排。
@@ -339,29 +339,32 @@ func (s *Service) Cancel(ctx context.Context, missionID string, expectedVersion 
 }
 
 // MarkRunning 执行投影：ready → running（run 域创建 Run 后调用；仅
-// ready 可进——并发修订期间不误标；canceled 终态不可翻转）。
-func (s *Service) MarkRunning(ctx context.Context, missionID string) error {
+// ready 可进——返回 changed=false 表示状态不符（canceled/非 ready），
+// 审校 #7：调用方须校验 changed 拒启动）。
+func (s *Service) MarkRunning(ctx context.Context, missionID string) (bool, error) {
 	return s.projectStatus(ctx, missionID, StatusReady, StatusRunning, "")
 }
 
 // MarkReadyFromRunning 执行投影：running → ready（Run 终态后回可执行；
 // reason 进事件 payload 供审计——fence_rejected/run_failed/restart_recovery）。
 func (s *Service) MarkReadyFromRunning(ctx context.Context, missionID, reason string) error {
-	return s.projectStatus(ctx, missionID, StatusRunning, StatusReady, reason)
+	_, err := s.projectStatus(ctx, missionID, StatusRunning, StatusReady, reason)
+	return err
 }
 
-// projectStatus 条件状态投影（from 不符或 Mission 未知 = 幂等无操作成功
-// ——调用方序已知；canceled 拒转）。status_changed 事件携 from/to/reason。
-func (s *Service) projectStatus(ctx context.Context, missionID, from, to, reason string) error {
+// projectStatus 条件状态投影（from 不符或 Mission 未知 = 幂等无操作
+// changed=false；canceled 拒转）。status_changed 事件携 from/to/reason。
+func (s *Service) projectStatus(ctx context.Context, missionID, from, to, reason string) (bool, error) {
 	payload, err := json.Marshal(map[string]string{"from": from, "to": to, "reason": reason})
 	if err != nil {
-		return fmt.Errorf("mission: 投影事件构造失败：%w", err)
+		return false, fmt.Errorf("mission: 投影事件构造失败：%w", err)
 	}
 	ev := Event{MissionID: missionID, EventType: EventStatusChanged, Payload: payload, OccurredAt: s.now()}
-	if err := s.store.TransitionStatus(ctx, missionID, from, to, ev); err != nil {
-		return fmt.Errorf("mission: 状态投影失败：%w", err)
+	changed, err := s.store.TransitionStatus(ctx, missionID, from, to, ev)
+	if err != nil {
+		return false, fmt.Errorf("mission: 状态投影失败：%w", err)
 	}
-	return nil
+	return changed, nil
 }
 
 // Get 契约详情；未知 ok=false。

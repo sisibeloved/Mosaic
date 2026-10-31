@@ -31,7 +31,7 @@ func (p epRunMissions) ListReady(ctx context.Context) ([]missionrun.MissionRef, 
 	}
 	return out, nil
 }
-func (p epRunMissions) SetRunning(ctx context.Context, id string) error {
+func (p epRunMissions) SetRunning(ctx context.Context, id string) (bool, error) {
 	return p.svc.MarkRunning(ctx, id)
 }
 func (p epRunMissions) SetReadyFromRunning(ctx context.Context, id, reason string) error {

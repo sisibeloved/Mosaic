@@ -353,7 +353,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		runRuntimesAdapter{runtimes: runtimeSvc},
 		runLeasesAdapter{runtimes: runtimeSvc},
 		runManifestsAdapter{execctx: execCtxSvc},
-		supervisorExecutor{supervisor: supervisor},
+		supervisorExecutor{supervisor: supervisor, identity: identitySvc, harness: harnessRegistry},
 		missionrun.WithNow(clock))
 	if n, err := runSvc.RecoverUnfinished(ctx); err != nil {
 		logger.Warn("Run 恢复失败", "err", err)
@@ -885,7 +885,7 @@ func (a runMissionsAdapter) ListReady(ctx context.Context) ([]missionrun.Mission
 	return out, nil
 }
 
-func (a runMissionsAdapter) SetRunning(ctx context.Context, missionID string) error {
+func (a runMissionsAdapter) SetRunning(ctx context.Context, missionID string) (bool, error) {
 	return a.svc.MarkRunning(ctx, missionID)
 }
 
@@ -933,14 +933,28 @@ func (a runRuntimesAdapter) FirstReady(ctx context.Context) (missionrun.RuntimeR
 	if err != nil {
 		return missionrun.RuntimeRef{}, false, err
 	}
-	busy := map[string]bool{}
+	busyRuntime := map[string]bool{}
+	busyWorkspace := map[string]bool{} // 规范工作区身份（#8——冲突候选不挡后续）
+	envs, _ := a.runtimes.ListEnvironments(ctx)
+	envKey := map[string]string{}
+	for _, e := range envs {
+		envKey[e.EnvironmentID] = e.WorkspaceKey
+	}
 	for _, l := range leases {
-		busy[l.RuntimeID] = true
+		busyRuntime[l.RuntimeID] = true
+		if key := envKey[l.EnvironmentID]; key != "" {
+			busyWorkspace[key] = true
+		}
 	}
 	for _, rt := range list {
-		if rt.State == mosaicruntime.StateReady && !busy[rt.RuntimeID] {
-			return missionrun.RuntimeRef{RuntimeID: rt.RuntimeID, EnvironmentID: rt.EnvironmentID}, true, nil
+		if rt.State != mosaicruntime.StateReady || busyRuntime[rt.RuntimeID] {
+			continue
 		}
+		// #8：工作区被活跃租约占用（跨运行时）的候选也排除——后续候选可用
+		if key := envKey[rt.EnvironmentID]; key != "" && busyWorkspace[key] {
+			continue
+		}
+		return missionrun.RuntimeRef{RuntimeID: rt.RuntimeID, EnvironmentID: rt.EnvironmentID}, true, nil
 	}
 	return missionrun.RuntimeRef{}, false, nil
 }
@@ -974,16 +988,59 @@ func (a runManifestsAdapter) Build(ctx context.Context, missionID, bindingID str
 	if err != nil {
 		return missionrun.Manifest{}, err
 	}
-	return missionrun.Manifest{ManifestID: res.Manifest.ManifestID, State: res.Manifest.State, ReasonCode: res.Manifest.ReasonCode}, nil
+	// #1：层内容块传透（执行输入取存档内容——契约/验收/近期消息/工具清单）
+	layers := make([]missionrun.ManifestLayer, 0, len(res.Manifest.Layers))
+	for _, l := range res.Manifest.Layers {
+		if l.State != execctx.LayerIncluded {
+			continue
+		}
+		content, _ := l.Content.(map[string]any)
+		if content == nil {
+			// typed struct → map 往返（同 execctx 视图序列化面）
+			if b, err := json.Marshal(l.Content); err == nil {
+				_ = json.Unmarshal(b, &content)
+			}
+		}
+		layers = append(layers, missionrun.ManifestLayer{Name: l.Name, Content: content})
+	}
+	return missionrun.Manifest{
+		ManifestID: res.Manifest.ManifestID, State: res.Manifest.State,
+		ReasonCode: res.Manifest.ReasonCode, Layers: layers,
+	}, nil
 }
 
-// supervisorExecutor missionrun.Executor 适配：agent.Supervisor 提交
-// （Kind=generate，存档清单引用入 Inline；工作目录由 Runtime 绑定环境
-// 决定——0.6.3 已绑定）。阻塞至 Result 终值。
-type supervisorExecutor struct{ supervisor *agent.Supervisor }
+// supervisorExecutor missionrun.Executor 适配（v0.2 #2）：按 Agent 身份
+// 解析真实 adapter（Profile.Adapter 来自身份域/harness 注册表——不硬编
+// echo）；存档清单内容入 Inline（#1）。工作目录由 Runtime 绑定环境决定
+// （0.6.3 已绑定）。阻塞至 Result 终值。
+type supervisorExecutor struct {
+	supervisor *agent.Supervisor
+	identity   *personalagent.Service
+	harness    *harness.Registry
+}
 
 func (e supervisorExecutor) Submit(ctx context.Context, in missionrun.ExecutionInput) (string, error) {
-	profile := agent.Profile{ProfileID: in.AgentID, Adapter: "echo", DisplayName: in.AgentID}
+	// #2：解析 Agent 身份 → adapter 名 + executable ref（真实 CLI 面）
+	adapterName := "echo"
+	if e.identity != nil {
+		if ag, ok, _ := e.identity.AgentByID(ctx, in.AgentID); ok && ag.Adapter != "" {
+			adapterName = ag.Adapter
+		}
+	}
+	// harness 注册表有该 adapter 家族的可执行程序 → 用真名（echo 兜底——
+	// 测试装配无 harness 时仍可执行）
+	if e.harness != nil {
+		for _, exe := range e.harness.EnabledList() {
+			if exe.Adapter == adapterName && exe.AgentID != "" {
+				// 真实 adapter：按 executable ref 寻址
+				adapterName = exe.Adapter
+				break
+			}
+		}
+	}
+	profile := agent.Profile{
+		ProfileID: in.AgentID, Adapter: adapterName, DisplayName: in.AgentID,
+	}
 	h, err := e.supervisor.Submit(ctx, profile, agent.Task{
 		TaskID: "mrun:" + in.RunID, Kind: agent.KindGenerate,
 		ParticipantID: in.AgentID, RoomID: "mission:" + in.MissionID,

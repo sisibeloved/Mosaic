@@ -159,21 +159,21 @@ func (m *MemStore) MissionEvents(_ context.Context, missionID string) ([]Event, 
 }
 
 // TransitionStatus 条件状态投影（幂等无操作；事件 Seq 由存储赋）。
-func (m *MemStore) TransitionStatus(_ context.Context, missionID, from, to string, event Event) error {
+func (m *MemStore) TransitionStatus(_ context.Context, missionID, from, to string, event Event) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	i, ok := m.indexOfLocked(missionID)
 	if !ok || m.missions[i].Status != from {
-		return nil
+		return false, nil
 	}
 	if m.missions[i].Status == StatusCanceled {
-		return nil
+		return false, nil
 	}
 	m.missions[i].Status = to
 	m.seq++
 	event.Seq = m.seq
 	m.events[missionID] = append(m.events[missionID], event)
-	return nil
+	return true, nil
 }
 
 func (m *MemStore) indexOfLocked(missionID string) (int, bool) {

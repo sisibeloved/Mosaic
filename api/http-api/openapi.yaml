@@ -5527,7 +5527,7 @@ components:
           allOf: [{ $ref: "#/components/schemas/RoomSource" }]
           description: 房间交办来源（非房间交办为 null）
         contract_version: { type: integer, minimum: 1, description: 当前契约版本（修订 +1） }
-        status: { type: string, enum: [draft, ready, canceled] }
+        status: { type: string, enum: [draft, ready, running, canceled] }
         owner_agent_id: { type: string, description: 负责人（空 = 显式 unassigned，§3.3 不变量） }
         requester: { type: string, description: 请求人（0.6.0 恒 owner——本地单用户） }
         reviewer: { type: string, description: 验收人（空 = 请求人自验） }
@@ -5549,7 +5549,7 @@ components:
       properties:
         mission_id: { type: string }
         contract_version: { type: integer }
-        status: { type: string, enum: [draft, ready, canceled] }
+        status: { type: string, enum: [draft, ready, running, canceled] }
         owner_agent_id: { type: string }
         objective: { type: string }
         created_at: { type: string, format: date-time }

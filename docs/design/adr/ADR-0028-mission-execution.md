@@ -125,3 +125,4 @@ Executor（执行面——app 注入 agent.Supervisor 适配）。Scheduler 归 
 ## 修订记录
 
 - v0.1 2026-10-31 初稿（0.6.5 开工——设计先行）。
+- v0.2 2026-10-31 审校修复登记（独立审校"7 P1 + 5 P2"）：**(P1#1)** 执行输入传存档清单内容块（契约/验收/近期消息/工具清单经 Layers 传透——非仅 manifest_id）。**(P1#2)** 真实执行器接通（Agent 身份域 → adapter 家族名解析，echo 仅兜底；Runtime 工作区由准备绑定）。**(P1#3)** 提交前围栏复核（失效/检查错误均拒启动 → fence_rejected 审计）。**(P1#4)** 终态写入前围栏核对紧邻（finalizeRun 统一——核对不通过写 rejected 非终态；检查错误保守拒绝）。**(P1#5)** 清理面独立上下文（30s 超时 context.Background——请求断开后终态/释放/投影不遗留 running + 活跃租约）。**(P1#6)** 恢复后 Mission 停在 running（不回 ready）——下次扫描不自动调度，等待用户手动再执行。**(P1#7)** SetRunning 返回 changed（TransitionStatus 返回 RowsAffected > 0——canceled 后 changed=false 拒启动，Run 置 failed）。**(P2#8)** Runtime 候选按工作区身份排除被占用者。**(P2#9)** Mission 状态枚举补 running。**(P2#10)** started_at / finished_at 补入视图。**(P2#11)** SPA 执行区随操作/周期刷新。**(P2#12)** 终态落库失败返回 ErrTerminalWrite（非静默成功）。

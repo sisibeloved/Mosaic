@@ -606,6 +606,11 @@ function MissionRunCard({ missionID, status, onChanged }: { missionID: string; s
       });
   };
   useEffect(load, [missionID]);
+  // #11：后台（调度器）创建/完成 Run 后同步刷新——10s 轮询
+  useEffect(() => {
+    const timer = setInterval(load, 10_000);
+    return () => clearInterval(timer);
+  }, [missionID]);
 
   const execute = async () => {
     setBusy(true);
