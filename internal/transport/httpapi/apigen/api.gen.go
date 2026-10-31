@@ -1053,6 +1053,27 @@ func (e RunViewStatus) Valid() bool {
 	}
 }
 
+// Defines values for RuntimeEventEventType.
+const (
+	RuntimeEventEventTypeDiscovered    RuntimeEventEventType = "discovered"
+	RuntimeEventEventTypeHealthChecked RuntimeEventEventType = "health_checked"
+	RuntimeEventEventTypeStateChanged  RuntimeEventEventType = "state_changed"
+)
+
+// Valid indicates whether the value is a known member of the RuntimeEventEventType enum.
+func (e RuntimeEventEventType) Valid() bool {
+	switch e {
+	case RuntimeEventEventTypeDiscovered:
+		return true
+	case RuntimeEventEventTypeHealthChecked:
+		return true
+	case RuntimeEventEventTypeStateChanged:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for RuntimeOptionsDefaultSource.
 const (
 	RuntimeOptionsDefaultSourceBuiltin RuntimeOptionsDefaultSource = "builtin"
@@ -1119,6 +1140,66 @@ func (e RuntimeUpdateRequestReasoningEffort) Valid() bool {
 	case RuntimeUpdateRequestReasoningEffortMinimal:
 		return true
 	case RuntimeUpdateRequestReasoningEffortXhigh:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RuntimeViewHost.
+const (
+	Native RuntimeViewHost = "native"
+	Wsl    RuntimeViewHost = "wsl"
+)
+
+// Valid indicates whether the value is a known member of the RuntimeViewHost enum.
+func (e RuntimeViewHost) Valid() bool {
+	switch e {
+	case Native:
+		return true
+	case Wsl:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RuntimeViewLogin.
+const (
+	RuntimeViewLoginLoggedIn  RuntimeViewLogin = "logged_in"
+	RuntimeViewLoginLoggedOut RuntimeViewLogin = "logged_out"
+	RuntimeViewLoginUnknown   RuntimeViewLogin = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the RuntimeViewLogin enum.
+func (e RuntimeViewLogin) Valid() bool {
+	switch e {
+	case RuntimeViewLoginLoggedIn:
+		return true
+	case RuntimeViewLoginLoggedOut:
+		return true
+	case RuntimeViewLoginUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RuntimeViewState.
+const (
+	RuntimeViewStateDiscovered RuntimeViewState = "discovered"
+	RuntimeViewStateReady      RuntimeViewState = "ready"
+	RuntimeViewStateUnhealthy  RuntimeViewState = "unhealthy"
+)
+
+// Valid indicates whether the value is a known member of the RuntimeViewState enum.
+func (e RuntimeViewState) Valid() bool {
+	switch e {
+	case RuntimeViewStateDiscovered:
+		return true
+	case RuntimeViewStateReady:
+		return true
+	case RuntimeViewStateUnhealthy:
 		return true
 	default:
 		return false
@@ -2332,6 +2413,26 @@ type DocVersionConflict struct {
 // DocVersionConflictErrorCode defines model for DocVersionConflict.Error.Code.
 type DocVersionConflictErrorCode string
 
+// EnvironmentCreate 建环境请求（0.6.3 子集：命名工作区目录——依赖/数据卷等随 0.6.4+ 按需增列）。
+type EnvironmentCreate struct {
+	Name string `json:"name"`
+
+	// WorkspaceDir 工作区目录路径（创建时验证/创建）
+	WorkspaceDir string `json:"workspace_dir"`
+}
+
+// EnvironmentView 环境（命名工作区目录）；is_default 全库恰一（启动自动确保默认环境）。
+type EnvironmentView struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// EnvironmentId env_ 前缀生成式
+	EnvironmentId string    `json:"environment_id"`
+	IsDefault     bool      `json:"is_default"`
+	Name          string    `json:"name"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	WorkspaceDir  string    `json:"workspace_dir"`
+}
+
 // Error defines model for Error.
 type Error struct {
 	Error struct {
@@ -3157,6 +3258,22 @@ type RunView struct {
 // RunViewStatus defines model for RunView.Status.
 type RunViewStatus string
 
+// RuntimeEvent runtime_events 流事件（migration v16；seq 升序即流序）。
+type RuntimeEvent struct {
+	EventType  RuntimeEventEventType `json:"event_type"`
+	OccurredAt time.Time             `json:"occurred_at"`
+
+	// Payload 事件体——discovered: {version, login}；health_checked: {ok, version, login, note}；state_changed: {from, to, reason}
+	Payload   map[string]interface{} `json:"payload"`
+	RuntimeId string                 `json:"runtime_id"`
+
+	// Seq 全表单调流序
+	Seq int64 `json:"seq"`
+}
+
+// RuntimeEventEventType defines model for RuntimeEvent.EventType.
+type RuntimeEventEventType string
+
 // RuntimeOptions 模型候选与思考强度档位（设置页下拉数据源）+ 确定量默认值（v1.49）。
 type RuntimeOptions struct {
 	// DefaultEffort 不覆盖时的 CLI 默认思考强度（codex 官方默认 medium）
@@ -3184,6 +3301,11 @@ type RuntimeOptions struct {
 // RuntimeOptionsDefaultSource 默认值来源——config=CLI 配置文件；builtin=官方文档/出厂回退
 type RuntimeOptionsDefaultSource string
 
+// RuntimePrepareRequest 准备请求——environment_id 缺省取默认环境。
+type RuntimePrepareRequest struct {
+	EnvironmentId *string `json:"environment_id,omitempty"`
+}
+
 // RuntimeRequirements 运行能力要求（能力名，非安装路径——实际连接由 Binding 解析）。
 type RuntimeRequirements struct {
 	Required        []string                           `json:"required"`
@@ -3192,6 +3314,12 @@ type RuntimeRequirements struct {
 
 // RuntimeRequirementsWorkspaceAccess defines model for RuntimeRequirements.WorkspaceAccess.
 type RuntimeRequirementsWorkspaceAccess string
+
+// RuntimeSyncResult 发现同步结果（新行记 discovered 事件；既有行只刷新镜像事实不动状态）。
+type RuntimeSyncResult struct {
+	Created   int `json:"created"`
+	Refreshed int `json:"refreshed"`
+}
 
 // RuntimeUpdateRequest 运行参数更新体（全量替换；空串 = 清除覆盖回 CLI 默认）。
 type RuntimeUpdateRequest struct {
@@ -3204,6 +3332,57 @@ type RuntimeUpdateRequest struct {
 
 // RuntimeUpdateRequestReasoningEffort 思考强度（仅 codex；空 = CLI 默认）
 type RuntimeUpdateRequestReasoningEffort string
+
+// RuntimeView 运行时记录（一份可执行实例的 Harness/主机/能力与健康状态）：
+// 发现自 harness 注册表（sync 单向搬运）；version/login 为最近探测
+// 镜像事实（登录非 ready 门——调度门随 0.6.5）；environment_id 为
+// 绑定（ready 必有；discovered/unhealthy 可空）。
+type RuntimeView struct {
+	// Adapter 适配家族（codex / kimi / zcode / …）
+	Adapter string `json:"adapter"`
+
+	// Channel 渠道（cli / app:*；空按 cli）
+	Channel      *string   `json:"channel,omitempty"`
+	DiscoveredAt time.Time `json:"discovered_at"`
+
+	// Distro WSL 发行版（host=native 为空串）
+	Distro string `json:"distro"`
+
+	// EnvironmentId 绑定环境（未绑为空串）
+	EnvironmentId *string `json:"environment_id,omitempty"`
+
+	// Host 执行面（沿用 harness Runtime 词）
+	Host RuntimeViewHost `json:"host"`
+
+	// LastHealthAt 最近探测时间（未探测为空串）
+	LastHealthAt *string `json:"last_health_at,omitempty"`
+
+	// LastHealthNote 最近探测摘要/失败原因（executable_gone / version_probe_failed / 探测成功）
+	LastHealthNote *string           `json:"last_health_note,omitempty"`
+	Login          *RuntimeViewLogin `json:"login,omitempty"`
+
+	// Path 可执行程序路径
+	Path string `json:"path"`
+
+	// RuntimeId rtx_ 前缀生成式；(adapter, host, distro, path) 唯一发现幂等键
+	RuntimeId string `json:"runtime_id"`
+
+	// State 0.6.3 子集（busy/draining/stopped 随 0.6.4/0.6.5）
+	State     RuntimeViewState `json:"state"`
+	UpdatedAt time.Time        `json:"updated_at"`
+
+	// Version 最近探测版本（未探测为空串）
+	Version *string `json:"version,omitempty"`
+}
+
+// RuntimeViewHost 执行面（沿用 harness Runtime 词）
+type RuntimeViewHost string
+
+// RuntimeViewLogin defines model for RuntimeView.Login.
+type RuntimeViewLogin string
+
+// RuntimeViewState 0.6.3 子集（busy/draining/stopped 随 0.6.4/0.6.5）
+type RuntimeViewState string
 
 // SearchHit 检索命中（对外视图：无 seq/tenant；position 供时间线跳转）。
 type SearchHit struct {
@@ -4008,6 +4187,9 @@ type CreateDocJSONRequestBody = DocCommand
 // SubmitDocCommandJSONRequestBody defines body for SubmitDocCommand for application/json ContentType.
 type SubmitDocCommandJSONRequestBody = DocCommand
 
+// CreateEnvironmentJSONRequestBody defines body for CreateEnvironment for application/json ContentType.
+type CreateEnvironmentJSONRequestBody = EnvironmentCreate
+
 // FeishuOAuthCallbackJSONRequestBody defines body for FeishuOAuthCallback for application/json ContentType.
 type FeishuOAuthCallbackJSONRequestBody = FeishuCallbackRequest
 
@@ -4067,6 +4249,9 @@ type UploadRoomAttachmentMultipartRequestBody UploadRoomAttachmentMultipartBody
 
 // SubmitRoomCommandJSONRequestBody defines body for SubmitRoomCommand for application/json ContentType.
 type SubmitRoomCommandJSONRequestBody = RoomCommand
+
+// PrepareRuntimeJSONRequestBody defines body for PrepareRuntime for application/json ContentType.
+type PrepareRuntimeJSONRequestBody = RuntimePrepareRequest
 
 // PrepareSlotBindingJSONRequestBody defines body for PrepareSlotBinding for application/json ContentType.
 type PrepareSlotBindingJSONRequestBody = BindingPrepare
@@ -4139,6 +4324,15 @@ type ServerInterface interface {
 	// GetDocSheetRange 有界区域读取（类型化单元格 + 公式原文 + 派生值 + 版本）
 	// (GET /v1/docs/{doc_id}/sheets/{sheet_id}/range)
 	GetDocSheetRange(w http.ResponseWriter, r *http.Request, docId DocID, sheetId string, params GetDocSheetRangeParams)
+	// ListEnvironments 环境列表（命名工作区目录）
+	// (GET /v1/environments)
+	ListEnvironments(w http.ResponseWriter, r *http.Request)
+	// CreateEnvironment 建环境（创建时验证/创建工作区目录）
+	// (POST /v1/environments)
+	CreateEnvironment(w http.ResponseWriter, r *http.Request)
+	// GetEnvironment 环境详情
+	// (GET /v1/environments/{environment_id})
+	GetEnvironment(w http.ResponseWriter, r *http.Request, environmentId string)
 	// GetFeishuAuthorizeURL 飞书授权页 URL（设置页"登录飞书"打开）
 	// (GET /v1/extdocs/feishu/authorize)
 	GetFeishuAuthorizeURL(w http.ResponseWriter, r *http.Request)
@@ -4316,6 +4510,24 @@ type ServerInterface interface {
 	// GetRoomSnapshot 快照（版本 + 水位 + 投影/算法版本 + Timeline 投影 + 房间名/参与者视图）
 	// (GET /v1/rooms/{room_id}/snapshot)
 	GetRoomSnapshot(w http.ResponseWriter, r *http.Request, roomId RoomID)
+	// ListRuntimes 本地运行时列表（状态/健康/环境绑定）
+	// (GET /v1/runtimes)
+	ListRuntimes(w http.ResponseWriter, r *http.Request)
+	// SyncRuntimes 手动重同步发现（harness 注册表 → 运行时行）
+	// (POST /v1/runtimes/sync)
+	SyncRuntimes(w http.ResponseWriter, r *http.Request)
+	// GetRuntime 运行时详情
+	// (GET /v1/runtimes/{runtime_id})
+	GetRuntime(w http.ResponseWriter, r *http.Request, runtimeId string)
+	// GetRuntimeEvents 运行时事件流（健康与状态历史）
+	// (GET /v1/runtimes/{runtime_id}/events)
+	GetRuntimeEvents(w http.ResponseWriter, r *http.Request, runtimeId string)
+	// HealthCheckRuntime 实时探测（RFC §9.2 "当前可执行"复核面）
+	// (POST /v1/runtimes/{runtime_id}/health-check)
+	HealthCheckRuntime(w http.ResponseWriter, r *http.Request, runtimeId string)
+	// PrepareRuntime 准备（绑环境 + 确保工作区 + 探测 → ready/unhealthy）
+	// (POST /v1/runtimes/{runtime_id}/prepare)
+	PrepareRuntime(w http.ResponseWriter, r *http.Request, runtimeId string)
 	// ListSlotBindings 任职记录列表（0.5.4 / ADR-0021）
 	// (GET /v1/slots/bindings)
 	ListSlotBindings(w http.ResponseWriter, r *http.Request, params ListSlotBindingsParams)
@@ -4824,6 +5036,60 @@ func (siw *ServerInterfaceWrapper) GetDocSheetRange(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetDocSheetRange(w, r, docId, sheetId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListEnvironments operation middleware
+func (siw *ServerInterfaceWrapper) ListEnvironments(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListEnvironments(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateEnvironment operation middleware
+func (siw *ServerInterfaceWrapper) CreateEnvironment(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateEnvironment(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetEnvironment operation middleware
+func (siw *ServerInterfaceWrapper) GetEnvironment(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "environment_id" -------------
+	var environmentId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "environment_id", r.PathValue("environment_id"), &environmentId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "environment_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetEnvironment(w, r, environmentId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -6279,6 +6545,138 @@ func (siw *ServerInterfaceWrapper) GetRoomSnapshot(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// ListRuntimes operation middleware
+func (siw *ServerInterfaceWrapper) ListRuntimes(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListRuntimes(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SyncRuntimes operation middleware
+func (siw *ServerInterfaceWrapper) SyncRuntimes(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SyncRuntimes(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetRuntime operation middleware
+func (siw *ServerInterfaceWrapper) GetRuntime(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "runtime_id" -------------
+	var runtimeId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "runtime_id", r.PathValue("runtime_id"), &runtimeId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "runtime_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetRuntime(w, r, runtimeId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetRuntimeEvents operation middleware
+func (siw *ServerInterfaceWrapper) GetRuntimeEvents(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "runtime_id" -------------
+	var runtimeId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "runtime_id", r.PathValue("runtime_id"), &runtimeId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "runtime_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetRuntimeEvents(w, r, runtimeId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// HealthCheckRuntime operation middleware
+func (siw *ServerInterfaceWrapper) HealthCheckRuntime(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "runtime_id" -------------
+	var runtimeId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "runtime_id", r.PathValue("runtime_id"), &runtimeId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "runtime_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.HealthCheckRuntime(w, r, runtimeId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PrepareRuntime operation middleware
+func (siw *ServerInterfaceWrapper) PrepareRuntime(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "runtime_id" -------------
+	var runtimeId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "runtime_id", r.PathValue("runtime_id"), &runtimeId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "runtime_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PrepareRuntime(w, r, runtimeId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListSlotBindings operation middleware
 func (siw *ServerInterfaceWrapper) ListSlotBindings(w http.ResponseWriter, r *http.Request) {
 
@@ -7016,6 +7414,15 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/dispatch/resolve", wrapper.ResolveDispatch)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/dispatch/dispatch", wrapper.DispatchRequest)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/dispatch/receipts", wrapper.GetDispatchReceipt)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/runtimes", wrapper.ListRuntimes)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/runtimes/sync", wrapper.SyncRuntimes)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/runtimes/{runtime_id}", wrapper.GetRuntime)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/runtimes/{runtime_id}/events", wrapper.GetRuntimeEvents)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/runtimes/{runtime_id}/health-check", wrapper.HealthCheckRuntime)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/runtimes/{runtime_id}/prepare", wrapper.PrepareRuntime)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/environments", wrapper.ListEnvironments)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/environments", wrapper.CreateEnvironment)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/environments/{environment_id}", wrapper.GetEnvironment)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/enable", wrapper.EnableHarnessExecutable)

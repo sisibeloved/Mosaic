@@ -47,6 +47,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
+	mosaicruntime "github.com/sisibeloved/Mosaic/internal/runtime"
 	"github.com/sisibeloved/Mosaic/internal/settings"
 	"github.com/sisibeloved/Mosaic/internal/slot"
 	"github.com/sisibeloved/Mosaic/internal/storage/sqlite"
@@ -327,6 +328,17 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Grants:   store,
 		Rooms:    execRoomEvents{reader: store},
 	}, execctx.WithNow(clock))
+	// 本地 Environment / Runtime 域（RFC-0018 §3/§6 / ADR-0026，0.6.3）：
+	// 发现源与探测面复用 harness 注册表（sync 单向搬运不回写；Reprobe 只读）；
+	// 默认环境启动确保（全库恰一，部分唯一索引兜底）。
+	runtimeSvc := mosaicruntime.New(store,
+		harnessProber{registry: harnessRegistry, runner: harness.NewHostRunner()},
+		osDirFS{},
+		mosaicruntime.WithNow(clock),
+		mosaicruntime.WithDiscoverySource(harnessDiscoveryOf(harnessRegistry)))
+	if _, err := runtimeSvc.EnsureDefaultEnvironment(ctx, "默认工作区", filepath.Join(opts.DataDir, "workspace")); err != nil {
+		logger.Warn("默认环境确保失败（读面前惰性重试）", "err", err)
+	}
 	scanDone := make(chan struct{})
 	go func() {
 		defer close(scanDone)
@@ -351,6 +363,12 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			logger.Info("harness discovered",
 				"adapter", exe.Adapter, "runtime", exe.Runtime, "distro", exe.Distro,
 				"path", exe.Path, "version", exe.Version, "login", exe.Login)
+		}
+		// 运行时发现同步（ADR-0026：扫描后自动——发现幂等，既有行只刷事实）
+		if created, refreshed, err := runtimeSvc.SyncFromSource(scanCtx); err != nil {
+			logger.Warn("运行时同步失败（读面前惰性重试）", "err", err)
+		} else if created > 0 || refreshed > 0 {
+			logger.Info("运行时同步", "created", created, "refreshed", refreshed)
 		}
 	}()
 
@@ -378,6 +396,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Missions:         missionSvc,
 		Dispatch:         dispatchSvc,
 		Execctx:          execCtxSvc,
+		Runtimes:         runtimeSvc,
 		Logger:           logger,
 		Dev:              opts.Dev,
 		Budget:           budgetLimits,
@@ -825,6 +844,56 @@ func (l roomTaskLookup) RoomTaskExists(ctx context.Context, roomID, taskID strin
 	}
 	return false, nil
 }
+
+// harnessDiscoveryOf runtime.DiscoverySource 的 harness 适配（ADR-0026 /
+// 0.6.3）：注册表全量镜像（Enabled 是座位面关注，运行时记录全部发现）。
+func harnessDiscoveryOf(registry *harness.Registry) mosaicruntime.DiscoverySource {
+	return func(_ context.Context) ([]mosaicruntime.DiscoveredEntry, error) {
+		exes := registry.List()
+		out := make([]mosaicruntime.DiscoveredEntry, 0, len(exes))
+		for _, e := range exes {
+			out = append(out, mosaicruntime.DiscoveredEntry{
+				Adapter: e.Adapter, Host: string(e.Runtime), Distro: e.Distro,
+				Path: e.Path, Channel: e.Channel, Version: e.Version, Login: e.Login,
+			})
+		}
+		return out, nil
+	}
+}
+
+// harnessProber runtime.Prober 的 harness 适配：按 (adapter,host,distro,path)
+// 定位登记行 → Reprobe（只读不回写）。成功 = 登记行在且版本探测非空；文件
+// 消失 Reprobe 返回 ok=false → executable_gone。
+type harnessProber struct {
+	registry *harness.Registry
+	runner   harness.Runner
+}
+
+func (a harnessProber) Probe(ctx context.Context, target mosaicruntime.ProbeTarget) (mosaicruntime.ProbeResult, error) {
+	for _, e := range a.registry.List() {
+		if e.Adapter != target.Adapter || string(e.Runtime) != target.Host ||
+			e.Distro != target.Distro || e.Path != target.Path {
+			continue
+		}
+		fresh, ok, err := a.registry.Reprobe(ctx, a.runner, e.ID)
+		if err != nil {
+			return mosaicruntime.ProbeResult{}, err
+		}
+		if !ok {
+			return mosaicruntime.ProbeResult{OK: false, Login: "unknown", Note: "executable_gone"}, nil
+		}
+		if fresh.Version == "" {
+			return mosaicruntime.ProbeResult{OK: false, Login: fresh.Login, Note: "version_probe_failed"}, nil
+		}
+		return mosaicruntime.ProbeResult{OK: true, Version: fresh.Version, Login: fresh.Login}, nil
+	}
+	return mosaicruntime.ProbeResult{OK: false, Login: "unknown", Note: "registry_entry_missing"}, nil
+}
+
+// osDirFS runtime.FS 的 os 适配（工作区目录确保）。
+type osDirFS struct{}
+
+func (osDirFS) EnsureDir(dir string) error { return os.MkdirAll(dir, 0o755) }
 
 // bindingFactsAdapter execctx.Bindings 的职责域适配（ADR-0025 / 0.6.2）：
 // 任职 → 实例（模板谱系）→ 钉住版本（SlotSpecVersion）的模板版本行——

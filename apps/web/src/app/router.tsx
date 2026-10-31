@@ -5,10 +5,12 @@
 //   /rooms/:roomId   → 房间聊天页（局部层）
 //   /docs            → 文档主页（RFC-0014 §2.8：列表/创建者筛选/检索）
 //   /docs/:docId     → 文档编辑器（§2.5：自绘块编辑器 + 修订批 CAS）
+//   /runtimes        → 运行环境页（0.6.3：Environment/Runtime——发现/探测/准备）
 //   /settings        → 设置页（全局层：左子导航 Agent/自动化/数据/外观/通用；
 //                      v1.72 个人中心并入，不含任何房间态）
 // v1.74：/contacts 退役——联系人收敛进侧栏私聊组（在席 Agent 即私聊入口）。
 import { MissionsPage } from "../pages/MissionsPage";
+import { RuntimesPage } from "../pages/RuntimesPage";
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppShell } from "./AppShell";
 import { HomePage } from "../pages/HomePage";
@@ -28,6 +30,7 @@ export const router = createBrowserRouter([
       { path: "/docs", element: <DocsHomePage /> },
       { path: "/docs/:docId", element: <DocEditorPage /> },
       { path: "/missions", element: <MissionsPage /> },
+      { path: "/runtimes", element: <RuntimesPage /> },
       { path: "/settings", element: <SettingsPage /> },
       { path: "*", element: <Navigate to="/" replace /> },
     ],

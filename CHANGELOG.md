@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 本地 Environment / Runtime（0.6.3 / RFC-0018 §3/§6 / ADR-0026）：`internal/runtime` 新域——migration v16 三表（environments 命名工作区目录：workspace_dir 唯一 + is_default 部分唯一索引恰一默认；runtimes 镜像 harness 登记事实 + 本域状态绑定，(adapter, host, distro, path) 唯一发现幂等键；runtime_events 流 discovered/health_checked/state_changed——健康历史可查）。**状态机 0.6.3 子集**：discovered →（prepare 绑环境 + 确保目录 + 探测）→ ready；探测失败 → unhealthy（note：executable_gone / version_probe_failed 可见）；恢复且已绑环境 → ready；busy/draining/stopped 随 0.6.4/0.6.5，provisioning 不落库（同步操作不把瞬时态伪装成事实）。**发现同步**：harness 注册表单向搬运不回写（新行 discovered 事件，既有行只刷镜像事实不动状态/绑定/发现时间）；启动扫描后自动同步 + `POST /v1/runtimes/sync` 手动 + 手动登记可执行程序后即同步；消失/重绑归 harness 既有语义。**探测面**：harness 新增导出 `Reprobe`（按登记 ID 重跑完整探测，只读）；探测成功 = 文件存在且版本探测非空；登录态是记录事实非 ready 门（"当前可执行"调度裁定随 0.6.5，RFC §9.2 三种判断分层）；ready 后可 re-prepare 换绑环境（无租约无在途，随 0.6.4 收紧）。默认环境启动自动确保（`<data>/workspace`，目录落盘）。API 九端点（runtimes 列表/详情/事件/同步/健康检查/准备 + environments 列表/创建/详情）+ 运行环境页（状态徽标/健康检查/准备（环境选择）/健康与状态历史/环境管理/发现同步）。验证：域 UT（发现幂等/转移矩阵/准备语义（成功才换绑、目录确保失败可见）/环境校验与占用）+ IT（v16 新库/同步不覆盖本域事实/事件回读/默认恰一/目录占用/v0.6.2 旧库升级）+ 端点（全链/错误族/503）先红后绿；vet/-race/it/st 串行 + SPA 绿；真机冒烟 14 项 ALL-PASS（真实 CLI 发现链：启动自动同步、默认环境目录落盘、探测/准备/换绑、事件流、占用冲突、重启不重建行且状态保留）。
+
 ## [0.6.2] - 2026-10-30
 
 ### Fixed

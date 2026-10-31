@@ -728,6 +728,37 @@ func expandAppPattern(pattern, home string) string {
 // AddManual 手动登记（负责人要求 2）：校验必填与已知家族，随后做完整探测。
 // entry.Channel 可显式指定实例渠道（App 形态在自动扫描位置未实证前的进入路径），
 // 空值按 cli；非法渠道串拒绝。
+// Reprobe 按登记 ID 重跑完整探测（版本/登录/摘要），只读不回写注册表
+// （0.6.3 / ADR-0026：runtime 域健康检查的探测面——发现权威仍是本注册表）。
+// 探测成功判定由调用方做（文件存在且版本非空）；未知 ID ok=false。
+func (r *Registry) Reprobe(ctx context.Context, runner Runner, id string) (Executable, bool, error) {
+	var entry Executable
+	found := false
+	for _, e := range r.List() {
+		if e.ID == id {
+			entry, found = e, true
+			break
+		}
+	}
+	if !found {
+		return Executable{}, false, nil
+	}
+	var spec *ProbeSpec
+	for i := range BuiltinProbes {
+		if BuiltinProbes[i].Adapter == entry.Adapter {
+			spec = &BuiltinProbes[i]
+		}
+	}
+	if spec == nil {
+		return Executable{}, false, fmt.Errorf("harness: 未知 adapter %q", entry.Adapter)
+	}
+	if !runner.Exists(ctx, Runtime(entry.Runtime), entry.Distro, entry.Path) {
+		return Executable{}, false, nil // 可执行文件已消失（探测无意义）
+	}
+	fresh := probeExecutable(ctx, runner, *spec, Runtime(entry.Runtime), entry.Distro, entry.Path, entry.Bundle)
+	return fresh, true, nil
+}
+
 func (r *Registry) AddManual(ctx context.Context, runner Runner, entry Executable) error {
 	if entry.Adapter == "" || entry.Runtime == "" || entry.Path == "" {
 		return fmt.Errorf("%w: adapter/runtime/path 必填", ErrInvalidEntry)

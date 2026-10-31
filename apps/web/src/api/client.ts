@@ -39,6 +39,12 @@ export type ContextManifestView = Schemas["ContextManifestView"];
 export type ContextLayerEntryView = Schemas["ContextLayerEntry"];
 export type ContextReceiptView = Schemas["ContextReceiptView"];
 export type ContextManifestBuildResult = Schemas["ContextManifestBuildResult"];
+/** 0.6.3 本地 Environment / Runtime（ADR-0026）。 */
+export type EnvironmentView = Schemas["EnvironmentView"];
+export type EnvironmentCreate = Schemas["EnvironmentCreate"];
+export type RuntimeView = Schemas["RuntimeView"];
+export type RuntimeEvent = Schemas["RuntimeEvent"];
+export type RuntimeSyncResult = Schemas["RuntimeSyncResult"];
 /** 0.5.5 职责准入（ADR-0022）：授权档案与 readiness report。 */
 export type AgentGrantView = Schemas["AgentGrantView"];
 export type AgentGrantPut = Schemas["AgentGrantPut"];
@@ -601,6 +607,36 @@ export const api = {
   },
   getContextManifest(manifestID: string): Promise<ContextManifestView> {
     return request(`/v1/context-manifests/${encodeURIComponent(manifestID)}`);
+  },
+  /** 0.6.3 本地 Environment / Runtime（ADR-0026）：发现同步（幂等——既有行只刷事实）。 */
+  syncRuntimes(): Promise<RuntimeSyncResult> {
+    return post("/v1/runtimes/sync", {});
+  },
+  listRuntimes(): Promise<{ runtimes: RuntimeView[] }> {
+    return request("/v1/runtimes");
+  },
+  getRuntime(runtimeID: string): Promise<RuntimeView> {
+    return request(`/v1/runtimes/${encodeURIComponent(runtimeID)}`);
+  },
+  getRuntimeEvents(runtimeID: string): Promise<{ events: RuntimeEvent[] }> {
+    return request(`/v1/runtimes/${encodeURIComponent(runtimeID)}/events`);
+  },
+  /** 实时探测（unhealthy 恒 200——结果是数据不是错误）。 */
+  healthCheckRuntime(runtimeID: string): Promise<RuntimeView> {
+    return post(`/v1/runtimes/${encodeURIComponent(runtimeID)}/health-check`, {});
+  },
+  /** 准备（environment_id 缺省默认环境；ready/unhealthy 恒 200）。 */
+  prepareRuntime(runtimeID: string, environmentID?: string): Promise<RuntimeView> {
+    return post(`/v1/runtimes/${encodeURIComponent(runtimeID)}/prepare`, environmentID ? { environment_id: environmentID } : {});
+  },
+  listEnvironments(): Promise<{ environments: EnvironmentView[] }> {
+    return request("/v1/environments");
+  },
+  createEnvironment(req: EnvironmentCreate): Promise<EnvironmentView> {
+    return post("/v1/environments", req);
+  },
+  getEnvironment(environmentID: string): Promise<EnvironmentView> {
+    return request(`/v1/environments/${encodeURIComponent(environmentID)}`);
   },
   /** 0.5.5 准入试算（只读无副作用；未就绪也是 200——报告不是错误）。 */
   getSlotReadiness(instanceID: string, agentID: string, version?: number): Promise<ReadinessReportView> {

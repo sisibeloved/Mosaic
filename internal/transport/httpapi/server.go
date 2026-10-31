@@ -32,6 +32,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
+	mosaicruntime "github.com/sisibeloved/Mosaic/internal/runtime"
 	"github.com/sisibeloved/Mosaic/internal/settings"
 	"github.com/sisibeloved/Mosaic/internal/slot"
 	"github.com/sisibeloved/Mosaic/internal/transport/httpapi/apigen"
@@ -57,7 +58,9 @@ type Deps struct {
 	Dispatch *dispatch.Service
 	// Execctx 执行上下文清单域（RFC-0018 §7.3 / ADR-0025，0.6.2；nil 时端点 503）。
 	Execctx *execctx.Service
-	Logger  *slog.Logger
+	// Runtimes 本地 Environment / Runtime 域（RFC-0018 §3/§6 / ADR-0026，0.6.3；nil 时端点 503）。
+	Runtimes *mosaicruntime.Service
+	Logger   *slog.Logger
 	// 开发者模式（M1 v1.8）：Dev 开启才注册 /v1/debug 只读端点与 UI 调试面板。
 	Dev    bool
 	Budget contextx.Limits         // 预算上限（状态端点的水位/梯度计算基准）
@@ -727,6 +730,12 @@ func (s *server) AddHarnessExecutable(w http.ResponseWriter, r *http.Request) {
 		}
 		s.writeDomainError(w, err)
 		return
+	}
+	// 手动登记后即同步运行时（ADR-0026：免重启重发现；失败不夺登记结果）
+	if s.deps.Runtimes != nil {
+		if _, _, serr := s.deps.Runtimes.SyncFromSource(r.Context()); serr != nil {
+			s.debugf("httpapi: runtime sync after manual register failed", "err", serr)
+		}
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"status": "registered"})
 }
@@ -2308,6 +2317,251 @@ func receiptView(r dispatch.Receipt, replayed bool) apigen.DispatchReceiptView {
 }
 
 // writeDispatchError 网关域错误映射。
+// ---- 本地运行时域（RFC-0018 §3/§6 / ADR-0026，0.6.3）----
+
+func (s *server) runtimesUnavailable(w http.ResponseWriter) bool {
+	if s.deps.Runtimes == nil {
+		writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "运行时域未装配")
+		return true
+	}
+	return false
+}
+
+// ListRuntimes 运行时列表。
+func (s *server) ListRuntimes(w http.ResponseWriter, r *http.Request) {
+	if s.runtimesUnavailable(w) {
+		return
+	}
+	list, err := s.deps.Runtimes.ListRuntimes(r.Context())
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	out := make([]apigen.RuntimeView, 0, len(list))
+	for _, rt := range list {
+		out = append(out, runtimeView(rt))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runtimes": out})
+}
+
+// SyncRuntimes 手动重同步发现（harness 注册表 → 运行时行）。
+func (s *server) SyncRuntimes(w http.ResponseWriter, r *http.Request) {
+	if s.runtimesUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, false) { // 空 body：只做跨源门
+		return
+	}
+	created, refreshed, err := s.deps.Runtimes.SyncFromSource(r.Context())
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, apigen.RuntimeSyncResult{Created: created, Refreshed: refreshed})
+}
+
+// GetRuntime 运行时详情。
+func (s *server) GetRuntime(w http.ResponseWriter, r *http.Request, runtimeID string) {
+	if s.runtimesUnavailable(w) {
+		return
+	}
+	rt, ok, err := s.deps.Runtimes.GetRuntime(r.Context(), runtimeID)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "runtime_not_found", "运行时不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, runtimeView(rt))
+}
+
+// GetRuntimeEvents 运行时事件流（健康与状态历史）。
+func (s *server) GetRuntimeEvents(w http.ResponseWriter, r *http.Request, runtimeID string) {
+	if s.runtimesUnavailable(w) {
+		return
+	}
+	events, ok, err := s.deps.Runtimes.RuntimeEventsByRuntime(r.Context(), runtimeID)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "runtime_not_found", "运行时不存在")
+		return
+	}
+	out := make([]apigen.RuntimeEvent, 0, len(events))
+	for _, e := range events {
+		out = append(out, runtimeEventView(e))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": out})
+}
+
+// HealthCheckRuntime 实时探测（unhealthy 恒 200——结果是数据不是错误）。
+func (s *server) HealthCheckRuntime(w http.ResponseWriter, r *http.Request, runtimeID string) {
+	if s.runtimesUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, false) { // 空 body：只做跨源门
+		return
+	}
+	rt, err := s.deps.Runtimes.HealthCheck(r.Context(), runtimeID)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, runtimeView(rt))
+}
+
+// PrepareRuntime 准备（绑环境 + 确保目录 + 探测 → ready/unhealthy 恒 200）。
+func (s *server) PrepareRuntime(w http.ResponseWriter, r *http.Request, runtimeID string) {
+	if s.runtimesUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, false) { // body 可空：只做跨源门；有体再严格解码
+		return
+	}
+	var req apigen.RuntimePrepareRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "bad_request", "准备请求 JSON 不合法："+err.Error())
+			return
+		}
+	}
+	rt, err := s.deps.Runtimes.Prepare(r.Context(), runtimeID, derefStr(req.EnvironmentId))
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, runtimeView(rt))
+}
+
+// ListEnvironments 环境列表。
+func (s *server) ListEnvironments(w http.ResponseWriter, r *http.Request) {
+	if s.runtimesUnavailable(w) {
+		return
+	}
+	list, err := s.deps.Runtimes.ListEnvironments(r.Context())
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	out := make([]apigen.EnvironmentView, 0, len(list))
+	for _, e := range list {
+		out = append(out, environmentView(e))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"environments": out})
+}
+
+// CreateEnvironment 建环境（创建时验证/创建目录）。
+func (s *server) CreateEnvironment(w http.ResponseWriter, r *http.Request) {
+	if s.runtimesUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.EnvironmentCreate
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "建环境请求超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "建环境请求不合法："+err.Error())
+		return
+	}
+	env, err := s.deps.Runtimes.CreateEnvironment(r.Context(), req.Name, req.WorkspaceDir)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, environmentView(env))
+}
+
+// GetEnvironment 环境详情。
+func (s *server) GetEnvironment(w http.ResponseWriter, r *http.Request, environmentID string) {
+	if s.runtimesUnavailable(w) {
+		return
+	}
+	env, ok, err := s.deps.Runtimes.GetEnvironment(r.Context(), environmentID)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "environment_not_found", "环境不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, environmentView(env))
+}
+
+// writeRuntimeError 本地运行时域错误映射。
+func writeRuntimeError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, mosaicruntime.ErrInvalidEnvironment):
+		writeError(w, http.StatusBadRequest, "invalid_environment", err.Error())
+	case errors.Is(err, mosaicruntime.ErrEnvironmentDirTaken):
+		writeError(w, http.StatusConflict, "workspace_dir_taken", err.Error())
+	case errors.Is(err, mosaicruntime.ErrEnvironmentNotFound):
+		writeError(w, http.StatusNotFound, "environment_not_found", err.Error())
+	case errors.Is(err, mosaicruntime.ErrRuntimeNotFound):
+		writeError(w, http.StatusNotFound, "runtime_not_found", err.Error())
+	case errors.Is(err, mosaicruntime.ErrWorkspaceUnavailable):
+		writeError(w, http.StatusConflict, "workspace_unavailable", err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "runtime_failed", err.Error())
+	}
+}
+
+// strPtr 可选字符串字段取址（derefStr 的对偶）。
+func strPtr(s string) *string { return &s }
+
+func runtimeView(rt mosaicruntime.Runtime) apigen.RuntimeView {
+	disc, _ := time.Parse(time.RFC3339, rt.DiscoveredAt)
+	upd, _ := time.Parse(time.RFC3339, rt.UpdatedAt)
+	login := apigen.RuntimeViewLogin(rt.Login)
+	return apigen.RuntimeView{
+		RuntimeId: rt.RuntimeID, Adapter: rt.Adapter,
+		Host: apigen.RuntimeViewHost(rt.Host), Distro: rt.Distro, Path: rt.Path,
+		Channel:        strPtr(rt.Channel),
+		Version:        strPtr(rt.Version),
+		Login:          &login,
+		State:          apigen.RuntimeViewState(rt.State),
+		EnvironmentId:  strPtr(rt.EnvironmentID),
+		LastHealthAt:   strPtr(rt.LastHealthAt),
+		LastHealthNote: strPtr(rt.LastHealthNote),
+		DiscoveredAt:   disc,
+		UpdatedAt:      upd,
+	}
+}
+
+func runtimeEventView(e mosaicruntime.Event) apigen.RuntimeEvent {
+	at, _ := time.Parse(time.RFC3339, e.OccurredAt)
+	payload := e.Payload
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	return apigen.RuntimeEvent{
+		Seq: e.Seq, RuntimeId: e.RuntimeID,
+		EventType: apigen.RuntimeEventEventType(e.EventType),
+		Payload:   payload, OccurredAt: at,
+	}
+}
+
+func environmentView(e mosaicruntime.Environment) apigen.EnvironmentView {
+	created, _ := time.Parse(time.RFC3339, e.CreatedAt)
+	updated, _ := time.Parse(time.RFC3339, e.UpdatedAt)
+	return apigen.EnvironmentView{
+		EnvironmentId: e.EnvironmentID, Name: e.Name, WorkspaceDir: e.WorkspaceDir,
+		IsDefault: e.IsDefault, CreatedAt: created, UpdatedAt: updated,
+	}
+}
+
 // ---- 执行上下文清单域（RFC-0018 §7.3 / ADR-0025，0.6.2）----
 
 func (s *server) execctxUnavailable(w http.ResponseWriter) bool {

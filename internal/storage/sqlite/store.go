@@ -26,6 +26,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
+	mosaicruntime "github.com/sisibeloved/Mosaic/internal/runtime"
 	"github.com/sisibeloved/Mosaic/internal/slot"
 
 	_ "modernc.org/sqlite"
@@ -416,6 +417,48 @@ CREATE TABLE IF NOT EXISTS exec_context_receipts (
   created_at     TEXT NOT NULL
 );
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (15, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+-- v16（RFC-0018 §3/§6 / ADR-0026，0.6.3）：本地 Environment / Runtime。
+-- environments 为命名工作区目录（workspace_dir 唯一；is_default 部分唯一
+-- 索引——全库恰一默认，装配启动确保）。runtimes 镜像 harness 登记事实 +
+-- 本域状态与绑定，(adapter, host, distro, path) 唯一为发现幂等键（sync
+-- 单向搬运不回写）。runtime_events 为运行时流（发现/健康/状态——健康
+-- 历史可查）；environments 无事件流（有明确所有者的持久记录）。
+CREATE TABLE IF NOT EXISTS environments (
+  environment_id TEXT PRIMARY KEY,
+  name           TEXT NOT NULL,
+  workspace_dir  TEXT NOT NULL UNIQUE,
+  is_default     INTEGER NOT NULL DEFAULT 0,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_environments_single_default ON environments(is_default) WHERE is_default = 1;
+CREATE TABLE IF NOT EXISTS runtimes (
+  runtime_id     TEXT PRIMARY KEY,
+  adapter        TEXT NOT NULL,
+  host           TEXT NOT NULL,
+  distro         TEXT NOT NULL DEFAULT '',
+  path           TEXT NOT NULL,
+  channel        TEXT NOT NULL DEFAULT '',
+  version        TEXT NOT NULL DEFAULT '',
+  login          TEXT NOT NULL DEFAULT 'unknown',
+  state          TEXT NOT NULL,
+  environment_id TEXT NOT NULL DEFAULT '',
+  last_health_at TEXT NOT NULL DEFAULT '',
+  last_health_note TEXT NOT NULL DEFAULT '',
+  discovered_at  TEXT NOT NULL,
+  updated_at     TEXT NOT NULL,
+  UNIQUE (adapter, host, distro, path)
+);
+CREATE INDEX IF NOT EXISTS idx_runtimes_state ON runtimes(state);
+CREATE TABLE IF NOT EXISTS runtime_events (
+  seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+  runtime_id  TEXT NOT NULL,
+  event_type  TEXT NOT NULL,
+  payload     TEXT NOT NULL,
+  occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_runtime_events_runtime ON runtime_events(runtime_id, seq);
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (16, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 `
 
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
@@ -3468,4 +3511,250 @@ func (s *Store) ManifestsByMission(ctx context.Context, missionID string) ([]exe
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// ---- 本地运行时域（RFC-0018 §3/§6 / ADR-0026，0.6.3；v16 表）----
+
+const runtimeScanColumns = `runtime_id, adapter, host, distro, path, channel, version, login, state, environment_id, last_health_at, last_health_note, discovered_at, updated_at`
+
+func scanRuntimeRow(row interface{ Scan(...any) error }) (mosaicruntime.Runtime, error) {
+	var r mosaicruntime.Runtime
+	if err := row.Scan(&r.RuntimeID, &r.Adapter, &r.Host, &r.Distro, &r.Path, &r.Channel,
+		&r.Version, &r.Login, &r.State, &r.EnvironmentID, &r.LastHealthAt,
+		&r.LastHealthNote, &r.DiscoveredAt, &r.UpdatedAt); err != nil {
+		return mosaicruntime.Runtime{}, err
+	}
+	return r, nil
+}
+
+func runtimeEventPayloadJSON(payload map[string]any) (string, error) {
+	if payload == nil {
+		return "{}", nil
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("sqlite: runtime event payload marshal: %w", err)
+	}
+	return string(b), nil
+}
+
+// SyncRuntimes 批量单事务：行按 (adapter,host,distro,path) upsert——新行
+// INSERT，既有行只刷新镜像事实（channel/version/login/updated_at——状态/
+// 绑定/发现时间是本域事实不被覆盖）；事件（discovered，仅新行）同事务。
+func (s *Store) SyncRuntimes(ctx context.Context, now string, rows []mosaicruntime.Runtime, events []mosaicruntime.Event) (int, int, error) {
+	created, refreshed := 0, 0
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		created, refreshed = 0, 0
+		for _, r := range rows {
+			// 先查存在性再 upsert（与 mission_sources 同型）：INSERT…ON
+			// CONFLICT DO UPDATE 的 RowsAffected 不能区分插入/更新。
+			var existing string
+			perr := q.QueryRowContext(ctx,
+				`SELECT runtime_id FROM runtimes WHERE adapter = ? AND host = ? AND distro = ? AND path = ?`,
+				r.Adapter, r.Host, r.Distro, r.Path).Scan(&existing)
+			if perr != nil && !errors.Is(perr, sql.ErrNoRows) {
+				return fmt.Errorf("sqlite: runtime existence probe: %w", perr)
+			}
+			if perr == nil {
+				refreshed++
+			} else {
+				created++
+			}
+			if _, err := q.ExecContext(ctx, `
+INSERT INTO runtimes (runtime_id, adapter, host, distro, path, channel, version, login, state, environment_id, last_health_at, last_health_note, discovered_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (adapter, host, distro, path) DO UPDATE SET
+  channel = excluded.channel, version = excluded.version, login = excluded.login,
+  updated_at = excluded.updated_at`,
+				r.RuntimeID, r.Adapter, r.Host, r.Distro, r.Path, r.Channel,
+				r.Version, r.Login, r.State, r.EnvironmentID, r.LastHealthAt,
+				r.LastHealthNote, r.DiscoveredAt, r.UpdatedAt); err != nil {
+				return fmt.Errorf("sqlite: upsert runtime: %w", err)
+			}
+		}
+		for _, e := range events {
+			payload, err := runtimeEventPayloadJSON(e.Payload)
+			if err != nil {
+				return err
+			}
+			if _, err := q.ExecContext(ctx, `
+INSERT INTO runtime_events (runtime_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+				e.RuntimeID, e.EventType, payload, e.OccurredAt); err != nil {
+				return fmt.Errorf("sqlite: insert runtime event: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return created, refreshed, nil
+}
+
+// UpdateRuntime 全行替换 + 事件同事务。
+func (s *Store) UpdateRuntime(ctx context.Context, r mosaicruntime.Runtime, events []mosaicruntime.Event) error {
+	return s.identityWriteTx(ctx, func(q identityExec) error {
+		res, err := q.ExecContext(ctx, `
+UPDATE runtimes SET adapter=?, host=?, distro=?, path=?, channel=?, version=?, login=?, state=?, environment_id=?, last_health_at=?, last_health_note=?, updated_at=?
+ WHERE runtime_id = ?`,
+			r.Adapter, r.Host, r.Distro, r.Path, r.Channel, r.Version, r.Login,
+			r.State, r.EnvironmentID, r.LastHealthAt, r.LastHealthNote, r.UpdatedAt, r.RuntimeID)
+		if err != nil {
+			return fmt.Errorf("sqlite: update runtime: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return fmt.Errorf("sqlite: update runtime: 行不存在 %s", r.RuntimeID)
+		}
+		for _, e := range events {
+			payload, err := runtimeEventPayloadJSON(e.Payload)
+			if err != nil {
+				return err
+			}
+			if _, err := q.ExecContext(ctx, `
+INSERT INTO runtime_events (runtime_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+				e.RuntimeID, e.EventType, payload, e.OccurredAt); err != nil {
+				return fmt.Errorf("sqlite: insert runtime event: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
+// RuntimeByID 单查；未知 ok=false。
+func (s *Store) RuntimeByID(ctx context.Context, runtimeID string) (mosaicruntime.Runtime, bool, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+runtimeScanColumns+`
+  FROM runtimes WHERE runtime_id = ?`, runtimeID)
+	r, err := scanRuntimeRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return mosaicruntime.Runtime{}, false, nil
+	}
+	if err != nil {
+		return mosaicruntime.Runtime{}, false, fmt.Errorf("sqlite: runtime by id: %w", err)
+	}
+	return r, true, nil
+}
+
+// ListRuntimes 全量（rowid 序 = 首次发现序）。
+func (s *Store) ListRuntimes(ctx context.Context) ([]mosaicruntime.Runtime, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+runtimeScanColumns+`
+  FROM runtimes ORDER BY rowid`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list runtimes: %w", err)
+	}
+	defer rows.Close()
+	out := []mosaicruntime.Runtime{}
+	for rows.Next() {
+		r, err := scanRuntimeRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: runtime scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// RuntimeEvents 事件流（seq 升序；ok 恒 true——存在性由调用方先行核对）。
+func (s *Store) RuntimeEvents(ctx context.Context, runtimeID string) ([]mosaicruntime.Event, bool, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT seq, runtime_id, event_type, payload, occurred_at
+  FROM runtime_events WHERE runtime_id = ? ORDER BY seq`, runtimeID)
+	if err != nil {
+		return nil, false, fmt.Errorf("sqlite: runtime events: %w", err)
+	}
+	defer rows.Close()
+	out := []mosaicruntime.Event{}
+	for rows.Next() {
+		var e mosaicruntime.Event
+		var payload string
+		if err := rows.Scan(&e.Seq, &e.RuntimeID, &e.EventType, &payload, &e.OccurredAt); err != nil {
+			return nil, false, fmt.Errorf("sqlite: runtime event scan: %w", err)
+		}
+		if err := json.Unmarshal([]byte(payload), &e.Payload); err != nil {
+			return nil, false, fmt.Errorf("sqlite: runtime event payload unmarshal: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, true, rows.Err()
+}
+
+// CreateEnvironment 建环境；workspace_dir 撞键 ErrEnvironmentDirTaken。
+func (s *Store) CreateEnvironment(ctx context.Context, e mosaicruntime.Environment) error {
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO environments (environment_id, name, workspace_dir, is_default, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)`,
+			e.EnvironmentID, e.Name, e.WorkspaceDir, boolInt(e.IsDefault), e.CreatedAt, e.UpdatedAt); err != nil {
+			if isUniqueViolation(err) {
+				return fmt.Errorf("%w：%s", mosaicruntime.ErrEnvironmentDirTaken, e.WorkspaceDir)
+			}
+			return fmt.Errorf("sqlite: insert environment: %w", err)
+		}
+		return nil
+	})
+	return err
+}
+
+// EnvironmentByID 单查；未知 ok=false。
+func (s *Store) EnvironmentByID(ctx context.Context, environmentID string) (mosaicruntime.Environment, bool, error) {
+	var e mosaicruntime.Environment
+	var isDefault int
+	err := s.db.QueryRowContext(ctx, `
+SELECT environment_id, name, workspace_dir, is_default, created_at, updated_at
+  FROM environments WHERE environment_id = ?`, environmentID).
+		Scan(&e.EnvironmentID, &e.Name, &e.WorkspaceDir, &isDefault, &e.CreatedAt, &e.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return mosaicruntime.Environment{}, false, nil
+	}
+	if err != nil {
+		return mosaicruntime.Environment{}, false, fmt.Errorf("sqlite: environment by id: %w", err)
+	}
+	e.IsDefault = isDefault == 1
+	return e, true, nil
+}
+
+// ListEnvironments 环境列表（创建序；默认在前）。
+func (s *Store) ListEnvironments(ctx context.Context) ([]mosaicruntime.Environment, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT environment_id, name, workspace_dir, is_default, created_at, updated_at
+  FROM environments ORDER BY is_default DESC, rowid`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list environments: %w", err)
+	}
+	defer rows.Close()
+	out := []mosaicruntime.Environment{}
+	for rows.Next() {
+		var e mosaicruntime.Environment
+		var isDefault int
+		if err := rows.Scan(&e.EnvironmentID, &e.Name, &e.WorkspaceDir, &isDefault, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("sqlite: environment scan: %w", err)
+		}
+		e.IsDefault = isDefault == 1
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// DefaultEnvironment 默认环境（部分唯一索引保证至多一）。
+func (s *Store) DefaultEnvironment(ctx context.Context) (mosaicruntime.Environment, bool, error) {
+	var e mosaicruntime.Environment
+	var isDefault int
+	err := s.db.QueryRowContext(ctx, `
+SELECT environment_id, name, workspace_dir, is_default, created_at, updated_at
+  FROM environments WHERE is_default = 1`).
+		Scan(&e.EnvironmentID, &e.Name, &e.WorkspaceDir, &isDefault, &e.CreatedAt, &e.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return mosaicruntime.Environment{}, false, nil
+	}
+	if err != nil {
+		return mosaicruntime.Environment{}, false, fmt.Errorf("sqlite: default environment: %w", err)
+	}
+	e.IsDefault = isDefault == 1
+	return e, true, nil
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

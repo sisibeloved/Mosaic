@@ -1585,6 +1585,168 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/runtimes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 本地运行时列表（状态/健康/环境绑定）
+         * @description 运行时记录（0.6.3 / ADR-0026）：发现自 harness 注册表（sync 单向
+         *     搬运不回写），discovered 待准备、ready 可供 0.6.5 调度、unhealthy
+         *     探测失败可见（携 note）。
+         */
+        get: operations["listRuntimes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runtimes/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 手动重同步发现（harness 注册表 → 运行时行）
+         * @description 批量单事务 upsert：新行入库 + discovered 事件；既有行只刷新镜像
+         *     事实（version/login/channel），不动状态与绑定。启动扫描完成后
+         *     自动执行；本端点供装新 CLI 后免重启重发现。消失/重绑归 harness
+         *     既有语义——本域行保留，探测/准备失败转 unhealthy 可见。
+         */
+        post: operations["syncRuntimes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runtimes/{runtime_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 运行时详情 */
+        get: operations["getRuntime"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runtimes/{runtime_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 运行时事件流（健康与状态历史） */
+        get: operations["getRuntimeEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runtimes/{runtime_id}/health-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 实时探测（RFC §9.2 "当前可执行"复核面）
+         * @description 单次探测（harness Reprobe 只读）：成功 = 文件存在且版本探测非空。
+         *     转移：成功且 unhealthy 且已绑环境 → ready（恢复）；成功且
+         *     discovered → 保持（ready 须绑环境经 prepare）；失败 → unhealthy
+         *     （note：executable_gone / version_probe_failed）。探测结果是数据
+         *     不是错误——unhealthy 恒 200。登录态为记录事实非 ready 门（调度
+         *     门随 0.6.5）。
+         */
+        post: operations["healthCheckRuntime"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runtimes/{runtime_id}/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 准备（绑环境 + 确保工作区 + 探测 → ready/unhealthy）
+         * @description environment_id 缺省 = 默认环境（全库恰一）。确保工作区目录在
+         *     （创建失败 409 workspace_unavailable）→ 探测 → 成功 ready /
+         *     失败 unhealthy（恒 200——结果态是数据）；记 state_changed 事件。
+         *     ready 后允许 re-prepare 换绑（0.6.3 无租约无在途；随 0.6.4 收紧）。
+         */
+        post: operations["prepareRuntime"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/environments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 环境列表（命名工作区目录） */
+        get: operations["listEnvironments"];
+        put?: never;
+        /** 建环境（创建时验证/创建工作区目录） */
+        post: operations["createEnvironment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/environments/{environment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 环境详情 */
+        get: operations["getEnvironment"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/harness/executables": {
         parameters: {
             query?: never;
@@ -3187,6 +3349,90 @@ export interface components {
             manifest: components["schemas"]["ContextManifestView"];
             /** @description true = 同状态重建重放原清单（非新装配） */
             replayed: boolean;
+        };
+        /** @description 建环境请求（0.6.3 子集：命名工作区目录——依赖/数据卷等随 0.6.4+ 按需增列）。 */
+        EnvironmentCreate: {
+            name: string;
+            /** @description 工作区目录路径（创建时验证/创建） */
+            workspace_dir: string;
+        };
+        /** @description 环境（命名工作区目录）；is_default 全库恰一（启动自动确保默认环境）。 */
+        EnvironmentView: {
+            /** @description env_ 前缀生成式 */
+            environment_id: string;
+            name: string;
+            workspace_dir: string;
+            is_default: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /**
+         * @description 运行时记录（一份可执行实例的 Harness/主机/能力与健康状态）：
+         *     发现自 harness 注册表（sync 单向搬运）；version/login 为最近探测
+         *     镜像事实（登录非 ready 门——调度门随 0.6.5）；environment_id 为
+         *     绑定（ready 必有；discovered/unhealthy 可空）。
+         */
+        RuntimeView: {
+            /** @description rtx_ 前缀生成式；(adapter, host, distro, path) 唯一发现幂等键 */
+            runtime_id: string;
+            /** @description 适配家族（codex / kimi / zcode / …） */
+            adapter: string;
+            /**
+             * @description 执行面（沿用 harness Runtime 词）
+             * @enum {string}
+             */
+            host: "native" | "wsl";
+            /** @description WSL 发行版（host=native 为空串） */
+            distro: string;
+            /** @description 可执行程序路径 */
+            path: string;
+            /** @description 渠道（cli / app:*；空按 cli） */
+            channel?: string;
+            /** @description 最近探测版本（未探测为空串） */
+            version?: string;
+            /** @enum {string} */
+            login?: "logged_in" | "logged_out" | "unknown";
+            /**
+             * @description 0.6.3 子集（busy/draining/stopped 随 0.6.4/0.6.5）
+             * @enum {string}
+             */
+            state: "discovered" | "ready" | "unhealthy";
+            /** @description 绑定环境（未绑为空串） */
+            environment_id?: string;
+            /** @description 最近探测时间（未探测为空串） */
+            last_health_at?: string;
+            /** @description 最近探测摘要/失败原因（executable_gone / version_probe_failed / 探测成功） */
+            last_health_note?: string;
+            /** Format: date-time */
+            discovered_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description runtime_events 流事件（migration v16；seq 升序即流序）。 */
+        RuntimeEvent: {
+            /**
+             * Format: int64
+             * @description 全表单调流序
+             */
+            seq: number;
+            runtime_id: string;
+            /** @enum {string} */
+            event_type: "discovered" | "health_checked" | "state_changed";
+            /** @description 事件体——discovered: {version, login}；health_checked: {ok, version, login, note}；state_changed: {from, to, reason} */
+            payload: Record<string, never>;
+            /** Format: date-time */
+            occurred_at: string;
+        };
+        /** @description 准备请求——environment_id 缺省取默认环境。 */
+        RuntimePrepareRequest: {
+            environment_id?: string;
+        };
+        /** @description 发现同步结果（新行记 discovered 事件；既有行只刷新镜像事实不动状态）。 */
+        RuntimeSyncResult: {
+            created: number;
+            refreshed: number;
         };
         /** @description 预算（RFC-0018 §6.1：并发、总 Run 数、墙钟时长、重试与委派深度）——0.6.0 为契约声明事实，运行时强制随 0.6.5 Scheduler 落；缺省 {1, 32, 86400, 0, 0}（单 Agent、不重试、不委派起步）。 */
         MissionBudget: {
@@ -7075,6 +7321,381 @@ export interface operations {
                 };
             };
             /** @description 网关域未装配（dispatch_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listRuntimes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 运行时列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        runtimes: components["schemas"]["RuntimeView"][];
+                    };
+                };
+            };
+            /** @description 运行时域未装配（runtime_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    syncRuntimes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 同步结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeSyncResult"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 运行时域未装配（runtime_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getRuntime: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runtime_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeView"];
+                };
+            };
+            /** @description 运行时不存在（runtime_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 运行时域未装配（runtime_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getRuntimeEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runtime_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 事件列表（seq 升序） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        events: components["schemas"]["RuntimeEvent"][];
+                    };
+                };
+            };
+            /** @description 运行时不存在（runtime_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 运行时域未装配（runtime_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    healthCheckRuntime: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runtime_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 探测后的运行时（ready/discovered/unhealthy） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 运行时不存在（runtime_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 运行时域未装配（runtime_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    prepareRuntime: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runtime_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RuntimePrepareRequest"];
+            };
+        };
+        responses: {
+            /** @description 准备后的运行时（ready / unhealthy） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeView"];
+                };
+            };
+            /** @description 请求不合法（invalid_request） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 运行时不存在（runtime_not_found）或环境不存在（environment_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 工作区目录不可用（workspace_unavailable） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 运行时域未装配（runtime_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listEnvironments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 环境列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        environments: components["schemas"]["EnvironmentView"][];
+                    };
+                };
+            };
+            /** @description 运行时域未装配（runtime_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createEnvironment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnvironmentCreate"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnvironmentView"];
+                };
+            };
+            /** @description 请求不合法（invalid_environment——名称/目录缺失超限；目录不可创建） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 工作区目录已被其他环境占用（workspace_dir_taken） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 运行时域未装配（runtime_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getEnvironment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                environment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnvironmentView"];
+                };
+            };
+            /** @description 环境不存在（environment_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 运行时域未装配（runtime_unavailable） */
             503: {
                 headers: {
                     [name: string]: unknown;

@@ -33,3 +33,4 @@ ADR 记录**实现与工具选型**级决策。三层文档分工：架构级约
 | [ADR-0023](ADR-0023-mission-contract.md) | MissionContract 独立事实源（0.6.0）：不可变契约版本行 + CAS 修订（version_conflict）、契约状态子集 draft/ready/canceled（完备性判定单源）、budget/delegation 安全缺省、/missions 任务中心首屏；Dispatch 排布裁定（首切片随 0.6.1） | Accepted |
 | [ADR-0024](ADR-0024-room-dispatch-first-slice.md) | 房间交办与 Dispatch 首切片（0.6.1）：room_source 结构化来源 + (room_id, task_id) 唯一映射（409 冲突可见）；resolve/dispatch/回执两段式 + (caller_ref, scope, idempotency_key) 幂等约束；决策存档请求为投递输入；确定性路径 only | Accepted |
 | [ADR-0025](ADR-0025-execution-context-manifest.md) | 执行上下文清单（0.6.2）：ContextManifest/ContextReceipt 存档装配（必需层不截断超预算 blocked、可选层独立配额、授权过滤先于排序计数）、digest 即身份确定性重建去重、水位向量、context_manifest_ref 查询时联查兑现 | Accepted |
+| [ADR-0026](ADR-0026-local-environment-runtime.md) | 本地 Environment / Runtime（0.6.3）：命名工作区环境（默认恰一）+ rtx_ 运行时记录（发现幂等键 (adapter,host,distro,path)）+ discovered/ready/unhealthy 子集（探测失败可见、准备恢复）、runtime_events 流、harness Reprobe 只读复用 | Accepted |
