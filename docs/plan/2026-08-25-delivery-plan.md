@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.25 |
+| 版本 | v2.26 |
 | 日期 | 2026-10-30 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -26,7 +26,7 @@
 
 ## 0.2 当前 Roadmap
 
-当前产品版本为 **v0.6.0**（0.6 领域已交付 0.6.0–0.6.1：MissionContract 与房间交办/网关首切片；下一件 0.6.2 执行上下文清单未开工）；0.5 领域线已收官；0.6 的 RFC 已于 2026-10-30 增补内嵌轻量级智能体网关设计（§0.6 说明，尚未实现）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
+当前产品版本为 **v0.6.1**（0.6 领域已交付 0.6.0–0.6.1：MissionContract 与房间交办/网关首切片；下一件 0.6.2 执行上下文清单未开工）；0.5 领域线已收官；0.6 的 RFC 已于 2026-10-30 增补内嵌轻量级智能体网关设计（§0.6 说明，尚未实现）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
 
 | 版本线 | 领域 / 产品目标 | 设计来源 / RFC-0018 阶段映射 |
 |---|---|---|
@@ -190,6 +190,7 @@ P5 不提前占用确定的小版本：
 | v2.23 | 2026-10-30 | Mosaic 项目组 / ZCode | **定版 v0.6.0（负责人指令："发布"）——0.6 领域线第一件**。CHANGELOG [Unreleased]（Added MissionContract 独立事实源 + Fixed 审校 2 P1 / 1 P2）定版 **[0.6.0] - 2026-10-30**，保留空 [Unreleased]；README 当前版本推进 v0.6.0、路线图 0.6 系列标注 0.6.0 已交付与下一件指向；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.6.0 + GitHub Release 发布说明与 Windows 产物（wails 按新版本字样重建）；CI 三平台绿基线（27c93e6 已验，定版提交复验） |
 | v2.24 | 2026-10-30 | Mosaic 项目组 / ZCode | **0.6.1 开发（负责人指令："开始0.6.1"）——房间交办与 Dispatch 首切片（ADR-0024，0.6 领域第二件）**。**(1) 设计先行**：ADR-0024（room_source 结构化来源 + (room_id, task_id) 唯一映射 409 冲突可见；resolve/dispatch/回执两段式 + (caller_ref, scope, idempotency_key) 幂等约束；决策存档请求为投递输入；确定性路径 only——兑现 ADR-0023 排布裁定）+ OpenAPI 契约冻结（dispatch 三端点 + mission room_source，apigen/TS 双链重生成）。**(2) 实现**：internal/dispatch 域 + SQLite migration v14（mission_sources / dispatch_decisions / dispatch_receipts）；SourceLookup 端口经 EventReader → TasksOf 装配；任务卡交办入口 + 来源表单 + 预填。**(3) 验证**：测试先行（UT blocked 族/幂等三态/孪生恰一、IT v14 新库 + v0.6.0 旧库升级 + 唯一约束并发、端点全链先红后绿）；修复事务内借池连接死锁形态；vet(it st) + -race + it/st 串行 + SPA 绿；真机冒烟 12 项（真库注入合法申报驱动任务投影）ALL-PASS。CHANGELOG [Unreleased] 登记；定版与发布另行指令 |
 | v2.25 | 2026-10-30 | Mosaic 项目组 / ZCode | **0.6.1 审校修复（独立审校"1 P1 + 4 P2，建议修复后定版"，ADR-0024 v0.2）**：P1 幂等键创建前原子认领两段式（ClaimKey 绑定摘要 → 创建 → FinalizeReceipt——异摘要零副作用退出，孪生恰一认领，门控测试双向钉住）；P2 来源半填拦截；P2 跨页历史统一重建（前页参与者索引不丢，补跨页提及回归）；P2 幂等身份改请求摘要（同摘要异路由重放，回执查验先于决策时效）；P2 resolve 复用契约校验与直接创建一致。验证：门控/跨页/契约反例先红后绿；IT ClaimKey 两段改造；全量 vet/race/it/st 串行 + SPA 绿；真机回归冒烟 9 项 ALL-PASS。CHANGELOG [Unreleased] Fixed 登记 |
+| v2.26 | 2026-10-30 | Mosaic 项目组 / ZCode | **定版 v0.6.1（负责人指令："发布"）——0.6 领域线第二件**。CHANGELOG [Unreleased]（Added 房间交办与 Dispatch 首切片 + Fixed 审校 1 P1 / 4 P2）定版 **[0.6.1] - 2026-10-30**，保留空 [Unreleased]；README 当前版本推进 v0.6.1、路线图 0.6 系列标注 0.6.0–0.6.1 已交付与 0.6.2 指向；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.6.1 + GitHub Release 发布说明与 Windows 产物（wails 按新版本字样重建）；CI 三平台绿基线（47811db 已验，定版提交复验） |
 | v2.15 | 2026-10-30 | Mosaic 项目组 / ZCode | **0.5.4 审校修复（独立审校报告：6 项 P2 全确认，未发现 P0/P1，"建议修复后定版"）——ADR-0021 v0.2 修订**。**(1) P2 prepare/retry 单事务**：门判定前置、建行直接落终态 + 两事件一次提交（中断零残留，不留 preparing 死记录）。**(2) P2 交接备注三处一致**：ready 直释与 draining 补终段的备注与状态/事件同事务入投影。**(3) P2 版本三态**：省略钉最新 / 显式 <1 → 400（不静默换最新）。**(4) P2 事件主体**：BindingEvent 类型（binding_id）替代 AgentEvent 借形。**(5) P2 前端最近交接**：按释放时间取最新（接口保持创建序）。**(6) P2 前端未加载中性提示**：不误报空缺。全量 vet/race/it/st + SPA 绿；真机回归冒烟 ALL-PASS |
 | v2.14 | 2026-10-29 | Mosaic 项目组 / ZCode | **0.5.4 开发（负责人指令："开发0.5.4版本"）——Binding 任职状态机与交接（ADR-0021）**。**(1) 设计先行**：ADR-0021（preparing/ready/active/draining/released/blocked 状态机；单 active 库级部分唯一索引兜底（AT-13）；固定模板版本；Readiness/Drain 双端口预埋（0.5.5/0.6 挂靠）；交接位 handoff_note）+ OpenAPI 契约冻结（六端点，apigen/TS 双链重生成）。**(2) 实现**：internal/slot/binding 域 + SQLite migration v11（slot_bindings 投影 + binding_events 流 + 部分唯一索引）；release 两段一事务（0.5.1 P2#4 教训前置规避）；Agent 前置校验两时点（AgentLookup 端口 app 装配注入）；httpapi 六端点；设置页实例行任职管理块。**(3) 验证**：测试先行（UT 9 例含双门注入 / IT v11 新库 + v0.5.3 真旧库升级 + 8 轮交替并发恒 1 在任 / 端点全链，先红后绿）；vet(it st) + -race 全量 + -tags it/st + SPA 绿；真机冒烟（全链 + 并发恰一在任 + 重启持久）ALL-PASS。CHANGELOG [Unreleased] 登记；定版与发布另行指令 |
 | v2.13 | 2026-10-29 | Mosaic 项目组 / ZCode | **定版 v0.5.3（负责人指令："发布"）——0.5 领域线第四件**。CHANGELOG [Unreleased]（Added SlotInstance 职责实例与独立知识命名空间 + Fixed 审校五项 P2）定版 **[0.5.3] - 2026-10-29**，保留空 [Unreleased]；README 当前版本推进 v0.5.3、路线图 0.5 系列标注 0.5.3 已交付；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.5.3 + GitHub Release 发布说明与 Windows 产物（wails 按新版本字样重建）；CI 三平台绿基线（870a136 已验，定版提交复验） |
