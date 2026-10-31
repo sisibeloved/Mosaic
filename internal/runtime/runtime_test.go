@@ -8,6 +8,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -246,7 +247,7 @@ func TestPrepareSemantics(t *testing.T) {
 	if err != nil || got.State != StateReady || got.EnvironmentID != env.EnvironmentID {
 		t.Fatalf("准备: %+v %v", got, err)
 	}
-	if len(f.fs.ensured) == 0 || f.fs.ensured[len(f.fs.ensured)-1] != "/data/ws-a" {
+	if len(f.fs.ensured) == 0 || f.fs.ensured[len(f.fs.ensured)-1] != filepath.Clean("/data/ws-a") {
 		t.Fatalf("工作区目录未确保：%v", f.fs.ensured)
 	}
 
@@ -405,7 +406,7 @@ func TestWorkspaceDirNormalization(t *testing.T) {
 		}
 	}
 	list, _ := f.svc.ListEnvironments(ctx)
-	if len(list) != 1 || list[0].WorkspaceDir != "/d/w" {
+	if len(list) != 1 || list[0].WorkspaceDir != filepath.Clean("/d/w") {
 		t.Fatalf("目录应规范化保存：%+v", list)
 	}
 }
