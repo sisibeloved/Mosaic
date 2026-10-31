@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Mission 暂停、恢复与取消**（0.6 领域第七件 / ADR-0029，RFC-0018 §3.2/§9.4/§11.2）：执行闭环的运行时控制面——执行一旦开始即可干预。
+  - **暂停/恢复**：`POST /v1/missions/{id}/pause`（ready | running → paused，CAS + reason）——持久状态先行即**阻止新调度**（调度器只取 ready，paused 天然出列；对 RFC §3.2 的一处增列：ready 可暂停——0.6.5 持久调度器周期派发 ready，"暂停先阻止新调度"要求 ready 可暂停）；来自 running 时在途 Run 在安全边界停止（结果拒收 + 围栏失效——Run 终态 `canceled` + `stop_requested{pause}` 审计 + 租约释放），响应不等停止完成。`POST /v1/missions/{id}/resume`（paused → ready）——调度器下一轮自动拾取，不重启已停止的 Run（canceled 终态留档，新执行 attempt 递增）。幂等：已 paused/ready（版本匹配）返回当前；draft 不可暂停（从未被调度）。
+  - **取消两段化**：`cancel` 端点扩义——非终态 → **canceling**（停止意图持久化先行，RFC §9.4"先持久化停止意图"）→ 停止在途 Run（有界等待缺省 10s，独立上下文——请求断开不丢终态翻转）→ **canceled**；无在途同步直达。超时返回 canceling（"待停止"可见——可重复 cancel 续驱；重启恢复分派兜底）——RFC §3.2"无法安全终止……显示待核验"。取消不抹去既有动作：已落库的 completed Run 与结果保留；canceled 不被迟到回调翻转。
+  - **执行脱离请求上下文**（行为变更）：每 Run 独立 Background 派生取消上下文（停止注册表 runID → {cancel, cause}）——HTTP 请求断开不再中止执行（执行是持久事实，中止只经控制面或进程退出）。
+  - **重启恢复按停止意图分派**：canceling → Run canceled（"停止请求在途时重启——结果未知"）+ 收尾兑现（→ canceled）；paused → Run canceled + 停 paused；其余照旧（failed 结果未知 + 停 running，禁止盲目重跑）。paused 跨重启持久且仍不入调度列。
+  - **迟到结果不落**：被放弃的执行 goroutine 结果经缓冲通道丢弃（围栏已随租约释放失效——无第二写入者）。
+  - **修订保持执行控制投影**：running/paused/canceling 中修订契约不回写 draft/ready（在途 Run 不静默换输入，停止/完成后下一 attempt 自然用新版本）——顺带修复 0.6.5 遗留投影缺陷（running 中修订会把状态覆写为 ready）。
+  - **执行器指令传透**：目标（objective）作为 instruction 入执行 Inline——目标即执行指令（受控执行桩/真实 CLI 均可消费）。
+  - **SPA**：任务详情控制区（暂停/恢复/取消/续驱停止按钮按状态呈现）+ paused/canceling 状态徽章与说明（停止进行中不掩盖、不通用重试）+ Run canceled 徽章。
+  - 契约面：MissionView/MissionSummary `status` 枚举 += paused, canceling；MissionRunView `state` 枚举 += canceled；MissionPause/MissionResume 请求体；无 migration（状态值扩展）。
+
 ## [0.6.5] - 2026-10-31
 
 ### Fixed

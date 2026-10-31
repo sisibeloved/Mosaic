@@ -23,8 +23,10 @@ const splitLines = (s: string): string[] =>
   s.split("\n").map((x) => x.trim()).filter(Boolean);
 
 function statusClass(status: string): string {
-  if (status === "ready") return "text-ok";
+  if (status === "ready" || status === "running") return "text-ok";
   if (status === "canceled") return "text-danger line-through";
+  // paused（阻止新调度）/ canceling（停止进行中）与 draft 同暖色系
+  if (status === "canceling") return "text-danger";
   return "text-warn";
 }
 
@@ -414,6 +416,12 @@ function MissionDetail({
         </p>
       </div>
       {msg && <p className="text-danger">{msg}</p>}
+      {detail.status === "canceling" && (
+        <p className="text-danger">停止进行中——在途 Run 终止后自动完成取消；若长时间停留可再点「续驱停止」，重启后由恢复分派兜底。</p>
+      )}
+      {detail.status === "paused" && (
+        <p className="text-warn">已暂停——不进入调度；在途执行已在安全边界停止（Run 记 canceled）。点「恢复」回到 ready 自动调度。</p>
+      )}
 
       {detail.status !== "canceled" && (
         <div className="flex flex-wrap items-center gap-2">
@@ -435,10 +443,40 @@ function MissionDetail({
           >
             {reviseOpen ? "收起修订" : "修订契约"}
           </button>
+          {(detail.status === "ready" || detail.status === "running") && (
+            <button
+              type="button"
+              disabled={busy || !owned}
+              onClick={() =>
+                void act(async () => {
+                  if (detail.mission_id !== missionID) throw new Error("详情未就绪，已阻止写入");
+                  await api.pauseMission(missionID, detail.contract_version, cancelReason.trim() || undefined);
+                })
+              }
+              className="rounded-lg bg-surface-3 px-2 py-1 disabled:opacity-40"
+            >
+              暂停
+            </button>
+          )}
+          {detail.status === "paused" && (
+            <button
+              type="button"
+              disabled={busy || !owned}
+              onClick={() =>
+                void act(async () => {
+                  if (detail.mission_id !== missionID) throw new Error("详情未就绪，已阻止写入");
+                  await api.resumeMission(missionID, detail.contract_version);
+                })
+              }
+              className="rounded-lg bg-accent px-2 py-1 text-accent-contrast disabled:opacity-40"
+            >
+              恢复
+            </button>
+          )}
           <input
             value={cancelReason}
             onChange={(e) => setCancelReason(e.target.value)}
-            placeholder="取消原因（可选，≤200 字）"
+            placeholder="取消/暂停原因（可选，≤200 字）"
             className="min-w-0 flex-1 rounded border border-border bg-surface-2 px-1.5 py-1 outline-none"
           />
           <button
@@ -452,7 +490,7 @@ function MissionDetail({
             }
             className="rounded-lg bg-surface-3 px-2 py-1 text-danger disabled:opacity-40"
           >
-            取消交办
+            {detail.status === "canceling" ? "续驱停止" : "取消交办"}
           </button>
         </div>
       )}
@@ -626,7 +664,8 @@ function MissionRunCard({ missionID, status, onChanged }: { missionID: string; s
     }
   };
 
-  const stateClass = (s: string) => (s === "completed" ? "text-ok" : s === "failed" ? "text-danger" : "text-warn");
+  const stateClass = (s: string) =>
+    s === "completed" ? "text-ok" : s === "failed" ? "text-danger" : s === "canceled" ? "text-dim line-through" : "text-warn";
 
   return (
     <details className="mt-1">

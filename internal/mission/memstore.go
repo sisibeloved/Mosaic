@@ -80,7 +80,38 @@ func (m *MemStore) ReviseMission(_ context.Context, missionID string, expectedVe
 	return next, true, nil
 }
 
-func (m *MemStore) CancelMission(_ context.Context, missionID string, expectedVersion int, reason, occurredAt string) (Mission, bool, error) {
+// PauseMission CAS 暂停（存储面只认 ready/running——幂等先读在服务层）。
+func (m *MemStore) PauseMission(_ context.Context, missionID string, expectedVersion int, reason, occurredAt string) (Mission, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx, ok := m.indexOfLocked(missionID)
+	if !ok {
+		return Mission{}, false, ErrMissionNotFound
+	}
+	cur := m.missions[idx]
+	if cur.ContractVersion != expectedVersion || (cur.Status != StatusReady && cur.Status != StatusRunning) {
+		return Mission{}, false, nil
+	}
+	return m.flipStatusLocked(idx, cur.Status, StatusPaused, reason, occurredAt), true, nil
+}
+
+// ResumeMission CAS 恢复（paused → ready）。
+func (m *MemStore) ResumeMission(_ context.Context, missionID string, expectedVersion int, occurredAt string) (Mission, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx, ok := m.indexOfLocked(missionID)
+	if !ok {
+		return Mission{}, false, ErrMissionNotFound
+	}
+	cur := m.missions[idx]
+	if cur.ContractVersion != expectedVersion || cur.Status != StatusPaused {
+		return Mission{}, false, nil
+	}
+	return m.flipStatusLocked(idx, cur.Status, StatusReady, "", occurredAt), true, nil
+}
+
+// MarkCanceling CAS 停止意图（非终态 → canceling）。
+func (m *MemStore) MarkCanceling(_ context.Context, missionID string, expectedVersion int, reason, occurredAt string) (Mission, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	idx, ok := m.indexOfLocked(missionID)
@@ -91,16 +122,37 @@ func (m *MemStore) CancelMission(_ context.Context, missionID string, expectedVe
 	if cur.ContractVersion != expectedVersion || cur.Status == StatusCanceled {
 		return Mission{}, false, nil
 	}
-	prevStatus := cur.Status
-	cur.Status = StatusCanceled
+	return m.flipStatusLocked(idx, cur.Status, StatusCanceling, reason, occurredAt), true, nil
+}
+
+// FinishCancel 收尾（canceling → canceled，无版本守卫）。
+func (m *MemStore) FinishCancel(_ context.Context, missionID, reason, occurredAt string) (Mission, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx, ok := m.indexOfLocked(missionID)
+	if !ok {
+		return Mission{}, false, ErrMissionNotFound
+	}
+	cur := m.missions[idx]
+	if cur.Status != StatusCanceling {
+		return Mission{}, false, nil
+	}
+	return m.flipStatusLocked(idx, cur.Status, StatusCanceled, reason, occurredAt), true, nil
+}
+
+// flipStatusLocked 条件状态转移 + status_changed 事件（调用方持锁并已
+// 完成 CAS 前置判定）。
+func (m *MemStore) flipStatusLocked(idx int, from, to, reason, occurredAt string) Mission {
+	cur := m.missions[idx]
+	cur.Status = to
 	cur.UpdatedAt = occurredAt
 	m.missions[idx] = cur
-	payload := map[string]string{"from": prevStatus, "to": StatusCanceled}
+	payload := map[string]string{"from": from, "to": to}
 	if reason != "" {
 		payload["reason"] = reason
 	}
-	m.appendEventLocked(missionID, EventStatusChanged, payload, occurredAt)
-	return cur, true, nil
+	m.appendEventLocked(cur.MissionID, EventStatusChanged, payload, occurredAt)
+	return cur
 }
 
 func (m *MemStore) MissionByID(_ context.Context, missionID string) (Mission, bool, error) {

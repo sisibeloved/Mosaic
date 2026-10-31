@@ -592,10 +592,24 @@ export const api = {
   reviseMission(missionID: string, req: MissionReviseRequest): Promise<MissionView> {
     return post(`/v1/missions/${encodeURIComponent(missionID)}/revise`, req);
   },
+  /** 0.6.6 取消（两段）：响应可为 canceled（已停止/无在途）或 canceling（停止进行中——轮询/续驱）。 */
   cancelMission(missionID: string, expectedVersion: number, reason?: string): Promise<MissionView> {
     return post(`/v1/missions/${encodeURIComponent(missionID)}/cancel`, {
       expected_version: expectedVersion,
       ...(reason ? { reason } : {}),
+    });
+  },
+  /** 0.6.6 暂停：ready|running → paused（阻止新调度 + 在途 Run 安全边界停止）。 */
+  pauseMission(missionID: string, expectedVersion: number, reason?: string): Promise<MissionView> {
+    return post(`/v1/missions/${encodeURIComponent(missionID)}/pause`, {
+      expected_version: expectedVersion,
+      ...(reason ? { reason } : {}),
+    });
+  },
+  /** 0.6.6 恢复：paused → ready（调度器自动拾取）。 */
+  resumeMission(missionID: string, expectedVersion: number): Promise<MissionView> {
+    return post(`/v1/missions/${encodeURIComponent(missionID)}/resume`, {
+      expected_version: expectedVersion,
     });
   },
   listMissionVersions(missionID: string): Promise<{ versions: MissionView[] }> {

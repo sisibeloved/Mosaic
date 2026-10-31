@@ -2,6 +2,9 @@
 // Mission 是可验收的一次交办——独立事实源，归 Workspace，不挂 Room。
 // 契约带版本（不可变版本行，修订即追加）；修订/取消经 expected_version
 // CAS（AT-13 并发冲突明确拒绝）；契约状态子集 draft/ready/canceled。
+//
+// 0.6.6 / ADR-0029 增执行控制态：paused（阻止新调度）与 canceling（停止
+// 中间态）——控制命令不递增 contract_version（执行投影，非契约修订）。
 package mission
 
 import (
@@ -27,6 +30,16 @@ const (
 	// Run 终态回 ready（可再执行）。非契约生命周期状态——不经 Revise/Cancel
 	// 的完备性判定，由 run 域经 MarkRunning/MarkReadyFromRunning 投影。
 	StatusRunning = "running"
+	// StatusPaused 执行控制态（0.6.6 / ADR-0029）：ready | running → paused
+	// （阻止新调度——ListReady 只取 ready）；在途 Run 由控制面停止（Run →
+	// canceled）；paused → ready（resume——调度器自动拾取）。对 RFC §3.2
+	// 的一处增列：ready 可暂停（持久调度器周期派发 ready——"暂停先阻止
+	// 新调度"要求 ready 可暂停）。
+	StatusPaused = "paused"
+	// StatusCanceling 取消中间态（0.6.6 / ADR-0029）：非终态 → canceling
+	// （停止意图持久化先行）→ 在途 Run 停止后 → canceled。可长期停留
+	// （执行器不响应取消时——"待停止"可见，可续驱，重启恢复兜底）。
+	StatusCanceling = "canceling"
 )
 
 // 事件类型（mission_events 流）。
@@ -160,9 +173,21 @@ type Store interface {
 	// + contract_revised（及完备性变化时 status_changed）事件，单事务；
 	// ok=false = 版本不匹配或已终态（服务方重读区分）。
 	ReviseMission(ctx context.Context, missionID string, expectedVersion int, next Mission) (Mission, bool, error)
-	// Cancel CAS 取消：contract_version 匹配且非终态才置 canceled +
-	// status_changed（含 reason）事件，单事务；ok=false 同上。
-	CancelMission(ctx context.Context, missionID string, expectedVersion int, reason, occurredAt string) (Mission, bool, error)
+	// PauseMission CAS 暂停（0.6.6 / ADR-0029）：contract_version 匹配且
+	// status ∈ (ready, running) → paused + status_changed（from/to/reason）
+	// 事件，单事务；ok=false = 版本不匹配/状态不合法/未知（服务方重读区分；
+	// 幂等由服务层先读实现——存储面只认 ready/running）。
+	PauseMission(ctx context.Context, missionID string, expectedVersion int, reason, occurredAt string) (Mission, bool, error)
+	// ResumeMission CAS 恢复：contract_version 匹配且 status = paused →
+	// ready + status_changed 事件，单事务；ok=false 同上。
+	ResumeMission(ctx context.Context, missionID string, expectedVersion int, occurredAt string) (Mission, bool, error)
+	// MarkCanceling CAS 停止意图：contract_version 匹配且非终态 → canceling +
+	// status_changed（含 reason）事件，单事务；ok=false = 版本不匹配/终态/
+	// 未知（canceling 续驱幂等由服务层先读实现）。
+	MarkCanceling(ctx context.Context, missionID string, expectedVersion int, reason, occurredAt string) (Mission, bool, error)
+	// FinishCancel 收尾：canceling → canceled + status_changed 事件，单事务
+	// （无版本守卫——控制序由服务层持有）；ok=false = 非 canceling/未知。
+	FinishCancel(ctx context.Context, missionID, reason, occurredAt string) (Mission, bool, error)
 	// MissionByID 单查契约；未知 ok=false。
 	MissionByID(ctx context.Context, missionID string) (Mission, bool, error)
 	// List 契约摘要（创建序）。
@@ -286,7 +311,8 @@ func (s *Service) checkSource(ctx context.Context, src *RoomSource) error {
 
 // Revise 修订契约（= revise_mission）：全量替换 + 版本追加；expected_version
 // CAS——败者 ErrVersionConflict（可见重试）；终态拒修订；完备性重判
-// （draft ↔ ready 双向，事件留痕）。
+// （draft ↔ ready 双向，事件留痕）；执行控制投影保持（running/paused/
+// canceling 中修订不改执行状态——ADR-0029 决策 5）。
 func (s *Service) Revise(ctx context.Context, missionID string, expectedVersion int, ownerAgentID string, c Content) (Mission, error) {
 	if err := ValidateContent(c); err != nil {
 		return Mission{}, err
@@ -311,6 +337,13 @@ func (s *Service) Revise(ctx context.Context, missionID string, expectedVersion 
 	next.OwnerAgentID = strings.TrimSpace(ownerAgentID)
 	next.Content = normalizeContent(c)
 	next.Status = statusOf(next)
+	// 0.6.6 / ADR-0029 决策 5：执行控制投影保持——running/paused/canceling
+	// 中修订不回写 draft/ready（在途 Run 不静默换输入；停止/完成后下一
+	// attempt 自然用新版本）。
+	switch cur.Status {
+	case StatusRunning, StatusPaused, StatusCanceling:
+		next.Status = cur.Status
+	}
 	next.UpdatedAt = s.now()
 	out, ok2, err := s.store.ReviseMission(ctx, missionID, expectedVersion, next)
 	if err != nil {
@@ -322,20 +355,136 @@ func (s *Service) Revise(ctx context.Context, missionID string, expectedVersion 
 	return out, nil
 }
 
-// Cancel 取消（= cancel_mission）：0.6.0 无在途工作单步终态（在途处置版
-// 随 0.6.6）；CAS + 原因入事件；终态幂等拒绝（不翻转、不重复记事件）。
-func (s *Service) Cancel(ctx context.Context, missionID string, expectedVersion int, reason string) (Mission, error) {
+// Cancel 取消（= cancel_mission，0.6.0 单步版）——0.6.6 起取消为两段
+// （MarkCanceling → 在途停止 → FinishCancel），编排经 missioncontrol；
+// 本方法移除（单一通往 canceled 的路径——防两条路径语义漂移）。
+
+// Pause 暂停（= pause_mission，0.6.6 / ADR-0029）：ready | running →
+// paused（执行控制态——阻止新调度）；与调度器 SetRunning 竞态由 CAS 条件
+// 更新串行化（≤3 次重读重试）。幂等：已 paused（版本匹配）返回当前。
+// draft 不可暂停（从未被调度）；canceled/canceling 拒绝。
+func (s *Service) Pause(ctx context.Context, missionID string, expectedVersion int, reason string) (Mission, error) {
 	if utf8.RuneCountInString(reason) > 200 {
 		return Mission{}, fmt.Errorf("%w: reason ≤200 字", ErrInvalidMission)
 	}
-	out, ok, err := s.store.CancelMission(ctx, missionID, expectedVersion, reason, s.now())
+	for attempt := 0; attempt < 3; attempt++ {
+		cur, ok, err := s.store.MissionByID(ctx, missionID)
+		if err != nil {
+			return Mission{}, err
+		}
+		if !ok {
+			return Mission{}, ErrMissionNotFound
+		}
+		switch cur.Status {
+		case StatusPaused:
+			if cur.ContractVersion != expectedVersion {
+				return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
+			}
+			return cur, nil // 幂等：重试安全
+		case StatusReady, StatusRunning:
+			out, ok2, err := s.store.PauseMission(ctx, missionID, expectedVersion, reason, s.now())
+			if err != nil {
+				return Mission{}, err
+			}
+			if ok2 {
+				return out, nil
+			}
+			continue // 状态被并发改（如 SetRunning 抢先）——重读重试
+		default:
+			// draft（从未被调度）/ canceled / canceling
+			return Mission{}, fmt.Errorf("%w: %s 不可暂停", ErrInvalidTransition, cur.Status)
+		}
+	}
+	return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
+}
+
+// Resume 恢复（= resume_mission）：paused → ready——此后调度器自动拾取
+// （不重启已停止的 Run：canceled 终态留档，新执行 attempt 递增）。幂等：
+// 已 ready（版本匹配）返回当前；其余状态拒绝。
+func (s *Service) Resume(ctx context.Context, missionID string, expectedVersion int) (Mission, error) {
+	cur, ok, err := s.store.MissionByID(ctx, missionID)
 	if err != nil {
 		return Mission{}, err
 	}
 	if !ok {
+		return Mission{}, ErrMissionNotFound
+	}
+	switch cur.Status {
+	case StatusReady:
+		if cur.ContractVersion != expectedVersion {
+			return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
+		}
+		return cur, nil // 幂等：重试安全
+	case StatusPaused:
+		out, ok2, err := s.store.ResumeMission(ctx, missionID, expectedVersion, s.now())
+		if err != nil {
+			return Mission{}, err
+		}
+		if ok2 {
+			return out, nil
+		}
+		return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
+	default:
+		return Mission{}, fmt.Errorf("%w: %s 不可恢复", ErrInvalidTransition, cur.Status)
+	}
+}
+
+// MarkCanceling 停止意图（= cancel_mission 第一段）：非终态 → canceling；
+// 在途 Run 停止由控制编排（missioncontrol）驱动。幂等：已 canceling
+// （版本匹配）返回当前（续驱）；canceled 拒绝（终态幂等拒绝——0.6.0
+// 语义不变）。
+func (s *Service) MarkCanceling(ctx context.Context, missionID string, expectedVersion int, reason string) (Mission, error) {
+	if utf8.RuneCountInString(reason) > 200 {
+		return Mission{}, fmt.Errorf("%w: reason ≤200 字", ErrInvalidMission)
+	}
+	cur, ok, err := s.store.MissionByID(ctx, missionID)
+	if err != nil {
+		return Mission{}, err
+	}
+	if !ok {
+		return Mission{}, ErrMissionNotFound
+	}
+	if cur.Status == StatusCanceling {
+		if cur.ContractVersion != expectedVersion {
+			return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
+		}
+		return cur, nil // 续驱幂等
+	}
+	if cur.Status == StatusCanceled {
+		return Mission{}, fmt.Errorf("%w: canceled 不可再取消", ErrInvalidTransition)
+	}
+	out, ok2, err := s.store.MarkCanceling(ctx, missionID, expectedVersion, reason, s.now())
+	if err != nil {
+		return Mission{}, err
+	}
+	if !ok2 {
 		return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
 	}
 	return out, nil
+}
+
+// FinishCancel 收尾（= cancel_mission 第二段）：canceling → canceled（在途
+// Run 已全部停止后由控制编排调用）。幂等：已 canceled 返回当前；非
+// canceling 拒绝。
+func (s *Service) FinishCancel(ctx context.Context, missionID, reason string) (Mission, error) {
+	out, ok, err := s.store.FinishCancel(ctx, missionID, reason, s.now())
+	if err != nil {
+		return Mission{}, err
+	}
+	if ok {
+		return out, nil
+	}
+	cur, found, err := s.store.MissionByID(ctx, missionID)
+	if err != nil {
+		return Mission{}, err
+	}
+	if !found {
+		return Mission{}, ErrMissionNotFound
+	}
+	if cur.Status == StatusCanceled {
+		return cur, nil // 幂等：重试安全
+	}
+	return Mission{}, fmt.Errorf("%w: %s 不可收尾", ErrInvalidTransition, cur.Status)
 }
 
 // MarkRunning 执行投影：ready → running（run 域创建 Run 后调用；仅

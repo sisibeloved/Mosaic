@@ -205,19 +205,23 @@ func TestReviseCompletenessTransition(t *testing.T) {
 	}
 }
 
-// TestCancelTerminal 取消终态：CAS 正确 → canceled（原因入事件）；重复取消/
+// TestCancelTerminal 取消终态（0.6.6 两段）：停止意图 CAS → 收尾 canceled
+// （原因入事件）；重复取消/
 // 终态修订/错误版本 → 对应可见拒绝。
 func TestCancelTerminal(t *testing.T) {
 	svc, _ := newSvc(t, fakeAgents{ids: map[string]bool{"ag_a": true}})
 	ctx := context.Background()
 	m, _ := svc.Create(ctx, "ag_a", fullContent(), nil)
 
-	if _, err := svc.Cancel(ctx, m.MissionID, 9, ""); !errors.Is(err, ErrVersionConflict) {
+	if _, err := svc.MarkCanceling(ctx, m.MissionID, 9, ""); !errors.Is(err, ErrVersionConflict) {
 		t.Fatalf("错误版本应冲突: %v", err)
 	}
-	out, err := svc.Cancel(ctx, m.MissionID, 1, "计划变更")
+	if _, err := svc.MarkCanceling(ctx, m.MissionID, 1, "计划变更"); err != nil {
+		t.Fatalf("停止意图: %v", err)
+	}
+	out, err := svc.FinishCancel(ctx, m.MissionID, "计划变更")
 	if err != nil || out.Status != StatusCanceled {
-		t.Fatalf("取消: %+v %v", out, err)
+		t.Fatalf("收尾: %+v %v", out, err)
 	}
 	evs, _, _ := svc.MissionEvents(ctx, m.MissionID)
 	last := evs[len(evs)-1]
@@ -225,7 +229,7 @@ func TestCancelTerminal(t *testing.T) {
 		t.Fatalf("原因应入事件: %s", last.Payload)
 	}
 
-	if _, err := svc.Cancel(ctx, m.MissionID, 1, ""); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := svc.MarkCanceling(ctx, m.MissionID, 1, ""); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("重复取消应转移拒绝: %v", err)
 	}
 	if _, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", fullContent()); !errors.Is(err, ErrInvalidTransition) {

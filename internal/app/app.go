@@ -43,6 +43,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/extdocs"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/mission"
+	"github.com/sisibeloved/Mosaic/internal/missioncontrol"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
@@ -420,6 +421,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Execctx:          execCtxSvc,
 		Runtimes:         runtimeSvc,
 		MissionRuns:      runSvc,
+		MissionControl:   missioncontrol.New(missionSvc, runSvc),
 		Logger:           logger,
 		Dev:              opts.Dev,
 		Budget:           budgetLimits,
@@ -893,6 +895,21 @@ func (a runMissionsAdapter) SetReadyFromRunning(ctx context.Context, missionID, 
 	return a.svc.MarkReadyFromRunning(ctx, missionID, reason)
 }
 
+// StatusOf 恢复分派用（0.6.6 / ADR-0029 决策 4）：按停止意图定 Run 处置。
+func (a runMissionsAdapter) StatusOf(ctx context.Context, missionID string) (string, bool, error) {
+	m, ok, err := a.svc.Get(ctx, missionID)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	return m.Status, true, nil
+}
+
+// FinishCanceling 重启时停止意图兑现收尾（canceling → canceled；幂等）。
+func (a runMissionsAdapter) FinishCanceling(ctx context.Context, missionID, reason string) error {
+	_, err := a.svc.FinishCancel(ctx, missionID, reason)
+	return err
+}
+
 // runBindingsAdapter missionrun.Bindings 的职责域适配：owner 的 active
 // Binding 解析（slot.Service 单源）。
 type runBindingsAdapter struct{ slots *slot.Service }
@@ -1037,6 +1054,11 @@ func (e supervisorExecutor) Submit(ctx context.Context, in missionrun.ExecutionI
 				break
 			}
 		}
+	}
+	// instruction（0.6.6）：目标即执行指令——执行面（如 slowrun 受控桩按
+	// "SLEEP <秒>" 标记控制时长）与真实 CLI 均可消费；契约正文已在 Inline。
+	if obj, _ := in.Inline["objective"].(string); obj != "" {
+		in.Inline["instruction"] = obj
 	}
 	profile := agent.Profile{
 		ProfileID: in.AgentID, Adapter: adapterName, DisplayName: in.AgentID,

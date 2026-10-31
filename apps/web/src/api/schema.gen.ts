@@ -1423,11 +1423,66 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 取消 Mission（CAS；唯一终态）
-         * @description 0.6.0 无在途工作，draft/ready 单步至 canceled（在途处置版随
-         *     0.6.6）；canceled 不被修订或迟到回调翻转（§3.2）。
+         * 取消 Mission（CAS；两段：canceling → canceled）
+         * @description 0.6.6 / ADR-0029 在途处置版：非终态（draft/ready/running/paused）
+         *     先持久化停止意图 → canceling，再停止在途 Run（有界等待缺省 10s）
+         *     后进 canceled。响应 status 可为 canceled（已停止/无在途）或
+         *     canceling（停止进行中——执行器未响应取消，客户端轮询任务详情或
+         *     重复 cancel 续驱；重启后由恢复分派终理化）。无在途 Run 时
+         *     canceling → canceled 同步直达。canceled 不被修订或迟到回调翻转
+         *     （§3.2）；已终态重复取消 409 invalid_transition。取消不抹去既有
+         *     动作——已落库的 completed Run 与结果保留。
          */
         post: operations["cancelMission"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/missions/{mission_id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 暂停 Mission（CAS；阻止新调度 + 在途 Run 安全边界停止）
+         * @description 0.6.6 / ADR-0029：ready | running → paused（执行控制态，不递增
+         *     contract_version）。持久状态先行——paused 即出调度列（ListReady
+         *     只取 ready），再停止在途 Run（结果拒收 + 围栏失效——Run 终态
+         *     canceled，stop_requested{pause} 审计）。来自 running 时在途 Run
+         *     异步终理化（响应不等停止完成——paused 已持久即已阻止新调度）。
+         *     paused → resume 恢复。幂等：已 paused（版本匹配）返回当前；
+         *     draft 不可暂停（从未被调度）；canceled/canceling 拒绝。
+         */
+        post: operations["pauseMission"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/missions/{mission_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 恢复 Mission（CAS；paused → ready）
+         * @description 0.6.6 / ADR-0029：paused → ready——此后持久调度器自动拾取（不
+         *     重启已停止的 Run：被停止的尝试已以 canceled 终态留档，新执行
+         *     attempt 自然递增）。幂等：已 ready（版本匹配）返回当前；
+         *     非 paused 拒绝（invalid_transition）。
+         */
+        post: operations["resumeMission"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3683,8 +3738,9 @@ export interface components {
             reason: string;
         };
         /**
-         * @description Run（一次执行尝试，ADR-0028）：state ∈ pending | running |
-         *     completed | failed（unknown/暂停随 0.6.7/0.6.6）。attempt 同
+         * @description Run（一次执行尝试，ADR-0028/0029）：state ∈ pending | running |
+         *     completed | failed | canceled（0.6.6 暂停/取消停止；unknown 随
+         *     0.6.7）。attempt 同
          *     Mission 递增；每 Mission 至多一个未终态。result_block 为正文
          *     截断存档（≤8000 字——完整交付物随 0.6.8）；fence_rejected 的
          *     迟到结果不落（见 run_events 审计）。
@@ -3702,7 +3758,7 @@ export interface components {
             binding_id: string;
             agent_id: string;
             /** @enum {string} */
-            state: "pending" | "running" | "completed" | "failed";
+            state: "pending" | "running" | "completed" | "failed" | "canceled";
             /** @description 失败原因（截断 1000 字；成功为空） */
             error_text: string;
             /** @description 结果正文截断存档（≤8000 字；未完成为空） */
@@ -3821,11 +3877,23 @@ export interface components {
             delegation?: components["schemas"]["DelegationPolicy"];
             reviewer?: string;
         };
-        /** @description 取消请求体（0.6.0 无在途工作单步终态；在途处置版随 0.6.6）。 */
+        /** @description 取消请求体（0.6.6 / ADR-0029：两段取消——先 canceling 持久化停止意图，在途 Run 停止后进 canceled）。 */
         MissionCancel: {
             expected_version: number;
             /** @description 可选原因（记入 status_changed 事件 payload） */
             reason?: string;
+        };
+        /** @description 暂停请求体（0.6.6 / ADR-0029：ready | running → paused；阻止新调度 + 在途 Run 安全边界停止）。 */
+        MissionPause: {
+            /** @description 调用方所见 contract_version；不匹配 409 version_conflict */
+            expected_version: number;
+            /** @description 可选原因（记入 status_changed 事件 payload） */
+            reason?: string;
+        };
+        /** @description 恢复请求体（0.6.6 / ADR-0029：paused → ready——调度器自动拾取）。 */
+        MissionResume: {
+            /** @description 调用方所见 contract_version；不匹配 409 version_conflict */
+            expected_version: number;
         };
         /**
          * @description Mission 契约（ADR-0023 / 0.6.0 + ADR-0024 房间来源 / 0.6.1）。
@@ -3842,7 +3910,7 @@ export interface components {
             /** @description 当前契约版本（修订 +1） */
             contract_version: number;
             /** @enum {string} */
-            status: "draft" | "ready" | "running" | "canceled";
+            status: "draft" | "ready" | "running" | "paused" | "canceling" | "canceled";
             /** @description 负责人（空 = 显式 unassigned，§3.3 不变量） */
             owner_agent_id: string;
             /** @description 请求人（0.6.0 恒 owner——本地单用户） */
@@ -3871,7 +3939,7 @@ export interface components {
             mission_id: string;
             contract_version: number;
             /** @enum {string} */
-            status: "draft" | "ready" | "running" | "canceled";
+            status: "draft" | "ready" | "running" | "paused" | "canceling" | "canceled";
             owner_agent_id: string;
             objective: string;
             /** Format: date-time */
@@ -7231,7 +7299,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description 已取消 */
+            /** @description 已取消（canceled）或停止进行中（canceling——待在途 Run 终止后进终态） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7262,6 +7330,127 @@ export interface operations {
             413: components["responses"]["TooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             /** @description Mission 域未装配（mission_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    pauseMission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MissionPause"];
+            };
+        };
+        responses: {
+            /** @description 已暂停（或在途 Run 停止异步进行中——Mission 已 paused） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionView"];
+                };
+            };
+            /** @description reason 超限（invalid_mission） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 版本冲突（version_conflict）或状态不合法（invalid_transition） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description Mission 控制面未装配（mission_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    resumeMission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MissionResume"];
+            };
+        };
+        responses: {
+            /** @description 已恢复（ready——调度器下一轮自动拾取） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 版本冲突（version_conflict）或状态不合法（invalid_transition） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description Mission 控制面未装配（mission_unavailable） */
             503: {
                 headers: {
                     [name: string]: unknown;

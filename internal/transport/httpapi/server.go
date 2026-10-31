@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sisibeloved/Mosaic/internal/agent"
 	"github.com/sisibeloved/Mosaic/internal/attach"
@@ -43,6 +44,18 @@ import (
 )
 
 // Deps 传输层依赖。
+// MissionControl 任务控制编排端口（0.6.6 / ADR-0029）：暂停/恢复/取消
+// （两段）——实现组合 mission 域 CAS 与 run 域停止面（internal/missioncontrol）。
+type MissionControl interface {
+	// PauseMission ready|running → paused（阻止新调度 + 在途 Run 停止信号）。
+	PauseMission(ctx context.Context, missionID string, expectedVersion int, reason string) (mission.Mission, error)
+	// ResumeMission paused → ready（调度器自动拾取）。
+	ResumeMission(ctx context.Context, missionID string, expectedVersion int) (mission.Mission, error)
+	// CancelMission 非终态 → canceling → （在途停止后）canceled；超时返回
+	// canceling（待停止——可续驱）。
+	CancelMission(ctx context.Context, missionID string, expectedVersion int, reason string) (mission.Mission, error)
+}
+
 type Deps struct {
 	SVC    *room.Service
 	Reader room.EventReader
@@ -65,7 +78,11 @@ type Deps struct {
 	Runtimes *mosaicruntime.Service
 	// MissionRuns Mission 执行域（RFC-0018 §10.2 / ADR-0028，0.6.5；nil 时端点 503）。
 	MissionRuns *missionrun.Service
-	Logger      *slog.Logger
+	// MissionControl 任务控制编排（RFC-0018 §3.2/§11.2 / ADR-0029，0.6.6）：
+	// mission 状态机 CAS + run 停止面组合（app 注入 missioncontrol 服务；
+	// nil 时 pause/resume/cancel 端点 503）。
+	MissionControl MissionControl
+	Logger         *slog.Logger
 	// 开发者模式（M1 v1.8）：Dev 开启才注册 /v1/debug 只读端点与 UI 调试面板。
 	Dev    bool
 	Budget contextx.Limits         // 预算上限（状态端点的水位/梯度计算基准）
@@ -1938,9 +1955,10 @@ func (s *server) ReviseMission(w http.ResponseWriter, r *http.Request, missionID
 	writeJSON(w, http.StatusOK, missionView(m))
 }
 
-// CancelMission 取消（CAS；唯一终态）。
+// CancelMission 取消（两段：canceling → 在途停止 → canceled；0.6.6 /
+// ADR-0029 经控制编排——超时返回 canceling 待续驱）。
 func (s *server) CancelMission(w http.ResponseWriter, r *http.Request, missionID string) {
-	if s.missionUnavailable(w) {
+	if s.controlUnavailable(w) {
 		return
 	}
 	if !s.guardWrite(w, r, true) {
@@ -1963,12 +1981,96 @@ func (s *server) CancelMission(w http.ResponseWriter, r *http.Request, missionID
 		writeError(w, http.StatusBadRequest, "invalid_mission", "expected_version 须 ≥1")
 		return
 	}
-	m, err := s.deps.Missions.Cancel(r.Context(), missionID, int(req.ExpectedVersion), derefStr(req.Reason))
+	if n := utf8.RuneCountInString(derefStr(req.Reason)); n > 200 {
+		writeError(w, http.StatusBadRequest, "invalid_mission", "reason ≤200 字")
+		return
+	}
+	m, err := s.deps.MissionControl.CancelMission(r.Context(), missionID, int(req.ExpectedVersion), derefStr(req.Reason))
 	if err != nil {
 		writeMissionError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, missionView(m))
+}
+
+// PauseMission 暂停（0.6.6 / ADR-0029：ready|running → paused——阻止新
+// 调度 + 在途 Run 停止信号，响应不等停止完成）。
+func (s *server) PauseMission(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.controlUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.MissionPause
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	if req.ExpectedVersion < 1 {
+		writeError(w, http.StatusBadRequest, "invalid_mission", "expected_version 须 ≥1")
+		return
+	}
+	if n := utf8.RuneCountInString(derefStr(req.Reason)); n > 200 {
+		writeError(w, http.StatusBadRequest, "invalid_mission", "reason ≤200 字")
+		return
+	}
+	m, err := s.deps.MissionControl.PauseMission(r.Context(), missionID, int(req.ExpectedVersion), derefStr(req.Reason))
+	if err != nil {
+		writeMissionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, missionView(m))
+}
+
+// ResumeMission 恢复（0.6.6 / ADR-0029：paused → ready——调度器自动拾取）。
+func (s *server) ResumeMission(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.controlUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.MissionResume
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	if req.ExpectedVersion < 1 {
+		writeError(w, http.StatusBadRequest, "invalid_mission", "expected_version 须 ≥1")
+		return
+	}
+	m, err := s.deps.MissionControl.ResumeMission(r.Context(), missionID, int(req.ExpectedVersion))
+	if err != nil {
+		writeMissionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, missionView(m))
+}
+
+// controlUnavailable 控制编排未装配门（503）。
+func (s *server) controlUnavailable(w http.ResponseWriter) bool {
+	if s.deps.MissionControl == nil {
+		writeError(w, http.StatusServiceUnavailable, "mission_unavailable", "任务控制面未装配")
+		return true
+	}
+	return false
 }
 
 // ListMissionVersions 不可变版本列表（升序）。

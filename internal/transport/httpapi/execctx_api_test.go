@@ -254,8 +254,11 @@ func TestExecctxEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("建 Mission2: %v", err)
 	}
-	if _, err := mSvc.Cancel(ctx, ag2.MissionID, 1, "不再需要"); err != nil {
-		t.Fatalf("取消: %v", err)
+	if _, err := mSvc.MarkCanceling(ctx, ag2.MissionID, 1, "不再需要"); err != nil {
+		t.Fatalf("停止意图: %v", err)
+	}
+	if _, err := mSvc.FinishCancel(ctx, ag2.MissionID, "不再需要"); err != nil {
+		t.Fatalf("收尾: %v", err)
 	}
 	resp = postSlot(t, ts.URL+"/v1/missions/"+ag2.MissionID+"/context-manifests", `{"binding_id":"bd_act"}`)
 	if code, _ := errOf(t, resp); resp.StatusCode != http.StatusConflict || code != "mission_canceled" {

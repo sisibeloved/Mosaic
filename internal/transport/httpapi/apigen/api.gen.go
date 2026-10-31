@@ -812,6 +812,7 @@ func (e MissionRunEventEventType) Valid() bool {
 
 // Defines values for MissionRunViewState.
 const (
+	MissionRunViewStateCanceled  MissionRunViewState = "canceled"
 	MissionRunViewStateCompleted MissionRunViewState = "completed"
 	MissionRunViewStateFailed    MissionRunViewState = "failed"
 	MissionRunViewStatePending   MissionRunViewState = "pending"
@@ -821,6 +822,8 @@ const (
 // Valid indicates whether the value is a known member of the MissionRunViewState enum.
 func (e MissionRunViewState) Valid() bool {
 	switch e {
+	case MissionRunViewStateCanceled:
+		return true
 	case MissionRunViewStateCompleted:
 		return true
 	case MissionRunViewStateFailed:
@@ -836,10 +839,12 @@ func (e MissionRunViewState) Valid() bool {
 
 // Defines values for MissionSummaryStatus.
 const (
-	MissionSummaryStatusCanceled MissionSummaryStatus = "canceled"
-	MissionSummaryStatusDraft    MissionSummaryStatus = "draft"
-	MissionSummaryStatusReady    MissionSummaryStatus = "ready"
-	MissionSummaryStatusRunning  MissionSummaryStatus = "running"
+	MissionSummaryStatusCanceled  MissionSummaryStatus = "canceled"
+	MissionSummaryStatusCanceling MissionSummaryStatus = "canceling"
+	MissionSummaryStatusDraft     MissionSummaryStatus = "draft"
+	MissionSummaryStatusPaused    MissionSummaryStatus = "paused"
+	MissionSummaryStatusReady     MissionSummaryStatus = "ready"
+	MissionSummaryStatusRunning   MissionSummaryStatus = "running"
 )
 
 // Valid indicates whether the value is a known member of the MissionSummaryStatus enum.
@@ -847,7 +852,11 @@ func (e MissionSummaryStatus) Valid() bool {
 	switch e {
 	case MissionSummaryStatusCanceled:
 		return true
+	case MissionSummaryStatusCanceling:
+		return true
 	case MissionSummaryStatusDraft:
+		return true
+	case MissionSummaryStatusPaused:
 		return true
 	case MissionSummaryStatusReady:
 		return true
@@ -860,10 +869,12 @@ func (e MissionSummaryStatus) Valid() bool {
 
 // Defines values for MissionViewStatus.
 const (
-	MissionViewStatusCanceled MissionViewStatus = "canceled"
-	MissionViewStatusDraft    MissionViewStatus = "draft"
-	MissionViewStatusReady    MissionViewStatus = "ready"
-	MissionViewStatusRunning  MissionViewStatus = "running"
+	MissionViewStatusCanceled  MissionViewStatus = "canceled"
+	MissionViewStatusCanceling MissionViewStatus = "canceling"
+	MissionViewStatusDraft     MissionViewStatus = "draft"
+	MissionViewStatusPaused    MissionViewStatus = "paused"
+	MissionViewStatusReady     MissionViewStatus = "ready"
+	MissionViewStatusRunning   MissionViewStatus = "running"
 )
 
 // Valid indicates whether the value is a known member of the MissionViewStatus enum.
@@ -871,7 +882,11 @@ func (e MissionViewStatus) Valid() bool {
 	switch e {
 	case MissionViewStatusCanceled:
 		return true
+	case MissionViewStatusCanceling:
+		return true
 	case MissionViewStatusDraft:
+		return true
+	case MissionViewStatusPaused:
 		return true
 	case MissionViewStatusReady:
 		return true
@@ -2987,7 +3002,7 @@ type MissionBudget struct {
 	MaxWallClockSeconds int `json:"max_wall_clock_seconds"`
 }
 
-// MissionCancel 取消请求体（0.6.0 无在途工作单步终态；在途处置版随 0.6.6）。
+// MissionCancel 取消请求体（0.6.6 / ADR-0029：两段取消——先 canceling 持久化停止意图，在途 Run 停止后进 canceled）。
 type MissionCancel struct {
 	ExpectedVersion int `json:"expected_version"`
 
@@ -3035,6 +3050,21 @@ type MissionEvent struct {
 // MissionEventEventType defines model for MissionEvent.EventType.
 type MissionEventEventType string
 
+// MissionPause 暂停请求体（0.6.6 / ADR-0029：ready | running → paused；阻止新调度 + 在途 Run 安全边界停止）。
+type MissionPause struct {
+	// ExpectedVersion 调用方所见 contract_version；不匹配 409 version_conflict
+	ExpectedVersion int `json:"expected_version"`
+
+	// Reason 可选原因（记入 status_changed 事件 payload）
+	Reason *string `json:"reason,omitempty"`
+}
+
+// MissionResume 恢复请求体（0.6.6 / ADR-0029：paused → ready——调度器自动拾取）。
+type MissionResume struct {
+	// ExpectedVersion 调用方所见 contract_version；不匹配 409 version_conflict
+	ExpectedVersion int `json:"expected_version"`
+}
+
 // MissionRevise 修订请求体（全量替换 + 版本追加；expected_version CAS——AT-13 并发修订冲突明确拒绝）。
 type MissionRevise struct {
 	AcceptanceCriteria []string `json:"acceptance_criteria"`
@@ -3071,8 +3101,9 @@ type MissionRunEvent struct {
 // MissionRunEventEventType defines model for MissionRunEvent.EventType.
 type MissionRunEventEventType string
 
-// MissionRunView Run（一次执行尝试，ADR-0028）：state ∈ pending | running |
-// completed | failed（unknown/暂停随 0.6.7/0.6.6）。attempt 同
+// MissionRunView Run（一次执行尝试，ADR-0028/0029）：state ∈ pending | running |
+// completed | failed | canceled（0.6.6 暂停/取消停止；unknown 随
+// 0.6.7）。attempt 同
 // Mission 递增；每 Mission 至多一个未终态。result_block 为正文
 // 截断存档（≤8000 字——完整交付物随 0.6.8）；fence_rejected 的
 // 迟到结果不落（见 run_events 审计）。
@@ -4489,6 +4520,12 @@ type CancelMissionJSONRequestBody = MissionCancel
 // BuildContextManifestJSONRequestBody defines body for BuildContextManifest for application/json ContentType.
 type BuildContextManifestJSONRequestBody = ContextManifestBuildRequest
 
+// PauseMissionJSONRequestBody defines body for PauseMission for application/json ContentType.
+type PauseMissionJSONRequestBody = MissionPause
+
+// ResumeMissionJSONRequestBody defines body for ResumeMission for application/json ContentType.
+type ResumeMissionJSONRequestBody = MissionResume
+
 // ReviseMissionJSONRequestBody defines body for ReviseMission for application/json ContentType.
 type ReviseMissionJSONRequestBody = MissionRevise
 
@@ -4707,7 +4744,7 @@ type ServerInterface interface {
 	// GetMission Mission 契约详情（当前契约 + 状态 + 版本）
 	// (GET /v1/missions/{mission_id})
 	GetMission(w http.ResponseWriter, r *http.Request, missionId string)
-	// CancelMission 取消 Mission（CAS；唯一终态）
+	// CancelMission 取消 Mission（CAS；两段：canceling → canceled）
 	// (POST /v1/missions/{mission_id}/cancel)
 	CancelMission(w http.ResponseWriter, r *http.Request, missionId string)
 	// ListContextManifests 执行上下文清单列表（摘要；创建序倒序）
@@ -4719,6 +4756,12 @@ type ServerInterface interface {
 	// ListMissionEvents Mission 事件流（只读审计面）
 	// (GET /v1/missions/{mission_id}/events)
 	ListMissionEvents(w http.ResponseWriter, r *http.Request, missionId string)
+	// PauseMission 暂停 Mission（CAS；阻止新调度 + 在途 Run 安全边界停止）
+	// (POST /v1/missions/{mission_id}/pause)
+	PauseMission(w http.ResponseWriter, r *http.Request, missionId string)
+	// ResumeMission 恢复 Mission（CAS；paused → ready）
+	// (POST /v1/missions/{mission_id}/resume)
+	ResumeMission(w http.ResponseWriter, r *http.Request, missionId string)
 	// ReviseMission 修订契约（全量替换 + 版本追加；CAS）
 	// (POST /v1/missions/{mission_id}/revise)
 	ReviseMission(w http.ResponseWriter, r *http.Request, missionId string)
@@ -6341,6 +6384,58 @@ func (siw *ServerInterfaceWrapper) ListMissionEvents(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListMissionEvents(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PauseMission operation middleware
+func (siw *ServerInterfaceWrapper) PauseMission(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PauseMission(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResumeMission operation middleware
+func (siw *ServerInterfaceWrapper) ResumeMission(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResumeMission(w, r, missionId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7984,6 +8079,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}", wrapper.GetMission)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/revise", wrapper.ReviseMission)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/cancel", wrapper.CancelMission)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/pause", wrapper.PauseMission)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/resume", wrapper.ResumeMission)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/versions", wrapper.ListMissionVersions)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/events", wrapper.ListMissionEvents)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/context-manifests", wrapper.ListContextManifests)

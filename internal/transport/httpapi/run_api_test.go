@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/mission"
+	"github.com/sisibeloved/Mosaic/internal/missioncontrol"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	missionrun "github.com/sisibeloved/Mosaic/internal/run"
 	"github.com/sisibeloved/Mosaic/internal/slot"
@@ -36,6 +38,17 @@ func (p epRunMissions) SetRunning(ctx context.Context, id string) (bool, error) 
 }
 func (p epRunMissions) SetReadyFromRunning(ctx context.Context, id, reason string) error {
 	return p.svc.MarkReadyFromRunning(ctx, id, reason)
+}
+func (p epRunMissions) StatusOf(ctx context.Context, id string) (string, bool, error) {
+	m, ok, err := p.svc.Get(ctx, id)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	return m.Status, true, nil
+}
+func (p epRunMissions) FinishCanceling(ctx context.Context, id, reason string) error {
+	_, err := p.svc.FinishCancel(ctx, id, reason)
+	return err
 }
 
 type epRunBindings struct{ agentID string }
@@ -109,27 +122,38 @@ func runTestServer(t *testing.T, opts ...func(*runTestCfg)) (*httptest.Server, *
 		t.Fatalf("建 owner agent: %v", err)
 	}
 	leases := &epRunLeases{fenceOK: cfg.fenceOK}
+	executor := missionrun.Executor(epRunExecutor{block: cfg.executorBlock, err: cfg.executorErr})
+	if cfg.executorOverride != nil {
+		executor = cfg.executorOverride
+	}
 	runSvc := missionrun.New(missionrun.NewMemStore(),
 		epRunMissions{mSvc},
 		epRunBindings{agentID: "ag_r1"},
 		epRunRuntimes{has: cfg.hasRuntime},
 		leases,
 		epRunManifests{blocked: cfg.manifestBlocked},
-		epRunExecutor{block: cfg.executorBlock, err: cfg.executorErr},
+		executor,
 		missionrun.WithNow(func() string { return "2026-10-31T12:00:00.000Z" }),
 		missionrun.WithNewRunID(func() string { seq++; return "run_r" + itoa(seq) }),
 		missionrun.WithSchedulerDisabled())
-	ts := httptest.NewServer(New(Deps{Missions: mSvc, MissionRuns: runSvc, Identity: ident}))
+	var ctlOpts []missioncontrol.Option
+	if cfg.cancelWait > 0 {
+		ctlOpts = append(ctlOpts, missioncontrol.WithCancelWait(cfg.cancelWait))
+	}
+	ts := httptest.NewServer(New(Deps{Missions: mSvc, MissionRuns: runSvc, Identity: ident,
+		MissionControl: missioncontrol.New(mSvc, runSvc, ctlOpts...)}))
 	t.Cleanup(ts.Close)
 	return ts, mSvc, leases
 }
 
 type runTestCfg struct {
-	executorBlock   string
-	executorErr     error
-	hasRuntime      bool
-	manifestBlocked bool
-	fenceOK         bool
+	executorBlock    string
+	executorErr      error
+	hasRuntime       bool
+	manifestBlocked  bool
+	fenceOK          bool
+	executorOverride missionrun.Executor // 控制面测试：阻塞/卡死执行器
+	cancelWait       time.Duration       // 控制面有界等待（0 = 缺省 10s）
 }
 
 func readyMission(t *testing.T, mSvc *mission.Service, owner string) string {

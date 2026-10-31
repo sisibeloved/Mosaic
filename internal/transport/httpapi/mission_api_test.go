@@ -13,10 +13,14 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"time"
+
 	"github.com/sisibeloved/Mosaic/internal/agent"
 	"github.com/sisibeloved/Mosaic/internal/mission"
+	"github.com/sisibeloved/Mosaic/internal/missioncontrol"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/room"
+	missionrun "github.com/sisibeloved/Mosaic/internal/run"
 	"github.com/sisibeloved/Mosaic/internal/transport/sse"
 )
 
@@ -45,14 +49,20 @@ func missionTestServer(t *testing.T) *httptest.Server {
 	ident := personalagent.New(personalagent.NewMemStore(), emptyIdentityRegistry{},
 		personalagent.WithNewAgentID(func() string { return "ag_seq_" + itoa(seq.Add(1)) }),
 		personalagent.WithNow(func() string { return "2026-10-30T12:00:00.000Z" }))
+	mSvc := mission.New(mission.NewMemStore(),
+		mission.WithNow(func() string { return "2026-10-30T12:00:00.000Z" }),
+		mission.WithNewMissionID(func() string { return "mi_api_" + itoa(seq.Add(1)) }),
+		mission.WithAgentLookup(missionIdentAgents{ident}))
 	ts := httptest.NewServer(New(Deps{
 		SVC: svc, Reader: store, Hub: sse.NewHub(),
-		Actor: room.Actor{ParticipantID: "par_owner", Kind: "human"},
-		Missions: mission.New(mission.NewMemStore(),
-			mission.WithNow(func() string { return "2026-10-30T12:00:00.000Z" }),
-			mission.WithNewMissionID(func() string { return "mi_api_" + itoa(seq.Add(1)) }),
-			mission.WithAgentLookup(missionIdentAgents{ident})),
+		Actor:    room.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Missions: mSvc,
 		Identity: ident,
+		// 0.6.6：取消经控制面（同一 mission 服务实例——无在途直达 canceled）
+		MissionControl: missioncontrol.New(mSvc,
+			missionrun.New(missionrun.NewMemStore(), epRunMissions{mSvc}, epRunBindings{}, epRunRuntimes{}, &epRunLeases{}, epRunManifests{}, epRunExecutor{},
+				missionrun.WithSchedulerDisabled()),
+			missioncontrol.WithCancelWait(50*time.Millisecond)),
 		Seats: func() []room.AgentSeat {
 			return []room.AgentSeat{{
 				ParticipantID: "par_echo",
@@ -208,8 +218,8 @@ func TestMissionEndpoints(t *testing.T) {
 	}
 	_ = json.NewDecoder(evs.Body).Decode(&evDoc)
 	evs.Body.Close()
-	if len(evDoc.Events) != 4 { // created + contract_revised + status_changed(draft→ready) + status_changed(→canceled)
-		t.Fatalf("事件 %d 条, want 4: %+v", len(evDoc.Events), evDoc.Events)
+	if len(evDoc.Events) != 5 { // created + contract_revised + status_changed(draft→ready) + 0.6.6 两段取消（→canceling →canceled）
+		t.Fatalf("事件 %d 条, want 5: %+v", len(evDoc.Events), evDoc.Events)
 	}
 	last := evDoc.Events[len(evDoc.Events)-1]
 	if last.EventType != "status_changed" || last.Payload["reason"] != "计划变更" {

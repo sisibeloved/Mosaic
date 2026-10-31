@@ -12,10 +12,11 @@ import (
 )
 
 type fakeMissions struct {
-	mu      sync.Mutex
-	ready   []MissionRef
-	status  map[string]string
-	setRuns []string
+	mu                sync.Mutex
+	ready             []MissionRef
+	status            map[string]string
+	setRuns           []string
+	finishCancelCalls int
 }
 
 func (f *fakeMissions) ListReady(_ context.Context) ([]MissionRef, error) {
@@ -33,11 +34,31 @@ func (f *fakeMissions) SetRunning(_ context.Context, id string) (bool, error) {
 	return true, nil
 }
 
+// SetReadyFromRunning 条件投影（对齐 mission 域：仅 running 可回 ready——
+// paused/canceling 上幂等无操作）。
 func (f *fakeMissions) SetReadyFromRunning(_ context.Context, id, reason string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if cur, ok := f.status[id]; !ok || cur != "running" {
+		return nil // 幂等无操作
+	}
 	f.status[id] = "ready"
 	f.setRuns = append(f.setRuns, id+":ready:"+reason)
+	return nil
+}
+
+func (f *fakeMissions) StatusOf(_ context.Context, id string) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st, ok := f.status[id]
+	return st, ok, nil
+}
+
+func (f *fakeMissions) FinishCanceling(_ context.Context, id, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.finishCancelCalls++
+	f.status[id] = "canceled"
 	return nil
 }
 

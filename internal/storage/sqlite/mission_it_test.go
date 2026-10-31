@@ -76,18 +76,22 @@ func TestMissionStoreIT(t *testing.T) {
 	if _, ok3, _ := store.ReviseMission(ctx, m.MissionID, 1, next); ok3 {
 		t.Fatal("旧版本号修订应 ok=false")
 	}
-	// 取消 + 终态拒修
-	canceled, ok4, err := store.CancelMission(ctx, m.MissionID, 2, "计划变更", "t3")
-	if err != nil || !ok4 || canceled.Status != mission.StatusCanceled {
-		t.Fatalf("取消: ok=%v err=%v", ok4, err)
+	// 取消（0.6.6 两段）+ 终态拒修
+	cing, ok4, err := store.MarkCanceling(ctx, m.MissionID, 2, "计划变更", "t3")
+	if err != nil || !ok4 || cing.Status != mission.StatusCanceling {
+		t.Fatalf("停止意图: ok=%v err=%v", ok4, err)
+	}
+	canceled, ok4b, err := store.FinishCancel(ctx, m.MissionID, "计划变更", "t3b")
+	if err != nil || !ok4b || canceled.Status != mission.StatusCanceled {
+		t.Fatalf("收尾: ok=%v err=%v", ok4b, err)
 	}
 	if _, ok5, _ := store.ReviseMission(ctx, m.MissionID, 2, next); ok5 {
 		t.Fatal("终态修订应 ok=false")
 	}
-	if _, ok6, _ := store.CancelMission(ctx, m.MissionID, 2, "", "t4"); ok6 {
+	if _, ok6, _ := store.MarkCanceling(ctx, m.MissionID, 2, "", "t4"); ok6 {
 		t.Fatal("重复取消应 ok=false")
 	}
-	if _, _, err := store.CancelMission(ctx, "mi_none", 1, "", "t"); !errors.Is(err, mission.ErrMissionNotFound) {
+	if _, _, err := store.MarkCanceling(ctx, "mi_none", 1, "", "t"); !errors.Is(err, mission.ErrMissionNotFound) {
 		t.Fatalf("未知取消应 ErrMissionNotFound: %v", err)
 	}
 

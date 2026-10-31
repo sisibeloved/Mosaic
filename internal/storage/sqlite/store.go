@@ -2725,10 +2725,11 @@ UPDATE missions SET contract_version = ?, status = ?, owner_agent_id = ?, object
 	return next, true, nil
 }
 
-// Cancel CAS 取消：版本匹配且非终态才置 canceled + status_changed 事件，
-// 单事务；ok=false 同 Revise。
-func (s *Store) CancelMission(ctx context.Context, missionID string, expectedVersion int, reason, occurredAt string) (mission.Mission, bool, error) {
-	var out mission.Mission
+// transitionMissionIf 通用控制转移（0.6.6 / ADR-0029）：单事务内探版本/状态
+// → 条件更新 → status_changed 事件。guard 判定可进才转移；ok=false = 前置
+// 不符（服务方重读分辨——幂等先读在服务层）。
+func (s *Store) transitionMissionIf(ctx context.Context, missionID string, expectedVersion int,
+	to, reason, occurredAt string, guard func(version int, status string) bool) (mission.Mission, bool, error) {
 	ok := false
 	err := s.identityWriteTx(ctx, func(q identityExec) error {
 		var version int
@@ -2739,17 +2740,17 @@ func (s *Store) CancelMission(ctx context.Context, missionID string, expectedVer
 			return mission.ErrMissionNotFound
 		}
 		if err != nil {
-			return fmt.Errorf("sqlite: cancel probe: %w", err)
+			return fmt.Errorf("sqlite: control probe: %w", err)
 		}
-		if version != expectedVersion || status == mission.StatusCanceled {
+		if !guard(version, status) {
 			return nil
 		}
 		if _, err := q.ExecContext(ctx,
 			`UPDATE missions SET status = ?, updated_at = ? WHERE mission_id = ?`,
-			mission.StatusCanceled, occurredAt, missionID); err != nil {
-			return fmt.Errorf("sqlite: cancel mission: %w", err)
+			to, occurredAt, missionID); err != nil {
+			return fmt.Errorf("sqlite: control mission: %w", err)
 		}
-		payload := map[string]string{"from": status, "to": mission.StatusCanceled}
+		payload := map[string]string{"from": status, "to": to}
 		if reason != "" {
 			payload["reason"] = reason
 		}
@@ -2766,8 +2767,39 @@ func (s *Store) CancelMission(ctx context.Context, missionID string, expectedVer
 	if err != nil || !found {
 		return mission.Mission{}, false, err
 	}
-	_ = out
 	return got, true, nil
+}
+
+// PauseMission CAS 暂停（ready | running → paused）。
+func (s *Store) PauseMission(ctx context.Context, missionID string, expectedVersion int, reason, occurredAt string) (mission.Mission, bool, error) {
+	return s.transitionMissionIf(ctx, missionID, expectedVersion, mission.StatusPaused, reason, occurredAt,
+		func(version int, status string) bool {
+			return version == expectedVersion && (status == mission.StatusReady || status == mission.StatusRunning)
+		})
+}
+
+// ResumeMission CAS 恢复（paused → ready）。
+func (s *Store) ResumeMission(ctx context.Context, missionID string, expectedVersion int, occurredAt string) (mission.Mission, bool, error) {
+	return s.transitionMissionIf(ctx, missionID, expectedVersion, mission.StatusReady, "", occurredAt,
+		func(version int, status string) bool {
+			return version == expectedVersion && status == mission.StatusPaused
+		})
+}
+
+// MarkCanceling CAS 停止意图（非终态 → canceling）。
+func (s *Store) MarkCanceling(ctx context.Context, missionID string, expectedVersion int, reason, occurredAt string) (mission.Mission, bool, error) {
+	return s.transitionMissionIf(ctx, missionID, expectedVersion, mission.StatusCanceling, reason, occurredAt,
+		func(version int, status string) bool {
+			return version == expectedVersion && status != mission.StatusCanceled
+		})
+}
+
+// FinishCancel 收尾（canceling → canceled；无版本守卫——控制序在服务层）。
+func (s *Store) FinishCancel(ctx context.Context, missionID, reason, occurredAt string) (mission.Mission, bool, error) {
+	return s.transitionMissionIf(ctx, missionID, 0, mission.StatusCanceled, reason, occurredAt,
+		func(_ int, status string) bool {
+			return status == mission.StatusCanceling
+		})
 }
 
 // CreateMission 投影 v1 + 版本行 + created 事件（+ 可选来源映射），单事务；
