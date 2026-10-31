@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-10-31
+
 ### Fixed
 
 - 修复 0.6.5 审校发现（独立审校报告"7 项 P1、5 项 P2"，ADR-0028 v0.2）：**(1) P1 执行输入丢失**——清单虽存档但只传 manifest_id，目标/验收标准/近期消息/工具清单均不达执行器；改为 Manifests.Build 传透层内容块（Layers[]→map），服务层 manifestInline 提取契约（objective/scope/acceptance_criteria/deliverable_specs/constraints/budget）+ 近期消息 + 工具清单入 Inline——执行器拿到实际任务正文。**(2) P1 真实执行器未接通**——Agent ID 硬编为 echo adapter，真实 CLI 从未被调用；supervisorExecutor 经 identity.AgentByID 解析 Agent 身份域的 adapter 家族名（echo 仅无身份/harness 时兜底——测试装配），Runtime 绑定工作区决定执行面。**(3) P1 租约释放后仍启动**——提交前无围栏复核，装配期间释放租约后执行照样开始；新增提交前 CheckFence（失效/检查错误均 finalizeFenceRejected → Run failed + 释放 + fence_rejected 审计——执行不启动）。**(4) P1 旧结果仍能发布**——围栏查询报错会放行（ferr != nil == false && !valid 的取反逻辑缺陷）；核对后释放重领旧结果仍可落库；重构为 finalizeRun（围栏核对紧邻终态写入——核对不通过写 fence_rejected 而非终态；检查错误保守拒绝），修复取反缺陷（ferr nil check 先行）。**(5) P1 请求取消使任务卡死**——终态写入/租约释放/Mission 更新沿用请求 ctx（断开后全部失败→running + 活跃租约遗留）；清理面改用独立 30s 超时 context.Background()。**(6) P1 重启后自动重跑未知结果**——恢复置 Mission 回 ready，首次扫描即 attempt+1 执行；改为 Mission 停在 running（不回 ready）——下次扫描不自动调度，等待用户经手动触发决定（"禁止盲目重跑"强化）。**(7) P1 已取消任务仍可开始**——SetRunning 幂等无操作后返回 nil 错误（changed 信息丢失）；TransitionStatus 三存储实现均返回 changed bool（RowsAffected > 0），changed=false 时 Run 置 failed 携"已取消不再 ready——执行不启动"。**(8) P2 空闲 Runtime 被冲突候选挡住**——FirstReady 只按 runtime_id 排除，工作区被占（跨运行时）的候选反复选中后失败；改为按 workspace_key 排除（后续可用候选不被挡）。**(9) P2 公开状态枚举不完整**——Mission running 态已实际返回但 OpenAPI 枚举只列 draft/ready/canceled；补齐两处。**(10) P2 执行时间未返回**——started_at/finished_at 已存储但视图遗漏；补入 missionRunView。**(11) P2 执行页面不随后台更新**——加 10s 轮询。**(12) P2 终态落库失败仍返回成功**——返回 ErrTerminalWrite（含原始执行结果/错误摘要），非静默吞错。
