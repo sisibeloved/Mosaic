@@ -10,6 +10,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -315,5 +316,96 @@ func TestCreateEnvironmentValidation(t *testing.T) {
 	// 默认环境查询（首建即默认？不——默认由装配确保；此处库内无默认）
 	if _, ok, _ := f.svc.DefaultEnv(ctx); ok {
 		t.Fatal("未建默认不应命中")
+	}
+}
+
+// stagedProber 审校 P2#4 用：首调用阻塞至放行（模拟慢探测），后续调用立即返回。
+type stagedProber struct {
+	mu      sync.Mutex
+	gate    bool
+	result  ProbeResult
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (p *stagedProber) Probe(_ context.Context, _ ProbeTarget) (ProbeResult, error) {
+	p.mu.Lock()
+	gate := p.gate
+	p.gate = false
+	res := p.result
+	p.mu.Unlock()
+	if gate {
+		p.entered <- struct{}{}
+		<-p.release
+	}
+	return res, nil
+}
+
+// TestHealthCheckPrepareSerialized 审校 P2#4：健康检查探测期间完成的准备
+// 不得被迟到写回撤销——读-探测-写按运行时串行（最终 ready 且保新绑定）。
+func TestHealthCheckPrepareSerialized(t *testing.T) {
+	prober := &stagedProber{result: okProbe(), entered: make(chan struct{}), release: make(chan struct{})}
+	var n int64
+	svc := New(NewMemStore(), prober, &fakeFS{},
+		WithNow(func() string { return "2026-10-30T12:00:00.000Z" }),
+		WithNewIDs(func() string { n++; return "rtx_race" + strconv.FormatInt(n, 10) },
+			func() string { n++; return "env_race" + strconv.FormatInt(n, 10) }))
+	ctx := context.Background()
+	envB, err := svc.CreateEnvironment(ctx, "乙", "/d/race-b")
+	if err != nil {
+		t.Fatalf("建环境: %v", err)
+	}
+	if _, _, err := svc.Sync(ctx, []DiscoveredEntry{entryA("1.0.0")}); err != nil {
+		t.Fatalf("同步: %v", err)
+	}
+	rt := firstRT(t, svc)
+
+	// 健康检查先行占位（读旧状态 → 探测阻塞）
+	prober.gate = true
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.HealthCheck(ctx, rt.RuntimeID)
+		done <- err
+	}()
+	<-prober.entered
+
+	// 期间准备成功（绑定 envB → ready）：串行化下等待健康检查完成后再
+	// 执行——旧状态不得整行覆盖。准备异步跑（锁被健康检查持有），先放
+	// 行探测再等准备完成，两个顺序都收敛到准备结果。
+	prepDone := make(chan error, 1)
+	go func() {
+		_, err := svc.Prepare(ctx, rt.RuntimeID, envB.EnvironmentID)
+		prepDone <- err
+	}()
+	close(prober.release)
+	if err := <-done; err != nil {
+		t.Fatalf("健康检查: %v", err)
+	}
+	if err := <-prepDone; err != nil {
+		t.Fatalf("期间准备: %v", err)
+	}
+
+	final, _, _ := svc.RuntimeByID(ctx, rt.RuntimeID)
+	if final.State != StateReady || final.EnvironmentID != envB.EnvironmentID {
+		t.Fatalf("迟到健康检查撤销了准备结果：%+v", final)
+	}
+}
+
+// TestWorkspaceDirNormalization 审校 P2#5：/dir 与 /dir/.（及尾斜杠变体）
+// 是同一目录——规范化后判重，不得登记为两个环境。
+func TestWorkspaceDirNormalization(t *testing.T) {
+	f, _ := newFixture(t)
+	ctx := context.Background()
+	if _, err := f.svc.CreateEnvironment(ctx, "甲", "/d/w/"); err != nil {
+		t.Fatalf("建环境: %v", err)
+	}
+	for _, dup := range []string{"/d/w/.", "/d/w//", "/d/w/./"} {
+		if _, err := f.svc.CreateEnvironment(ctx, "乙", dup); !errors.Is(err, ErrEnvironmentDirTaken) {
+			t.Fatalf("目录 %q 与 /d/w 应判重：%v", dup, err)
+		}
+	}
+	list, _ := f.svc.ListEnvironments(ctx)
+	if len(list) != 1 || list[0].WorkspaceDir != "/d/w" {
+		t.Fatalf("目录应规范化保存：%+v", list)
 	}
 }

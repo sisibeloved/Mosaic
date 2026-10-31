@@ -105,6 +105,7 @@ export function RuntimesPage() {
               onPrepareEnv={(id) => setPrepareEnv((m) => ({ ...m, [rt.runtime_id]: id }))}
               busy={busy}
               act={act}
+              refreshKey={rev}
             />
           ))}
         </ul>
@@ -140,8 +141,12 @@ export function RuntimesPage() {
             disabled={busy || !envForm.name.trim() || !envForm.dir.trim()}
             onClick={() =>
               void act(async () => {
-                await api.createEnvironment({ name: envForm.name.trim(), workspace_dir: envForm.dir.trim() });
-                setEnvForm({ name: "", dir: "" });
+                // 提交快照（审校 P3：等待期间改填的输入不被旧回调清空）
+                const snap = { name: envForm.name.trim(), dir: envForm.dir.trim() };
+                await api.createEnvironment({ name: snap.name, workspace_dir: snap.dir });
+                setEnvForm((cur) =>
+                  cur.name.trim() === snap.name && cur.dir.trim() === snap.dir ? { name: "", dir: "" } : cur,
+                );
               })
             }
             className="rounded-lg bg-accent px-3 py-1.5 text-accent-contrast disabled:opacity-40"
@@ -162,6 +167,7 @@ function RuntimeRow({
   onPrepareEnv,
   busy,
   act,
+  refreshKey,
 }: {
   rt: RuntimeView;
   environments: EnvironmentView[];
@@ -170,23 +176,32 @@ function RuntimeRow({
   onPrepareEnv: (id: string) => void;
   busy: boolean;
   act: (fn: () => Promise<string | void>) => Promise<void>;
+  refreshKey: number;
 }) {
+  // 事件三态（审校 P2#2）：null=加载中 / err=失败（可重试）/ []=成功空列表
   const [events, setEvents] = useState<RuntimeEvent[] | null>(null);
+  const [eventsErr, setEventsErr] = useState<string | null>(null);
+  const [eventsRetry, setEventsRetry] = useState(0);
   const [eventsOpen, setEventsOpen] = useState(false);
   const evSeq = useRef(0);
 
   useEffect(() => {
     if (!eventsOpen) return;
     const cur = ++evSeq.current;
+    setEventsErr(null);
     void api
       .getRuntimeEvents(rt.runtime_id)
       .then((e) => {
-        if (evSeq.current === cur) setEvents(e.events);
+        if (evSeq.current !== cur) return;
+        setEvents(e.events);
       })
-      .catch(() => {
-        if (evSeq.current === cur) setEvents([]);
+      .catch((e) => {
+        if (evSeq.current !== cur) return;
+        setEvents(null);
+        setEventsErr(e instanceof Error ? e.message : String(e));
       });
-  }, [eventsOpen, rt.runtime_id]);
+    // refreshKey：成功操作（准备/健康检查）后已展开的历史重取（审校 P2#8）
+  }, [eventsOpen, rt.runtime_id, eventsRetry, refreshKey]);
 
   return (
     <li className="flex flex-col gap-1.5 px-3 py-2.5">
@@ -249,7 +264,16 @@ function RuntimeRow({
       </div>
       {eventsOpen && (
         <ul className="flex flex-col gap-0.5 border-t border-border pt-1 font-mono text-[11px]">
-          {(events ?? []).length === 0 && <li className="text-faint">（暂无事件）</li>}
+          {eventsErr && (
+            <li className="flex items-center gap-2 text-danger">
+              历史读取失败：{eventsErr}
+              <button type="button" onClick={() => setEventsRetry((n) => n + 1)} className="underline">
+                重试
+              </button>
+            </li>
+          )}
+          {!eventsErr && events === null && <li className="text-faint">历史加载中…</li>}
+          {events !== null && events.length === 0 && <li className="text-faint">（暂无事件）</li>}
           {[...(events ?? [])].reverse().map((e) => (
             <li key={e.seq} className="flex items-center gap-2 text-faint">
               <span className="shrink-0">#{e.seq}</span>

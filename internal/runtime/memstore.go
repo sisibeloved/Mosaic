@@ -22,25 +22,41 @@ func NewMemStore() *MemStore {
 	return &MemStore{runtimes: map[string]Runtime{}, envs: map[string]Environment{}, dirTaken: map[string]string{}}
 }
 
-// SyncRuntimes 批量单事务语义（内存等价）：新行插入、既有行替换事实。
-func (m *MemStore) SyncRuntimes(_ context.Context, _ string, rows []Runtime, events []Event) (int, int, error) {
+// SyncRuntimes 批量单事务语义（内存等价）：新行插入（并为真正插入的行
+// 生成 discovered 事件）、既有行按发现幂等键只替换事实（无孤儿事件）。
+func (m *MemStore) SyncRuntimes(_ context.Context, now string, rows []Runtime) (int, int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	created, refreshed := 0, 0
 	for _, r := range rows {
-		if _, ok := m.runtimes[r.RuntimeID]; ok {
+		if existing, ok := m.byDiscoveryKey(r); ok {
 			refreshed++
-		} else {
-			created++
+			existing.Channel = r.Channel
+			existing.Version = r.Version
+			existing.Login = r.Login
+			existing.UpdatedAt = r.UpdatedAt
+			m.runtimes[existing.RuntimeID] = existing
+			continue
 		}
+		created++
 		m.runtimes[r.RuntimeID] = r
-	}
-	for _, e := range events {
 		m.nextSeq++
-		e.Seq = m.nextSeq
-		m.events = append(m.events, e)
+		m.events = append(m.events, Event{
+			Seq: m.nextSeq, RuntimeID: r.RuntimeID, EventType: EventDiscovered,
+			Payload: map[string]any{"version": r.Version, "login": r.Login}, OccurredAt: now,
+		})
 	}
 	return created, refreshed, nil
+}
+
+// byDiscoveryKey 按 (adapter,host,distro,path) 找既有行（发现幂等键）。
+func (m *MemStore) byDiscoveryKey(r Runtime) (Runtime, bool) {
+	for _, e := range m.runtimes {
+		if e.Adapter == r.Adapter && e.Host == r.Host && e.Distro == r.Distro && e.Path == r.Path {
+			return e, true
+		}
+	}
+	return Runtime{}, false
 }
 
 // UpdateRuntime 全行替换 + 事件。

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	mosaicruntime "github.com/sisibeloved/Mosaic/internal/runtime"
@@ -36,11 +37,9 @@ func TestRuntimeStoreIT(t *testing.T) {
 		t.Fatalf("migration v16 未登记: %d", v16)
 	}
 
-	// 首同步：新行 + discovered 事件
+	// 首同步：新行 + discovered 事件（存储在事务内为插入行生成）
 	created, refreshed, err := store.SyncRuntimes(ctx, "2026-10-30T10:00:00.000Z",
-		[]mosaicruntime.Runtime{discoveredRow("rtx_a", "1.0.0")},
-		[]mosaicruntime.Event{{RuntimeID: "rtx_a", EventType: mosaicruntime.EventDiscovered,
-			Payload: map[string]any{"version": "1.0.0"}, OccurredAt: "2026-10-30T10:00:00.000Z"}})
+		[]mosaicruntime.Runtime{discoveredRow("rtx_a", "1.0.0")})
 	if err != nil || created != 1 || refreshed != 0 {
 		t.Fatalf("首同步：created=%d refreshed=%d err=%v", created, refreshed, err)
 	}
@@ -59,7 +58,7 @@ func TestRuntimeStoreIT(t *testing.T) {
 	updated := discoveredRow("rtx_a", "9.9.9") // 服务层以既有行（含状态）构造
 	updated.State = mosaicruntime.StateReady
 	updated.EnvironmentID = "env_x"
-	created, refreshed, err = store.SyncRuntimes(ctx, "2026-10-30T10:02:00.000Z", []mosaicruntime.Runtime{updated}, nil)
+	created, refreshed, err = store.SyncRuntimes(ctx, "2026-10-30T10:02:00.000Z", []mosaicruntime.Runtime{updated})
 	if err != nil || created != 0 || refreshed != 1 {
 		t.Fatalf("重同步：created=%d refreshed=%d err=%v", created, refreshed, err)
 	}
@@ -165,12 +164,58 @@ func TestRuntimeLegacyUpgradeIT(t *testing.T) {
 		t.Fatalf("升级后 migration v16 应登记: %d", v16)
 	}
 	if _, _, err := store.SyncRuntimes(ctx, "2026-10-30T10:00:00.000Z",
-		[]mosaicruntime.Runtime{discoveredRow("rtx_l", "1.0.0")}, nil); err != nil {
+		[]mosaicruntime.Runtime{discoveredRow("rtx_l", "1.0.0")}); err != nil {
 		t.Fatalf("升级库同步: %v", err)
 	}
 	env := mosaicruntime.Environment{EnvironmentID: "env_l", Name: "默认", WorkspaceDir: "/tmp/ws-l",
 		IsDefault: true, CreatedAt: "t", UpdatedAt: "t"}
 	if err := store.CreateEnvironment(ctx, env); err != nil {
 		t.Fatalf("升级库建环境: %v", err)
+	}
+}
+
+// TestRuntimeSyncNoOrphanEventsIT 审校 P2#6：并发首次同步（服务层各自
+// 生成新行 ID）——恰一行入库、恰一条 discovered 事件且引用在库 ID，
+// 落败方不得留下孤儿事件。
+func TestRuntimeSyncNoOrphanEventsIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	rowA := discoveredRow("rtx_a", "1.0.0")
+	rowB := discoveredRow("rtx_b", "1.0.0") // 同 (adapter,host,distro,path)，异生成 ID
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i, row := range []mosaicruntime.Runtime{rowA, rowB} {
+		wg.Add(1)
+		go func(i int, row mosaicruntime.Runtime) {
+			defer wg.Done()
+			_, _, errs[i] = store.SyncRuntimes(ctx, "2026-10-30T10:00:00.000Z", []mosaicruntime.Runtime{row})
+		}(i, row)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			t.Fatalf("并发同步: %v", err)
+		}
+	}
+	list, err := store.ListRuntimes(ctx)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("应恰一行: %v %d", err, len(list))
+	}
+	var evCount int
+	store.db.QueryRow(`SELECT COUNT(*) FROM runtime_events WHERE event_type = 'discovered'`).Scan(&evCount)
+	if evCount != 1 {
+		t.Fatalf("discovered 事件应恰一条（无孤儿）: %d", evCount)
+	}
+	var orphans int
+	store.db.QueryRow(`SELECT COUNT(*) FROM runtime_events e WHERE NOT EXISTS (
+  SELECT 1 FROM runtimes r WHERE r.runtime_id = e.runtime_id)`).Scan(&orphans)
+	if orphans != 0 {
+		t.Fatalf("孤儿事件 %d 条", orphans)
+	}
+	evs, _, _ := store.RuntimeEvents(ctx, list[0].RuntimeID)
+	if len(evs) != 1 || evs[0].EventType != mosaicruntime.EventDiscovered {
+		t.Fatalf("入库行应恰一条 discovered 事件: %+v", evs)
 	}
 }

@@ -25,6 +25,8 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/doc"
 	"github.com/sisibeloved/Mosaic/internal/execctx"
 	"github.com/sisibeloved/Mosaic/internal/extdocs"
+	goruntime "runtime"
+
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/monitor"
@@ -2344,13 +2346,24 @@ func (s *server) ListRuntimes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"runtimes": out})
 }
 
-// SyncRuntimes 手动重同步发现（harness 注册表 → 运行时行）。
+// SyncRuntimes 手动重同步发现：先做有超时的宿主扫描再镜像同步（审校
+// P1——启动后才安装的 CLI 不应因只读缓存而不可发现；扫描部分失败不夺
+// 同步——注册表已含成功面）。启动/手动登记后的自动同步走扫描后状态，
+// 不经此处重扫。
 func (s *server) SyncRuntimes(w http.ResponseWriter, r *http.Request) {
 	if s.runtimesUnavailable(w) {
 		return
 	}
 	if !s.guardWrite(w, r, false) { // 空 body：只做跨源门
 		return
+	}
+	if s.deps.Harness != nil && s.deps.ProbeRunner != nil {
+		scanCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		if err := s.deps.Harness.Scan(scanCtx, s.deps.ProbeRunner, harness.BuiltinProbes,
+			harness.ScanOptions{IncludeWSL: goruntime.GOOS == "windows"}); err != nil {
+			s.debugf("httpapi: sync 前宿主扫描部分失败", "err", err)
+		}
+		cancel()
 	}
 	created, refreshed, err := s.deps.Runtimes.SyncFromSource(r.Context())
 	if err != nil {
@@ -2424,7 +2437,9 @@ func (s *server) PrepareRuntime(w http.ResponseWriter, r *http.Request, runtimeI
 	}
 	var req apigen.RuntimePrepareRequest
 	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields() // 拼错字段拒收（审校 P2#7——不静默走默认环境）
+		if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 			writeError(w, http.StatusBadRequest, "bad_request", "准备请求 JSON 不合法："+err.Error())
 			return
 		}

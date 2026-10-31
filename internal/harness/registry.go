@@ -250,14 +250,16 @@ func probeExecutable(ctx context.Context, r Runner, spec ProbeSpec, runtime Runt
 	if len(spec.VersionArgs) > 0 {
 		vctx, cancel := context.WithTimeout(ctx, ScanOptions{}.probeTimeout())
 		defer cancel()
+		// 版本事实只认执行成功（exit 0）——非零退出的错误文本（常含数字）
+		// 不是版本，两个分支同口径（0.6.3 审校 P2#3：经健康适配器影响 ready）
 		if bundle != "" {
 			args := append([]string{path, bundle}, spec.VersionArgs...)
-			if out, _, err := r.RunWithEnv(vctx, runtime, distro, []string{"ELECTRON_RUN_AS_NODE=1"}, args); err == nil {
+			if out, code, err := r.RunWithEnv(vctx, runtime, distro, []string{"ELECTRON_RUN_AS_NODE=1"}, args); err == nil && code == 0 {
 				exe.Version = sanitizeVersion(firstLine(out))
 			}
 		} else {
 			args := append([]string{path}, spec.VersionArgs...)
-			if out, _, err := r.RunWithDir(vctx, runtime, distro, binDir, args); err == nil {
+			if out, code, err := r.RunWithDir(vctx, runtime, distro, binDir, args); err == nil && code == 0 {
 				exe.Version = sanitizeVersion(firstLine(out))
 			}
 		}

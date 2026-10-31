@@ -15,7 +15,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -138,8 +140,9 @@ type DiscoverySource func(ctx context.Context) ([]DiscoveredEntry, error)
 // Store 持久化端口（SQLite 实现：internal/storage/sqlite；测试件：memstore）。
 type Store interface {
 	// SyncRuntimes 批量单事务：新行插入 + 既有行仅刷新镜像事实（不动
-	// 状态/绑定/发现时间）；事件（discovered——仅新行）随行同事务落。
-	SyncRuntimes(ctx context.Context, now string, rows []Runtime, events []Event) (created, refreshed int, err error)
+	// 状态/绑定/发现时间）；discovered 事件由存储在事务内只为真正插入
+	// 的行生成（并发首次同步的落败方 upsert 不产生孤儿事件——审校 P2#6）。
+	SyncRuntimes(ctx context.Context, now string, rows []Runtime) (created, refreshed int, err error)
 	// UpdateRuntime 全行替换 + 事件同事务。
 	UpdateRuntime(ctx context.Context, r Runtime, events []Event) error
 	RuntimeByID(ctx context.Context, runtimeID string) (Runtime, bool, error)
@@ -177,6 +180,14 @@ type Service struct {
 	now              func() string
 	newRuntimeID     func() string
 	newEnvironmentID func() string
+	// locks 按运行时串行化读-探测-写全程（审校 P2#4：迟到的健康检查
+	// 不得以旧状态整行覆盖期间完成的准备——撤销 ready 与新绑定）。
+	locks sync.Map // runtime_id → *sync.Mutex
+}
+
+func (s *Service) lockOf(runtimeID string) *sync.Mutex {
+	m, _ := s.locks.LoadOrStore(runtimeID, &sync.Mutex{})
+	return m.(*sync.Mutex)
 }
 
 // New 装配服务。
@@ -223,7 +234,6 @@ func (s *Service) Sync(ctx context.Context, entries []DiscoveredEntry) (created,
 		byKey[keyOf(r.Adapter, r.Host, r.Distro, r.Path)] = r
 	}
 	var rows []Runtime
-	var events []Event
 	for _, e := range entries {
 		key := keyOf(e.Adapter, e.Host, e.Distro, e.Path)
 		if old, ok := byKey[key]; ok {
@@ -241,15 +251,13 @@ func (s *Service) Sync(ctx context.Context, entries []DiscoveredEntry) (created,
 			Channel: e.Channel, Version: e.Version, Login: normalizeLogin(e.Login),
 			State: StateDiscovered, DiscoveredAt: now, UpdatedAt: now,
 		})
-		events = append(events, Event{
-			RuntimeID: rows[len(rows)-1].RuntimeID, EventType: EventDiscovered,
-			Payload: map[string]any{"version": e.Version, "login": normalizeLogin(e.Login)}, OccurredAt: now,
-		})
 	}
 	if len(rows) == 0 {
 		return 0, 0, nil
 	}
-	return s.store.SyncRuntimes(ctx, now, rows, events)
+	// discovered 事件由存储在事务内只为真正插入的行生成（并发首次同步
+	// 的落败方行 ID 未入库，不产生孤儿事件——审校 P2#6）
+	return s.store.SyncRuntimes(ctx, now, rows)
 }
 
 func keyOf(adapter, host, distro, path string) string {
@@ -267,6 +275,9 @@ func normalizeLogin(login string) string {
 // unhealthy 且已绑环境 → ready（恢复）；成功且 discovered → 保持（ready
 // 须绑环境经 prepare）；失败 → unhealthy（note 可见）。
 func (s *Service) HealthCheck(ctx context.Context, runtimeID string) (Runtime, error) {
+	mu := s.lockOf(runtimeID)
+	mu.Lock()
+	defer mu.Unlock() // 读-探测-写全程持锁（审校 P2#4）
 	r, ok, err := s.store.RuntimeByID(ctx, runtimeID)
 	if err != nil {
 		return Runtime{}, fmt.Errorf("runtime: 读运行时失败：%w", err)
@@ -307,6 +318,9 @@ func (s *Service) HealthCheck(ctx context.Context, runtimeID string) (Runtime, e
 // Prepare 准备：绑定环境（缺省默认；成功才换绑）→ 确保工作区目录 →
 // 探测 → ready / unhealthy（结果态是数据不是错误）。
 func (s *Service) Prepare(ctx context.Context, runtimeID, environmentID string) (Runtime, error) {
+	mu := s.lockOf(runtimeID)
+	mu.Lock()
+	defer mu.Unlock() // 与健康检查互斥（审校 P2#4）
 	r, ok, err := s.store.RuntimeByID(ctx, runtimeID)
 	if err != nil {
 		return Runtime{}, fmt.Errorf("runtime: 读运行时失败：%w", err)
@@ -381,7 +395,13 @@ func (s *Service) createEnvironment(ctx context.Context, name, workspaceDir stri
 	if n := utf8.RuneCountInString(name); n < 1 || n > 64 {
 		return Environment{}, fmt.Errorf("%w：名称须 1–64 字（%d）", ErrInvalidEnvironment, n)
 	}
-	trimmed := trimSpaces(workspaceDir)
+	// 规范化目录标识（审校 P2#5）：/dir 与 /dir/. 是同一目录——判重与
+	// 保存统一在 Clean 之后；去空白后为空先拒（Clean("") 会得 "."）
+	stripped := trimSpaces(workspaceDir)
+	if utf8.RuneCountInString(stripped) < 1 {
+		return Environment{}, fmt.Errorf("%w：工作区目录不得为空", ErrInvalidEnvironment)
+	}
+	trimmed := filepath.Clean(stripped)
 	if n := utf8.RuneCountInString(trimmed); n < 1 || n > 512 {
 		return Environment{}, fmt.Errorf("%w：工作区目录须 1–512 字", ErrInvalidEnvironment)
 	}

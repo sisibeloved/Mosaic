@@ -3540,8 +3540,10 @@ func runtimeEventPayloadJSON(payload map[string]any) (string, error) {
 
 // SyncRuntimes 批量单事务：行按 (adapter,host,distro,path) upsert——新行
 // INSERT，既有行只刷新镜像事实（channel/version/login/updated_at——状态/
-// 绑定/发现时间是本域事实不被覆盖）；事件（discovered，仅新行）同事务。
-func (s *Store) SyncRuntimes(ctx context.Context, now string, rows []mosaicruntime.Runtime, events []mosaicruntime.Event) (int, int, error) {
+// 绑定/发现时间是本域事实不被覆盖）。discovered 事件在事务内只为真正
+// 插入的行生成（并发首次同步的落败方 upsert 不产生孤儿事件——审校 P2#6：
+// 服务层并发构造的新行 ID 未入库，落败方不得留下引用不存在 ID 的事件）。
+func (s *Store) SyncRuntimes(ctx context.Context, now string, rows []mosaicruntime.Runtime) (int, int, error) {
 	created, refreshed := 0, 0
 	err := s.identityWriteTx(ctx, func(q identityExec) error {
 		created, refreshed = 0, 0
@@ -3555,10 +3557,11 @@ func (s *Store) SyncRuntimes(ctx context.Context, now string, rows []mosaicrunti
 			if perr != nil && !errors.Is(perr, sql.ErrNoRows) {
 				return fmt.Errorf("sqlite: runtime existence probe: %w", perr)
 			}
-			if perr == nil {
-				refreshed++
-			} else {
+			isNew := perr != nil
+			if isNew {
 				created++
+			} else {
+				refreshed++
 			}
 			if _, err := q.ExecContext(ctx, `
 INSERT INTO runtimes (runtime_id, adapter, host, distro, path, channel, version, login, state, environment_id, last_health_at, last_health_note, discovered_at, updated_at)
@@ -3571,16 +3574,16 @@ ON CONFLICT (adapter, host, distro, path) DO UPDATE SET
 				r.LastHealthNote, r.DiscoveredAt, r.UpdatedAt); err != nil {
 				return fmt.Errorf("sqlite: upsert runtime: %w", err)
 			}
-		}
-		for _, e := range events {
-			payload, err := runtimeEventPayloadJSON(e.Payload)
-			if err != nil {
-				return err
-			}
-			if _, err := q.ExecContext(ctx, `
+			if isNew {
+				payload, err := runtimeEventPayloadJSON(map[string]any{"version": r.Version, "login": r.Login})
+				if err != nil {
+					return err
+				}
+				if _, err := q.ExecContext(ctx, `
 INSERT INTO runtime_events (runtime_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
-				e.RuntimeID, e.EventType, payload, e.OccurredAt); err != nil {
-				return fmt.Errorf("sqlite: insert runtime event: %w", err)
+					r.RuntimeID, mosaicruntime.EventDiscovered, payload, now); err != nil {
+					return fmt.Errorf("sqlite: insert runtime event: %w", err)
+				}
 			}
 		}
 		return nil
