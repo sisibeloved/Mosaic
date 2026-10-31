@@ -1,6 +1,9 @@
 // UT 层：执行上下文装配（0.6.2 / ADR-0025）。确定性（同状态必同 digest）、
 // 层账本（必需不截断/可选配额/未建模如实 omitted）、授权过滤先于排序与计数
 // （非 public 事件不进入不计数）、blocked 优先级、digest 即身份重建重放。
+// 审校修复回归（ADR-0025 v0.2）：模板不声明 tools 不崩（P1）、readiness 与
+// 工具清单共用同一授权快照（P4）、可选层受剩余总预算约束（P5）、摘要存储
+// 往返可复算（P6）、声明未授权的 room.recent 域读取前省略（P8）。
 package execctx
 
 import (
@@ -37,36 +40,35 @@ func (f fakeBindings) Facts(_ context.Context, bindingID string) (BindingFacts, 
 	return facts, ok, nil
 }
 
-type fakeReadiness struct {
-	report slot.ReadinessReport
-	err    error
-}
-
-func (f fakeReadiness) Check(_ context.Context, _ slot.Binding) (slot.ReadinessReport, error) {
-	return f.report, f.err
-}
-
 type fakeGrants struct {
 	grant slot.AgentGrant
+	ok    bool
 }
 
 func (f fakeGrants) GrantByAgent(_ context.Context, _ string) (slot.AgentGrant, bool, error) {
-	return f.grant, true, nil
+	return f.grant, f.ok, nil
 }
 
+// fakeRooms 带读取计数——P8 验证"读取、计数前核对授权"。
 type fakeRooms struct {
 	events map[string][]RoomEvent
+	calls  int
 }
 
-func (f fakeRooms) RoomEvents(_ context.Context, roomID string) ([]RoomEvent, error) {
+func (f *fakeRooms) RoomEvents(_ context.Context, roomID string) ([]RoomEvent, error) {
+	f.calls++
 	return f.events[roomID], nil
 }
 
-func readyReport() slot.ReadinessReport {
-	return slot.ReadinessReport{
-		Ready:                    true,
-		Satisfied:                []string{"runtime.required:net", "tools.required:web"},
-		EffectiveWorkspaceAccess: "read",
+// fullGrant 与 testSpec 全交集（readiness ready；room.recent 域已授权；
+// skills 列举即必需——版本 ≥ 模板声明）。
+func fullGrant() slot.AgentGrant {
+	return slot.AgentGrant{
+		AgentID: "ag_own",
+		Skills:  []slot.SkillRef{{Ref: "skill/research", Version: 3}},
+		Tools:   []string{"web", "notes"},
+		Context: []string{ContextDomainRecentMessages},
+		Runtime: slot.AgentGrantRuntime{Capabilities: []string{"net"}, WorkspaceAccess: "read"},
 	}
 }
 
@@ -79,6 +81,7 @@ func testSpec() slot.SlotSpec {
 			Deliverables:   []string{"调研报告"},
 			Skills:         []slot.SkillRef{{Ref: "skill/research", Version: 3}},
 			Tools:          &slot.CapabilityList{Required: []string{"web"}, Optional: []string{"notes"}},
+			Context:        &slot.CapabilityList{Optional: []string{ContextDomainRecentMessages}},
 			Runtime:        &slot.RuntimeRequirements{Required: []string{"net"}, WorkspaceAccess: "read"},
 		},
 	}
@@ -105,12 +108,12 @@ func testMission() mission.Mission {
 }
 
 type fixture struct {
-	svc  *Service
-	room *fakeRooms
+	svc   *Service
+	room  *fakeRooms
+	grant *fakeGrants
 }
 
-// newFixture 默认全绿：owner 任职 active、授权就绪、房间有 3 条 public 消息
-// （seq 1 房间创建型非消息事件、seq 2/4 public 消息、seq 3 participants 私有）。
+// newFixture 默认全绿：owner 任职 active、授权就绪、房间有 public/私有消息。
 func newFixture(t *testing.T) fixture {
 	t.Helper()
 	rooms := &fakeRooms{events: map[string][]RoomEvent{
@@ -121,14 +124,14 @@ func newFixture(t *testing.T) fixture {
 			{Seq: 4, EventID: "evt_4", Type: "message.posted", Visibility: "public", ParticipantID: "par_c", ActorKind: "agent", Body: "公开消息丙"},
 		},
 	}}
+	grants := &fakeGrants{grant: fullGrant(), ok: true}
 	svc := New(NewMemStore(), Ports{
-		Missions:  fakeMissions{m: testMission(), ok: true},
-		Bindings:  fakeBindings{facts: map[string]BindingFacts{"bd_1": {Binding: testBinding("ag_own", slot.BindingActive), Spec: testSpec()}}},
-		Readiness: fakeReadiness{report: readyReport()},
-		Grants:    fakeGrants{grant: slot.AgentGrant{AgentID: "ag_own", Tools: []string{"web", "notes"}}},
-		Rooms:     rooms,
+		Missions: fakeMissions{m: testMission(), ok: true},
+		Bindings: fakeBindings{facts: map[string]BindingFacts{"bd_1": {Binding: testBinding("ag_own", slot.BindingActive), Spec: testSpec()}}},
+		Grants:   grants,
+		Rooms:    rooms,
 	})
-	return fixture{svc: svc, room: rooms}
+	return fixture{svc: svc, room: rooms, grant: grants}
 }
 
 func layerOf(t *testing.T, m Manifest, name string) Layer {
@@ -140,6 +143,28 @@ func layerOf(t *testing.T, m Manifest, name string) Layer {
 	}
 	t.Fatalf("层 %q 不在账本中（共 %d 层）", name, len(m.Layers))
 	return Layer{}
+}
+
+// roomWatermark 取房间水位分量（水位向量含模板版本分量——P6 后首项为
+// slot_spec:{id}，房间分量随交付层出现）。
+func roomWatermark(t *testing.T, m Manifest) Watermark {
+	t.Helper()
+	for _, w := range m.Watermarks {
+		if strings.HasPrefix(w.Stream, "room:") {
+			return w
+		}
+	}
+	t.Fatalf("无房间水位分量：%+v", m.Watermarks)
+	return Watermark{}
+}
+
+func roomWatermarkOf(m Manifest) *Watermark {
+	for _, w := range m.Watermarks {
+		if strings.HasPrefix(w.Stream, "room:") {
+			return &w
+		}
+	}
+	return nil
 }
 
 func TestBuildAssemblesAllLayers(t *testing.T) {
@@ -204,7 +229,7 @@ func TestBuildAssemblesAllLayers(t *testing.T) {
 	if !ok || sc.Refs[0] != "r:1" || sc.RoomSource.TaskID != "tsk_1" {
 		t.Fatalf("引用层内容错误：%+v", sc)
 	}
-	// 总字节 = 各 included 层之和
+	// 总字节 = 各 included 层之和，且不超总预算
 	var sum int
 	for _, l := range m.Layers {
 		if l.State == LayerIncluded {
@@ -214,7 +239,17 @@ func TestBuildAssemblesAllLayers(t *testing.T) {
 	if m.TotalBytes != sum {
 		t.Fatalf("total_bytes %d ≠ 各层和 %d", m.TotalBytes, sum)
 	}
-	// 回执：账目 9 条、不复制内容、digest 同源、政策版本
+	if m.TotalBytes > TotalBudgetBytes {
+		t.Fatalf("总字节 %d 超总预算 %d", m.TotalBytes, TotalBudgetBytes)
+	}
+	// 水位向量：模板版本分量 + 房间交付前沿
+	if len(m.Watermarks) != 2 || m.Watermarks[0].Stream != "slot_spec:ss_t" || m.Watermarks[0].Position != 2 {
+		t.Fatalf("模板版本水位分量错误：%+v", m.Watermarks)
+	}
+	if w := roomWatermark(t, m); w.Stream != "room:rm_1" || w.Position != 4 {
+		t.Fatalf("房间水位错误：%+v", w)
+	}
+	// 回执：账目 9 条、digest 同源、政策版本
 	if res.Receipt.ManifestID != m.ManifestID || res.Receipt.Digest != m.Digest {
 		t.Fatalf("回执关联错误：%+v", res.Receipt)
 	}
@@ -226,6 +261,33 @@ func TestBuildAssemblesAllLayers(t *testing.T) {
 		if a.State != l.State || a.Bytes != l.Bytes {
 			t.Fatalf("回执账目与层账本不一致（%s）：%+v vs %s/%d", a.Name, a, l.State, l.Bytes)
 		}
+	}
+}
+
+// TestBuildSpecWithoutTools 审校 P1：合法模板可不声明 tools（指针 nil）——
+// 装配不得崩溃，工具层为空清单（不虚构能力）。
+func TestBuildSpecWithoutTools(t *testing.T) {
+	f := newFixture(t)
+	spec := testSpec()
+	spec.Tools = nil
+	spec.Runtime = nil // 无运行要求同样合法
+	f.svc.ports.Bindings = fakeBindings{facts: map[string]BindingFacts{
+		"bd_1": {Binding: testBinding("ag_own", slot.BindingActive), Spec: spec},
+	}}
+	res, err := f.svc.Build(context.Background(), "mi_1", "bd_1")
+	if err != nil {
+		t.Fatalf("无 tools 模板装配失败：%v", err)
+	}
+	if res.Manifest.State != StateAssembled {
+		t.Fatalf("期望 assembled，得到 %s/%s", res.Manifest.State, res.Manifest.ReasonCode)
+	}
+	tc, ok := layerOf(t, res.Manifest, LayerTools).Content.(ToolsContent)
+	if !ok || len(tc.Required) != 0 || len(tc.Optional) != 0 {
+		t.Fatalf("工具层应为空清单：%+v", tc)
+	}
+	cc := layerOf(t, res.Manifest, LayerConstraints).Content.(ConstraintsContent)
+	if len(cc.EffectiveTools) != 0 {
+		t.Fatalf("有效工具应为空：%v", cc.EffectiveTools)
 	}
 }
 
@@ -248,13 +310,61 @@ func TestBuildRecentMessagesFilterBeforeCount(t *testing.T) {
 		t.Fatalf("全量容纳时不应裁剪：dropped=%d truncated=%d", l.Dropped, l.TruncatedMessages)
 	}
 	// 水位 = 实际交付的最新 seq（交付前沿——非 public 的 seq 3 不可见）
-	if len(res.Manifest.Watermarks) != 1 || res.Manifest.Watermarks[0].Stream != "room:rm_1" || res.Manifest.Watermarks[0].Position != 4 {
-		t.Fatalf("水位向量错误：%+v", res.Manifest.Watermarks)
+	if w := roomWatermark(t, res.Manifest); w.Stream != "room:rm_1" || w.Position != 4 {
+		t.Fatalf("水位错误：%+v", w)
 	}
 	// 非 public 内容不得出现在账本任何位置（存在性不泄漏）
 	blob, _ := json.Marshal(res.Manifest)
 	if strings.Contains(string(blob), "私有消息乙") || strings.Contains(string(blob), "evt_3") {
 		t.Fatalf("私有事件泄漏进清单：%s", string(blob)[:400])
+	}
+}
+
+// TestBuildRecentMessagesContextNotAuthorized 审校 P8：模板声明 room.recent
+// 域（选配）而授权未含——读取与计数前省略（连房间读取都不发生）；不声明
+// 该域的模板不扩大要求（未声明仍交付）。
+func TestBuildRecentMessagesContextNotAuthorized(t *testing.T) {
+	f := newFixture(t)
+	// 声明未授权（选配缺失 → readiness 降级但不 blocked）
+	g := fullGrant()
+	g.Context = nil
+	f.grant.grant = g
+	res, err := f.svc.Build(context.Background(), "mi_1", "bd_1")
+	if err != nil {
+		t.Fatalf("装配失败：%v", err)
+	}
+	l := layerOf(t, res.Manifest, LayerRecentMessages)
+	if l.State != LayerOmitted || l.ReasonCode != ReasonContextNotAuthorized {
+		t.Fatalf("未授权域应省略 context_not_authorized，得到 %s/%s", l.State, l.ReasonCode)
+	}
+	if f.room.calls != 0 {
+		t.Fatalf("未授权域不得读取房间（读取先于计数是违规）：calls=%d", f.room.calls)
+	}
+	if roomWatermarkOf(res.Manifest) != nil {
+		t.Fatalf("省略层不得产生房间水位：%+v", res.Manifest.Watermarks)
+	}
+	if res.Manifest.State != StateAssembled {
+		t.Fatalf("选配缺失应为 degraded 非 blocked：%s/%s", res.Manifest.State, res.Manifest.ReasonCode)
+	}
+	cc := layerOf(t, res.Manifest, LayerConstraints).Content.(ConstraintsContent)
+	if !cc.Readiness.Ready || len(cc.Readiness.Degraded) == 0 {
+		t.Fatalf("选配缺失应记降级：%+v", cc.Readiness)
+	}
+
+	// 对照：模板不声明该域 → 不扩大要求，层照常装配
+	f2 := newFixture(t)
+	spec := testSpec()
+	spec.Context = nil
+	f2.svc.ports.Bindings = fakeBindings{facts: map[string]BindingFacts{
+		"bd_1": {Binding: testBinding("ag_own", slot.BindingActive), Spec: spec},
+	}}
+	f2.grant.grant.Context = nil
+	res2, err := f2.svc.Build(context.Background(), "mi_1", "bd_1")
+	if err != nil {
+		t.Fatalf("未声明模板装配失败：%v", err)
+	}
+	if l := layerOf(t, res2.Manifest, LayerRecentMessages); l.State != LayerIncluded {
+		t.Fatalf("未声明域不扩大要求，应照常装配：%s/%s", l.State, l.ReasonCode)
 	}
 }
 
@@ -271,8 +381,9 @@ func TestBuildRecentMessagesNoSource(t *testing.T) {
 	if l.State != LayerOmitted || l.ReasonCode != ReasonNoSourceRoom {
 		t.Fatalf("无来源房应省略 no_source_room，得到 %s/%s", l.State, l.ReasonCode)
 	}
-	if len(res.Manifest.Watermarks) != 0 {
-		t.Fatalf("无来源房不应有水位：%+v", res.Manifest.Watermarks)
+	// 无来源房无房间水位（模板版本分量仍在）
+	if roomWatermarkOf(res.Manifest) != nil || len(res.Manifest.Watermarks) != 1 {
+		t.Fatalf("水位向量错误：%+v", res.Manifest.Watermarks)
 	}
 }
 
@@ -297,11 +408,48 @@ func TestBuildRecentMessagesQuotaTruncation(t *testing.T) {
 		t.Fatalf("配额裁剪账目错误：included=%d dropped=%d", len(mc.Messages), l.Dropped)
 	}
 	// 装的是最新的：水位 = 200；窗口末条 seq 亦为 200
-	if res.Manifest.Watermarks[0].Position != 200 || mc.Messages[len(mc.Messages)-1].Seq != 200 {
-		t.Fatalf("应从新往旧装满：水位=%d 末条=%d", res.Manifest.Watermarks[0].Position, mc.Messages[len(mc.Messages)-1].Seq)
+	if w := roomWatermark(t, res.Manifest); w.Position != 200 || mc.Messages[len(mc.Messages)-1].Seq != 200 {
+		t.Fatalf("应从新往旧装满：水位=%+v 末条=%d", w, mc.Messages[len(mc.Messages)-1].Seq)
 	}
 	if l.Bytes > RecentMessagesQuotaBytes {
 		t.Fatalf("消息层 %d 超配额 %d", l.Bytes, RecentMessagesQuotaBytes)
+	}
+}
+
+// TestBuildOptionalCappedByRemainingBudget 审校 P5：必需层接近总预算时，
+// 可选层配额须按剩余空间收紧——总字节不得突破 256 KiB 仍标 assembled。
+func TestBuildOptionalCappedByRemainingBudget(t *testing.T) {
+	f := newFixture(t)
+	// 契约层（必需）~195KiB：必填未超总预算，但剩余空间远小于 64KiB 配额
+	m := testMission()
+	m.Objective = strings.Repeat(" ", 195<<10) + "目标"
+	f.svc.ports.Missions = fakeMissions{m: m, ok: true}
+	// 房间堆 200 条 ~1KB public 消息（满 64KiB 配额的体量）
+	var events []RoomEvent
+	for i := 1; i <= 200; i++ {
+		events = append(events, RoomEvent{
+			Seq: int64(i), EventID: "evt_q", Type: "message.posted", Visibility: "public",
+			ParticipantID: "par_a", ActorKind: "agent", Body: strings.Repeat("x", 1000),
+		})
+	}
+	f.room.events["rm_1"] = events
+
+	res, err := f.svc.Build(context.Background(), "mi_1", "bd_1")
+	if err != nil {
+		t.Fatalf("装配失败：%v", err)
+	}
+	if res.Manifest.State != StateAssembled {
+		t.Fatalf("必需层未超预算应 assembled，得到 %s/%s", res.Manifest.State, res.Manifest.ReasonCode)
+	}
+	if res.Manifest.TotalBytes > TotalBudgetBytes {
+		t.Fatalf("总字节 %d 突破总预算 %d 仍标可用", res.Manifest.TotalBytes, TotalBudgetBytes)
+	}
+	l := layerOf(t, res.Manifest, LayerRecentMessages)
+	if l.State != LayerIncluded || l.Dropped == 0 {
+		t.Fatalf("剩余空间收紧后应大量裁剪：%s dropped=%d", l.State, l.Dropped)
+	}
+	if req := requiredBytes(res.Manifest.Layers); req > TotalBudgetBytes {
+		t.Fatalf("必需层 %d 超预算应 blocked", req)
 	}
 }
 
@@ -326,27 +474,26 @@ func TestBuildPerMessageTruncation(t *testing.T) {
 }
 
 func TestBuildBlockedPrecedence(t *testing.T) {
+	// readiness 不再是端口注入——由授权快照推导（P4）：撤能力即 not ready
 	cases := []struct {
 		name    string
 		binding slot.Binding
-		ready   bool
+		grant   slot.AgentGrant
 		want    string
 	}{
-		{"执行者非负责人优先", testBinding("ag_other", slot.BindingReleased), true, ReasonOwnerMismatch},
-		{"任职非活跃次之", testBinding("ag_own", slot.BindingReleased), true, ReasonBindingNotActive},
-		{"授权缺失再次", testBinding("ag_own", slot.BindingActive), false, ReasonReadinessNotMet},
+		{"执行者非负责人优先", testBinding("ag_other", slot.BindingReleased), fullGrant(), ReasonOwnerMismatch},
+		{"任职非活跃次之", testBinding("ag_own", slot.BindingReleased), fullGrant(), ReasonBindingNotActive},
+		{"授权缺失再次", testBinding("ag_own", slot.BindingActive), func() slot.AgentGrant {
+			g := fullGrant()
+			g.Runtime.Capabilities = nil // 缺 runtime.required:net → blocked
+			return g
+		}(), ReasonReadinessNotMet},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t)
 			f.svc.ports.Bindings = fakeBindings{facts: map[string]BindingFacts{"bd_1": {Binding: tc.binding, Spec: testSpec()}}}
-			rep := readyReport()
-			rep.Ready = tc.ready
-			if !tc.ready {
-				rep.Satisfied = nil
-				rep.Missing = []string{"tools.required:web"}
-			}
-			f.svc.ports.Readiness = fakeReadiness{report: rep}
+			f.grant.grant = tc.grant
 			res, err := f.svc.Build(context.Background(), "mi_1", "bd_1")
 			if err != nil {
 				t.Fatalf("装配失败：%v", err)
@@ -360,6 +507,34 @@ func TestBuildBlockedPrecedence(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBuildReadinessSharesGrantSnapshot 审校 P4：准入报告与工具清单共用同
+// 一授权快照——单次装配内不可能出现"必需工具满足 Ready=true 而有效工具
+// 为空"的矛盾清单（readiness 与 EffectiveTools 同源于一次 GrantByAgent）。
+func TestBuildReadinessSharesGrantSnapshot(t *testing.T) {
+	f := newFixture(t)
+	res, err := f.svc.Build(context.Background(), "mi_1", "bd_1")
+	if err != nil {
+		t.Fatalf("装配失败：%v", err)
+	}
+	cc := layerOf(t, res.Manifest, LayerConstraints).Content.(ConstraintsContent)
+	// web 是模板必需工具：Ready ⇒ 有效工具必含 web（同一快照推导）
+	if cc.Readiness.Ready && !contains(cc.EffectiveTools, "web") {
+		t.Fatalf("矛盾清单：Ready=true 但有效工具 %v 缺必需项", cc.EffectiveTools)
+	}
+	if len(cc.Readiness.Missing) > 0 && cc.Readiness.Ready {
+		t.Fatalf("矛盾报告：%+v", cc.Readiness)
+	}
+}
+
+func contains(list []string, want string) bool {
+	for _, x := range list {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuildRequiredOverBudget(t *testing.T) {
@@ -399,6 +574,41 @@ func TestBuildValidation(t *testing.T) {
 	f.svc.ports.Missions = fakeMissions{m: testMission(), ok: true}
 	if _, err := f.svc.Build(context.Background(), "mi_1", "bd_x"); !errors.Is(err, ErrBindingNotFound) {
 		t.Fatalf("未知任职期望 ErrBindingNotFound，得到 %v", err)
+	}
+	// 无授权档案 = 空授权（安全缺省）→ blocked readiness_not_met
+	f.grant.ok = false
+	f.grant.grant = slot.AgentGrant{}
+	res, err := f.svc.Build(context.Background(), "mi_1", "bd_1")
+	if err != nil {
+		t.Fatalf("装配失败：%v", err)
+	}
+	if res.Manifest.State != StateBlocked || res.Manifest.ReasonCode != ReasonReadinessNotMet {
+		t.Fatalf("空授权期望 blocked readiness_not_met，得到 %s/%s", res.Manifest.State, res.Manifest.ReasonCode)
+	}
+}
+
+// TestDigestSurvivesStorageRoundtrip 审校 P6：层内容经存储往返（typed →
+// map）后，摘要须按原算法复算一致——DigestOf 规范化编码（键序/数字保真）。
+func TestDigestSurvivesStorageRoundtrip(t *testing.T) {
+	f := newFixture(t)
+	res, err := f.svc.Build(context.Background(), "mi_1", "bd_1")
+	if err != nil {
+		t.Fatalf("装配失败：%v", err)
+	}
+	// 模拟存储往返：整体 JSON 序列化再反序列化（Content 变 map[string]any）
+	blob, err := json.Marshal(res.Manifest)
+	if err != nil {
+		t.Fatalf("序列化：%v", err)
+	}
+	var back Manifest
+	if err := json.Unmarshal(blob, &back); err != nil {
+		t.Fatalf("反序列化：%v", err)
+	}
+	if _, isMap := back.Layers[0].Content.(map[string]any); !isMap {
+		t.Fatalf("往返后内容应为 map（存储读路径形态）：%T", back.Layers[0].Content)
+	}
+	if got := DigestOf(back); got != res.Manifest.Digest {
+		t.Fatalf("往返复算摘要不一致：%s vs 存档 %s", got, res.Manifest.Digest)
 	}
 }
 

@@ -573,15 +573,14 @@ function MissionDetail({
         </ul>
       </details>
 
-      {detail.status !== "canceled" && (
-        <ExecContextCard missionID={missionID} ownerAgentID={detail.owner_agent_id} />
-      )}
+      {/* 审校 P7：取消后仍渲染（只读——canceled 时仅禁新装配，历史/层内容可查） */}
+      <ExecContextCard missionID={missionID} ownerAgentID={detail.owner_agent_id} canceled={detail.status === "canceled"} />
     </section>
   );
 }
 
 /** 执行上下文清单（0.6.2 / ADR-0025）：选任职装配存档、层账本、装配历史。 */
-function ExecContextCard({ missionID, ownerAgentID }: { missionID: string; ownerAgentID: string }) {
+function ExecContextCard({ missionID, ownerAgentID, canceled }: { missionID: string; ownerAgentID: string; canceled: boolean }) {
   const [manifests, setManifests] = useState<ContextManifestSummary[] | null>(null);
   const [instances, setInstances] = useState<SlotInstanceView[]>([]);
   const [bindings, setBindings] = useState<BindingView[]>([]);
@@ -591,6 +590,7 @@ function ExecContextCard({ missionID, ownerAgentID }: { missionID: string; owner
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const seq = useRef(0);
+  const resultSeq = useRef(0); // 结果请求序号（审校 P3）：装配/历史查看共用——只接纳最新响应
 
   const load = () => {
     const cur = ++seq.current;
@@ -608,6 +608,10 @@ function ExecContextCard({ missionID, ownerAgentID }: { missionID: string; owner
       });
   };
   useEffect(load, [missionID]); // 父层按 missionID key 重挂载
+  // 负责人变化清空任职选择（审校 P2）：旧 owner 的选择残留不可提交
+  useEffect(() => {
+    setBindingID("");
+  }, [ownerAgentID]);
 
   // 执行者须为契约负责人（owner_mismatch 只是 blocked 预演）——默认只列
   // owner 的任职，便于直接选对；无 owner 时提示先指派。
@@ -615,18 +619,42 @@ function ExecContextCard({ missionID, ownerAgentID }: { missionID: string; owner
   const instTitle = (id: string) => instances.find((x) => x.slot_instance_id === id)?.title ?? id;
 
   const build = async (id: string) => {
+    // 提交前核对任职仍属于当前负责人（审校 P2）：迟到列表/并发修订防护
+    if (!owned.some((b) => b.binding_id === id)) {
+      setErr("所选任职已不属于当前负责人——请重新选择");
+      setBindingID("");
+      return;
+    }
     setBusy(true);
     setErr(null);
+    const cur = ++resultSeq.current; // 出发取号（审校 P3）
     try {
       const r = await api.buildContextManifest(missionID, id);
+      if (resultSeq.current !== cur) return; // 过期响应弃用
       setResult(r.manifest);
       setReplayed(r.replayed);
       load();
     } catch (e) {
+      if (resultSeq.current !== cur) return;
       setErr(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
+  };
+
+  const viewHistory = (manifestID: string) => {
+    const cur = ++resultSeq.current; // 与装配共用结果序号（审校 P3）
+    void api
+      .getContextManifest(manifestID)
+      .then((v) => {
+        if (resultSeq.current !== cur) return; // 迟到响应不覆盖最新查看/装配结果
+        setResult(v);
+        setReplayed(false);
+      })
+      .catch((e) => {
+        if (resultSeq.current !== cur) return;
+        setErr(e instanceof Error ? e.message : String(e));
+      });
   };
 
   return (
@@ -636,7 +664,11 @@ function ExecContextCard({ missionID, ownerAgentID }: { missionID: string; owner
       </summary>
       <div className="mt-1 flex flex-col gap-2">
         {err && <p className="text-danger">{err}</p>}
-        {ownerAgentID === "" ? (
+        {canceled ? (
+          // 审校 P7：取消后保留只读卡——既有层内容与历史仍可查（数据保留，
+          // API 仍可读），仅不能再装配（后端 409 mission_canceled）
+          <p className="text-faint">任务已取消——不能再装配；既有清单与层内容仍可查看。</p>
+        ) : ownerAgentID === "" ? (
           <p className="text-faint">未指派负责人——先修订契约指派 owner 再装配。</p>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
@@ -714,15 +746,7 @@ function ExecContextCard({ missionID, ownerAgentID }: { missionID: string; owner
               <li key={m.manifest_id} className="flex items-center gap-2 text-faint">
                 <button
                   type="button"
-                  onClick={() =>
-                    void api
-                      .getContextManifest(m.manifest_id)
-                      .then((v) => {
-                        setResult(v);
-                        setReplayed(false);
-                      })
-                      .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
-                  }
+                  onClick={() => viewHistory(m.manifest_id)}
                   className="shrink-0 rounded bg-surface-3 px-1.5 py-px text-[10px] hover:opacity-85"
                 >
                   查看

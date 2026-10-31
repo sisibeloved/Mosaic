@@ -10,6 +10,7 @@
 package execctx
 
 import (
+	"bytes"
 	"context"
 	crand "crypto/rand"
 	"crypto/sha256"
@@ -80,7 +81,15 @@ const (
 	ReasonCheckpointUnavailable      = "checkpoint_unavailable"
 	ReasonMemoryUnavailable          = "memory_unavailable"
 	ReasonDecisionCapsuleUnavailable = "decision_capsule_unavailable"
+	// ReasonContextNotAuthorized 模板声明了该上下文域而授权未含（审校
+	// P8：读取与计数前省略——授权过滤先于排序计数的域级延伸）。
+	ReasonContextNotAuthorized = "context_not_authorized"
 )
+
+// ContextDomainRecentMessages 近期消息层的上下文域标识（与 SlotSpec
+// Context 声明 / AgentGrant.Context 授权同词表——审校 P8 核对用；模板
+// 未声明该域不扩大要求，照常装配）。
+const ContextDomainRecentMessages = "room.recent"
 
 var bindingIDPattern = regexp.MustCompile(`^bd_[0-9A-Za-z_-]+$`)
 
@@ -249,14 +258,9 @@ type Bindings interface {
 	Facts(ctx context.Context, bindingID string) (BindingFacts, bool, error)
 }
 
-// Readiness 准入报告端口（ADR-0022 GrantReadinessChecker 复用——
-// 就绪判定单源；工具清单不在此重算，经 Grants 端口取授权档案）。
-type Readiness interface {
-	Check(ctx context.Context, candidate slot.Binding) (slot.ReadinessReport, error)
-}
-
-// Grants 授权档案读端口（工具清单 = 模板声明 ∩ 授权——清单是库存不是
-// 就绪判定：required 缺失 → blocked 仍由 readiness 报告单源裁决）。
+// Grants 授权档案读端口（审校 P4：单次装配只读取一份授权——准入报告
+// （ADR-0022 交集单源 EvaluateReadiness 纯函数）与工具清单/域授权共用
+// 同一快照，不出现"必需工具满足 Ready=true 而有效工具为空"的矛盾清单）。
 type Grants interface {
 	GrantByAgent(ctx context.Context, agentID string) (slot.AgentGrant, bool, error)
 }
@@ -268,11 +272,10 @@ type RoomReader interface {
 
 // Ports 外部事实端口。
 type Ports struct {
-	Missions  Missions
-	Bindings  Bindings
-	Readiness Readiness
-	Grants    Grants
-	Rooms     RoomReader
+	Missions Missions
+	Bindings Bindings
+	Grants   Grants
+	Rooms    RoomReader
 }
 
 // Store 持久化端口（SQLite 实现：internal/storage/sqlite；测试件：memstore）。
@@ -352,21 +355,24 @@ func (s *Service) Build(ctx context.Context, missionID, bindingID string) (Build
 	if !ok {
 		return BuildResult{}, ErrBindingNotFound
 	}
-	report, err := s.ports.Readiness.Check(ctx, facts.Binding)
-	if err != nil {
-		return BuildResult{}, fmt.Errorf("execctx: 准入核对失败：%w", err)
-	}
-	grant, _, err := s.ports.Grants.GrantByAgent(ctx, facts.Binding.AgentID)
+	// 单次装配只读取一份授权（审校 P4）：无档案 = 空授权（安全缺省），
+	// 准入报告与工具清单/域授权同源推导。
+	grant, gok, err := s.ports.Grants.GrantByAgent(ctx, facts.Binding.AgentID)
 	if err != nil {
 		return BuildResult{}, fmt.Errorf("execctx: 读授权档案失败：%w", err)
 	}
+	if !gok {
+		grant = slot.AgentGrant{}
+	}
 
-	layers, watermarks, err := s.assemble(ctx, m, facts, report, grant)
+	layers, watermarks, report, err := s.assemble(ctx, m, facts, grant)
 	if err != nil {
 		return BuildResult{}, err
 	}
 
-	// blocked 优先级（ADR-0025 决策 4——固定序，先命中先记录）。
+	// blocked 优先级（ADR-0025 决策 4——固定序，先命中先记录）。可选层
+	// 已按剩余预算收紧（assemble），此处必需超限或总量超限（防御性）均
+	// blocked required_over_budget。
 	state, reason := StateAssembled, ""
 	switch {
 	case facts.Binding.AgentID != m.OwnerAgentID:
@@ -375,7 +381,7 @@ func (s *Service) Build(ctx context.Context, missionID, bindingID string) (Build
 		state, reason = StateBlocked, ReasonBindingNotActive
 	case !report.Ready:
 		state, reason = StateBlocked, ReasonReadinessNotMet
-	case requiredBytes(layers) > TotalBudgetBytes:
+	case requiredBytes(layers) > TotalBudgetBytes || totalBytes(layers) > TotalBudgetBytes:
 		state, reason = StateBlocked, ReasonRequiredOverBudget
 	}
 
@@ -386,7 +392,7 @@ func (s *Service) Build(ctx context.Context, missionID, bindingID string) (Build
 		State: state, ReasonCode: reason, PolicyVersion: PolicyVersion,
 		Layers: layers, Watermarks: watermarks, TotalBytes: totalBytes(layers), CreatedAt: now,
 	}
-	manifest.Digest = digestOf(manifest, facts.Binding.SlotSpecVersion)
+	manifest.Digest = DigestOf(manifest)
 	receipt := Receipt{
 		ReceiptID: s.newReceiptID(), ManifestID: manifest.ManifestID, Digest: manifest.Digest,
 		PolicyVersion: PolicyVersion, Accounting: accountingOf(layers), TotalBytes: manifest.TotalBytes, CreatedAt: now,
@@ -424,8 +430,12 @@ func (s *Service) ListByMission(ctx context.Context, missionID string) ([]Manife
 }
 
 // assemble 按 RFC §7.3 组装顺序产出层账本（blocked 也存完整账本）。
-func (s *Service) assemble(ctx context.Context, m mission.Mission, facts BindingFacts, report slot.ReadinessReport, grant slot.AgentGrant) ([]Layer, []Watermark, error) {
+// readiness 由 (模板 × 授权快照) 经 ADR-0022 单源纯函数推导（审校 P4）；
+// 可选层配额按剩余总预算收紧（审校 P5）；声明的上下文域未授权时在读取、
+// 计数前省略（审校 P8）。
+func (s *Service) assemble(ctx context.Context, m mission.Mission, facts BindingFacts, grant slot.AgentGrant) ([]Layer, []Watermark, slot.ReadinessReport, error) {
 	spec := facts.Spec.SpecContent
+	report := slot.EvaluateReadiness(spec, grant)
 
 	constraints := ConstraintsContent{
 		Readiness:                report,
@@ -439,10 +449,12 @@ func (s *Service) assemble(ctx context.Context, m mission.Mission, facts Binding
 		SpecDeliverables: spec.Deliverables, SpecSkills: spec.Skills,
 		Binding: facts.Binding,
 	}
+	// tools 声明为可选指针（合法模板可不填——审校 P1 空值安全访问）
 	tools := ToolsContent{
-		Required: intersectCaps(spec.Tools.Required, grant.Tools),
-		Optional: intersectCaps(spec.Tools.Optional, grant.Tools),
+		Required: intersectCaps(specRequiredTools(spec), grant.Tools),
+		Optional: intersectCaps(specOptionalTools(spec), grant.Tools),
 	}
+	sources := includedLayer(LayerSources, RoleOptional, SourcesContent{Refs: m.SourceRefs, RoomSource: m.RoomSource})
 	layers := []Layer{
 		includedLayer(LayerConstraints, RoleRequired, constraints),
 		includedLayer(LayerResponsibility, RoleRequired, responsibility),
@@ -450,32 +462,84 @@ func (s *Service) assemble(ctx context.Context, m mission.Mission, facts Binding
 		omittedLayer(LayerDecisionCapsule, ReasonDecisionCapsuleUnavailable),
 		omittedLayer(LayerCheckpoint, ReasonCheckpointUnavailable),
 		omittedLayer(LayerMemory, ReasonMemoryUnavailable),
-		includedLayer(LayerSources, RoleOptional, SourcesContent{Refs: m.SourceRefs, RoomSource: m.RoomSource}),
+		sources,
 	}
 
-	var watermarks []Watermark
-	if m.RoomSource == nil {
+	// 水位向量：模板版本分量恒在（digest 输入自包含——存储往返可复算，
+	// 审校 P6）；房间交付前沿随 recent_messages 交付出现。
+	watermarks := []Watermark{{Stream: "slot_spec:" + facts.Spec.SlotSpecID, Position: int64(facts.Spec.Version)}}
+	switch {
+	case m.RoomSource == nil:
 		layers = append(layers, omittedLayer(LayerRecentMessages, ReasonNoSourceRoom))
-	} else {
+	case !contextAuthorized(spec, grant, ContextDomainRecentMessages):
+		// 审校 P8：声明未授权的域在读取、计数前省略（房间读取都不发生）
+		layers = append(layers, omittedLayer(LayerRecentMessages, ReasonContextNotAuthorized))
+	default:
 		events, err := s.ports.Rooms.RoomEvents(ctx, m.RoomSource.RoomID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("execctx: 读来源房间失败：%w", err)
+			return nil, nil, slot.ReadinessReport{}, fmt.Errorf("execctx: 读来源房间失败：%w", err)
 		}
-		content, dropped, truncated, wms := assembleMessages(events, m.RoomSource.RoomID)
-		watermarks = wms
+		// 审校 P5：可选层配额同时受剩余总预算约束（必需 + 已装可选先行扣减）
+		remaining := TotalBudgetBytes - requiredBytes(layers) - layerBytes(sources) - layerBytes(toolsLayerOf(tools))
+		quota := RecentMessagesQuotaBytes
+		if remaining < quota {
+			quota = max(remaining, 0)
+		}
+		content, dropped, truncated, wms := assembleMessages(events, m.RoomSource.RoomID, quota)
+		watermarks = append(watermarks, wms...)
 		l := includedLayer(LayerRecentMessages, RoleOptional, content)
 		l.Dropped, l.TruncatedMessages = dropped, truncated
 		layers = append(layers, l)
 	}
 
 	layers = append(layers, includedLayer(LayerTools, RoleRequired, tools))
-	return layers, watermarks, nil
+	return layers, watermarks, report, nil
+}
+
+// toolsLayerOf 预算扣减用：工具层（必需）内容块的字节数。
+func toolsLayerOf(tools ToolsContent) Layer {
+	return includedLayer(LayerTools, RoleRequired, tools)
+}
+
+func layerBytes(l Layer) int {
+	if l.State != LayerIncluded {
+		return 0
+	}
+	return l.Bytes
+}
+
+// contextAuthorized 上下文域授权核对（审校 P8）：模板声明了该域
+// （required ∪ optional）而授权未含 → false；未声明的域不扩大要求。
+func contextAuthorized(spec slot.SpecContent, grant slot.AgentGrant, domain string) bool {
+	if spec.Context == nil {
+		return true
+	}
+	declared := false
+	for _, d := range spec.Context.Required {
+		if d == domain {
+			declared = true
+		}
+	}
+	for _, d := range spec.Context.Optional {
+		if d == domain {
+			declared = true
+		}
+	}
+	if !declared {
+		return true
+	}
+	for _, d := range grant.Context {
+		if d == domain {
+			return true
+		}
+	}
+	return false
 }
 
 // assembleMessages 授权过滤先于排序与计数：只收 public 可见 message.posted；
 // 从新往旧装满配额即停（dropped = 被裁的更旧条数）；单条超限取头部记截断；
 // 呈现时序旧→新；水位 = 实际交付的最新 seq（交付前沿——非 public 不参与）。
-func assembleMessages(events []RoomEvent, roomID string) (RecentMessagesContent, int, int, []Watermark) {
+func assembleMessages(events []RoomEvent, roomID string, quota int) (RecentMessagesContent, int, int, []Watermark) {
 	var pub []RoomEvent
 	for _, e := range events {
 		if e.Visibility == "public" && e.Type == "message.posted" {
@@ -492,7 +556,7 @@ func assembleMessages(events []RoomEvent, roomID string) (RecentMessagesContent,
 			ParticipantID: e.ParticipantID, ActorKind: e.ActorKind, Body: body,
 		}
 		sz := jsonSize(entry)
-		if len(sel) > 0 && used+sz > RecentMessagesQuotaBytes {
+		if used+sz > quota { // 首条也不例外：剩余预算不足即全裁（审校 P5）
 			dropped = i + 1 // 索引 0..i（更旧）被配额裁剪
 			break
 		}
@@ -574,22 +638,36 @@ func accountingOf(layers []Layer) []AccountingEntry {
 	return out
 }
 
-// digestOf 清单摘要：层账本（含内容）+ 水位 + 钉住版本——同状态必同摘要
-// （typed 内容 json.Marshal 字段序固定；created_at 与 ID 不参与）。
-func digestOf(m Manifest, slotSpecVersion int) string {
+// DigestOf 清单摘要（导出——审计/IT 复算验证）：层账本（含内容）+ 水位
+// 向量（含模板版本分量）+ 钉住版本列。同状态必同摘要；created_at 与 ID
+// 不参与。审校 P6：先规范化再哈希——层内容经 JSON 往返（typed 结构 →
+// map）后键序统一按字典序、数字经 json.Number 保真，首次生成与存储读取
+// 后的复算值一致（digestInput 全部字段在 Manifest 行内自包含）。
+func DigestOf(m Manifest) string {
 	in := struct {
 		MissionID       string      `json:"mission_id"`
 		ContractVersion int         `json:"contract_version"`
 		BindingID       string      `json:"binding_id"`
-		SlotSpecVersion int         `json:"slot_spec_version"`
 		Layers          []Layer     `json:"layers"`
 		Watermarks      []Watermark `json:"watermarks"`
-	}{m.MissionID, m.ContractVersion, m.BindingID, slotSpecVersion, m.Layers, m.Watermarks}
+	}{m.MissionID, m.ContractVersion, m.BindingID, m.Layers, m.Watermarks}
 	b, err := json.Marshal(in)
 	if err != nil {
 		return ""
 	}
-	sum := sha256.Sum256(b)
+	// 规范化：解码为通用表示（map 键序字典序、数字 json.Number 保真）再
+	// 编码——typed（首次生成）与 map（存储读回）两种形态同一字节序列。
+	var norm any
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	if err := dec.Decode(&norm); err != nil {
+		return ""
+	}
+	canonical, err := json.Marshal(norm)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:])
 }
 

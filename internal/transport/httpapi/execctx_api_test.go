@@ -24,16 +24,12 @@ func (f fakeExecBindings) Facts(_ context.Context, bindingID string) (execctx.Bi
 	return facts, ok, nil
 }
 
-type fakeExecReadiness struct{ ready bool }
-
-func (f fakeExecReadiness) Check(_ context.Context, _ slot.Binding) (slot.ReadinessReport, error) {
-	return slot.ReadinessReport{Ready: f.ready, Satisfied: []string{"runtime.required:net"}}, nil
-}
-
-type fakeExecGrants struct{ tools []string }
+// fakeExecGrants 授权档案端口——readiness 由 execctx 域内经
+// EvaluateReadiness 从该快照推导（审校 P4：不再独立注入报告）。
+type fakeExecGrants struct{ grant slot.AgentGrant }
 
 func (f fakeExecGrants) GrantByAgent(_ context.Context, _ string) (slot.AgentGrant, bool, error) {
-	return slot.AgentGrant{Tools: f.tools}, true, nil
+	return f.grant, true, nil
 }
 
 type fakeExecRooms struct {
@@ -44,7 +40,8 @@ func (f fakeExecRooms) RoomEvents(_ context.Context, roomID string) ([]execctx.R
 	return f.events[roomID], nil
 }
 
-// execctxTestServer 身份 + Mission + execctx（任职/授权/房间经端口注入）。
+// execctxTestServer 身份 + Mission + execctx（任职/授权/房间经端口注入；
+// ready=false 时授权缺必需运行能力 → blocked readiness_not_met）。
 func execctxTestServer(t *testing.T, ready bool) (*httptest.Server, *mission.Service) {
 	t.Helper()
 	roomTasks := fakeRoomTasks{tasks: map[[2]string]bool{{"r1", "tsk_a"}: true}}
@@ -60,7 +57,9 @@ func execctxTestServer(t *testing.T, ready bool) (*httptest.Server, *mission.Ser
 		mission.WithSourceLookup(roomTasks))
 	spec := slot.SlotSpec{SlotSpecID: "ss_e", Version: 1, SpecContent: slot.SpecContent{
 		Name: "执行者", Responsibility: "负责执行", Deliverables: []string{"产出"},
-		Tools: &slot.CapabilityList{Required: []string{"web"}},
+		Tools:   &slot.CapabilityList{Required: []string{"web"}},
+		Context: &slot.CapabilityList{Optional: []string{execctx.ContextDomainRecentMessages}},
+		Runtime: &slot.RuntimeRequirements{Required: []string{"net"}, WorkspaceAccess: "read"},
 	}}
 	bindings := fakeExecBindings{facts: map[string]execctx.BindingFacts{
 		"bd_act": {Binding: slot.Binding{BindingID: "bd_act", AgentID: "ag_e1", SlotInstanceID: "si_e",
@@ -68,12 +67,20 @@ func execctxTestServer(t *testing.T, ready bool) (*httptest.Server, *mission.Ser
 		"bd_rel": {Binding: slot.Binding{BindingID: "bd_rel", AgentID: "ag_e1", SlotInstanceID: "si_e",
 			SlotSpecVersion: 1, Status: slot.BindingReleased}, Spec: spec},
 	}}
+	grant := slot.AgentGrant{
+		AgentID: "ag_e1",
+		Tools:   []string{"web"},
+		Context: []string{execctx.ContextDomainRecentMessages},
+		Runtime: slot.AgentGrantRuntime{WorkspaceAccess: "read"},
+	}
+	if ready {
+		grant.Runtime.Capabilities = []string{"net"}
+	}
 	var n int64
 	eSvc := execctx.New(execctx.NewMemStore(), execctx.Ports{
-		Missions:  mSvc,
-		Bindings:  bindings,
-		Readiness: fakeExecReadiness{ready: ready},
-		Grants:    fakeExecGrants{tools: []string{"web"}},
+		Missions: mSvc,
+		Bindings: bindings,
+		Grants:   fakeExecGrants{grant: grant},
 		Rooms: fakeExecRooms{events: map[string][]execctx.RoomEvent{
 			"r1": {
 				{Seq: 2, EventID: "evt_2", Type: "message.posted", Visibility: "public",
@@ -156,9 +163,15 @@ func TestExecctxEndpoints(t *testing.T) {
 	if doc.Manifest.PolicyVersion != "context-assembly/1" {
 		t.Fatalf("政策版本错误: %s", doc.Manifest.PolicyVersion)
 	}
-	// 私有事件不进入不计数：水位 = 实际交付的 evt_2（seq 2），非读取前沿 3
-	if len(doc.Manifest.Watermarks) != 1 || doc.Manifest.Watermarks[0].Stream != "room:r1" ||
-		doc.Manifest.Watermarks[0].Position != 2 {
+	// 私有事件不进入不计数：水位 = 实际交付的 evt_2（seq 2），非读取前沿 3；
+	// 水位向量另含模板版本分量（审校 P6）
+	var roomPos int64 = -1
+	for _, w := range doc.Manifest.Watermarks {
+		if w.Stream == "room:r1" {
+			roomPos = w.Position
+		}
+	}
+	if len(doc.Manifest.Watermarks) != 2 || roomPos != 2 {
 		t.Fatalf("水位错误: %+v", doc.Manifest.Watermarks)
 	}
 	if doc.Manifest.Receipt.ReceiptID == "" || doc.Manifest.Receipt.Digest != doc.Manifest.Digest {

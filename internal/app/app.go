@@ -317,14 +317,15 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	}, dispatch.WithNow(clock))
 	// 执行上下文清单域（RFC-0018 §7.3 / ADR-0025，0.6.2）：确定性装配存档
 	// （digest 即身份——重建重放，状态变化追加）；任职事实（binding → 实例
-	// → 钉版本模板行）与房间事件经端口适配注入，readiness 复用 0.5.5 交集
-	// 单源。授权过滤先于排序计数在 execctx 域内执行并测试钉住。
+	// → 钉版本模板行）与房间事件经端口适配注入。readiness 经 ADR-0022
+	// 交集单源纯函数（EvaluateReadiness）与工具清单/域授权共用同一授权
+	// 快照（审校 P4——单次装配只读一份授权）。授权过滤先于排序计数在
+	// execctx 域内执行并测试钉住。
 	execCtxSvc := execctx.New(store, execctx.Ports{
-		Missions:  missionSvc,
-		Bindings:  bindingFactsAdapter{slots: slotSvc},
-		Readiness: slot.NewGrantReadinessChecker(store),
-		Grants:    store,
-		Rooms:     execRoomEvents{reader: store},
+		Missions: missionSvc,
+		Bindings: bindingFactsAdapter{slots: slotSvc},
+		Grants:   store,
+		Rooms:    execRoomEvents{reader: store},
 	}, execctx.WithNow(clock))
 	scanDone := make(chan struct{})
 	go func() {

@@ -177,3 +177,67 @@ func TestExecctxLegacyUpgradeIT(t *testing.T) {
 		t.Fatalf("升级库查清单: ok=%v", ok)
 	}
 }
+
+// TestExecctxDigestRoundtripIT 审校 P6：清单经真实 SQLite 往返（层内容
+// typed → map 形态）后，摘要须按原算法（execctx.DigestOf 规范化编码）
+// 复算一致——审计/回放可验证。
+func TestExecctxDigestRoundtripIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	m, r := sampleManifest("cmf_dg", "mi_dg", "")
+	m.Digest = execctx.DigestOf(m)
+	r.Digest = m.Digest
+	if err := store.CreateManifest(ctx, m, r); err != nil {
+		t.Fatalf("落库: %v", err)
+	}
+	got, gr, ok, err := store.ManifestByDigest(ctx, "mi_dg", m.Digest)
+	if err != nil || !ok {
+		t.Fatalf("按摘要查: ok=%v err=%v", ok, err)
+	}
+	if _, isMap := got.Layers[0].Content.(map[string]any); !isMap {
+		t.Fatalf("读回层内容应为 map（存储形态）：%T", got.Layers[0].Content)
+	}
+	if back := execctx.DigestOf(got); back != m.Digest {
+		t.Fatalf("往返复算摘要不一致：%s vs 存档 %s", back, m.Digest)
+	}
+	byID, _, ok, _ := store.ManifestByID(ctx, "cmf_dg")
+	if !ok || execctx.DigestOf(byID) != m.Digest {
+		t.Fatalf("按 ID 读回复算不一致：ok=%v", ok)
+	}
+	_ = gr
+}
+
+// TestExecctxCreateRollbackIT 审校注记：清单与回执同事务——回执插入失败
+// （主键撞预占行）时整事务回滚，清单行不留半成品（撞键≠ErrManifestExists
+// 的摘要撞键路径，此处为存储错误路径）。
+func TestExecctxCreateRollbackIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	// 预占回执主键（模拟历史遗留/病态行）
+	if _, err := store.db.Exec(`INSERT INTO exec_context_receipts
+(receipt_id, manifest_id, digest, policy_version, accounting, total_bytes, created_at)
+VALUES ('cxr_taken', 'cmf_other', 'dx', 'p', '[]', 0, '2026-10-30T00:00:00.000Z')`); err != nil {
+		t.Fatalf("预占回执主键: %v", err)
+	}
+	m, r := sampleManifest("cmf_rb", "mi_rb", "")
+	m.Digest = execctx.DigestOf(m)
+	r.Digest = m.Digest
+	r.ReceiptID = "cxr_taken" // 撞预占主键 → 回执插入失败
+	err := store.CreateManifest(ctx, m, r)
+	if err == nil || errors.Is(err, execctx.ErrManifestExists) {
+		t.Fatalf("回执主键冲突应为存储错误，得到 %v", err)
+	}
+	// 整事务回滚：清单行不可见
+	if _, _, ok, _ := store.ManifestByDigest(ctx, "mi_rb", m.Digest); ok {
+		t.Fatal("回执失败后清单行不应残留（同事务回滚）")
+	}
+	var rows int
+	store.db.QueryRow(`SELECT COUNT(*) FROM exec_context_manifests WHERE mission_id = 'mi_rb'`).Scan(&rows)
+	if rows != 0 {
+		t.Fatalf("清单行残留 %d 行", rows)
+	}
+}

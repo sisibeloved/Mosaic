@@ -123,10 +123,11 @@ created_at 与 ID。`UNIQUE(mission_id, digest)`：
 ### 8. 端口与装配（app 组合根）
 
 execctx 自定义小端口（不反向依赖 httpapi）：Missions（Get 单源）、
-Bindings（binding+钉版本模板行一次解析）、Readiness（ADR-0022
-Checker 复用）、Rooms（room.EventReader 分页——跨页累积全量后过滤，
-沿用 ADR-0024 P2#3 裁定）。SPA 两步选择器（实例→任职）复用既有
-slot 端点，不新增 slot 契约面。
+Bindings（binding+钉版本模板行一次解析）、Grants（授权档案——**单次
+装配只读一份**：readiness 经 ADR-0022 交集单源纯函数 EvaluateReadiness
+与工具清单/域授权共用同一快照，审校 P4）、Rooms（room.EventReader
+分页——跨页累积全量后过滤，沿用 ADR-0024 P2#3 裁定）。SPA 两步选择器
+（实例→任职）复用既有 slot 端点，不新增 slot 契约面。
 
 ## 非目标
 
@@ -156,3 +157,4 @@ slot 端点，不新增 slot 契约面。
 ## 修订记录
 
 - v0.1 2026-10-30 初稿（0.6.2 开工——设计先行）。
+- v0.2 2026-10-30 审校修复登记（独立审校"1 P1 + 7 P2，建议修复后定版"）：**(P1)** 合法模板可不声明 tools（可选指针）——工具层改经空值安全访问（声明缺省助手），无声明即空清单不崩溃，补无 tools 模板装配回归。**(P2#2)** SPA 负责人变化清空任职选择 + 提交前核对任职仍属当前负责人。**(P2#3)** 历史查看与装配共用结果请求序号，迟到响应不覆盖最新结果。**(P2#4)** Readiness 端口移除——单次装配只读一份授权：准入报告经 ADR-0022 单源纯函数 EvaluateReadiness 与工具清单/域授权同快照推导（不可能出现"必需工具满足 Ready=true 而有效工具为空"的矛盾清单）。**(P2#5)** 可选层配额同时受剩余总预算约束（必需 + 已装可选先行扣减，首条消息也不例外）；总量超限防御性 blocked。**(P2#6)** 摘要改规范化编码（JSON 往返 map 键序字典序 + json.Number 保真）后哈希——typed（首次生成）与 map（存储读回）同字节序列；模板版本入水位向量（slot_spec:{id}），digest 输入在清单行内自包含、存储往返可复算（DigestOf 导出，UT/IT 双钉）。**(P2#7)** canceled 后保留只读上下文卡（历史/层内容可查，仅禁新装配）。**(P2#8)** 声明未授权的上下文域（room.recent）在读取、计数前省略（omitted context_not_authorized，房间读取不发生）；模板未声明该域不扩大要求照常装配。另补清单/回执同事务回滚 IT（回执插入失败清单行不留半成品）。

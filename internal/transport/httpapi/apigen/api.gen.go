@@ -1892,7 +1892,7 @@ type ContextLayerEntry struct {
 	Dropped *int                  `json:"dropped,omitempty"`
 	Name    ContextLayerEntryName `json:"name"`
 
-	// ReasonCode omitted 原因：no_source_room / checkpoint_unavailable / memory_unavailable / decision_capsule_unavailable；included 为空串
+	// ReasonCode omitted 原因：no_source_room / context_not_authorized（声明未授权的上下文域——读取前省略）/ checkpoint_unavailable / memory_unavailable / decision_capsule_unavailable；included 为空串
 	ReasonCode *string                `json:"reason_code,omitempty"`
 	Role       ContextLayerEntryRole  `json:"role"`
 	State      ContextLayerEntryState `json:"state"`
@@ -2082,7 +2082,7 @@ type ContextReceiptView struct {
 	TotalBytes int    `json:"total_bytes"`
 }
 
-// ContextWatermark 水位向量分量（RFC §7.3——跨流水位，不虚构全局序号；0.6.2 仅来源房间流，契约/模板版本即水位已单列）。
+// ContextWatermark 水位向量分量（RFC §7.3——跨流水位，不虚构全局序号；0.6.2 含来源房间流（room:{id}，交付前沿）与模板版本（slot_spec:{id}）——全部字段在清单行内自包含，摘要存储往返可复算）。
 type ContextWatermark struct {
 	// Position 实际交付的最新事件 seq（交付前沿，非读取前沿——不泄漏被过滤内容）
 	Position int64 `json:"position"`

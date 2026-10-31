@@ -3094,7 +3094,7 @@ export interface components {
             state: "included" | "omitted";
             /** @description 内容块 JSON 字节数（omitted 为 0） */
             bytes: number;
-            /** @description omitted 原因：no_source_room / checkpoint_unavailable / memory_unavailable / decision_capsule_unavailable；included 为空串 */
+            /** @description omitted 原因：no_source_room / context_not_authorized（声明未授权的上下文域——读取前省略）/ checkpoint_unavailable / memory_unavailable / decision_capsule_unavailable；included 为空串 */
             reason_code?: string;
             /** @description 配额裁剪丢弃的更旧 public 消息条数（仅 recent_messages；权限过滤不计入不披露） */
             dropped?: number;
@@ -3115,7 +3115,7 @@ export interface components {
             dropped?: number;
             truncated_messages?: number;
         };
-        /** @description 水位向量分量（RFC §7.3——跨流水位，不虚构全局序号；0.6.2 仅来源房间流，契约/模板版本即水位已单列）。 */
+        /** @description 水位向量分量（RFC §7.3——跨流水位，不虚构全局序号；0.6.2 含来源房间流（room:{id}，交付前沿）与模板版本（slot_spec:{id}）——全部字段在清单行内自包含，摘要存储往返可复算）。 */
         ContextWatermark: {
             /** @description 流标识（room:{room_id}） */
             stream: string;
