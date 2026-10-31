@@ -83,7 +83,7 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 文档
 
-- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.6.3）
+- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.6.4）
 - [架构设计说明书](docs/design/2026-08-13-mosaic-architecture-design.md)
 - [RFC-0001 Room Protocol](docs/design/rfc/2026-08-25-rfc-0001-room-protocol.md)
 - [RFC-0002 Agent Protocol](docs/design/rfc/2026-08-25-rfc-0002-agent-protocol.md)
@@ -95,12 +95,12 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 当前状态与路线图
 
-当前版本 **v0.6.3**（2026-10-30，0.6 Mission 与本地执行领域第四件——本地 Environment / Runtime（RFC-0018 §3/§6/§9.2 / ADR-0026）：命名工作区环境（默认恰一）、rtx_ 运行时发现/探测/准备与健康检查（(adapter,host,distro,path) 发现幂等、手动同步先扫描——装后 CLI 免重启可发现、探测失败 unhealthy 可见、恢复回 ready）、runtime_events 健康历史、运行环境页，见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收；0.6 已交付 0.6.0–0.6.3（下一件 0.6.4 RuntimeLease）。
+当前版本 **v0.6.4**（2026-10-30，0.6 Mission 与本地执行领域第五件——RuntimeLease：工作区占用、互斥与围栏代次（RFC-0018 §5.2/§10.3.1 / ADR-0027）：runtime_leases 双部分唯一索引互斥（同一可写工作区跨运行时独占 + 单运行时并发 1）、代次单源 MAX(generation)、fnc_ 围栏令牌四关校验（0.6.5 结果提交拒绝旧实例）、续租即心跳、到期惰性判定、租约诊断区，见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收；0.6 已交付 0.6.0–0.6.4（下一件 0.6.5 单 Agent Mission 执行）。
 
 后续版本采用 `大版本.领域中版本.特性小版本`（`X.Y.Z`）：**第三段每次只交付一个特性，第二段按领域聚合成系统能力**。领域中版本是版本线，不另发只用于汇总的版本；各小版本及验收口径见[交付与进度规划](docs/plan/2026-08-25-delivery-plan.md#02-当前-roadmap)。
 
 - **0.5 长期 Agent 与职责领域**（`0.5.0–0.5.5`，**0.5.0–0.5.5 已全部交付（领域收官）**）：独立 Agent 身份与生命周期、SlotSpec / SlotInstance、Binding 与职责准入。
-- **0.6 Mission 与本地执行领域**（`0.6.0–0.6.12`，**0.6.0–0.6.3 已交付**）：独立 Mission、房间交办、本地 Runtime / Lease、单 Agent 执行、交付验收与责任交接。
+- **0.6 Mission 与本地执行领域**（`0.6.0–0.6.12`，**0.6.0–0.6.4 已交付**）：独立 Mission、房间交办、本地 Runtime / Lease、单 Agent 执行、交付验收与责任交接。
 - **0.7 记忆与可移植恢复领域**（`0.7.0–0.7.9`）：分域记忆、Checkpoint、跨 Harness 续办、Portable Agent Bundle 与删除传播。
 - **0.8 有界 Swarm 协作领域**（`0.8.0–0.8.8`）：WorkItem DAG、长期 Agent 委派、临时 Worker、配额、取消隔离与结果汇总。
 - **0.9 持续事务与环境维护领域**（`0.9.0–0.9.8`）：Goal、持久唤醒、离线恢复、Runtime 排空升级与环境管理员。
