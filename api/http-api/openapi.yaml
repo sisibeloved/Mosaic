@@ -2357,6 +2357,116 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /v1/missions/{mission_id}/context-manifests:
+    get:
+      operationId: listContextManifests
+      summary: 执行上下文清单列表（摘要；创建序倒序）
+      description: |
+        Mission 的装配历史（digest 追加——每个时点"会交付什么"；ADR-0025
+        决策 5）。摘要不含层内容块。
+      parameters:
+        - name: mission_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 清单摘要列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [manifests]
+                properties:
+                  manifests:
+                    type: array
+                    items: { $ref: "#/components/schemas/ContextManifestSummary" }
+        "404":
+          description: Mission 不存在（mission_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: 执行上下文域未装配（execctx_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      operationId: buildContextManifest
+      summary: 装配执行上下文清单（存档 Manifest + Receipt）
+      parameters:
+        - name: mission_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+      description: |
+        确定性装配（RFC-0018 §7.3 的 0.6.2 子集 / ADR-0025）：钉契约当前
+        版本行 + 任职钉版本模板行 + 授权交集（ADR-0022 单源）+ 来源房间
+        public 消息（授权过滤先于排序与计数）。必需层不截断（超总预算
+        blocked）；可选层独立配额截断并标明遗漏。blocked 恒 200（probe
+        纪律——blocked 是数据不是错误）。digest = 层账本+水位+钉住版本的
+        SHA-256；UNIQUE(mission_id, digest)：同状态重建重放原清单
+        （replayed=true），状态变化追加新行。Run 消费随 0.6.5。
+      security: [{ OwnerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContextManifestBuildRequest" }
+      responses:
+        "200":
+          description: 装配结果（assembled 或 blocked；blocked 携 reason_code）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContextManifestBuildResult" }
+        "400":
+          description: 请求不合法（invalid_request——binding_id 缺失/格式）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Mission 不存在（mission_not_found）或任职不存在（binding_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Mission 已取消（mission_canceled——终态无执行语义）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: 执行上下文域未装配（execctx_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/context-manifests/{manifest_id}:
+    get:
+      operationId: getContextManifest
+      summary: 执行上下文清单详情（含层内容块与 Receipt）
+      parameters:
+        - name: manifest_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^cmf_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 清单全量视图
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContextManifestView" }
+        "404":
+          description: 清单不存在（manifest_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: 执行上下文域未装配（execctx_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/dispatch/resolve:
     post:
       operationId: resolveDispatch
@@ -4364,6 +4474,107 @@ components:
         return_refs: { type: array, items: { type: string } }
         committed_at: { type: string, format: date-time }
         replayed: { type: boolean, description: true = 幂等重放原回执（非新投递） }
+    ContextManifestBuildRequest:
+      type: object
+      required: [binding_id]
+      additionalProperties: false
+      description: 装配请求——执行任职（BuildExecutionInput 的 binding 入参；RFC §10.2）。
+      properties:
+        binding_id: { type: string, pattern: "^bd_[0-9A-Za-z_-]+$", description: 执行任职（其 Agent 须为契约 owner——不匹配 blocked owner_mismatch） }
+    ContextLayerEntry:
+      type: object
+      required: [name, role, state, bytes]
+      description: |
+        层账本条目（RFC §7.3 组装顺序的 0.6.2 子集）。必需层 included 不得
+        截断；可选层按独立配额截断（dropped/truncated_messages 如实披露）；
+        未建模层 omitted 携原因。content 为装配内容块（omitted 层无此键；
+        摘要视图与 Receipt 不回内容——Receipt 不复制完整 Prompt）。
+      properties:
+        name: { type: string, enum: [constraints, responsibility, contract, tools, sources, recent_messages, checkpoint, memory, decision_capsule] }
+        role: { type: string, enum: [required, optional] }
+        state: { type: string, enum: [included, omitted] }
+        bytes: { type: integer, minimum: 0, description: 内容块 JSON 字节数（omitted 为 0） }
+        reason_code: { type: string, description: "omitted 原因：no_source_room / checkpoint_unavailable / memory_unavailable / decision_capsule_unavailable；included 为空串" }
+        dropped: { type: integer, minimum: 0, description: 配额裁剪丢弃的更旧 public 消息条数（仅 recent_messages；权限过滤不计入不披露） }
+        truncated_messages: { type: integer, minimum: 0, description: 单条超 8 KiB 头部截断条数（仅 recent_messages） }
+        content:
+          type: object
+          additionalProperties: true
+          description: 装配内容块（层各态：readiness/格栅/契约全文/工具清单/引用列表/消息窗）
+    ContextLayerAccountingEntry:
+      type: object
+      required: [name, state, bytes]
+      description: Receipt 交付账目条目——只记账不复制内容（截断与遗漏如实披露）。
+      properties:
+        name: { type: string }
+        state: { type: string, enum: [included, omitted] }
+        bytes: { type: integer, minimum: 0 }
+        reason_code: { type: string }
+        dropped: { type: integer, minimum: 0 }
+        truncated_messages: { type: integer, minimum: 0 }
+    ContextWatermark:
+      type: object
+      required: [stream, position]
+      description: 水位向量分量（RFC §7.3——跨流水位，不虚构全局序号；0.6.2 仅来源房间流，契约/模板版本即水位已单列）。
+      properties:
+        stream: { type: string, description: "流标识（room:{room_id}）" }
+        position: { type: integer, format: int64, minimum: 0, description: 实际交付的最新事件 seq（交付前沿，非读取前沿——不泄漏被过滤内容） }
+    ContextManifestSummary:
+      type: object
+      required: [manifest_id, mission_id, contract_version, binding_id, agent_id, state, reason_code, digest, total_bytes, created_at]
+      description: 清单摘要（列表用；不含层内容块）。
+      properties:
+        manifest_id: { type: string, description: "cmf_ 前缀生成式" }
+        mission_id: { type: string }
+        contract_version: { type: integer, minimum: 1, description: 装配钉住的契约版本行 }
+        binding_id: { type: string }
+        agent_id: { type: string }
+        state: { type: string, enum: [assembled, blocked] }
+        reason_code: { type: string, description: "blocked 原因：owner_mismatch / binding_not_active / readiness_not_met / required_over_budget；assembled 为空串" }
+        digest: { type: string, description: 层账本+水位+钉住版本规范 JSON 的 SHA-256（十六进制）——同状态必同摘要 }
+        total_bytes: { type: integer, minimum: 0, description: 全部层内容块字节合计（上限 256 KiB） }
+        created_at: { type: string, format: date-time }
+    ContextReceiptView:
+      type: object
+      required: [receipt_id, manifest_id, digest, policy_version, accounting, total_bytes, created_at]
+      description: |
+        交付回执（RFC §7.3）：证明 Mosaic 装配交付了什么，不证明模型保留
+        或理解；不复制完整 Prompt（内容在 Manifest）。run_id 随 0.6.5 Run
+        对象存在时增列（不落空壳）。
+      properties:
+        receipt_id: { type: string, description: "cxr_ 前缀生成式" }
+        manifest_id: { type: string }
+        digest: { type: string, description: 与 Manifest 同源摘要（账目可复算验证） }
+        policy_version: { type: string, description: "装配政策版本（0.6.2 = context-assembly/1——层表/配额/渲染规则变更须升版）" }
+        accounting: { type: array, items: { $ref: "#/components/schemas/ContextLayerAccountingEntry" } }
+        total_bytes: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+    ContextManifestView:
+      type: object
+      required: [manifest_id, mission_id, contract_version, binding_id, agent_id, state, reason_code, digest, policy_version, layers, watermarks, total_bytes, created_at, receipt]
+      description: 清单全量视图（含层内容块与 Receipt；Runtime 消费存档内容——执行存档输入不采信现场重装）。
+      properties:
+        manifest_id: { type: string }
+        mission_id: { type: string }
+        contract_version: { type: integer, minimum: 1 }
+        binding_id: { type: string }
+        agent_id: { type: string }
+        state: { type: string, enum: [assembled, blocked] }
+        reason_code: { type: string }
+        digest: { type: string }
+        policy_version: { type: string }
+        layers: { type: array, items: { $ref: "#/components/schemas/ContextLayerEntry" } }
+        watermarks: { type: array, items: { $ref: "#/components/schemas/ContextWatermark" } }
+        total_bytes: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        receipt: { $ref: "#/components/schemas/ContextReceiptView" }
+    ContextManifestBuildResult:
+      type: object
+      required: [manifest, replayed]
+      description: 装配结果——replayed=true 为确定性重建命中既有清单（digest 即身份）。
+      properties:
+        manifest: { $ref: "#/components/schemas/ContextManifestView" }
+        replayed: { type: boolean, description: true = 同状态重建重放原清单（非新装配） }
     MissionBudget:
       type: object
       required: [concurrency, max_runs, max_wall_clock_seconds, max_retries, max_delegation_depth]

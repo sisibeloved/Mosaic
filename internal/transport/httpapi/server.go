@@ -21,13 +21,14 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/attach"
 	"github.com/sisibeloved/Mosaic/internal/backup"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
+	"github.com/sisibeloved/Mosaic/internal/dispatch"
 	"github.com/sisibeloved/Mosaic/internal/doc"
+	"github.com/sisibeloved/Mosaic/internal/execctx"
 	"github.com/sisibeloved/Mosaic/internal/extdocs"
 	"github.com/sisibeloved/Mosaic/internal/harness"
+	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/monitor"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
-	"github.com/sisibeloved/Mosaic/internal/dispatch"
-	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
@@ -54,7 +55,9 @@ type Deps struct {
 	Missions *mission.Service
 	// Dispatch 网关首切片域（RFC-0018 §11.2/§11.2.1 / ADR-0024，0.6.1；nil 时端点 503）。
 	Dispatch *dispatch.Service
-	Logger *slog.Logger
+	// Execctx 执行上下文清单域（RFC-0018 §7.3 / ADR-0025，0.6.2；nil 时端点 503）。
+	Execctx *execctx.Service
+	Logger  *slog.Logger
 	// 开发者模式（M1 v1.8）：Dev 开启才注册 /v1/debug 只读端点与 UI 调试面板。
 	Dev    bool
 	Budget contextx.Limits         // 预算上限（状态端点的水位/梯度计算基准）
@@ -1757,11 +1760,11 @@ func (s *server) RetrySlotBinding(w http.ResponseWriter, r *http.Request, bindin
 func grantView(g slot.AgentGrant) apigen.AgentGrantView {
 	ts, _ := time.Parse(time.RFC3339, g.UpdatedAt)
 	return apigen.AgentGrantView{
-		AgentId:  g.AgentID,
-		Skills:   skillRefsOf(g.Skills),
-		Tools:    g.Tools,
-		Context:  g.Context,
-		Runtime:  apigen.GrantRuntime{Capabilities: g.Runtime.Capabilities, WorkspaceAccess: apigen.GrantRuntimeWorkspaceAccess(g.Runtime.WorkspaceAccess)},
+		AgentId:   g.AgentID,
+		Skills:    skillRefsOf(g.Skills),
+		Tools:     g.Tools,
+		Context:   g.Context,
+		Runtime:   apigen.GrantRuntime{Capabilities: g.Runtime.Capabilities, WorkspaceAccess: apigen.GrantRuntimeWorkspaceAccess(g.Runtime.WorkspaceAccess)},
 		UpdatedAt: ts,
 	}
 }
@@ -2006,7 +2009,7 @@ func (s *server) ListMissionEvents(w http.ResponseWriter, r *http.Request, missi
 		out = append(out, apigen.MissionEvent{
 			Seq: ev.Seq, MissionId: ev.MissionID,
 			EventType: apigen.MissionEventEventType(ev.EventType),
-			Payload: payload, OccurredAt: ts,
+			Payload:   payload, OccurredAt: ts,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": out})
@@ -2103,7 +2106,7 @@ func missionContentOf(budget *apigen.MissionBudget, constraints *[]string, deleg
 		c.Budget = mission.Budget{
 			Concurrency: budget.Concurrency, MaxRuns: budget.MaxRuns,
 			MaxWallClockSeconds: budget.MaxWallClockSeconds,
-			MaxRetries: budget.MaxRetries, MaxDelegationDepth: budget.MaxDelegationDepth,
+			MaxRetries:          budget.MaxRetries, MaxDelegationDepth: budget.MaxDelegationDepth,
 		}
 	}
 	if delegation != nil {
@@ -2158,7 +2161,7 @@ func missionView(m mission.Mission) apigen.MissionView {
 		Budget: apigen.MissionBudget{
 			Concurrency: m.Budget.Concurrency, MaxRuns: m.Budget.MaxRuns,
 			MaxWallClockSeconds: m.Budget.MaxWallClockSeconds,
-			MaxRetries: m.Budget.MaxRetries, MaxDelegationDepth: m.Budget.MaxDelegationDepth,
+			MaxRetries:          m.Budget.MaxRetries, MaxDelegationDepth: m.Budget.MaxDelegationDepth,
 		},
 		Delegation: apigen.DelegationPolicy{Allowed: allowed, MaxDepth: m.Delegation.MaxDepth},
 		CreatedAt:  ts, UpdatedAt: us,
@@ -2305,6 +2308,199 @@ func receiptView(r dispatch.Receipt, replayed bool) apigen.DispatchReceiptView {
 }
 
 // writeDispatchError 网关域错误映射。
+// ---- 执行上下文清单域（RFC-0018 §7.3 / ADR-0025，0.6.2）----
+
+func (s *server) execctxUnavailable(w http.ResponseWriter) bool {
+	if s.deps.Execctx == nil {
+		writeError(w, http.StatusServiceUnavailable, "execctx_unavailable", "执行上下文域未装配")
+		return true
+	}
+	return false
+}
+
+// BuildContextManifest 装配并存档（apigen.ServerInterface）。blocked 恒
+// 200 携 reason_code——blocked 是数据不是错误（probe 纪律，ADR-0025 决策 4）。
+func (s *server) BuildContextManifest(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.execctxUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.ContextManifestBuildRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "装配请求超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "装配请求 JSON 不合法："+err.Error())
+		return
+	}
+	if req.BindingId == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "binding_id 必填（bd_ 前缀任职）")
+		return
+	}
+	res, err := s.deps.Execctx.Build(r.Context(), missionID, req.BindingId)
+	if err != nil {
+		writeExecctxError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, apigen.ContextManifestBuildResult{
+		Manifest: execctxManifestView(res.Manifest, res.Receipt),
+		Replayed: res.Replayed,
+	})
+}
+
+// ListContextManifests 装配历史（摘要；创建序倒序）。
+func (s *server) ListContextManifests(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.execctxUnavailable(w) {
+		return
+	}
+	list, err := s.deps.Execctx.ListByMission(r.Context(), missionID)
+	if err != nil {
+		writeExecctxError(w, err)
+		return
+	}
+	out := make([]apigen.ContextManifestSummary, 0, len(list))
+	for _, m := range list {
+		out = append(out, execctxSummaryView(m))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"manifests": out})
+}
+
+// GetContextManifest 清单详情（含层内容块与 Receipt）。
+func (s *server) GetContextManifest(w http.ResponseWriter, r *http.Request, manifestID string) {
+	if s.execctxUnavailable(w) {
+		return
+	}
+	m, rec, ok, err := s.deps.Execctx.Get(r.Context(), manifestID)
+	if err != nil {
+		writeExecctxError(w, err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "manifest_not_found", "执行上下文清单不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, execctxManifestView(m, rec))
+}
+
+// writeExecctxError 执行上下文域错误映射。
+func writeExecctxError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, execctx.ErrInvalidRequest):
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+	case errors.Is(err, execctx.ErrMissionNotFound):
+		writeError(w, http.StatusNotFound, "mission_not_found", err.Error())
+	case errors.Is(err, execctx.ErrBindingNotFound):
+		writeError(w, http.StatusNotFound, "binding_not_found", err.Error())
+	case errors.Is(err, execctx.ErrMissionCanceled):
+		writeError(w, http.StatusConflict, "mission_canceled", err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "execctx_failed", err.Error())
+	}
+}
+
+func execctxSummaryView(m execctx.Manifest) apigen.ContextManifestSummary {
+	ts, _ := time.Parse(time.RFC3339, m.CreatedAt)
+	return apigen.ContextManifestSummary{
+		ManifestId: m.ManifestID, MissionId: m.MissionID, ContractVersion: m.ContractVersion,
+		BindingId: m.BindingID, AgentId: m.AgentID,
+		State:      apigen.ContextManifestSummaryState(m.State),
+		ReasonCode: m.ReasonCode, Digest: m.Digest, TotalBytes: m.TotalBytes, CreatedAt: ts,
+	}
+}
+
+func execctxManifestView(m execctx.Manifest, rec execctx.Receipt) apigen.ContextManifestView {
+	ts, _ := time.Parse(time.RFC3339, m.CreatedAt)
+	layers := make([]apigen.ContextLayerEntry, 0, len(m.Layers))
+	for _, l := range m.Layers {
+		entry := apigen.ContextLayerEntry{
+			Name:  apigen.ContextLayerEntryName(l.Name),
+			Role:  apigen.ContextLayerEntryRole(l.Role),
+			State: apigen.ContextLayerEntryState(l.State),
+			Bytes: l.Bytes,
+		}
+		if l.ReasonCode != "" {
+			reason := l.ReasonCode
+			entry.ReasonCode = &reason
+		}
+		if l.Dropped != 0 {
+			dropped := l.Dropped
+			entry.Dropped = &dropped
+		}
+		if l.TruncatedMessages != 0 {
+			trunc := l.TruncatedMessages
+			entry.TruncatedMessages = &trunc
+		}
+		entry.Content = execctxContentMap(l.Content)
+		layers = append(layers, entry)
+	}
+	wms := make([]apigen.ContextWatermark, 0, len(m.Watermarks))
+	for _, wm := range m.Watermarks {
+		wms = append(wms, apigen.ContextWatermark{Stream: wm.Stream, Position: wm.Position})
+	}
+	return apigen.ContextManifestView{
+		ManifestId: m.ManifestID, MissionId: m.MissionID, ContractVersion: m.ContractVersion,
+		BindingId: m.BindingID, AgentId: m.AgentID,
+		State:      apigen.ContextManifestViewState(m.State),
+		ReasonCode: m.ReasonCode, Digest: m.Digest, PolicyVersion: m.PolicyVersion,
+		Layers: layers, Watermarks: wms, TotalBytes: m.TotalBytes, CreatedAt: ts,
+		Receipt: execctxReceiptView(rec),
+	}
+}
+
+func execctxReceiptView(rec execctx.Receipt) apigen.ContextReceiptView {
+	ts, _ := time.Parse(time.RFC3339, rec.CreatedAt)
+	accounting := make([]apigen.ContextLayerAccountingEntry, 0, len(rec.Accounting))
+	for _, a := range rec.Accounting {
+		entry := apigen.ContextLayerAccountingEntry{
+			Name:  a.Name,
+			State: apigen.ContextLayerAccountingEntryState(a.State),
+			Bytes: a.Bytes,
+		}
+		if a.ReasonCode != "" {
+			reason := a.ReasonCode
+			entry.ReasonCode = &reason
+		}
+		if a.Dropped != 0 {
+			dropped := a.Dropped
+			entry.Dropped = &dropped
+		}
+		if a.TruncatedMessages != 0 {
+			trunc := a.TruncatedMessages
+			entry.TruncatedMessages = &trunc
+		}
+		accounting = append(accounting, entry)
+	}
+	return apigen.ContextReceiptView{
+		ReceiptId: rec.ReceiptID, ManifestId: rec.ManifestID, Digest: rec.Digest,
+		PolicyVersion: rec.PolicyVersion, Accounting: accounting,
+		TotalBytes: rec.TotalBytes, CreatedAt: ts,
+	}
+}
+
+// execctxContentMap 层内容块 → 视图 map（typed 内容 JSON 往返——digest
+// 仍以域内 typed 序列化为准，视图仅展示）。
+func execctxContentMap(c any) *map[string]interface{} {
+	if c == nil {
+		return nil
+	}
+	b, err := json.Marshal(c)
+	if err != nil {
+		return nil
+	}
+	var m map[string]interface{}
+	if json.Unmarshal(b, &m) != nil {
+		return nil
+	}
+	return &m
+}
+
 func writeDispatchError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, dispatch.ErrInvalidRequest):

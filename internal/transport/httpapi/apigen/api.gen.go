@@ -135,6 +135,135 @@ func (e ClosureSummaryState) Valid() bool {
 	}
 }
 
+// Defines values for ContextLayerAccountingEntryState.
+const (
+	ContextLayerAccountingEntryStateIncluded ContextLayerAccountingEntryState = "included"
+	ContextLayerAccountingEntryStateOmitted  ContextLayerAccountingEntryState = "omitted"
+)
+
+// Valid indicates whether the value is a known member of the ContextLayerAccountingEntryState enum.
+func (e ContextLayerAccountingEntryState) Valid() bool {
+	switch e {
+	case ContextLayerAccountingEntryStateIncluded:
+		return true
+	case ContextLayerAccountingEntryStateOmitted:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ContextLayerEntryName.
+const (
+	Checkpoint      ContextLayerEntryName = "checkpoint"
+	Constraints     ContextLayerEntryName = "constraints"
+	Contract        ContextLayerEntryName = "contract"
+	DecisionCapsule ContextLayerEntryName = "decision_capsule"
+	Memory          ContextLayerEntryName = "memory"
+	RecentMessages  ContextLayerEntryName = "recent_messages"
+	Responsibility  ContextLayerEntryName = "responsibility"
+	Sources         ContextLayerEntryName = "sources"
+	Tools           ContextLayerEntryName = "tools"
+)
+
+// Valid indicates whether the value is a known member of the ContextLayerEntryName enum.
+func (e ContextLayerEntryName) Valid() bool {
+	switch e {
+	case Checkpoint:
+		return true
+	case Constraints:
+		return true
+	case Contract:
+		return true
+	case DecisionCapsule:
+		return true
+	case Memory:
+		return true
+	case RecentMessages:
+		return true
+	case Responsibility:
+		return true
+	case Sources:
+		return true
+	case Tools:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ContextLayerEntryRole.
+const (
+	Optional ContextLayerEntryRole = "optional"
+	Required ContextLayerEntryRole = "required"
+)
+
+// Valid indicates whether the value is a known member of the ContextLayerEntryRole enum.
+func (e ContextLayerEntryRole) Valid() bool {
+	switch e {
+	case Optional:
+		return true
+	case Required:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ContextLayerEntryState.
+const (
+	ContextLayerEntryStateIncluded ContextLayerEntryState = "included"
+	ContextLayerEntryStateOmitted  ContextLayerEntryState = "omitted"
+)
+
+// Valid indicates whether the value is a known member of the ContextLayerEntryState enum.
+func (e ContextLayerEntryState) Valid() bool {
+	switch e {
+	case ContextLayerEntryStateIncluded:
+		return true
+	case ContextLayerEntryStateOmitted:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ContextManifestSummaryState.
+const (
+	ContextManifestSummaryStateAssembled ContextManifestSummaryState = "assembled"
+	ContextManifestSummaryStateBlocked   ContextManifestSummaryState = "blocked"
+)
+
+// Valid indicates whether the value is a known member of the ContextManifestSummaryState enum.
+func (e ContextManifestSummaryState) Valid() bool {
+	switch e {
+	case ContextManifestSummaryStateAssembled:
+		return true
+	case ContextManifestSummaryStateBlocked:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ContextManifestViewState.
+const (
+	ContextManifestViewStateAssembled ContextManifestViewState = "assembled"
+	ContextManifestViewStateBlocked   ContextManifestViewState = "blocked"
+)
+
+// Valid indicates whether the value is a known member of the ContextManifestViewState enum.
+func (e ContextManifestViewState) Valid() bool {
+	switch e {
+	case ContextManifestViewStateAssembled:
+		return true
+	case ContextManifestViewStateBlocked:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ContextPanoramaCapsulesClosureType.
 const (
 	ContextPanoramaCapsulesClosureTypeBoundedDisagreement ContextPanoramaCapsulesClosureType = "bounded_disagreement"
@@ -1735,6 +1864,119 @@ type CommandResponse struct {
 	RoomVersion int64  `json:"room_version"`
 }
 
+// ContextLayerAccountingEntry Receipt 交付账目条目——只记账不复制内容（截断与遗漏如实披露）。
+type ContextLayerAccountingEntry struct {
+	Bytes             int                              `json:"bytes"`
+	Dropped           *int                             `json:"dropped,omitempty"`
+	Name              string                           `json:"name"`
+	ReasonCode        *string                          `json:"reason_code,omitempty"`
+	State             ContextLayerAccountingEntryState `json:"state"`
+	TruncatedMessages *int                             `json:"truncated_messages,omitempty"`
+}
+
+// ContextLayerAccountingEntryState defines model for ContextLayerAccountingEntry.State.
+type ContextLayerAccountingEntryState string
+
+// ContextLayerEntry 层账本条目（RFC §7.3 组装顺序的 0.6.2 子集）。必需层 included 不得
+// 截断；可选层按独立配额截断（dropped/truncated_messages 如实披露）；
+// 未建模层 omitted 携原因。content 为装配内容块（omitted 层无此键；
+// 摘要视图与 Receipt 不回内容——Receipt 不复制完整 Prompt）。
+type ContextLayerEntry struct {
+	// Bytes 内容块 JSON 字节数（omitted 为 0）
+	Bytes int `json:"bytes"`
+
+	// Content 装配内容块（层各态：readiness/格栅/契约全文/工具清单/引用列表/消息窗）
+	Content *map[string]interface{} `json:"content,omitempty"`
+
+	// Dropped 配额裁剪丢弃的更旧 public 消息条数（仅 recent_messages；权限过滤不计入不披露）
+	Dropped *int                  `json:"dropped,omitempty"`
+	Name    ContextLayerEntryName `json:"name"`
+
+	// ReasonCode omitted 原因：no_source_room / checkpoint_unavailable / memory_unavailable / decision_capsule_unavailable；included 为空串
+	ReasonCode *string                `json:"reason_code,omitempty"`
+	Role       ContextLayerEntryRole  `json:"role"`
+	State      ContextLayerEntryState `json:"state"`
+
+	// TruncatedMessages 单条超 8 KiB 头部截断条数（仅 recent_messages）
+	TruncatedMessages *int `json:"truncated_messages,omitempty"`
+}
+
+// ContextLayerEntryName defines model for ContextLayerEntry.Name.
+type ContextLayerEntryName string
+
+// ContextLayerEntryRole defines model for ContextLayerEntry.Role.
+type ContextLayerEntryRole string
+
+// ContextLayerEntryState defines model for ContextLayerEntry.State.
+type ContextLayerEntryState string
+
+// ContextManifestBuildRequest 装配请求——执行任职（BuildExecutionInput 的 binding 入参；RFC §10.2）。
+type ContextManifestBuildRequest struct {
+	// BindingId 执行任职（其 Agent 须为契约 owner——不匹配 blocked owner_mismatch）
+	BindingId string `json:"binding_id"`
+}
+
+// ContextManifestBuildResult 装配结果——replayed=true 为确定性重建命中既有清单（digest 即身份）。
+type ContextManifestBuildResult struct {
+	// Manifest 清单全量视图（含层内容块与 Receipt；Runtime 消费存档内容——执行存档输入不采信现场重装）。
+	Manifest ContextManifestView `json:"manifest"`
+
+	// Replayed true = 同状态重建重放原清单（非新装配）
+	Replayed bool `json:"replayed"`
+}
+
+// ContextManifestSummary 清单摘要（列表用；不含层内容块）。
+type ContextManifestSummary struct {
+	AgentId   string `json:"agent_id"`
+	BindingId string `json:"binding_id"`
+
+	// ContractVersion 装配钉住的契约版本行
+	ContractVersion int       `json:"contract_version"`
+	CreatedAt       time.Time `json:"created_at"`
+
+	// Digest 层账本+水位+钉住版本规范 JSON 的 SHA-256（十六进制）——同状态必同摘要
+	Digest string `json:"digest"`
+
+	// ManifestId cmf_ 前缀生成式
+	ManifestId string `json:"manifest_id"`
+	MissionId  string `json:"mission_id"`
+
+	// ReasonCode blocked 原因：owner_mismatch / binding_not_active / readiness_not_met / required_over_budget；assembled 为空串
+	ReasonCode string                      `json:"reason_code"`
+	State      ContextManifestSummaryState `json:"state"`
+
+	// TotalBytes 全部层内容块字节合计（上限 256 KiB）
+	TotalBytes int `json:"total_bytes"`
+}
+
+// ContextManifestSummaryState defines model for ContextManifestSummary.State.
+type ContextManifestSummaryState string
+
+// ContextManifestView 清单全量视图（含层内容块与 Receipt；Runtime 消费存档内容——执行存档输入不采信现场重装）。
+type ContextManifestView struct {
+	AgentId         string              `json:"agent_id"`
+	BindingId       string              `json:"binding_id"`
+	ContractVersion int                 `json:"contract_version"`
+	CreatedAt       time.Time           `json:"created_at"`
+	Digest          string              `json:"digest"`
+	Layers          []ContextLayerEntry `json:"layers"`
+	ManifestId      string              `json:"manifest_id"`
+	MissionId       string              `json:"mission_id"`
+	PolicyVersion   string              `json:"policy_version"`
+	ReasonCode      string              `json:"reason_code"`
+
+	// Receipt 交付回执（RFC §7.3）：证明 Mosaic 装配交付了什么，不证明模型保留
+	// 或理解；不复制完整 Prompt（内容在 Manifest）。run_id 随 0.6.5 Run
+	// 对象存在时增列（不落空壳）。
+	Receipt    ContextReceiptView       `json:"receipt"`
+	State      ContextManifestViewState `json:"state"`
+	TotalBytes int                      `json:"total_bytes"`
+	Watermarks []ContextWatermark       `json:"watermarks"`
+}
+
+// ContextManifestViewState defines model for ContextManifestView.State.
+type ContextManifestViewState string
+
 // ContextPanorama 语境平面全景（GET /v1/rooms/{id}/context，v1.70 展示对齐）——与引擎组装同源的纯函数快照。
 type ContextPanorama struct {
 	// Budget 恒常平面合并水位（同 MemoryView.curated_budget 形状）
@@ -1820,6 +2062,34 @@ type ContextPanoramaCapsulesClosureType string
 
 // ContextPanoramaNearWindowActorKind defines model for ContextPanorama.NearWindow.ActorKind.
 type ContextPanoramaNearWindowActorKind string
+
+// ContextReceiptView 交付回执（RFC §7.3）：证明 Mosaic 装配交付了什么，不证明模型保留
+// 或理解；不复制完整 Prompt（内容在 Manifest）。run_id 随 0.6.5 Run
+// 对象存在时增列（不落空壳）。
+type ContextReceiptView struct {
+	Accounting []ContextLayerAccountingEntry `json:"accounting"`
+	CreatedAt  time.Time                     `json:"created_at"`
+
+	// Digest 与 Manifest 同源摘要（账目可复算验证）
+	Digest     string `json:"digest"`
+	ManifestId string `json:"manifest_id"`
+
+	// PolicyVersion 装配政策版本（0.6.2 = context-assembly/1——层表/配额/渲染规则变更须升版）
+	PolicyVersion string `json:"policy_version"`
+
+	// ReceiptId cxr_ 前缀生成式
+	ReceiptId  string `json:"receipt_id"`
+	TotalBytes int    `json:"total_bytes"`
+}
+
+// ContextWatermark 水位向量分量（RFC §7.3——跨流水位，不虚构全局序号；0.6.2 仅来源房间流，契约/模板版本即水位已单列）。
+type ContextWatermark struct {
+	// Position 实际交付的最新事件 seq（交付前沿，非读取前沿——不泄漏被过滤内容）
+	Position int64 `json:"position"`
+
+	// Stream 流标识（room:{room_id}）
+	Stream string `json:"stream"`
+}
 
 // DelegationPolicy 委派策略；缺省语义 = 不允许委派（安全缺省）。
 type DelegationPolicy struct {
@@ -3780,6 +4050,9 @@ type CreateMissionJSONRequestBody = MissionCreate
 // CancelMissionJSONRequestBody defines body for CancelMission for application/json ContentType.
 type CancelMissionJSONRequestBody = MissionCancel
 
+// BuildContextManifestJSONRequestBody defines body for BuildContextManifest for application/json ContentType.
+type BuildContextManifestJSONRequestBody = ContextManifestBuildRequest
+
 // ReviseMissionJSONRequestBody defines body for ReviseMission for application/json ContentType.
 type ReviseMissionJSONRequestBody = MissionRevise
 
@@ -3827,6 +4100,9 @@ type ServerInterface interface {
 	// ListAgents 当前在席 Agent 座位（建房选择的候选集）+ 已发现未启用项
 	// (GET /v1/agents)
 	ListAgents(w http.ResponseWriter, r *http.Request)
+	// GetContextManifest 执行上下文清单详情（含层内容块与 Receipt）
+	// (GET /v1/context-manifests/{manifest_id})
+	GetContextManifest(w http.ResponseWriter, r *http.Request, manifestId string)
 	// DispatchRequest 网关投递（复核 + 幂等 + 建契约 + 回执）
 	// (POST /v1/dispatch/dispatch)
 	DispatchRequest(w http.ResponseWriter, r *http.Request)
@@ -3971,6 +4247,12 @@ type ServerInterface interface {
 	// CancelMission 取消 Mission（CAS；唯一终态）
 	// (POST /v1/missions/{mission_id}/cancel)
 	CancelMission(w http.ResponseWriter, r *http.Request, missionId string)
+	// ListContextManifests 执行上下文清单列表（摘要；创建序倒序）
+	// (GET /v1/missions/{mission_id}/context-manifests)
+	ListContextManifests(w http.ResponseWriter, r *http.Request, missionId string)
+	// BuildContextManifest 装配执行上下文清单（存档 Manifest + Receipt）
+	// (POST /v1/missions/{mission_id}/context-manifests)
+	BuildContextManifest(w http.ResponseWriter, r *http.Request, missionId string)
 	// ListMissionEvents Mission 事件流（只读审计面）
 	// (GET /v1/missions/{mission_id}/events)
 	ListMissionEvents(w http.ResponseWriter, r *http.Request, missionId string)
@@ -4136,6 +4418,32 @@ func (siw *ServerInterfaceWrapper) ListAgents(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListAgents(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetContextManifest operation middleware
+func (siw *ServerInterfaceWrapper) GetContextManifest(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "manifest_id" -------------
+	var manifestId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "manifest_id", r.PathValue("manifest_id"), &manifestId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "manifest_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetContextManifest(w, r, manifestId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5341,6 +5649,58 @@ func (siw *ServerInterfaceWrapper) CancelMission(w http.ResponseWriter, r *http.
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CancelMission(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListContextManifests operation middleware
+func (siw *ServerInterfaceWrapper) ListContextManifests(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListContextManifests(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// BuildContextManifest operation middleware
+func (siw *ServerInterfaceWrapper) BuildContextManifest(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.BuildContextManifest(w, r, missionId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -6650,6 +7010,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/cancel", wrapper.CancelMission)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/versions", wrapper.ListMissionVersions)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/events", wrapper.ListMissionEvents)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/context-manifests", wrapper.ListContextManifests)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/context-manifests", wrapper.BuildContextManifest)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/context-manifests/{manifest_id}", wrapper.GetContextManifest)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/dispatch/resolve", wrapper.ResolveDispatch)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/dispatch/dispatch", wrapper.DispatchRequest)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/dispatch/receipts", wrapper.GetDispatchReceipt)

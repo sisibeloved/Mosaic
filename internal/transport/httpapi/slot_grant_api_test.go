@@ -33,7 +33,7 @@ func grantTestServer(t *testing.T) *httptest.Server {
 	})
 	var seq atomic.Int64
 	ident := personalagent.New(personalagent.NewMemStore(), emptyIdentityRegistry{},
-		personalagent.WithNewAgentID(func() string { return "ag_seq_" + strconv.FormatInt(seq.Add(1), 10)}),
+		personalagent.WithNewAgentID(func() string { return "ag_seq_" + strconv.FormatInt(seq.Add(1), 10) }),
 		personalagent.WithNow(func() string { return "2026-10-30T12:00:00.000Z" }))
 	slotMem := slot.NewMemStore()
 	ts := httptest.NewServer(New(Deps{
@@ -126,9 +126,9 @@ func TestSlotGrantEndpoints(t *testing.T) {
 		t.Fatalf("put: %v", err)
 	}
 	var view struct {
-		AgentID  string   `json:"agent_id"`
-		Tools    []string `json:"tools"`
-		Runtime  struct {
+		AgentID string   `json:"agent_id"`
+		Tools   []string `json:"tools"`
+		Runtime struct {
 			Capabilities    []string `json:"capabilities"`
 			WorkspaceAccess string   `json:"workspace_access"`
 		} `json:"runtime"`
@@ -306,9 +306,9 @@ func TestSlotGrantPutRequiredFields(t *testing.T) {
 	}
 
 	for name, body := range map[string]string{
-		"仅 runtime":     `{"runtime":{"capabilities":[],"workspace_access":"none"}}`,
-		"skills 缺席":     `{"tools":[],"context":[],"runtime":{"capabilities":[],"workspace_access":"none"}}`,
-		"skills null":    `{"skills":null,"tools":[],"context":[],"runtime":{"capabilities":[],"workspace_access":"none"}}`,
+		"仅 runtime":    `{"runtime":{"capabilities":[],"workspace_access":"none"}}`,
+		"skills 缺席":    `{"tools":[],"context":[],"runtime":{"capabilities":[],"workspace_access":"none"}}`,
+		"skills null":  `{"skills":null,"tools":[],"context":[],"runtime":{"capabilities":[],"workspace_access":"none"}}`,
 		"runtime 子字段缺": `{"skills":[],"tools":[],"context":[],"runtime":{"workspace_access":"none"}}`,
 	} {
 		req, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/slots/grants/"+agentID, strings.NewReader(body))

@@ -33,6 +33,12 @@ export type MissionView = Schemas["MissionView"];
 export type MissionEvent = Schemas["MissionEvent"];
 export type MissionCreateRequest = Schemas["MissionCreate"];
 export type MissionReviseRequest = Schemas["MissionRevise"];
+/** 0.6.2 执行上下文清单（ADR-0025）。 */
+export type ContextManifestSummary = Schemas["ContextManifestSummary"];
+export type ContextManifestView = Schemas["ContextManifestView"];
+export type ContextLayerEntryView = Schemas["ContextLayerEntry"];
+export type ContextReceiptView = Schemas["ContextReceiptView"];
+export type ContextManifestBuildResult = Schemas["ContextManifestBuildResult"];
 /** 0.5.5 职责准入（ADR-0022）：授权档案与 readiness report。 */
 export type AgentGrantView = Schemas["AgentGrantView"];
 export type AgentGrantPut = Schemas["AgentGrantPut"];
@@ -584,6 +590,17 @@ export const api = {
   },
   listMissionEvents(missionID: string): Promise<{ events: MissionEvent[] }> {
     return request(`/v1/missions/${encodeURIComponent(missionID)}/events`);
+  },
+  /** 0.6.2 执行上下文清单历史（摘要，创建序倒序——各时点"会交付什么"）。 */
+  listContextManifests(missionID: string): Promise<{ manifests: ContextManifestSummary[] }> {
+    return request(`/v1/missions/${encodeURIComponent(missionID)}/context-manifests`);
+  },
+  /** 0.6.2 装配并存档（blocked 恒 200 携 reason_code；同状态重建 replayed=true）。 */
+  buildContextManifest(missionID: string, bindingID: string): Promise<ContextManifestBuildResult> {
+    return post(`/v1/missions/${encodeURIComponent(missionID)}/context-manifests`, { binding_id: bindingID });
+  },
+  getContextManifest(manifestID: string): Promise<ContextManifestView> {
+    return request(`/v1/context-manifests/${encodeURIComponent(manifestID)}`);
   },
   /** 0.5.5 准入试算（只读无副作用；未就绪也是 200——报告不是错误）。 */
   getSlotReadiness(instanceID: string, agentID: string, version?: number): Promise<ReadinessReportView> {

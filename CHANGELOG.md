@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 执行上下文清单（0.6.2 / RFC-0018 §7.3/§6 / ADR-0025）：`internal/execctx` 新域——ContextManifest 存档装配内容（钉契约当前版本行 + 任职钉版本模板行 + 授权交集（ADR-0022 单源）+ 来源房间水位向量），ContextReceipt 记交付账目不复制完整 Prompt（`run_id` 随 0.6.5 增列）。**层模型 0.6.2 子集**（RFC 组装顺序）：必需层 constraints（readiness 报告/有效格栅/工具有效集/有效委派/预算）、responsibility（任职 + 模板职责钉版）、contract（全量契约）、tools（声明序∩授权）不得截断——合计超 256 KiB 总预算 blocked `required_over_budget`；可选层 sources（引用原文）、recent_messages（来源房 public `message.posted`，64 KiB 独立配额、单条 8 KiB 上限、从新往旧装满披露 dropped/truncated）独立截断；checkpoint/memory/decision_capsule 未建模层账本如实 omitted 携原因（0.7/0.6.5+/0.6.11）。**授权过滤先于排序、摘要与计数**：非 public 事件不进入、不计数、不列名（不泄漏存在性）；水位 = 实际交付的最新 seq（交付前沿非读取前沿）。**digest 即身份**：SHA-256(层账本+水位+钉住版本)，`UNIQUE(mission_id, digest)`——同状态重建重放原清单（replayed=true，授权撤销再恢复也重放原清单），状态变化（房间新事件/授权变更/契约修订）追加新行——每 Mission 保留"各时点会交付什么"的装配历史；0.6.5 Runtime 执行存档清单不采信现场重装（ADR-0024 同型纪律）。blocked 恒 200 携 reason_code（probe 纪律；优先级 owner_mismatch > binding_not_active > readiness_not_met > required_over_budget，blocked 也存完整账本）；`context_manifest_ref` 兑现为查询时联查（ADR-0023 决策 2——不改契约内容，manifest 以 mission_id 寻址钉 contract_version）。migration v15 两表（`exec_context_manifests`/`exec_context_receipts`——表名冠 exec_ 与房间域 RFC-0007 context_receipts 区分）；无事件流（RFC §6 有明确所有者的持久记录，mission_events 契约生命周期专属）。API 三端点（POST/GET `/v1/missions/{id}/context-manifests`、GET `/v1/context-manifests/{id}`）+ 任务中心详情"执行上下文"区（选负责人任职装配、层账本与内容块、装配历史）。验证：域 UT（层账本/过滤先于计数/配额与单条截断/blocked 优先级/deterministic digest 与重放/巨引用超预算）+ IT（v15 新库/撞键恰一落库/v0.6.1 旧库升级/JSON 回读）+ 端点（全链/错误族/503）+ 适配器跨页回归先红后绿；vet/-race/it/st 串行 + SPA 绿；真机冒烟 13 项 ALL-PASS（装配 9 层、私有事件零泄漏、水位=公开前沿、重放、授权撤销 blocked/恢复重放原清单、新事件追加、错误族、重启持久）。
+
 ## [0.6.1] - 2026-10-30
 
 ### Fixed

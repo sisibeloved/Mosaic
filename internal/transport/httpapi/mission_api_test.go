@@ -251,8 +251,8 @@ func TestMissionRequiredFieldsAndBudget(t *testing.T) {
 
 	// 1) 修订缺必填键 → 400 bad_request
 	for name, body := range map[string]string{
-		"缺验收键":  `{"expected_version":1,"objective":"o2","scope":"s","deliverable_specs":["d"],"source_refs":["r:1"]}`,
-		"缺来源键":  `{"expected_version":1,"objective":"o2","scope":"s","acceptance_criteria":["a"],"deliverable_specs":["d"]}`,
+		"缺验收键":    `{"expected_version":1,"objective":"o2","scope":"s","deliverable_specs":["d"],"source_refs":["r:1"]}`,
+		"缺来源键":    `{"expected_version":1,"objective":"o2","scope":"s","acceptance_criteria":["a"],"deliverable_specs":["d"]}`,
 		"验收 null": `{"expected_version":1,"objective":"o2","scope":"s","acceptance_criteria":null,"deliverable_specs":["d"],"source_refs":["r:1"]}`,
 	} {
 		r := postSlot(t, ts.URL+"/v1/missions/"+base.MissionID+"/revise", body)

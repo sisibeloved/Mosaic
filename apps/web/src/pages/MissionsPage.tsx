@@ -1,15 +1,20 @@
 // 任务中心（0.6.0 / ADR-0023）：Mission 契约——创建（完备 → ready / 缺失 →
 // draft）、列表、详情（当前契约 + 版本历史 + 事件流）、修订（CAS 冲突可见）、
-// 取消。请求序号守卫与错误态纪律沿用 0.5 系列教训。
+// 取消。0.6.2 增执行上下文清单（装配存档 + 历史 + 层账本）。请求序号守卫与
+// 错误态纪律沿用 0.5 系列教训。
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   api,
   ApiError,
+  type BindingView,
+  type ContextManifestSummary,
+  type ContextManifestView,
   type IdentityAgent,
   type MissionEvent,
   type MissionSummary,
   type MissionView,
+  type SlotInstanceView,
 } from "../api/client";
 import { absoluteTime } from "../lib/ui";
 
@@ -567,6 +572,173 @@ function MissionDetail({
           ))}
         </ul>
       </details>
+
+      {detail.status !== "canceled" && (
+        <ExecContextCard missionID={missionID} ownerAgentID={detail.owner_agent_id} />
+      )}
     </section>
+  );
+}
+
+/** 执行上下文清单（0.6.2 / ADR-0025）：选任职装配存档、层账本、装配历史。 */
+function ExecContextCard({ missionID, ownerAgentID }: { missionID: string; ownerAgentID: string }) {
+  const [manifests, setManifests] = useState<ContextManifestSummary[] | null>(null);
+  const [instances, setInstances] = useState<SlotInstanceView[]>([]);
+  const [bindings, setBindings] = useState<BindingView[]>([]);
+  const [bindingID, setBindingID] = useState("");
+  const [result, setResult] = useState<ContextManifestView | null>(null);
+  const [replayed, setReplayed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const seq = useRef(0);
+
+  const load = () => {
+    const cur = ++seq.current;
+    setErr(null);
+    void Promise.all([api.listContextManifests(missionID), api.listSlotInstances(), api.listSlotBindings()])
+      .then(([m, i, b]) => {
+        if (seq.current !== cur) return;
+        setManifests(m.manifests);
+        setInstances(i.instances);
+        setBindings(b.bindings);
+      })
+      .catch((e) => {
+        if (seq.current !== cur) return;
+        setErr(e instanceof Error ? e.message : String(e));
+      });
+  };
+  useEffect(load, [missionID]); // 父层按 missionID key 重挂载
+
+  // 执行者须为契约负责人（owner_mismatch 只是 blocked 预演）——默认只列
+  // owner 的任职，便于直接选对；无 owner 时提示先指派。
+  const owned = bindings.filter((b) => ownerAgentID !== "" && b.agent_id === ownerAgentID);
+  const instTitle = (id: string) => instances.find((x) => x.slot_instance_id === id)?.title ?? id;
+
+  const build = async (id: string) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api.buildContextManifest(missionID, id);
+      setResult(r.manifest);
+      setReplayed(r.replayed);
+      load();
+    } catch (e) {
+      setErr(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <details className="mt-1">
+      <summary className="cursor-pointer select-none text-faint">
+        执行上下文{manifests === null ? "" : `（${manifests.length} 份清单）`}
+      </summary>
+      <div className="mt-1 flex flex-col gap-2">
+        {err && <p className="text-danger">{err}</p>}
+        {ownerAgentID === "" ? (
+          <p className="text-faint">未指派负责人——先修订契约指派 owner 再装配。</p>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={bindingID}
+              onChange={(e) => setBindingID(e.target.value)}
+              className="min-w-0 max-w-full rounded border border-border bg-surface-2 px-1.5 py-1 outline-none"
+            >
+              <option value="">选择负责人任职（{owned.length}）</option>
+              {owned.map((b) => (
+                <option key={b.binding_id} value={b.binding_id}>
+                  {instTitle(b.slot_instance_id)} · {b.status} · v{b.slot_spec_version}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={busy || bindingID === ""}
+              onClick={() => void build(bindingID)}
+              className="rounded-lg bg-accent px-2.5 py-1 text-accent-contrast disabled:opacity-40"
+            >
+              {busy ? "装配中…" : "装配清单"}
+            </button>
+            <span className="text-faint">
+              确定性装配存档——同状态重建重放原清单（digest 即身份）；执行随 0.6.5。
+            </span>
+          </div>
+        )}
+
+        {result && (
+          <div className="flex flex-col gap-1 rounded-lg bg-surface-2 p-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={result.state === "assembled" ? "text-ok" : "text-warn"}>{result.state}</span>
+              {result.reason_code && <span className="rounded bg-surface-3 px-1.5 py-px text-[10px] text-warn">{result.reason_code}</span>}
+              {replayed && <span className="rounded bg-surface-3 px-1.5 py-px text-[10px] text-dim">重放（同状态重建）</span>}
+              <span className="font-mono text-[10px] text-faint" title={result.digest}>
+                {result.digest.slice(0, 16)}…
+              </span>
+              <span className="text-faint">
+                契约 v{result.contract_version} · {(result.total_bytes / 1024).toFixed(1)} KiB · {result.policy_version}
+              </span>
+              {result.watermarks.map((w) => (
+                <span key={w.stream} className="rounded bg-surface-3 px-1.5 py-px font-mono text-[10px] text-dim">
+                  {w.stream}@{w.position}
+                </span>
+              ))}
+            </div>
+            <ul className="flex flex-col gap-0.5 font-mono text-[11px]">
+              {result.layers.map((l) => (
+                <li key={l.name} className="flex flex-wrap items-center gap-2 text-faint">
+                  <span className="w-36 shrink-0 text-dim">{l.name}</span>
+                  <span className={l.state === "included" ? "text-ok" : "text-warn"}>{l.state}</span>
+                  <span>{l.role}</span>
+                  {l.state === "included" && <span>{l.bytes} B</span>}
+                  {l.reason_code && <span className="text-warn">{l.reason_code}</span>}
+                  {l.dropped ? <span>裁 {l.dropped} 条</span> : null}
+                  {l.truncated_messages ? <span>截 {l.truncated_messages} 条</span> : null}
+                  {l.content && (
+                    <details className="ml-auto">
+                      <summary className="cursor-pointer select-none text-[10px]">内容块</summary>
+                      <pre className="mt-1 max-h-48 max-w-full overflow-auto rounded bg-surface-3 p-1.5 text-[10px]">
+                        {JSON.stringify(l.content, null, 2)}
+                      </pre>
+                    </details>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {manifests !== null && manifests.length > 0 && (
+          <ul className="flex flex-col gap-0.5">
+            {manifests.map((m) => (
+              <li key={m.manifest_id} className="flex items-center gap-2 text-faint">
+                <button
+                  type="button"
+                  onClick={() =>
+                    void api
+                      .getContextManifest(m.manifest_id)
+                      .then((v) => {
+                        setResult(v);
+                        setReplayed(false);
+                      })
+                      .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+                  }
+                  className="shrink-0 rounded bg-surface-3 px-1.5 py-px text-[10px] hover:opacity-85"
+                >
+                  查看
+                </button>
+                <span className={m.state === "assembled" ? "text-ok" : "text-warn"}>{m.state}</span>
+                {m.reason_code && <span className="text-warn">{m.reason_code}</span>}
+                <span className="font-mono text-[10px]" title={m.digest}>
+                  {m.digest.slice(0, 12)}…
+                </span>
+                <span>v{m.contract_version}</span>
+                <span className="ml-auto shrink-0">{absoluteTime(m.created_at)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </details>
   );
 }

@@ -1468,6 +1468,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/missions/{mission_id}/context-manifests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 执行上下文清单列表（摘要；创建序倒序）
+         * @description Mission 的装配历史（digest 追加——每个时点"会交付什么"；ADR-0025
+         *     决策 5）。摘要不含层内容块。
+         */
+        get: operations["listContextManifests"];
+        put?: never;
+        /**
+         * 装配执行上下文清单（存档 Manifest + Receipt）
+         * @description 确定性装配（RFC-0018 §7.3 的 0.6.2 子集 / ADR-0025）：钉契约当前
+         *     版本行 + 任职钉版本模板行 + 授权交集（ADR-0022 单源）+ 来源房间
+         *     public 消息（授权过滤先于排序与计数）。必需层不截断（超总预算
+         *     blocked）；可选层独立配额截断并标明遗漏。blocked 恒 200（probe
+         *     纪律——blocked 是数据不是错误）。digest = 层账本+水位+钉住版本的
+         *     SHA-256；UNIQUE(mission_id, digest)：同状态重建重放原清单
+         *     （replayed=true），状态变化追加新行。Run 消费随 0.6.5。
+         */
+        post: operations["buildContextManifest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/context-manifests/{manifest_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 执行上下文清单详情（含层内容块与 Receipt） */
+        get: operations["getContextManifest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/dispatch/resolve": {
         parameters: {
             query?: never;
@@ -3024,6 +3072,120 @@ export interface components {
             /** Format: date-time */
             committed_at: string;
             /** @description true = 幂等重放原回执（非新投递） */
+            replayed: boolean;
+        };
+        /** @description 装配请求——执行任职（BuildExecutionInput 的 binding 入参；RFC §10.2）。 */
+        ContextManifestBuildRequest: {
+            /** @description 执行任职（其 Agent 须为契约 owner——不匹配 blocked owner_mismatch） */
+            binding_id: string;
+        };
+        /**
+         * @description 层账本条目（RFC §7.3 组装顺序的 0.6.2 子集）。必需层 included 不得
+         *     截断；可选层按独立配额截断（dropped/truncated_messages 如实披露）；
+         *     未建模层 omitted 携原因。content 为装配内容块（omitted 层无此键；
+         *     摘要视图与 Receipt 不回内容——Receipt 不复制完整 Prompt）。
+         */
+        ContextLayerEntry: {
+            /** @enum {string} */
+            name: "constraints" | "responsibility" | "contract" | "tools" | "sources" | "recent_messages" | "checkpoint" | "memory" | "decision_capsule";
+            /** @enum {string} */
+            role: "required" | "optional";
+            /** @enum {string} */
+            state: "included" | "omitted";
+            /** @description 内容块 JSON 字节数（omitted 为 0） */
+            bytes: number;
+            /** @description omitted 原因：no_source_room / checkpoint_unavailable / memory_unavailable / decision_capsule_unavailable；included 为空串 */
+            reason_code?: string;
+            /** @description 配额裁剪丢弃的更旧 public 消息条数（仅 recent_messages；权限过滤不计入不披露） */
+            dropped?: number;
+            /** @description 单条超 8 KiB 头部截断条数（仅 recent_messages） */
+            truncated_messages?: number;
+            /** @description 装配内容块（层各态：readiness/格栅/契约全文/工具清单/引用列表/消息窗） */
+            content?: {
+                [key: string]: unknown;
+            };
+        };
+        /** @description Receipt 交付账目条目——只记账不复制内容（截断与遗漏如实披露）。 */
+        ContextLayerAccountingEntry: {
+            name: string;
+            /** @enum {string} */
+            state: "included" | "omitted";
+            bytes: number;
+            reason_code?: string;
+            dropped?: number;
+            truncated_messages?: number;
+        };
+        /** @description 水位向量分量（RFC §7.3——跨流水位，不虚构全局序号；0.6.2 仅来源房间流，契约/模板版本即水位已单列）。 */
+        ContextWatermark: {
+            /** @description 流标识（room:{room_id}） */
+            stream: string;
+            /**
+             * Format: int64
+             * @description 实际交付的最新事件 seq（交付前沿，非读取前沿——不泄漏被过滤内容）
+             */
+            position: number;
+        };
+        /** @description 清单摘要（列表用；不含层内容块）。 */
+        ContextManifestSummary: {
+            /** @description cmf_ 前缀生成式 */
+            manifest_id: string;
+            mission_id: string;
+            /** @description 装配钉住的契约版本行 */
+            contract_version: number;
+            binding_id: string;
+            agent_id: string;
+            /** @enum {string} */
+            state: "assembled" | "blocked";
+            /** @description blocked 原因：owner_mismatch / binding_not_active / readiness_not_met / required_over_budget；assembled 为空串 */
+            reason_code: string;
+            /** @description 层账本+水位+钉住版本规范 JSON 的 SHA-256（十六进制）——同状态必同摘要 */
+            digest: string;
+            /** @description 全部层内容块字节合计（上限 256 KiB） */
+            total_bytes: number;
+            /** Format: date-time */
+            created_at: string;
+        };
+        /**
+         * @description 交付回执（RFC §7.3）：证明 Mosaic 装配交付了什么，不证明模型保留
+         *     或理解；不复制完整 Prompt（内容在 Manifest）。run_id 随 0.6.5 Run
+         *     对象存在时增列（不落空壳）。
+         */
+        ContextReceiptView: {
+            /** @description cxr_ 前缀生成式 */
+            receipt_id: string;
+            manifest_id: string;
+            /** @description 与 Manifest 同源摘要（账目可复算验证） */
+            digest: string;
+            /** @description 装配政策版本（0.6.2 = context-assembly/1——层表/配额/渲染规则变更须升版） */
+            policy_version: string;
+            accounting: components["schemas"]["ContextLayerAccountingEntry"][];
+            total_bytes: number;
+            /** Format: date-time */
+            created_at: string;
+        };
+        /** @description 清单全量视图（含层内容块与 Receipt；Runtime 消费存档内容——执行存档输入不采信现场重装）。 */
+        ContextManifestView: {
+            manifest_id: string;
+            mission_id: string;
+            contract_version: number;
+            binding_id: string;
+            agent_id: string;
+            /** @enum {string} */
+            state: "assembled" | "blocked";
+            reason_code: string;
+            digest: string;
+            policy_version: string;
+            layers: components["schemas"]["ContextLayerEntry"][];
+            watermarks: components["schemas"]["ContextWatermark"][];
+            total_bytes: number;
+            /** Format: date-time */
+            created_at: string;
+            receipt: components["schemas"]["ContextReceiptView"];
+        };
+        /** @description 装配结果——replayed=true 为确定性重建命中既有清单（digest 即身份）。 */
+        ContextManifestBuildResult: {
+            manifest: components["schemas"]["ContextManifestView"];
+            /** @description true = 同状态重建重放原清单（非新装配） */
             replayed: boolean;
         };
         /** @description 预算（RFC-0018 §6.1：并发、总 Run 数、墙钟时长、重试与委派深度）——0.6.0 为契约声明事实，运行时强制随 0.6.5 Scheduler 落；缺省 {1, 32, 86400, 0, 0}（单 Agent、不重试、不委派起步）。 */
@@ -6618,6 +6780,153 @@ export interface operations {
                 };
             };
             /** @description Mission 域未装配（mission_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listContextManifests: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 清单摘要列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        manifests: components["schemas"]["ContextManifestSummary"][];
+                    };
+                };
+            };
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 执行上下文域未装配（execctx_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    buildContextManifest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ContextManifestBuildRequest"];
+            };
+        };
+        responses: {
+            /** @description 装配结果（assembled 或 blocked；blocked 携 reason_code） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContextManifestBuildResult"];
+                };
+            };
+            /** @description 请求不合法（invalid_request——binding_id 缺失/格式） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Mission 不存在（mission_not_found）或任职不存在（binding_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Mission 已取消（mission_canceled——终态无执行语义） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 执行上下文域未装配（execctx_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getContextManifest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                manifest_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 清单全量视图 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContextManifestView"];
+                };
+            };
+            /** @description 清单不存在（manifest_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 执行上下文域未装配（execctx_unavailable） */
             503: {
                 headers: {
                     [name: string]: unknown;

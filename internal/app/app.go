@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -36,13 +37,15 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/attach"
 	"github.com/sisibeloved/Mosaic/internal/backup"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
+	"github.com/sisibeloved/Mosaic/internal/dispatch"
 	"github.com/sisibeloved/Mosaic/internal/doc"
+	"github.com/sisibeloved/Mosaic/internal/execctx"
 	"github.com/sisibeloved/Mosaic/internal/extdocs"
 	"github.com/sisibeloved/Mosaic/internal/harness"
-	"github.com/sisibeloved/Mosaic/internal/outbox"
-	"github.com/sisibeloved/Mosaic/internal/dispatch"
 	"github.com/sisibeloved/Mosaic/internal/mission"
+	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
+	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
 	"github.com/sisibeloved/Mosaic/internal/settings"
 	"github.com/sisibeloved/Mosaic/internal/slot"
@@ -312,6 +315,17 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Sources: roomTasks,
 		Mapped:  missionSvc.SourceMapped,
 	}, dispatch.WithNow(clock))
+	// 执行上下文清单域（RFC-0018 §7.3 / ADR-0025，0.6.2）：确定性装配存档
+	// （digest 即身份——重建重放，状态变化追加）；任职事实（binding → 实例
+	// → 钉版本模板行）与房间事件经端口适配注入，readiness 复用 0.5.5 交集
+	// 单源。授权过滤先于排序计数在 execctx 域内执行并测试钉住。
+	execCtxSvc := execctx.New(store, execctx.Ports{
+		Missions:  missionSvc,
+		Bindings:  bindingFactsAdapter{slots: slotSvc},
+		Readiness: slot.NewGrantReadinessChecker(store),
+		Grants:    store,
+		Rooms:     execRoomEvents{reader: store},
+	}, execctx.WithNow(clock))
 	scanDone := make(chan struct{})
 	go func() {
 		defer close(scanDone)
@@ -362,6 +376,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Slots:            slotSvc,
 		Missions:         missionSvc,
 		Dispatch:         dispatchSvc,
+		Execctx:          execCtxSvc,
 		Logger:           logger,
 		Dev:              opts.Dev,
 		Budget:           budgetLimits,
@@ -808,6 +823,71 @@ func (l roomTaskLookup) RoomTaskExists(ctx context.Context, roomID, taskID strin
 		}
 	}
 	return false, nil
+}
+
+// bindingFactsAdapter execctx.Bindings 的职责域适配（ADR-0025 / 0.6.2）：
+// 任职 → 实例（模板谱系）→ 钉住版本（SlotSpecVersion）的模板版本行——
+// 职责层内容以任职钉版为准，不随模板最新版漂移。
+type bindingFactsAdapter struct{ slots *slot.Service }
+
+func (a bindingFactsAdapter) Facts(ctx context.Context, bindingID string) (execctx.BindingFacts, bool, error) {
+	b, ok, err := a.slots.GetBinding(ctx, bindingID)
+	if err != nil || !ok {
+		return execctx.BindingFacts{}, false, err
+	}
+	inst, ok, err := a.slots.GetInstance(ctx, b.SlotInstanceID)
+	if err != nil || !ok {
+		return execctx.BindingFacts{}, false, err
+	}
+	versions, ok, err := a.slots.Versions(ctx, inst.SlotInstance.SlotSpecID)
+	if err != nil || !ok {
+		return execctx.BindingFacts{}, false, err
+	}
+	for _, spec := range versions {
+		if spec.Version == b.SlotSpecVersion {
+			return execctx.BindingFacts{Binding: b, Spec: spec}, true, nil
+		}
+	}
+	return execctx.BindingFacts{}, false, nil
+}
+
+// execRoomEvents execctx.RoomReader 的房间域适配（ADR-0025 / 0.6.2）：
+// EventReader 跨页累积全量有序事件（ADR-0024 P2#3 同型）→ 信封映射
+// RoomEvent。可见性原样透传——授权过滤先于排序计数是 execctx 域内
+// 不变量（域 UT 钉住），适配器预滤会让不变量失去测试钉子。
+type execRoomEvents struct{ reader room.EventReader }
+
+func (a execRoomEvents) RoomEvents(ctx context.Context, roomID string) ([]execctx.RoomEvent, error) {
+	var all []room.StoredEvent
+	cursor := ""
+	for {
+		events, next, err := a.reader.EventsAfter(ctx, roomID, cursor, 500)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, events...)
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	out := make([]execctx.RoomEvent, 0, len(all))
+	for _, e := range all {
+		evt := execctx.RoomEvent{
+			Seq: e.Envelope.Seq, EventID: e.Envelope.EventID, OccurredAt: e.Envelope.OccurredAt,
+			Type: e.Envelope.Type, Visibility: e.Envelope.Visibility.Kind,
+			ParticipantID: e.Envelope.Actor.ParticipantID, ActorKind: e.Envelope.Actor.Kind,
+		}
+		if e.Envelope.Type == protocol.EventMessagePosted {
+			var payload struct {
+				Body string `json:"body"`
+			}
+			_ = json.Unmarshal(e.Envelope.Payload, &payload)
+			evt.Body = payload.Body
+		}
+		out = append(out, evt)
+	}
+	return out, nil
 }
 
 // missionAgentLookup mission.AgentLookup 的身份域适配（owner 存在性）。

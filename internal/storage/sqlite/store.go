@@ -19,6 +19,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/dispatch"
 	"github.com/sisibeloved/Mosaic/internal/doc"
+	"github.com/sisibeloved/Mosaic/internal/execctx"
 	"github.com/sisibeloved/Mosaic/internal/extdocs"
 	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
@@ -380,6 +381,41 @@ CREATE TABLE IF NOT EXISTS dispatch_receipts (
   UNIQUE (caller_ref, scope, idempotency_key)
 );
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (14, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+-- v15（RFC-0018 §7.3/§6 / ADR-0025，0.6.2）：执行上下文清单。
+-- exec_context_manifests 存档装配（钉契约版本/任职/摘要 + 层账本含内容
+-- 块 + 水位向量）；(mission_id, digest) 唯一——确定性重建命中即重放原清
+-- 单，状态变化追加新行（每 Mission 保留各时点装配历史）。
+-- exec_context_receipts 为交付回执（只记账目不复制内容；run_id 随 0.6.5
+-- Run 对象存在时增列）。表名冠 exec_ 与房间域 RFC-0007 context_receipts
+--（对话上下文回执，v1 表）区分。两表是有明确所有者的持久记录（RFC §6），
+-- 不进事件流。
+CREATE TABLE IF NOT EXISTS exec_context_manifests (
+  manifest_id     TEXT PRIMARY KEY,
+  mission_id      TEXT NOT NULL,
+  contract_version INTEGER NOT NULL,
+  binding_id      TEXT NOT NULL,
+  agent_id        TEXT NOT NULL,
+  state           TEXT NOT NULL,
+  reason_code     TEXT NOT NULL DEFAULT '',
+  digest          TEXT NOT NULL,
+  policy_version  TEXT NOT NULL,
+  layers          TEXT NOT NULL,
+  watermarks      TEXT NOT NULL,
+  total_bytes     INTEGER NOT NULL,
+  created_at      TEXT NOT NULL,
+  UNIQUE (mission_id, digest)
+);
+CREATE INDEX IF NOT EXISTS idx_exec_context_manifests_mission ON exec_context_manifests(mission_id);
+CREATE TABLE IF NOT EXISTS exec_context_receipts (
+  receipt_id     TEXT PRIMARY KEY,
+  manifest_id    TEXT NOT NULL UNIQUE,
+  digest         TEXT NOT NULL,
+  policy_version TEXT NOT NULL,
+  accounting     TEXT NOT NULL,
+  total_bytes    INTEGER NOT NULL,
+  created_at     TEXT NOT NULL
+);
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (15, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 `
 
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
@@ -3270,6 +3306,166 @@ SELECT seq, binding_id, event_type, payload, occurred_at FROM binding_events WHE
 		}
 		ev.Payload = json.RawMessage(payload)
 		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
+// ---- 执行上下文清单域（RFC-0018 §7.3/§6 / ADR-0025，0.6.2；v15 表）----
+
+// execctxScanColumns 清单行统一读取列。
+const execctxScanColumns = `manifest_id, mission_id, contract_version, binding_id, agent_id, state, reason_code, digest, policy_version, layers, watermarks, total_bytes, created_at`
+
+// scanExecctxManifest 清单行 → Manifest（层/水位 JSON 反序列化）。
+func scanExecctxManifest(row interface{ Scan(...any) error }) (execctx.Manifest, error) {
+	var m execctx.Manifest
+	var layers, watermarks string
+	if err := row.Scan(&m.ManifestID, &m.MissionID, &m.ContractVersion, &m.BindingID, &m.AgentID,
+		&m.State, &m.ReasonCode, &m.Digest, &m.PolicyVersion, &layers, &watermarks,
+		&m.TotalBytes, &m.CreatedAt); err != nil {
+		return execctx.Manifest{}, err
+	}
+	if err := json.Unmarshal([]byte(layers), &m.Layers); err != nil {
+		return execctx.Manifest{}, fmt.Errorf("sqlite: manifest layers unmarshal: %w", err)
+	}
+	if err := json.Unmarshal([]byte(watermarks), &m.Watermarks); err != nil {
+		return execctx.Manifest{}, fmt.Errorf("sqlite: manifest watermarks unmarshal: %w", err)
+	}
+	return m, nil
+}
+
+// scanExecctxReceipt 回执行 → Receipt（账目 JSON 反序列化）。
+func scanExecctxReceipt(receiptID, manifestID, digest, policy, accounting string, total int, createdAt string) (execctx.Receipt, error) {
+	r := execctx.Receipt{
+		ReceiptID: receiptID, ManifestID: manifestID, Digest: digest,
+		PolicyVersion: policy, TotalBytes: total, CreatedAt: createdAt,
+	}
+	if err := json.Unmarshal([]byte(accounting), &r.Accounting); err != nil {
+		return execctx.Receipt{}, fmt.Errorf("sqlite: receipt accounting unmarshal: %w", err)
+	}
+	return r, nil
+}
+
+// execctxReceiptByManifestID 按清单取回执；不存在 ok=false（连接来源由
+// 调用方决定——写临界区内经 q，读路径经池）。
+func (s *Store) execctxReceiptByManifestID(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, manifestID string) (execctx.Receipt, bool, error) {
+	var receiptID, digest, policy, accounting, createdAt string
+	var total int
+	err := q.QueryRowContext(ctx, `
+SELECT receipt_id, digest, policy_version, accounting, total_bytes, created_at
+  FROM exec_context_receipts WHERE manifest_id = ?`, manifestID).
+		Scan(&receiptID, &digest, &policy, &accounting, &total, &createdAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return execctx.Receipt{}, false, nil
+	}
+	if err != nil {
+		return execctx.Receipt{}, false, fmt.Errorf("sqlite: receipt by manifest: %w", err)
+	}
+	r, err := scanExecctxReceipt(receiptID, manifestID, digest, policy, accounting, total, createdAt)
+	if err != nil {
+		return execctx.Receipt{}, false, err
+	}
+	return r, true, nil
+}
+
+// CreateManifest 清单与回执同事务落库；(mission_id, digest) 撞键
+// ErrManifestExists（先查后插同 BEGIN IMMEDIATE 临界区——并发孪生恰一
+// 落库，败者可凭错误转重放）。
+func (s *Store) CreateManifest(ctx context.Context, m execctx.Manifest, r execctx.Receipt) error {
+	layers, err := json.Marshal(m.Layers)
+	if err != nil {
+		return fmt.Errorf("sqlite: manifest layers marshal: %w", err)
+	}
+	watermarks, err := json.Marshal(m.Watermarks)
+	if err != nil {
+		return fmt.Errorf("sqlite: manifest watermarks marshal: %w", err)
+	}
+	accounting, err := json.Marshal(r.Accounting)
+	if err != nil {
+		return fmt.Errorf("sqlite: receipt accounting marshal: %w", err)
+	}
+	return s.identityWriteTx(ctx, func(q identityExec) error {
+		var existing string
+		err := q.QueryRowContext(ctx,
+			`SELECT manifest_id FROM exec_context_manifests WHERE mission_id = ? AND digest = ?`,
+			m.MissionID, m.Digest).Scan(&existing)
+		if err == nil {
+			return fmt.Errorf("%w: (%s, %s) 已存 %s", execctx.ErrManifestExists, m.MissionID, m.Digest, existing)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("sqlite: manifest digest probe: %w", err)
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO exec_context_manifests (manifest_id, mission_id, contract_version, binding_id, agent_id, state, reason_code, digest, policy_version, layers, watermarks, total_bytes, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.ManifestID, m.MissionID, m.ContractVersion, m.BindingID, m.AgentID,
+			m.State, m.ReasonCode, m.Digest, m.PolicyVersion, string(layers),
+			string(watermarks), m.TotalBytes, m.CreatedAt); err != nil {
+			return fmt.Errorf("sqlite: insert manifest: %w", err)
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO exec_context_receipts (receipt_id, manifest_id, digest, policy_version, accounting, total_bytes, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			r.ReceiptID, r.ManifestID, r.Digest, r.PolicyVersion,
+			string(accounting), r.TotalBytes, r.CreatedAt); err != nil {
+			return fmt.Errorf("sqlite: insert receipt: %w", err)
+		}
+		return nil
+	})
+}
+
+// ManifestByDigest 按 (mission_id, digest) 取清单与回执；不存在 ok=false。
+func (s *Store) ManifestByDigest(ctx context.Context, missionID, digest string) (execctx.Manifest, execctx.Receipt, bool, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+execctxScanColumns+`
+  FROM exec_context_manifests WHERE mission_id = ? AND digest = ?`, missionID, digest)
+	m, err := scanExecctxManifest(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return execctx.Manifest{}, execctx.Receipt{}, false, nil
+	}
+	if err != nil {
+		return execctx.Manifest{}, execctx.Receipt{}, false, fmt.Errorf("sqlite: manifest by digest: %w", err)
+	}
+	r, ok, err := s.execctxReceiptByManifestID(ctx, s.db, m.ManifestID)
+	if err != nil || !ok {
+		return execctx.Manifest{}, execctx.Receipt{}, false, err
+	}
+	return m, r, true, nil
+}
+
+// ManifestByID 单查（含回执）；不存在 ok=false。
+func (s *Store) ManifestByID(ctx context.Context, manifestID string) (execctx.Manifest, execctx.Receipt, bool, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+execctxScanColumns+`
+  FROM exec_context_manifests WHERE manifest_id = ?`, manifestID)
+	m, err := scanExecctxManifest(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return execctx.Manifest{}, execctx.Receipt{}, false, nil
+	}
+	if err != nil {
+		return execctx.Manifest{}, execctx.Receipt{}, false, fmt.Errorf("sqlite: manifest by id: %w", err)
+	}
+	r, ok, err := s.execctxReceiptByManifestID(ctx, s.db, m.ManifestID)
+	if err != nil || !ok {
+		return execctx.Manifest{}, execctx.Receipt{}, false, err
+	}
+	return m, r, true, nil
+}
+
+// ManifestsByMission 装配历史（创建序倒序——rowid 即插入序）。
+func (s *Store) ManifestsByMission(ctx context.Context, missionID string) ([]execctx.Manifest, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+execctxScanColumns+`
+  FROM exec_context_manifests WHERE mission_id = ? ORDER BY rowid DESC`, missionID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: manifests by mission: %w", err)
+	}
+	defer rows.Close()
+	out := []execctx.Manifest{}
+	for rows.Next() {
+		m, err := scanExecctxManifest(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: manifests scan: %w", err)
+		}
+		out = append(out, m)
 	}
 	return out, rows.Err()
 }
