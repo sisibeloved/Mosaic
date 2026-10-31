@@ -1747,6 +1747,122 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/runtime-leases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 租约历史（诊断视图）
+         * @description 租约细节归诊断视图（RFC §13 导航裁定）。state 缺省 all；可按
+         *     runtime_id 过滤。过期惰性判定：触碰即转 expired——列表不会出现
+         *     已过期仍标 active 的行。
+         */
+        get: operations["listRuntimeLeases"];
+        put?: never;
+        /**
+         * 领取租约（工作区占用 + 互斥 + 围栏代次）
+         * @description 前置：runtime ready 且已绑环境（租约工作区 = 准备绑定的环境，
+         *     不改绑）；mission 存在且非 canceled。互斥（事务内惰性清障后
+         *     判定）：同一环境至多一活跃租约（跨运行时互斥——可写工作区是
+         *     共享排他资源）；单运行时并发 1。成功 generation=当代+1 并签发
+         *     围栏令牌 fnc_。resource_limits 为声明（强制随 0.6.5）；TTL 缺省
+         *     3600s 界限 [60, 86400]。run_id 随 0.6.5 Run 对象增列（不落空壳）。
+         */
+        post: operations["acquireRuntimeLease"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runtime-leases/{lease_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 租约详情 */
+        get: operations["getRuntimeLease"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runtime-leases/{lease_id}/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 续租（心跳——从现在起延长）
+         * @description expires_at = now + ttl（缺省 3600s 界限 [60, 86400]），不从旧
+         *     到期点叠加。非 active（含惰性已过期）409 lease_inactive。心跳
+         *     失败触发 runtime unhealthy 随 0.6.5 心跳调度。
+         */
+        post: operations["renewRuntimeLease"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runtime-leases/{lease_id}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 释放租约（终态，代次 +1——围栏令牌自此失效）
+         * @description 显式释放；该租约 generation 之后的代次递增使旧围栏令牌失效
+         *     （0.6.5 结果提交经 check-fence 拒绝旧实例提交——围栏不撤销外部
+         *     已发生动作，RFC §10.3.1 原文裁定）。非 active 409 lease_inactive。
+         */
+        post: operations["releaseRuntimeLease"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runtime-leases/{lease_id}/check-fence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 围栏校验（恒 200——结果是数据不是错误）
+         * @description 四关：租约在且令牌匹配、state=active、未过期（触碰即惰性转
+         *     expired）、generation 为该运行时当代（无更新租约取代）。失败携
+         *     reason：fence_token_mismatch / lease_not_active / lease_expired /
+         *     generation_stale。0.6.5 结果提交消费；围栏只保护 Mosaic 接收的
+         *     状态与受控工具调用。
+         */
+        post: operations["checkRuntimeLeaseFence"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/harness/executables": {
         parameters: {
             query?: never;
@@ -3433,6 +3549,62 @@ export interface components {
         RuntimeSyncResult: {
             created: number;
             refreshed: number;
+        };
+        /** @description 领取请求——工作区取 runtime 准备绑定环境（不改绑）。 */
+        RuntimeLeaseAcquire: {
+            runtime_id: string;
+            /** @description 占用主体（Run 对象随 0.6.5 增列——此前以任务计） */
+            mission_id: string;
+            /** @description 租期（缺省 3600） */
+            ttl_seconds?: number;
+            /** @description 资源限额声明（缺省 {"concurrency":1}；强制随 0.6.5 Scheduler——此前是声明） */
+            resource_limits?: {
+                [key: string]: number;
+            };
+        };
+        /**
+         * @description 租约（RFC §10.3.1 的 0.6.4 子集）：state ∈ active|released|expired
+         *     （到期惰性判定——触碰即转，列表不出现过期仍标 active 的行）；
+         *     generation 为领取代次（释放/到期递增——运行时当代 = MAX(generation)）。
+         */
+        RuntimeLeaseView: {
+            /** @description lse_ 前缀生成式 */
+            lease_id: string;
+            runtime_id: string;
+            /** @description 租约工作区所在环境（= runtime 准备绑定） */
+            environment_id: string;
+            /** @description 工作区目录（环境 workspace_dir） */
+            workspace_ref: string;
+            mission_id: string;
+            generation: number;
+            /** @description fnc_ 前缀围栏令牌（随租约签发；释放/到期/被取代即失效） */
+            fence_token: string;
+            /** @enum {string} */
+            state: "active" | "released" | "expired";
+            resource_limits: {
+                [key: string]: number;
+            };
+            /** Format: date-time */
+            acquired_at: string;
+            /** Format: date-time */
+            expires_at: string;
+            /** @description 释放时刻（未释为空串） */
+            released_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description 续租请求——从现在起延长（缺省 3600s）。 */
+        RuntimeLeaseRenew: {
+            ttl_seconds?: number;
+        };
+        /** @description 围栏校验请求（0.6.5 结果提交携带）。 */
+        FenceCheckRequest: {
+            fence_token: string;
+        };
+        /** @description 围栏校验结果——失败 reason ∈ fence_token_mismatch / lease_not_active / lease_expired / generation_stale；有效为空串。 */
+        FenceCheckResult: {
+            valid: boolean;
+            reason: string;
         };
         /** @description 预算（RFC-0018 §6.1：并发、总 Run 数、墙钟时长、重试与委派深度）——0.6.0 为契约声明事实，运行时强制随 0.6.5 Scheduler 落；缺省 {1, 32, 86400, 0, 0}（单 Agent、不重试、不委派起步）。 */
         MissionBudget: {
@@ -7695,6 +7867,306 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description 运行时域未装配（runtime_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listRuntimeLeases: {
+        parameters: {
+            query?: {
+                state?: "active" | "released" | "expired" | "all";
+                runtime_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 租约列表（领取序倒序） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        leases: components["schemas"]["RuntimeLeaseView"][];
+                    };
+                };
+            };
+            /** @description 运行时域未装配（runtime_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    acquireRuntimeLease: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RuntimeLeaseAcquire"];
+            };
+        };
+        responses: {
+            /** @description 已领取 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeLeaseView"];
+                };
+            };
+            /** @description 请求不合法（invalid_lease——ID 格式/TTL 界限） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 运行时不存在（runtime_not_found）或任务不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 运行时未就绪（runtime_not_ready）、单运行时容量占用（lease_conflict_runtime）、工作区独占冲突（lease_conflict_workspace）或任务已取消（mission_canceled） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 运行时域未装配（runtime_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getRuntimeLease: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                lease_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeLeaseView"];
+                };
+            };
+            /** @description 租约不存在（lease_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 运行时域未装配（runtime_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    renewRuntimeLease: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                lease_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RuntimeLeaseRenew"];
+            };
+        };
+        responses: {
+            /** @description 续租后的租约 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeLeaseView"];
+                };
+            };
+            /** @description 请求不合法（invalid_lease） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 租约不存在（lease_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 租约非活跃（lease_inactive——released/expired） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 运行时域未装配（runtime_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    releaseRuntimeLease: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                lease_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 释放后的租约 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeLeaseView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 租约不存在（lease_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 租约非活跃（lease_inactive） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 运行时域未装配（runtime_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    checkRuntimeLeaseFence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                lease_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FenceCheckRequest"];
+            };
+        };
+        responses: {
+            /** @description 围栏校验结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FenceCheckResult"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 租约不存在（lease_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             /** @description 运行时域未装配（runtime_unavailable） */
             503: {
                 headers: {

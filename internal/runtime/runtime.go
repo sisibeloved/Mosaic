@@ -153,6 +153,21 @@ type Store interface {
 	EnvironmentByID(ctx context.Context, environmentID string) (Environment, bool, error)
 	ListEnvironments(ctx context.Context) ([]Environment, error)
 	DefaultEnvironment(ctx context.Context) (Environment, bool, error)
+	// ---- 租约面（0.6.4 / ADR-0027）----
+	// AcquireLease 单事务：互斥判定（运行时容量 + 工作区独占，并发恰一
+	// 胜者——库级部分唯一索引兜底）→ 代次 = 当代 MAX+1 → 插入；冲突
+	// 映射 ErrLeaseConflictRuntime / ErrLeaseConflictWorkspace。
+	AcquireLease(ctx context.Context, lease Lease) (Lease, error)
+	// UpdateLease 全行替换（续租/释放/惰性转 expired）。
+	UpdateLease(ctx context.Context, lease Lease) error
+	LeaseByID(ctx context.Context, leaseID string) (Lease, bool, error)
+	// ListLeases 租约历史（state=active|released|expired|all；runtimeID
+	// 可空；领取序倒序）。
+	ListLeases(ctx context.Context, state, runtimeID string) ([]Lease, error)
+	// MaxLeaseGeneration 运行时当代代次（无租约 0）——单源于租约行。
+	MaxLeaseGeneration(ctx context.Context, runtimeID string) (int, error)
+	// ExpireOverdue 惰性到期：把 expires_at ≤ now 的活跃租约转 expired。
+	ExpireOverdue(ctx context.Context, now string) error
 }
 
 // Option 服务选项。
@@ -177,9 +192,12 @@ type Service struct {
 	prober           Prober
 	fs               FS
 	discovery        DiscoverySource
+	missions         Missions // 租约占用主体端口（0.6.4；nil = 不校验主体——仅测试装配）
 	now              func() string
 	newRuntimeID     func() string
 	newEnvironmentID func() string
+	newLeaseID       func() string
+	newFenceToken    func() string
 	// locks 按运行时串行化读-探测-写全程（审校 P2#4：迟到的健康检查
 	// 不得以旧状态整行覆盖期间完成的准备——撤销 ready 与新绑定）。
 	locks sync.Map // runtime_id → *sync.Mutex
@@ -197,6 +215,8 @@ func New(store Store, prober Prober, fs FS, opts ...Option) *Service {
 		now:              func() string { return time.Now().UTC().Format(time.RFC3339Nano) },
 		newRuntimeID:     func() string { return "rtx_" + randomSuffix() },
 		newEnvironmentID: func() string { return "env_" + randomSuffix() },
+		newLeaseID:       func() string { return "lse_" + randomSuffix() },
+		newFenceToken:    newFenceTokenRandom,
 	}
 	for _, opt := range opts {
 		opt(s)

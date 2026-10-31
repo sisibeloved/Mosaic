@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- RuntimeLease——工作区占用、互斥与围栏代次（0.6.4 / RFC-0018 §5.2/§10.3.1 / ADR-0027，migration v17）：`runtime_leases` 一表 + 双部分唯一索引承载互斥——**同一可写工作区（环境）至多一个活跃租约（跨运行时，§5.2"同一可写工作区须独占租约"）+ 单运行时并发 1**（首版单 Agent 串行；容量 >1 随 0.6.5 资源上限扩展）。租约字段 0.6.4 子集：lease_id（lse_）/runtime_id/environment_id（workspace_ref = 准备绑定环境目录，租约不改绑）/mission_id（占用主体——经端口验存在且非 canceled；run_id 随 0.6.5 Run 对象增列不落空壳）/generation/expires_at（TTL 缺省 3600s 界限 [60, 86400]）/resource_limits（声明不强制——0.6.5 消费）。**代次单源于租约行**（运行时当代 = MAX(generation)，无运行时列——单事实源免列迁移）；领取 = 当代+1 并签发 `fnc_` 围栏令牌。**围栏校验四关**（probe 纪律恒 200）：令牌匹配 → active → 未过期 → 代次为当代；失败携 fence_token_mismatch / lease_not_active / lease_expired / generation_stale——0.6.5 结果提交经此拒绝旧实例提交（围栏只保护 Mosaic 接收的状态与受控工具调用，不撤销外部已发生动作——RFC 原文裁定）。生命周期：active →（release|到期）→ released|expired 终态；**renew 即心跳**（从现在起延长）；**到期惰性判定**（任一操作触碰即转 expired——确定性无后台计时器，读面不出现过期仍标 active 的行）。busy 派生化（活跃租约存在即忙，不占运行时状态名——避免双事实源）；draining/stopped 随 0.6.5 执行面。租约行即事实（无事件流，审计经租约历史）。API 六端点（领取/列表/详情/续租/释放/围栏校验）+ 运行环境页租约诊断区（RFC §13：Lease/generation 细节归诊断视图——领取是 0.6.5 调度行为不做人工入口）。验证：域 UT（互斥双面/并发恰一胜者/前置族/TTL 界限/续租从现在延长/惰性到期/围栏四关含播种落后代次）+ IT（v17 新库/库级部分唯一索引兜底直插拒绝/并发恰一/代次 MAX/v0.6.3 旧库升级）+ 端点（全链/409 族/404 族/503）先红后绿；vet/-race/it/st 串行 + SPA 绿；真机冒烟 15 项 ALL-PASS（真实任务领取、容量 409、canceled 拒领、围栏三态、释放后代次 2 再领、重启持久）。
+
 ## [0.6.3] - 2026-10-30
 
 ### Fixed

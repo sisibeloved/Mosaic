@@ -15,11 +15,12 @@ type MemStore struct {
 	events   []Event
 	envs     map[string]Environment
 	dirTaken map[string]string // workspace_dir → environment_id
+	leases   map[string]Lease
 }
 
 // NewMemStore 建空库。
 func NewMemStore() *MemStore {
-	return &MemStore{runtimes: map[string]Runtime{}, envs: map[string]Environment{}, dirTaken: map[string]string{}}
+	return &MemStore{runtimes: map[string]Runtime{}, envs: map[string]Environment{}, dirTaken: map[string]string{}, leases: map[string]Lease{}}
 }
 
 // SyncRuntimes 批量单事务语义（内存等价）：新行插入（并为真正插入的行

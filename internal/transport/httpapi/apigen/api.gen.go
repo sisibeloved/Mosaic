@@ -1074,6 +1074,27 @@ func (e RuntimeEventEventType) Valid() bool {
 	}
 }
 
+// Defines values for RuntimeLeaseViewState.
+const (
+	RuntimeLeaseViewStateActive   RuntimeLeaseViewState = "active"
+	RuntimeLeaseViewStateExpired  RuntimeLeaseViewState = "expired"
+	RuntimeLeaseViewStateReleased RuntimeLeaseViewState = "released"
+)
+
+// Valid indicates whether the value is a known member of the RuntimeLeaseViewState enum.
+func (e RuntimeLeaseViewState) Valid() bool {
+	switch e {
+	case RuntimeLeaseViewStateActive:
+		return true
+	case RuntimeLeaseViewStateExpired:
+		return true
+	case RuntimeLeaseViewStateReleased:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for RuntimeOptionsDefaultSource.
 const (
 	RuntimeOptionsDefaultSourceBuiltin RuntimeOptionsDefaultSource = "builtin"
@@ -1743,6 +1764,30 @@ func (e RunHarnessExecutableUpdate202JSONResponseBodyStatus) Valid() bool {
 	case RunHarnessExecutableUpdate202JSONResponseBodyStatusRunning:
 		return true
 	case RunHarnessExecutableUpdate202JSONResponseBodyStatusStarted:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListRuntimeLeasesParamsState.
+const (
+	ListRuntimeLeasesParamsStateActive   ListRuntimeLeasesParamsState = "active"
+	ListRuntimeLeasesParamsStateAll      ListRuntimeLeasesParamsState = "all"
+	ListRuntimeLeasesParamsStateExpired  ListRuntimeLeasesParamsState = "expired"
+	ListRuntimeLeasesParamsStateReleased ListRuntimeLeasesParamsState = "released"
+)
+
+// Valid indicates whether the value is a known member of the ListRuntimeLeasesParamsState enum.
+func (e ListRuntimeLeasesParamsState) Valid() bool {
+	switch e {
+	case ListRuntimeLeasesParamsStateActive:
+		return true
+	case ListRuntimeLeasesParamsStateAll:
+		return true
+	case ListRuntimeLeasesParamsStateExpired:
+		return true
+	case ListRuntimeLeasesParamsStateReleased:
 		return true
 	default:
 		return false
@@ -2660,6 +2705,17 @@ type FeishuCallbackRequest struct {
 	Code string `json:"code"`
 }
 
+// FenceCheckRequest 围栏校验请求（0.6.5 结果提交携带）。
+type FenceCheckRequest struct {
+	FenceToken string `json:"fence_token"`
+}
+
+// FenceCheckResult 围栏校验结果——失败 reason ∈ fence_token_mismatch / lease_not_active / lease_expired / generation_stale；有效为空串。
+type FenceCheckResult struct {
+	Reason string `json:"reason"`
+	Valid  bool   `json:"valid"`
+}
+
 // GrantRuntime 授权侧运行能力（与模板 RuntimeRequirements 对偶：能力名集合 + 工作区权限级）。
 type GrantRuntime struct {
 	Capabilities    []string                    `json:"capabilities"`
@@ -3273,6 +3329,56 @@ type RuntimeEvent struct {
 
 // RuntimeEventEventType defines model for RuntimeEvent.EventType.
 type RuntimeEventEventType string
+
+// RuntimeLeaseAcquire 领取请求——工作区取 runtime 准备绑定环境（不改绑）。
+type RuntimeLeaseAcquire struct {
+	// MissionId 占用主体（Run 对象随 0.6.5 增列——此前以任务计）
+	MissionId string `json:"mission_id"`
+
+	// ResourceLimits 资源限额声明（缺省 {"concurrency":1}；强制随 0.6.5 Scheduler——此前是声明）
+	ResourceLimits *map[string]int `json:"resource_limits,omitempty"`
+	RuntimeId      string          `json:"runtime_id"`
+
+	// TtlSeconds 租期（缺省 3600）
+	TtlSeconds *int `json:"ttl_seconds,omitempty"`
+}
+
+// RuntimeLeaseRenew 续租请求——从现在起延长（缺省 3600s）。
+type RuntimeLeaseRenew struct {
+	TtlSeconds *int `json:"ttl_seconds,omitempty"`
+}
+
+// RuntimeLeaseView 租约（RFC §10.3.1 的 0.6.4 子集）：state ∈ active|released|expired
+// （到期惰性判定——触碰即转，列表不出现过期仍标 active 的行）；
+// generation 为领取代次（释放/到期递增——运行时当代 = MAX(generation)）。
+type RuntimeLeaseView struct {
+	AcquiredAt time.Time `json:"acquired_at"`
+
+	// EnvironmentId 租约工作区所在环境（= runtime 准备绑定）
+	EnvironmentId string    `json:"environment_id"`
+	ExpiresAt     time.Time `json:"expires_at"`
+
+	// FenceToken fnc_ 前缀围栏令牌（随租约签发；释放/到期/被取代即失效）
+	FenceToken string `json:"fence_token"`
+	Generation int    `json:"generation"`
+
+	// LeaseId lse_ 前缀生成式
+	LeaseId   string `json:"lease_id"`
+	MissionId string `json:"mission_id"`
+
+	// ReleasedAt 释放时刻（未释为空串）
+	ReleasedAt     string                `json:"released_at"`
+	ResourceLimits map[string]int        `json:"resource_limits"`
+	RuntimeId      string                `json:"runtime_id"`
+	State          RuntimeLeaseViewState `json:"state"`
+	UpdatedAt      time.Time             `json:"updated_at"`
+
+	// WorkspaceRef 工作区目录（环境 workspace_dir）
+	WorkspaceRef string `json:"workspace_ref"`
+}
+
+// RuntimeLeaseViewState defines model for RuntimeLeaseView.State.
+type RuntimeLeaseViewState string
 
 // RuntimeOptions 模型候选与思考强度档位（设置页下拉数据源）+ 确定量默认值（v1.49）。
 type RuntimeOptions struct {
@@ -4153,6 +4259,15 @@ type SearchRoomMessagesParams struct {
 	Limit *int    `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// ListRuntimeLeasesParams defines parameters for ListRuntimeLeases.
+type ListRuntimeLeasesParams struct {
+	State     *ListRuntimeLeasesParamsState `form:"state,omitempty" json:"state,omitempty"`
+	RuntimeId *string                       `form:"runtime_id,omitempty" json:"runtime_id,omitempty"`
+}
+
+// ListRuntimeLeasesParamsState defines parameters for ListRuntimeLeases.
+type ListRuntimeLeasesParamsState string
+
 // ListSlotBindingsParams defines parameters for ListSlotBindings.
 type ListSlotBindingsParams struct {
 	SlotInstanceId *string `form:"slot_instance_id,omitempty" json:"slot_instance_id,omitempty"`
@@ -4249,6 +4364,15 @@ type UploadRoomAttachmentMultipartRequestBody UploadRoomAttachmentMultipartBody
 
 // SubmitRoomCommandJSONRequestBody defines body for SubmitRoomCommand for application/json ContentType.
 type SubmitRoomCommandJSONRequestBody = RoomCommand
+
+// AcquireRuntimeLeaseJSONRequestBody defines body for AcquireRuntimeLease for application/json ContentType.
+type AcquireRuntimeLeaseJSONRequestBody = RuntimeLeaseAcquire
+
+// CheckRuntimeLeaseFenceJSONRequestBody defines body for CheckRuntimeLeaseFence for application/json ContentType.
+type CheckRuntimeLeaseFenceJSONRequestBody = FenceCheckRequest
+
+// RenewRuntimeLeaseJSONRequestBody defines body for RenewRuntimeLease for application/json ContentType.
+type RenewRuntimeLeaseJSONRequestBody = RuntimeLeaseRenew
 
 // PrepareRuntimeJSONRequestBody defines body for PrepareRuntime for application/json ContentType.
 type PrepareRuntimeJSONRequestBody = RuntimePrepareRequest
@@ -4510,6 +4634,24 @@ type ServerInterface interface {
 	// GetRoomSnapshot 快照（版本 + 水位 + 投影/算法版本 + Timeline 投影 + 房间名/参与者视图）
 	// (GET /v1/rooms/{room_id}/snapshot)
 	GetRoomSnapshot(w http.ResponseWriter, r *http.Request, roomId RoomID)
+	// ListRuntimeLeases 租约历史（诊断视图）
+	// (GET /v1/runtime-leases)
+	ListRuntimeLeases(w http.ResponseWriter, r *http.Request, params ListRuntimeLeasesParams)
+	// AcquireRuntimeLease 领取租约（工作区占用 + 互斥 + 围栏代次）
+	// (POST /v1/runtime-leases)
+	AcquireRuntimeLease(w http.ResponseWriter, r *http.Request)
+	// GetRuntimeLease 租约详情
+	// (GET /v1/runtime-leases/{lease_id})
+	GetRuntimeLease(w http.ResponseWriter, r *http.Request, leaseId string)
+	// CheckRuntimeLeaseFence 围栏校验（恒 200——结果是数据不是错误）
+	// (POST /v1/runtime-leases/{lease_id}/check-fence)
+	CheckRuntimeLeaseFence(w http.ResponseWriter, r *http.Request, leaseId string)
+	// ReleaseRuntimeLease 释放租约（终态，代次 +1——围栏令牌自此失效）
+	// (POST /v1/runtime-leases/{lease_id}/release)
+	ReleaseRuntimeLease(w http.ResponseWriter, r *http.Request, leaseId string)
+	// RenewRuntimeLease 续租（心跳——从现在起延长）
+	// (POST /v1/runtime-leases/{lease_id}/renew)
+	RenewRuntimeLease(w http.ResponseWriter, r *http.Request, leaseId string)
 	// ListRuntimes 本地运行时列表（状态/健康/环境绑定）
 	// (GET /v1/runtimes)
 	ListRuntimes(w http.ResponseWriter, r *http.Request)
@@ -6545,6 +6687,170 @@ func (siw *ServerInterfaceWrapper) GetRoomSnapshot(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// ListRuntimeLeases operation middleware
+func (siw *ServerInterfaceWrapper) ListRuntimeLeases(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListRuntimeLeasesParams
+
+	// ------------- Optional query parameter "state" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "state", r.URL.Query(), &params.State, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "state"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "state", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "runtime_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "runtime_id", r.URL.Query(), &params.RuntimeId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "runtime_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "runtime_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListRuntimeLeases(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AcquireRuntimeLease operation middleware
+func (siw *ServerInterfaceWrapper) AcquireRuntimeLease(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AcquireRuntimeLease(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetRuntimeLease operation middleware
+func (siw *ServerInterfaceWrapper) GetRuntimeLease(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "lease_id" -------------
+	var leaseId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "lease_id", r.PathValue("lease_id"), &leaseId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "lease_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetRuntimeLease(w, r, leaseId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CheckRuntimeLeaseFence operation middleware
+func (siw *ServerInterfaceWrapper) CheckRuntimeLeaseFence(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "lease_id" -------------
+	var leaseId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "lease_id", r.PathValue("lease_id"), &leaseId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "lease_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CheckRuntimeLeaseFence(w, r, leaseId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReleaseRuntimeLease operation middleware
+func (siw *ServerInterfaceWrapper) ReleaseRuntimeLease(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "lease_id" -------------
+	var leaseId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "lease_id", r.PathValue("lease_id"), &leaseId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "lease_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReleaseRuntimeLease(w, r, leaseId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RenewRuntimeLease operation middleware
+func (siw *ServerInterfaceWrapper) RenewRuntimeLease(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "lease_id" -------------
+	var leaseId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "lease_id", r.PathValue("lease_id"), &leaseId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "lease_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RenewRuntimeLease(w, r, leaseId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListRuntimes operation middleware
 func (siw *ServerInterfaceWrapper) ListRuntimes(w http.ResponseWriter, r *http.Request) {
 
@@ -7423,6 +7729,12 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/environments", wrapper.ListEnvironments)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/environments", wrapper.CreateEnvironment)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/environments/{environment_id}", wrapper.GetEnvironment)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/runtime-leases", wrapper.ListRuntimeLeases)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/runtime-leases", wrapper.AcquireRuntimeLease)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/runtime-leases/{lease_id}", wrapper.GetRuntimeLease)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/runtime-leases/{lease_id}/renew", wrapper.RenewRuntimeLease)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/runtime-leases/{lease_id}/release", wrapper.ReleaseRuntimeLease)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/runtime-leases/{lease_id}/check-fence", wrapper.CheckRuntimeLeaseFence)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/enable", wrapper.EnableHarnessExecutable)

@@ -1,12 +1,14 @@
-// 运行环境（0.6.3 / ADR-0026）：本地 Environment / Runtime——发现同步、
-// 实时探测（unhealthy 是数据不是错误）、准备（绑环境 → ready）、事件历史
-// 与环境管理。请求序号守卫沿用 0.5/0.6 系列纪律。
+// 运行环境（0.6.3 / ADR-0026；0.6.4 / ADR-0027 增租约诊断区）：本地
+// Environment / Runtime——发现同步、实时探测（unhealthy 是数据不是错误）、
+// 准备（绑环境 → ready）、事件历史与环境管理；租约（占用/互斥/围栏代次）
+// 归诊断视图——领取是 0.6.5 调度行为，不做人工入口。请求序号守卫沿用。
 import { useEffect, useRef, useState } from "react";
 import {
   api,
   ApiError,
   type EnvironmentView,
   type RuntimeEvent,
+  type RuntimeLeaseView,
   type RuntimeView,
 } from "../api/client";
 import { absoluteTime } from "../lib/ui";
@@ -14,6 +16,12 @@ import { absoluteTime } from "../lib/ui";
 function stateClass(state: string): string {
   if (state === "ready") return "text-ok";
   if (state === "unhealthy") return "text-danger";
+  return "text-warn";
+}
+
+function leaseClass(state: string): string {
+  if (state === "active") return "text-ok";
+  if (state === "released") return "text-faint";
   return "text-warn";
 }
 
@@ -25,17 +33,19 @@ export function RuntimesPage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [envForm, setEnvForm] = useState({ name: "", dir: "" });
   const [prepareEnv, setPrepareEnv] = useState<Record<string, string>>({});
+  const [leases, setLeases] = useState<RuntimeLeaseView[] | null>(null);
   const [rev, setRev] = useState(0);
   const seq = useRef(0);
 
   useEffect(() => {
     const cur = ++seq.current;
     setLoadErr(null);
-    void Promise.all([api.listRuntimes(), api.listEnvironments()])
-      .then(([r, e]) => {
+    void Promise.all([api.listRuntimes(), api.listEnvironments(), api.listRuntimeLeases()])
+      .then(([r, e, l]) => {
         if (seq.current !== cur) return;
         setRuntimes(r.runtimes);
         setEnvironments(e.environments);
+        setLeases(l.leases);
       })
       .catch((e) => {
         if (seq.current !== cur) return;
@@ -154,6 +164,48 @@ export function RuntimesPage() {
             建环境
           </button>
         </div>
+      </section>
+
+      {/* 租约诊断区（RFC §13：Lease/generation 细节归诊断视图——领取是
+          0.6.5 调度行为，不做人工入口；此处只看与释放） */}
+      <section className="mt-2 flex flex-col gap-2 rounded-xl border border-border bg-surface p-3">
+        <h2 className="text-sm font-medium">租约（诊断）</h2>
+        {leases === null ? (
+          <p className="text-xs text-faint">加载中…</p>
+        ) : leases.length === 0 ? (
+          <p className="text-xs text-faint">尚无租约（领取随 0.6.5 调度）。</p>
+        ) : (
+          <ul className="flex flex-col gap-1 text-xs">
+            {leases.map((l) => (
+              <li key={l.lease_id} className="flex flex-wrap items-center gap-2 text-faint">
+                <span className={leaseClass(l.state)}>{l.state}</span>
+                <span className="rounded bg-surface-3 px-1.5 py-px text-[10px] text-dim">gen {l.generation}</span>
+                <span className="font-mono text-[11px]" title={l.lease_id}>
+                  {l.runtime_id} · {l.mission_id}
+                </span>
+                <span className="font-mono text-[10px] text-dim" title={l.fence_token}>
+                  {l.workspace_ref}
+                </span>
+                <span>{l.state === "active" ? `到期 ${absoluteTime(l.expires_at)}` : `领取 ${absoluteTime(l.acquired_at)}`}</span>
+                {l.state === "active" && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() =>
+                      void act(async () => {
+                        await api.releaseRuntimeLease(l.lease_id);
+                        return "租约已释放（代次自此失效）";
+                      })
+                    }
+                    className="ml-auto shrink-0 rounded bg-surface-3 px-2 py-0.5 text-danger disabled:opacity-40"
+                  >
+                    释放
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
     </div>
   );

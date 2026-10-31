@@ -335,7 +335,10 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		harnessProber{registry: harnessRegistry, runner: harness.NewHostRunner()},
 		osDirFS{},
 		mosaicruntime.WithNow(clock),
-		mosaicruntime.WithDiscoverySource(harnessDiscoveryOf(harnessRegistry)))
+		mosaicruntime.WithDiscoverySource(harnessDiscoveryOf(harnessRegistry)),
+		// 租约占用主体端口（0.6.4 / ADR-0027）：missionSvc 单源——存在性
+		// 与 canceled 拒领，域不 import mission 包。
+		mosaicruntime.WithMissions(missionStateLookup{missionSvc}))
 	if _, err := runtimeSvc.EnsureDefaultEnvironment(ctx, "默认工作区", filepath.Join(opts.DataDir, "workspace")); err != nil {
 		logger.Warn("默认环境确保失败（读面前惰性重试）", "err", err)
 	}
@@ -843,6 +846,17 @@ func (l roomTaskLookup) RoomTaskExists(ctx context.Context, roomID, taskID strin
 		}
 	}
 	return false, nil
+}
+
+// missionStateLookup runtime.Missions 的 Mission 域适配（ADR-0027）。
+type missionStateLookup struct{ svc *mission.Service }
+
+func (l missionStateLookup) MissionState(ctx context.Context, missionID string) (string, bool, error) {
+	m, ok, err := l.svc.Get(ctx, missionID)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	return m.Status, true, nil
 }
 
 // harnessDiscoveryOf runtime.DiscoverySource 的 harness 适配（ADR-0026 /

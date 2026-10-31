@@ -45,6 +45,9 @@ export type EnvironmentCreate = Schemas["EnvironmentCreate"];
 export type RuntimeView = Schemas["RuntimeView"];
 export type RuntimeEvent = Schemas["RuntimeEvent"];
 export type RuntimeSyncResult = Schemas["RuntimeSyncResult"];
+/** 0.6.4 RuntimeLease（ADR-0027）。 */
+export type RuntimeLeaseView = Schemas["RuntimeLeaseView"];
+export type FenceCheckResult = Schemas["FenceCheckResult"];
 /** 0.5.5 职责准入（ADR-0022）：授权档案与 readiness report。 */
 export type AgentGrantView = Schemas["AgentGrantView"];
 export type AgentGrantPut = Schemas["AgentGrantPut"];
@@ -637,6 +640,32 @@ export const api = {
   },
   getEnvironment(environmentID: string): Promise<EnvironmentView> {
     return request(`/v1/environments/${encodeURIComponent(environmentID)}`);
+  },
+  /** 0.6.4 RuntimeLease（ADR-0027）：领取（互斥 409 可见——容量/工作区独占）。 */
+  acquireRuntimeLease(req: { runtime_id: string; mission_id: string; ttl_seconds?: number }): Promise<RuntimeLeaseView> {
+    return post("/v1/runtime-leases", req);
+  },
+  listRuntimeLeases(state?: string, runtimeID?: string): Promise<{ leases: RuntimeLeaseView[] }> {
+    const q = new URLSearchParams();
+    if (state) q.set("state", state);
+    if (runtimeID) q.set("runtime_id", runtimeID);
+    const qs = q.toString();
+    return request(`/v1/runtime-leases${qs ? "?" + qs : ""}`);
+  },
+  getRuntimeLease(leaseID: string): Promise<RuntimeLeaseView> {
+    return request(`/v1/runtime-leases/${encodeURIComponent(leaseID)}`);
+  },
+  /** 续租（心跳——从现在起延长；缺省 3600s）。 */
+  renewRuntimeLease(leaseID: string, ttlSeconds?: number): Promise<RuntimeLeaseView> {
+    return post(`/v1/runtime-leases/${encodeURIComponent(leaseID)}/renew`, ttlSeconds ? { ttl_seconds: ttlSeconds } : {});
+  },
+  /** 释放（终态——代次自此失效，围栏令牌不可再用）。 */
+  releaseRuntimeLease(leaseID: string): Promise<RuntimeLeaseView> {
+    return post(`/v1/runtime-leases/${encodeURIComponent(leaseID)}/release`, {});
+  },
+  /** 围栏校验（恒 200 携 valid/reason——0.6.5 结果提交消费）。 */
+  checkRuntimeLeaseFence(leaseID: string, fenceToken: string): Promise<FenceCheckResult> {
+    return post(`/v1/runtime-leases/${encodeURIComponent(leaseID)}/check-fence`, { fence_token: fenceToken });
   },
   /** 0.5.5 准入试算（只读无副作用；未就绪也是 200——报告不是错误）。 */
   getSlotReadiness(instanceID: string, agentID: string, version?: number): Promise<ReadinessReportView> {

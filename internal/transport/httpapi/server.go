@@ -2577,6 +2577,205 @@ func environmentView(e mosaicruntime.Environment) apigen.EnvironmentView {
 	}
 }
 
+// ---- 租约面（RFC-0018 §5.2/§10.3.1 / ADR-0027，0.6.4）----
+
+// AcquireRuntimeLease 领取租约（201；互斥冲突 409 可见）。
+func (s *server) AcquireRuntimeLease(w http.ResponseWriter, r *http.Request) {
+	if s.runtimesUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.RuntimeLeaseAcquire
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "领取请求超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "领取请求不合法："+err.Error())
+		return
+	}
+	var ttl int
+	if req.TtlSeconds != nil {
+		ttl = *req.TtlSeconds
+	}
+	var limits map[string]int
+	if req.ResourceLimits != nil {
+		limits = *req.ResourceLimits
+	}
+	l, err := s.deps.Runtimes.Acquire(r.Context(), req.RuntimeId, req.MissionId, ttl, limits)
+	if err != nil {
+		writeLeaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, leaseView(l))
+}
+
+// ListRuntimeLeases 租约历史（诊断视图）。
+func (s *server) ListRuntimeLeases(w http.ResponseWriter, r *http.Request, params apigen.ListRuntimeLeasesParams) {
+	if s.runtimesUnavailable(w) {
+		return
+	}
+	state := ""
+	if params.State != nil {
+		state = string(*params.State)
+	}
+	runtimeID := ""
+	if params.RuntimeId != nil {
+		runtimeID = *params.RuntimeId
+	}
+	list, err := s.deps.Runtimes.ListLeases(r.Context(), state, runtimeID)
+	if err != nil {
+		writeLeaseError(w, err)
+		return
+	}
+	out := make([]apigen.RuntimeLeaseView, 0, len(list))
+	for _, l := range list {
+		out = append(out, leaseView(l))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"leases": out})
+}
+
+// GetRuntimeLease 租约详情。
+func (s *server) GetRuntimeLease(w http.ResponseWriter, r *http.Request, leaseID string) {
+	if s.runtimesUnavailable(w) {
+		return
+	}
+	l, ok, err := s.deps.Runtimes.GetLease(r.Context(), leaseID)
+	if err != nil {
+		writeLeaseError(w, err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "lease_not_found", "租约不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, leaseView(l))
+}
+
+// RenewRuntimeLease 续租（心跳——从现在起延长）。
+func (s *server) RenewRuntimeLease(w http.ResponseWriter, r *http.Request, leaseID string) {
+	if s.runtimesUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, false) { // body 可空：只做跨源门；有体再严格解码
+		return
+	}
+	var req apigen.RuntimeLeaseRenew
+	if r.Body != nil {
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "bad_request", "续租请求不合法："+err.Error())
+			return
+		}
+	}
+	var ttl int
+	if req.TtlSeconds != nil {
+		ttl = *req.TtlSeconds
+	}
+	l, err := s.deps.Runtimes.Renew(r.Context(), leaseID, ttl)
+	if err != nil {
+		writeLeaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, leaseView(l))
+}
+
+// ReleaseRuntimeLease 释放（终态；代次自此失效）。
+func (s *server) ReleaseRuntimeLease(w http.ResponseWriter, r *http.Request, leaseID string) {
+	if s.runtimesUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, false) { // 空 body：只做跨源门
+		return
+	}
+	l, err := s.deps.Runtimes.Release(r.Context(), leaseID)
+	if err != nil {
+		writeLeaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, leaseView(l))
+}
+
+// CheckRuntimeLeaseFence 围栏校验（probe 纪律恒 200 携 valid/reason）。
+func (s *server) CheckRuntimeLeaseFence(w http.ResponseWriter, r *http.Request, leaseID string) {
+	if s.runtimesUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.FenceCheckRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "围栏校验请求超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "围栏校验请求不合法："+err.Error())
+		return
+	}
+	valid, reason, err := s.deps.Runtimes.CheckFence(r.Context(), leaseID, req.FenceToken)
+	if err != nil {
+		writeLeaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, apigen.FenceCheckResult{Valid: valid, Reason: reason})
+}
+
+// writeLeaseError 租约面错误映射。
+func writeLeaseError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, mosaicruntime.ErrInvalidLease):
+		writeError(w, http.StatusBadRequest, "invalid_lease", err.Error())
+	case errors.Is(err, mosaicruntime.ErrRuntimeNotFound):
+		writeError(w, http.StatusNotFound, "runtime_not_found", err.Error())
+	case errors.Is(err, mosaicruntime.ErrMissionNotFound):
+		writeError(w, http.StatusNotFound, "mission_not_found", err.Error())
+	case errors.Is(err, mosaicruntime.ErrMissionCanceled):
+		writeError(w, http.StatusConflict, "mission_canceled", err.Error())
+	case errors.Is(err, mosaicruntime.ErrRuntimeNotReady):
+		writeError(w, http.StatusConflict, "runtime_not_ready", err.Error())
+	case errors.Is(err, mosaicruntime.ErrLeaseConflictRuntime):
+		writeError(w, http.StatusConflict, "lease_conflict_runtime", err.Error())
+	case errors.Is(err, mosaicruntime.ErrLeaseConflictWorkspace):
+		writeError(w, http.StatusConflict, "lease_conflict_workspace", err.Error())
+	case errors.Is(err, mosaicruntime.ErrLeaseNotFound):
+		writeError(w, http.StatusNotFound, "lease_not_found", err.Error())
+	case errors.Is(err, mosaicruntime.ErrLeaseInactive):
+		writeError(w, http.StatusConflict, "lease_inactive", err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "lease_failed", err.Error())
+	}
+}
+
+func leaseView(l mosaicruntime.Lease) apigen.RuntimeLeaseView {
+	acq, _ := time.Parse(time.RFC3339, l.AcquiredAt)
+	exp, _ := time.Parse(time.RFC3339, l.ExpiresAt)
+	upd, _ := time.Parse(time.RFC3339, l.UpdatedAt)
+	limits := l.ResourceLimits
+	if limits == nil {
+		limits = map[string]int{}
+	}
+	return apigen.RuntimeLeaseView{
+		LeaseId: l.LeaseID, RuntimeId: l.RuntimeID, EnvironmentId: l.EnvironmentID,
+		WorkspaceRef: l.WorkspaceRef, MissionId: l.MissionID, Generation: l.Generation,
+		FenceToken:     l.FenceToken,
+		State:          apigen.RuntimeLeaseViewState(l.State),
+		ResourceLimits: limits,
+		AcquiredAt:     acq, ExpiresAt: exp, ReleasedAt: l.ReleasedAt, UpdatedAt: upd,
+	}
+}
+
 // ---- 执行上下文清单域（RFC-0018 §7.3 / ADR-0025，0.6.2）----
 
 func (s *server) execctxUnavailable(w http.ResponseWriter) bool {

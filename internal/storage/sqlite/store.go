@@ -459,6 +459,33 @@ CREATE TABLE IF NOT EXISTS runtime_events (
 );
 CREATE INDEX IF NOT EXISTS idx_runtime_events_runtime ON runtime_events(runtime_id, seq);
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (16, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+-- v17（RFC-0018 §5.2/§10.3.1 / ADR-0027，0.6.4）：RuntimeLease——工作区
+-- 占用、互斥与围栏代次。两个部分唯一索引承载互斥：单运行时并发 1
+--（容量）+ 同一可写工作区（环境）独占（跨运行时，§5.2"同一可写工作区
+-- 须独占租约"）。代次单源于本表（运行时当代 = MAX(generation)，无运行
+-- 时列——单事实源免列迁移）；到期惰性判定（触碰即转 expired）。租约行
+-- 即事实（无事件流）；run_id 随 0.6.5 Run 对象增列（不落空壳）。
+CREATE TABLE IF NOT EXISTS runtime_leases (
+  lease_id        TEXT PRIMARY KEY,
+  runtime_id      TEXT NOT NULL,
+  environment_id  TEXT NOT NULL,
+  workspace_ref   TEXT NOT NULL,
+  mission_id      TEXT NOT NULL,
+  generation      INTEGER NOT NULL,
+  fence_token     TEXT NOT NULL,
+  state           TEXT NOT NULL,
+  resource_limits TEXT NOT NULL DEFAULT '{}',
+  acquired_at     TEXT NOT NULL,
+  expires_at      TEXT NOT NULL,
+  released_at     TEXT NOT NULL DEFAULT '',
+  updated_at      TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_leases_single_active_runtime
+  ON runtime_leases(runtime_id) WHERE state = 'active';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_leases_single_active_env
+  ON runtime_leases(environment_id) WHERE state = 'active';
+CREATE INDEX IF NOT EXISTS idx_runtime_leases_runtime_gen ON runtime_leases(runtime_id, generation);
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (17, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 `
 
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
@@ -3760,4 +3787,200 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// ---- 租约面（RFC-0018 §5.2/§10.3.1 / ADR-0027，0.6.4；v17 表）----
+
+const leaseScanColumns = `lease_id, runtime_id, environment_id, workspace_ref, mission_id, generation, fence_token, state, resource_limits, acquired_at, expires_at, released_at, updated_at`
+
+func scanLeaseRow(row interface{ Scan(...any) error }) (mosaicruntime.Lease, error) {
+	var l mosaicruntime.Lease
+	var limits string
+	if err := row.Scan(&l.LeaseID, &l.RuntimeID, &l.EnvironmentID, &l.WorkspaceRef,
+		&l.MissionID, &l.Generation, &l.FenceToken, &l.State, &limits,
+		&l.AcquiredAt, &l.ExpiresAt, &l.ReleasedAt, &l.UpdatedAt); err != nil {
+		return mosaicruntime.Lease{}, err
+	}
+	if err := json.Unmarshal([]byte(limits), &l.ResourceLimits); err != nil {
+		return mosaicruntime.Lease{}, fmt.Errorf("sqlite: lease limits unmarshal: %w", err)
+	}
+	if l.ResourceLimits == nil {
+		l.ResourceLimits = map[string]int{}
+	}
+	return l, nil
+}
+
+// AcquireLease 单事务：互斥判定（活跃租约两查——运行时容量与工作区独占，
+// BEGIN IMMEDIATE 临界区内并发恰一胜者，库级部分唯一索引兜底）→ 代次 =
+// 当代 MAX+1 → 插入。
+func (s *Store) AcquireLease(ctx context.Context, lease mosaicruntime.Lease) (mosaicruntime.Lease, error) {
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		var conflictRuntime, conflictEnv string
+		err := q.QueryRowContext(ctx,
+			`SELECT lease_id FROM runtime_leases WHERE state = 'active' AND runtime_id = ?`,
+			lease.RuntimeID).Scan(&conflictRuntime)
+		if err == nil {
+			return fmt.Errorf("%w：%s（%s）", mosaicruntime.ErrLeaseConflictRuntime, lease.RuntimeID, conflictRuntime)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("sqlite: lease runtime probe: %w", err)
+		}
+		err = q.QueryRowContext(ctx,
+			`SELECT lease_id FROM runtime_leases WHERE state = 'active' AND environment_id = ?`,
+			lease.EnvironmentID).Scan(&conflictEnv)
+		if err == nil {
+			return fmt.Errorf("%w：%s（%s）", mosaicruntime.ErrLeaseConflictWorkspace, lease.EnvironmentID, conflictEnv)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("sqlite: lease env probe: %w", err)
+		}
+		var gen sql.NullInt64
+		if err := q.QueryRowContext(ctx,
+			`SELECT MAX(generation) FROM runtime_leases WHERE runtime_id = ?`, lease.RuntimeID).Scan(&gen); err != nil {
+			return fmt.Errorf("sqlite: lease generation probe: %w", err)
+		}
+		lease.Generation = int(gen.Int64) + 1
+		limits, err := json.Marshal(lease.ResourceLimits)
+		if err != nil {
+			return fmt.Errorf("sqlite: lease limits marshal: %w", err)
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO runtime_leases (lease_id, runtime_id, environment_id, workspace_ref, mission_id, generation, fence_token, state, resource_limits, acquired_at, expires_at, released_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			lease.LeaseID, lease.RuntimeID, lease.EnvironmentID, lease.WorkspaceRef, lease.MissionID,
+			lease.Generation, lease.FenceToken, lease.State, string(limits),
+			lease.AcquiredAt, lease.ExpiresAt, lease.ReleasedAt, lease.UpdatedAt); err != nil {
+			if isUniqueViolation(err) {
+				// 并发兜底：临界区外插入被部分唯一索引拦下（两互斥面之一）
+				return fmt.Errorf("%w：%s 并发领取冲突", mosaicruntime.ErrLeaseConflictRuntime, lease.RuntimeID)
+			}
+			return fmt.Errorf("sqlite: insert lease: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return mosaicruntime.Lease{}, err
+	}
+	return lease, nil
+}
+
+// UpdateLease 全行替换（续租/释放/惰性转 expired）。
+func (s *Store) UpdateLease(ctx context.Context, lease mosaicruntime.Lease) error {
+	return s.identityWriteTx(ctx, func(q identityExec) error {
+		limits, err := json.Marshal(lease.ResourceLimits)
+		if err != nil {
+			return fmt.Errorf("sqlite: lease limits marshal: %w", err)
+		}
+		res, err := q.ExecContext(ctx, `
+UPDATE runtime_leases SET environment_id=?, workspace_ref=?, mission_id=?, generation=?, fence_token=?, state=?, resource_limits=?, expires_at=?, released_at=?, updated_at=?
+ WHERE lease_id = ?`,
+			lease.EnvironmentID, lease.WorkspaceRef, lease.MissionID, lease.Generation,
+			lease.FenceToken, lease.State, string(limits),
+			lease.ExpiresAt, lease.ReleasedAt, lease.UpdatedAt, lease.LeaseID)
+		if err != nil {
+			return fmt.Errorf("sqlite: update lease: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return fmt.Errorf("%w：%s", mosaicruntime.ErrLeaseNotFound, lease.LeaseID)
+		}
+		return nil
+	})
+}
+
+// LeaseByID 单查；未知 ok=false。
+func (s *Store) LeaseByID(ctx context.Context, leaseID string) (mosaicruntime.Lease, bool, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+leaseScanColumns+`
+  FROM runtime_leases WHERE lease_id = ?`, leaseID)
+	l, err := scanLeaseRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return mosaicruntime.Lease{}, false, nil
+	}
+	if err != nil {
+		return mosaicruntime.Lease{}, false, fmt.Errorf("sqlite: lease by id: %w", err)
+	}
+	return l, true, nil
+}
+
+// ListLeases 租约历史（state 过滤可 all；runtimeID 可空；领取序倒序——
+// acquired_at 降序，同刻 lease_id 降序兜底）。
+func (s *Store) ListLeases(ctx context.Context, state, runtimeID string) ([]mosaicruntime.Lease, error) {
+	qry := `SELECT ` + leaseScanColumns + ` FROM runtime_leases WHERE 1=1`
+	args := []any{}
+	if state != "" && state != mosaicruntime.LeaseStateAll {
+		qry += ` AND state = ?`
+		args = append(args, state)
+	}
+	if runtimeID != "" {
+		qry += ` AND runtime_id = ?`
+		args = append(args, runtimeID)
+	}
+	qry += ` ORDER BY acquired_at DESC, lease_id DESC`
+	rows, err := s.db.QueryContext(ctx, qry, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list leases: %w", err)
+	}
+	defer rows.Close()
+	out := []mosaicruntime.Lease{}
+	for rows.Next() {
+		l, err := scanLeaseRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: lease scan: %w", err)
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// MaxLeaseGeneration 运行时当代代次（无租约 0）。
+func (s *Store) MaxLeaseGeneration(ctx context.Context, runtimeID string) (int, error) {
+	var gen sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT MAX(generation) FROM runtime_leases WHERE runtime_id = ?`, runtimeID).Scan(&gen)
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: max lease generation: %w", err)
+	}
+	return int(gen.Int64), nil
+}
+
+// ExpireOverdue 惰性到期：expires_at ≤ now 的活跃租约转 expired。时间经
+// Go 侧解析比较（RFC3339Nano 小数位不定长，字符串比较不可靠）。
+func (s *Store) ExpireOverdue(ctx context.Context, now string) error {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT lease_id, expires_at FROM runtime_leases WHERE state = 'active'`)
+	if err != nil {
+		return fmt.Errorf("sqlite: expire overdue select: %w", err)
+	}
+	type overdue struct {
+		id, at string
+	}
+	var pending []overdue
+	for rows.Next() {
+		var o overdue
+		if err := rows.Scan(&o.id, &o.at); err != nil {
+			rows.Close()
+			return fmt.Errorf("sqlite: expire overdue scan: %w", err)
+		}
+		exp, err1 := time.Parse(time.RFC3339Nano, o.at)
+		nowT, err2 := time.Parse(time.RFC3339Nano, now)
+		if err1 != nil || err2 != nil || !exp.After(nowT) {
+			pending = append(pending, o)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	return s.identityWriteTx(ctx, func(q identityExec) error {
+		for _, o := range pending {
+			if _, err := q.ExecContext(ctx,
+				`UPDATE runtime_leases SET state = 'expired', updated_at = ? WHERE lease_id = ? AND state = 'active'`,
+				now, o.id); err != nil {
+				return fmt.Errorf("sqlite: expire overdue update: %w", err)
+			}
+		}
+		return nil
+	})
 }
