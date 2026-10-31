@@ -2602,6 +2602,12 @@ func (s *server) AcquireRuntimeLease(w http.ResponseWriter, r *http.Request) {
 	}
 	var ttl int
 	if req.TtlSeconds != nil {
+		// 字段存在即校验界限（审校 P2#4）：显式 0/越界 400——省略才缺省
+		if *req.TtlSeconds < mosaicruntime.MinLeaseTTLSeconds || *req.TtlSeconds > mosaicruntime.MaxLeaseTTLSeconds {
+			writeError(w, http.StatusBadRequest, "invalid_lease", fmt.Sprintf(
+				"ttl_seconds 须 [%d, %d]（%d）", mosaicruntime.MinLeaseTTLSeconds, mosaicruntime.MaxLeaseTTLSeconds, *req.TtlSeconds))
+			return
+		}
 		ttl = *req.TtlSeconds
 	}
 	var limits map[string]int
@@ -2677,6 +2683,11 @@ func (s *server) RenewRuntimeLease(w http.ResponseWriter, r *http.Request, lease
 	}
 	var ttl int
 	if req.TtlSeconds != nil {
+		if *req.TtlSeconds < mosaicruntime.MinLeaseTTLSeconds || *req.TtlSeconds > mosaicruntime.MaxLeaseTTLSeconds {
+			writeError(w, http.StatusBadRequest, "invalid_lease", fmt.Sprintf(
+				"ttl_seconds 须 [%d, %d]（%d）", mosaicruntime.MinLeaseTTLSeconds, mosaicruntime.MaxLeaseTTLSeconds, *req.TtlSeconds))
+			return
+		}
 		ttl = *req.TtlSeconds
 	}
 	l, err := s.deps.Runtimes.Renew(r.Context(), leaseID, ttl)

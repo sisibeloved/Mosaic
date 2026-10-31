@@ -193,8 +193,18 @@ export function RuntimesPage() {
                     disabled={busy}
                     onClick={() =>
                       void act(async () => {
-                        await api.releaseRuntimeLease(l.lease_id);
-                        return "租约已释放（代次自此失效）";
+                        try {
+                          await api.releaseRuntimeLease(l.lease_id);
+                          return "租约已释放（围栏令牌自此失效）";
+                        } catch (e) {
+                          if (e instanceof ApiError && e.code === "lease_inactive") {
+                            // 已知终态（页面加载后到期/被他处释放）——刷新诊断
+                            // 列表对齐实际状态并保留说明（审校 P2#5）
+                            setRev((r) => r + 1);
+                            throw new Error("租约已非活跃（可能已到期或被他处释放）——列表已刷新");
+                          }
+                          throw e;
+                        }
                       })
                     }
                     className="ml-auto shrink-0 rounded bg-surface-3 px-2 py-0.5 text-danger disabled:opacity-40"

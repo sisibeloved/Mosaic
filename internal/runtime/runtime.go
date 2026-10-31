@@ -62,9 +62,13 @@ type Environment struct {
 	EnvironmentID string `json:"environment_id"` // env_ 前缀生成式
 	Name          string `json:"name"`
 	WorkspaceDir  string `json:"workspace_dir"`
-	IsDefault     bool   `json:"is_default"` // 全库恰一（部分唯一索引；装配启动确保）
-	CreatedAt     string `json:"created_at"`
-	UpdatedAt     string `json:"updated_at"`
+	// WorkspaceKey 规范工作区身份（EvalSymlinks(Clean(dir))——审校 P2#2：
+	// 同一物理目录的路径别名不得绕过工作区独占；判重与租约排他以本键计。
+	// 空 = 历史别名行（0.6.4 未发布期开发库）——不参与新排他。
+	WorkspaceKey string `json:"workspace_key,omitempty"`
+	IsDefault    bool   `json:"is_default"` // 全库恰一（部分唯一索引；装配启动确保）
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
 }
 
 // Runtime 运行时记录：镜像 harness 登记事实 + 本域状态与绑定。
@@ -158,8 +162,16 @@ type Store interface {
 	// 胜者——库级部分唯一索引兜底）→ 代次 = 当代 MAX+1 → 插入；冲突
 	// 映射 ErrLeaseConflictRuntime / ErrLeaseConflictWorkspace。
 	AcquireLease(ctx context.Context, lease Lease) (Lease, error)
-	// UpdateLease 全行替换（续租/释放/惰性转 expired）。
+	// UpdateLease 全行替换（测试播种/惰性转 expired 直改；续租/释放走
+	// 条件化 RenewLease/ReleaseLease——审校 P1 竞态防护）。
 	UpdateLease(ctx context.Context, lease Lease) error
+	// RenewLease 原子续租：UPDATE expires_at/updated_at WHERE
+	// lease_id AND state=active——并发到期先落则零行 ErrLeaseInactive
+	//（不复活 active、不改原令牌；只更新续租字段）。
+	RenewLease(ctx context.Context, leaseID, newExpiresAt, now string) (Lease, error)
+	// ReleaseLease 原子释放：UPDATE state/released_at/updated_at WHERE
+	// active——同型防护。
+	ReleaseLease(ctx context.Context, leaseID, now string) (Lease, error)
 	LeaseByID(ctx context.Context, leaseID string) (Lease, bool, error)
 	// ListLeases 租约历史（state=active|released|expired|all；runtimeID
 	// 可空；领取序倒序）。
@@ -431,7 +443,8 @@ func (s *Service) createEnvironment(ctx context.Context, name, workspaceDir stri
 	now := s.now()
 	env := Environment{
 		EnvironmentID: s.newEnvironmentID(), Name: name, WorkspaceDir: trimmed,
-		IsDefault: isDefault, CreatedAt: now, UpdatedAt: now,
+		WorkspaceKey: evalWorkspaceKey(trimmed),
+		IsDefault:    isDefault, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.store.CreateEnvironment(ctx, env); err != nil {
 		return Environment{}, err
@@ -497,6 +510,15 @@ func noteOf(result ProbeResult) string {
 		return "version_probe_failed"
 	}
 	return result.Note
+}
+
+// evalWorkspaceKey 规范工作区身份：解析符号链接后的绝对路径（别名归一，
+// 审校 P2#2）；解析失败（挂载边界等）回退 Clean 路径——身份可比性优先。
+func evalWorkspaceKey(dir string) string {
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(dir)
 }
 
 func trimSpaces(s string) string {

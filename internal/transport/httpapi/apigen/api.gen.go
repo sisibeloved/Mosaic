@@ -3350,7 +3350,7 @@ type RuntimeLeaseRenew struct {
 
 // RuntimeLeaseView 租约（RFC §10.3.1 的 0.6.4 子集）：state ∈ active|released|expired
 // （到期惰性判定——触碰即转，列表不出现过期仍标 active 的行）；
-// generation 为领取代次（释放/到期递增——运行时当代 = MAX(generation)）。
+// generation 为领取代次（仅领取时分配 MAX+1；释放/到期经状态终态化使旧令牌失效——运行时当代 = MAX(generation)）。
 type RuntimeLeaseView struct {
 	AcquiredAt time.Time `json:"acquired_at"`
 
@@ -4646,7 +4646,7 @@ type ServerInterface interface {
 	// CheckRuntimeLeaseFence 围栏校验（恒 200——结果是数据不是错误）
 	// (POST /v1/runtime-leases/{lease_id}/check-fence)
 	CheckRuntimeLeaseFence(w http.ResponseWriter, r *http.Request, leaseId string)
-	// ReleaseRuntimeLease 释放租约（终态，代次 +1——围栏令牌自此失效）
+	// ReleaseRuntimeLease 释放租约（终态——围栏令牌自此失效；新领取分配 MAX+1 代次自此超过）
 	// (POST /v1/runtime-leases/{lease_id}/release)
 	ReleaseRuntimeLease(w http.ResponseWriter, r *http.Request, leaseId string)
 	// RenewRuntimeLease 续租（心跳——从现在起延长）

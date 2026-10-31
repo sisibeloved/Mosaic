@@ -170,6 +170,9 @@ func (s *Service) Acquire(ctx context.Context, runtimeID, missionID string, ttlS
 }
 
 // Renew 续租（心跳）：从现在起延长（不从旧到期点叠加）；非活跃 409。
+// 竞态安全（审校 P1）：时钟与惰性清障在获锁后重取；落库为原子条件更新
+// （WHERE state='active'，只更新续租字段）——并发到期先落则更新零行，
+// 旧续租不得整行写回复活 active 与原令牌。
 func (s *Service) Renew(ctx context.Context, leaseID string, ttlSeconds int) (Lease, error) {
 	ttl := DefaultLeaseTTLSeconds
 	if ttlSeconds != 0 {
@@ -178,59 +181,40 @@ func (s *Service) Renew(ctx context.Context, leaseID string, ttlSeconds int) (Le
 		}
 		ttl = ttlSeconds
 	}
-	now := s.now()
-	if err := s.expireOverdue(ctx, now); err != nil {
-		return Lease{}, err
-	}
 	mu := s.lockOf(s.runtimeOfLease(ctx, leaseID))
 	mu.Lock()
 	defer mu.Unlock()
 
-	l, ok, err := s.store.LeaseByID(ctx, leaseID)
-	if err != nil {
-		return Lease{}, fmt.Errorf("runtime: 读租约失败：%w", err)
+	now := s.now() // 获锁后重取时间（审校 P1）
+	if err := s.expireOverdue(ctx, now); err != nil {
+		return Lease{}, err
 	}
-	if !ok {
+	if _, ok, err := s.store.LeaseByID(ctx, leaseID); err != nil {
+		return Lease{}, fmt.Errorf("runtime: 读租约失败：%w", err)
+	} else if !ok {
 		return Lease{}, ErrLeaseNotFound
 	}
-	if l.State != LeaseStateActive {
-		return Lease{}, fmt.Errorf("%w：%s（%s）", ErrLeaseInactive, leaseID, l.State)
-	}
-	l.ExpiresAt = addTTL(now, ttl)
-	l.UpdatedAt = now
-	if err := s.store.UpdateLease(ctx, l); err != nil {
-		return Lease{}, fmt.Errorf("runtime: 续租落库失败：%w", err)
-	}
-	return l, nil
+	return s.store.RenewLease(ctx, leaseID, addTTL(now, ttl), now)
 }
 
-// Release 释放（终态）：该租约代次自此失效（围栏令牌不可再用）。
+// Release 释放（终态）：该租约的围栏令牌自此失效（状态终态化；新领取
+// 分配 MAX+1，代次自此超过旧租约——语义等价于"递增"而不在终态时计数）。
+// 落库同样为原子条件更新（审校 P1 同型防护）。
 func (s *Service) Release(ctx context.Context, leaseID string) (Lease, error) {
-	now := s.now()
-	if err := s.expireOverdue(ctx, now); err != nil {
-		return Lease{}, err
-	}
 	mu := s.lockOf(s.runtimeOfLease(ctx, leaseID))
 	mu.Lock()
 	defer mu.Unlock()
 
-	l, ok, err := s.store.LeaseByID(ctx, leaseID)
-	if err != nil {
-		return Lease{}, fmt.Errorf("runtime: 读租约失败：%w", err)
+	now := s.now() // 获锁后重取时间
+	if err := s.expireOverdue(ctx, now); err != nil {
+		return Lease{}, err
 	}
-	if !ok {
+	if _, ok, err := s.store.LeaseByID(ctx, leaseID); err != nil {
+		return Lease{}, fmt.Errorf("runtime: 读租约失败：%w", err)
+	} else if !ok {
 		return Lease{}, ErrLeaseNotFound
 	}
-	if l.State != LeaseStateActive {
-		return Lease{}, fmt.Errorf("%w：%s（%s）", ErrLeaseInactive, leaseID, l.State)
-	}
-	l.State = LeaseStateReleased
-	l.ReleasedAt = now
-	l.UpdatedAt = now
-	if err := s.store.UpdateLease(ctx, l); err != nil {
-		return Lease{}, fmt.Errorf("runtime: 释放落库失败：%w", err)
-	}
-	return l, nil
+	return s.store.ReleaseLease(ctx, leaseID, now)
 }
 
 // CheckFence 围栏校验（probe 纪律恒结果不错误）：四关——令牌匹配、

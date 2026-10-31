@@ -40,7 +40,8 @@ runtime_leases：lease_id（lse_ 前缀）主键；runtime_id + environment_id
   **运行时容量 1**——首版单 Agent 串行（RFC"资源上限与工作区隔离必须
   满足"；容量 >1 随 0.6.5 资源上限扩展）。
 - 惰性到期：任一领取/续租/围栏校验/读取触碰时，先把已过期的活跃租约
-  转入 expired（代次随之递增——旧代次自此失效）；不设后台计时器
+  转入 expired（旧代次自此失效——状态终态化；新领取分配 MAX+1 自此
+  超过）；不设后台计时器
   （确定性，无定时器漂移）。
 - 领取成功：generation = 当代 + 1，签发围栏令牌 `fnc_`（随机 32 hex，
   随租约行存取）；`resource_limits` 为声明（默认 `{"concurrency":1}`），
@@ -50,16 +51,17 @@ runtime_leases：lease_id（lse_ 前缀）主键；runtime_id + environment_id
 ### 3. 生命周期与围栏代次
 
 ```
-（acquire）→ active ──release──▶ released（终态，代次 +1）
-                 └──到期（惰性判定）──▶ expired（终态，代次 +1）
+（acquire）→ active ──release──▶ released（终态——令牌经状态失效）
+                 └──到期（惰性判定）──▶ expired（终态——同上）
 active ──renew（心跳）──▶ active（expires_at = now + ttl，从现在起延长）
 ```
 
 - **renew 即心跳**：续租从现在起延长（不从旧到期点叠加）；非 active
   （含已惰性过期）409 `lease_inactive`。心跳失败触发 runtime unhealthy
   随 0.6.5 心跳调度（本件提供原语）。
-- **release**：显式释放（终态）；释放即代次递增——该租约的围栏令牌
-  自此无效。
+- **release**：显式释放（终态）——该租约的围栏令牌自此失效（状态
+  终态化；新领取分配 MAX+1，代次自此超过旧租约——语义等价于递增
+  而不在终态时计数）。
 - **check-fence（围栏校验，probe 纪律恒 200）**：校验四关——租约在且
   令牌匹配、state=active、未过期（惰性转 expired）、**generation 为该
   运行时当代**（无更新租约取代）。失败携 `fence_token_mismatch |
@@ -82,7 +84,7 @@ active ──renew（心跳）──▶ active（expires_at = now + ttl，从现
 | `GET /v1/runtime-leases?state=&runtime_id=` | 租约历史（诊断视图；state 缺省 all） |
 | `GET /v1/runtime-leases/{lease_id}` | 详情 |
 | `POST /v1/runtime-leases/{lease_id}/renew` `{ttl_seconds?}` | 续租（心跳） |
-| `POST /v1/runtime-leases/{lease_id}/release` | 释放（代次 +1） |
+| `POST /v1/runtime-leases/{lease_id}/release` | 释放（终态——令牌失效） |
 | `POST /v1/runtime-leases/{lease_id}/check-fence` `{fence_token}` | 围栏校验（恒 200 携 valid/reason） |
 
 运行环境页加租约诊断区（活跃租约徽标/历史/释放）——领取是 0.6.5
@@ -121,3 +123,4 @@ missionSvc，域不 import mission 包）；租约写路径沿用 per-runtime
 ## 修订记录
 
 - v0.1 2026-10-30 初稿（0.6.4 开工——设计先行）。
+- v0.2 2026-10-30 审校修复登记（独立审校"1 P1 + 4 P2 + 1 P3，建议修复后定版"）：**(P1)** 续租/释放改**原子条件更新**（UPDATE 只改目标字段且以 state='active' 为条件；时钟与惰性清障获锁后重取）——并发到期先落则零行 ErrLeaseInactive，旧续租不得整行写回复活 active 与原令牌（RenewLease/ReleaseLease 双存储同语义）。**(P2#2)** 工作区别名排他：environments 增 workspace_key（规范身份 = EvalSymlinks(Clean(dir))，migration v18 增列 + 部分唯一索引）；建面按身份判重（路径别名同一物理目录 409）、领取面经 JOIN 按身份排他兜底（空键历史行不参与）。**(P2#3)** 惰性到期改**单语句原子判定+转移**（datetime() 比较）——消除"扫描旧截止→期间续租→仍被置 expired"窗口。**(P2#4)** ttl_seconds 字段存在即校验界限（显式 0/越界 400），省略才用缺省。**(P2#5)** SPA 释放遇 lease_inactive 刷新诊断列表并保留说明。**(P3)** generation 文档对齐实现：代次仅在领取时分配 MAX+1；释放/到期经状态终态化使旧令牌失效（语义等价，不在终态时递增计数）——本节措辞同步修正。

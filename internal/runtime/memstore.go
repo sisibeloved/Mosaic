@@ -109,11 +109,17 @@ func (m *MemStore) RuntimeEvents(_ context.Context, runtimeID string) ([]Event, 
 func (m *MemStore) CreateEnvironment(_ context.Context, e Environment) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, taken := m.dirTaken[e.WorkspaceDir]; taken {
+	// 判重按规范工作区身份（EvalSymlinks 键）计——路径别名同一物理目录
+	// 不得双注册（审校 P2#2）；空键（历史行）回退目录串判重。
+	key := e.WorkspaceKey
+	if key == "" {
+		key = e.WorkspaceDir
+	}
+	if _, taken := m.dirTaken[key]; taken {
 		return ErrEnvironmentDirTaken
 	}
 	m.envs[e.EnvironmentID] = e
-	m.dirTaken[e.WorkspaceDir] = e.EnvironmentID
+	m.dirTaken[key] = e.EnvironmentID
 	return nil
 }
 

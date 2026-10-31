@@ -11,6 +11,13 @@ import (
 func (m *MemStore) AcquireLease(_ context.Context, lease Lease) (Lease, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// 工作区独占按规范身份（workspace_key）计——同一物理目录的路径别名
+	// 不得绕过（审校 P2#2）；空 key 为历史别名行，不参与新排他。
+	acqEnv, acqOK := m.envs[lease.EnvironmentID]
+	acqKey := ""
+	if acqOK {
+		acqKey = acqEnv.WorkspaceKey
+	}
 	for id, l := range m.leases {
 		if l.State != LeaseStateActive {
 			continue
@@ -18,8 +25,10 @@ func (m *MemStore) AcquireLease(_ context.Context, lease Lease) (Lease, error) {
 		if l.RuntimeID == lease.RuntimeID {
 			return Lease{}, ErrLeaseConflictRuntime
 		}
-		if l.EnvironmentID == lease.EnvironmentID {
-			return Lease{}, ErrLeaseConflictWorkspace
+		if acqKey != "" {
+			if env, ok := m.envs[l.EnvironmentID]; ok && env.WorkspaceKey == acqKey {
+				return Lease{}, ErrLeaseConflictWorkspace
+			}
 		}
 		_ = id
 	}
@@ -36,6 +45,42 @@ func (m *MemStore) UpdateLease(_ context.Context, lease Lease) error {
 	}
 	m.leases[lease.LeaseID] = lease
 	return nil
+}
+
+// RenewLease 原子续租（审校 P1）：锁内核对 state=active，只更新续租字段
+// ——并发到期先落则 ErrLeaseInactive，不复活 active、不改原令牌。
+func (m *MemStore) RenewLease(_ context.Context, leaseID, newExpiresAt, now string) (Lease, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l, ok := m.leases[leaseID]
+	if !ok {
+		return Lease{}, ErrLeaseNotFound
+	}
+	if l.State != LeaseStateActive {
+		return Lease{}, ErrLeaseInactive
+	}
+	l.ExpiresAt = newExpiresAt
+	l.UpdatedAt = now
+	m.leases[leaseID] = l
+	return l, nil
+}
+
+// ReleaseLease 原子释放（同型防护）：只更新终态字段。
+func (m *MemStore) ReleaseLease(_ context.Context, leaseID, now string) (Lease, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l, ok := m.leases[leaseID]
+	if !ok {
+		return Lease{}, ErrLeaseNotFound
+	}
+	if l.State != LeaseStateActive {
+		return Lease{}, ErrLeaseInactive
+	}
+	l.State = LeaseStateReleased
+	l.ReleasedAt = now
+	l.UpdatedAt = now
+	m.leases[leaseID] = l
+	return l, nil
 }
 
 func (m *MemStore) LeaseByID(_ context.Context, leaseID string) (Lease, bool, error) {

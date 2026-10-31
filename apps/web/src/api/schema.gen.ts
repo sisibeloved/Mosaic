@@ -1827,7 +1827,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 释放租约（终态，代次 +1——围栏令牌自此失效）
+         * 释放租约（终态——围栏令牌自此失效；新领取分配 MAX+1 代次自此超过）
          * @description 显式释放；该租约 generation 之后的代次递增使旧围栏令牌失效
          *     （0.6.5 结果提交经 check-fence 拒绝旧实例提交——围栏不撤销外部
          *     已发生动作，RFC §10.3.1 原文裁定）。非 active 409 lease_inactive。
@@ -3565,7 +3565,7 @@ export interface components {
         /**
          * @description 租约（RFC §10.3.1 的 0.6.4 子集）：state ∈ active|released|expired
          *     （到期惰性判定——触碰即转，列表不出现过期仍标 active 的行）；
-         *     generation 为领取代次（释放/到期递增——运行时当代 = MAX(generation)）。
+         *     generation 为领取代次（仅领取时分配 MAX+1；释放/到期经状态终态化使旧令牌失效——运行时当代 = MAX(generation)）。
          */
         RuntimeLeaseView: {
             /** @description lse_ 前缀生成式 */

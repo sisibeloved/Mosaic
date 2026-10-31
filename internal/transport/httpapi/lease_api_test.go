@@ -89,10 +89,17 @@ func TestLeaseEndpoints(t *testing.T) {
 	if code, _ := errOf(t, resp); resp.StatusCode != http.StatusNotFound || code != "mission_not_found" {
 		t.Fatalf("未知主体: %d/%s", resp.StatusCode, code)
 	}
-	// TTL 界限 400；拼错字段 400
-	resp = postSlot(t, ts.URL+"/v1/runtime-leases", `{"runtime_id":"`+rtID+`","mission_id":"mi_ok","ttl_seconds":30}`)
+	// TTL 界限 400（含显式 0——字段存在即校验，省略才缺省：审校 P2#4）
+	for _, ttl := range []string{"30", "0", "86401"} {
+		resp = postSlot(t, ts.URL+"/v1/runtime-leases", `{"runtime_id":"`+rtID+`","mission_id":"mi_ok","ttl_seconds":`+ttl+`}`)
+		if code, _ := errOf(t, resp); resp.StatusCode != http.StatusBadRequest || code != "invalid_lease" {
+			t.Fatalf("TTL=%s 期望 400/invalid_lease: %d/%s", ttl, resp.StatusCode, code)
+		}
+	}
+	// 续租同口径：显式 0 拒收
+	resp = postSlot(t, ts.URL+"/v1/runtime-leases/"+l.LeaseID+"/renew", `{"ttl_seconds":0}`)
 	if code, _ := errOf(t, resp); resp.StatusCode != http.StatusBadRequest || code != "invalid_lease" {
-		t.Fatalf("TTL 下界: %d/%s", resp.StatusCode, code)
+		t.Fatalf("续租 TTL=0 期望 400: %d/%s", resp.StatusCode, code)
 	}
 
 	// 围栏校验：有效 → 错令牌
