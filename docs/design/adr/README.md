@@ -35,3 +35,4 @@ ADR 记录**实现与工具选型**级决策。三层文档分工：架构级约
 | [ADR-0025](ADR-0025-execution-context-manifest.md) | 执行上下文清单（0.6.2）：ContextManifest/ContextReceipt 存档装配（必需层不截断超预算 blocked、可选层独立配额、授权过滤先于排序计数）、digest 即身份确定性重建去重、水位向量、context_manifest_ref 查询时联查兑现 | Accepted |
 | [ADR-0026](ADR-0026-local-environment-runtime.md) | 本地 Environment / Runtime（0.6.3）：命名工作区环境（默认恰一）+ rtx_ 运行时记录（发现幂等键 (adapter,host,distro,path)）+ discovered/ready/unhealthy 子集（探测失败可见、准备恢复）、runtime_events 流、harness Reprobe 只读复用 | Accepted |
 | [ADR-0027](ADR-0027-runtime-lease.md) | RuntimeLease 工作区占用/互斥/围栏代次（0.6.4）：环境独占 + 单运行时容量 1（双部分唯一索引）、代次单源于租约行（MAX(generation)）、fnc_ 围栏令牌四关校验（0.6.5 结果提交消费）、续租即心跳、到期惰性判定、busy 派生化 | Accepted |
+| [ADR-0028](ADR-0028-mission-execution.md) | 单 Agent Mission 执行（0.6.5）：run_ 域（attempt 唯一、每 Mission 至一未终态）+ 持久调度（两时点复核、租约+存档清单+围栏全消费）+ 执行器端口（agent.Supervisor 适配）+ Mission running 投影 + 围栏拒绝审计 | Accepted |

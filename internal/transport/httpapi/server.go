@@ -34,6 +34,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
+	missionrun "github.com/sisibeloved/Mosaic/internal/run"
 	mosaicruntime "github.com/sisibeloved/Mosaic/internal/runtime"
 	"github.com/sisibeloved/Mosaic/internal/settings"
 	"github.com/sisibeloved/Mosaic/internal/slot"
@@ -62,7 +63,9 @@ type Deps struct {
 	Execctx *execctx.Service
 	// Runtimes 本地 Environment / Runtime 域（RFC-0018 §3/§6 / ADR-0026，0.6.3；nil 时端点 503）。
 	Runtimes *mosaicruntime.Service
-	Logger   *slog.Logger
+	// MissionRuns Mission 执行域（RFC-0018 §10.2 / ADR-0028，0.6.5；nil 时端点 503）。
+	MissionRuns *missionrun.Service
+	Logger      *slog.Logger
 	// 开发者模式（M1 v1.8）：Dev 开启才注册 /v1/debug 只读端点与 UI 调试面板。
 	Dev    bool
 	Budget contextx.Limits         // 预算上限（状态端点的水位/梯度计算基准）
@@ -2784,6 +2787,184 @@ func leaseView(l mosaicruntime.Lease) apigen.RuntimeLeaseView {
 		State:          apigen.RuntimeLeaseViewState(l.State),
 		ResourceLimits: limits,
 		AcquiredAt:     acq, ExpiresAt: exp, ReleasedAt: l.ReleasedAt, UpdatedAt: upd,
+	}
+}
+
+// ---- Mission 执行域（RFC-0018 §10.2 / ADR-0028，0.6.5）----
+
+func (s *server) missionRunsUnavailable(w http.ResponseWriter) bool {
+	if s.deps.MissionRuns == nil {
+		writeError(w, http.StatusServiceUnavailable, "run_unavailable", "执行域未装配")
+		return true
+	}
+	return false
+}
+
+// CreateMissionRun 手动调度一次执行（同步面——返回时 Run 已终态）。
+func (s *server) CreateMissionRun(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.missionRunsUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, false) { // 空 body：只做跨源门
+		return
+	}
+	// Mission 存在性与 ready 先核（调用方可理解的错误分类）
+	m, ok, err := s.deps.Missions.Get(r.Context(), missionID)
+	if err != nil {
+		writeRunError(w, err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "mission_not_found", "Mission 不存在")
+		return
+	}
+	if m.Status != mission.StatusReady {
+		writeError(w, http.StatusConflict, "mission_not_ready",
+			"Mission 非 ready（当前 "+m.Status+"）——仅 ready 可调度执行")
+		return
+	}
+	out, err := s.deps.MissionRuns.ExecuteMission(r.Context(), missionrun.MissionRef{
+		MissionID: missionID, OwnerAgentID: m.OwnerAgentID})
+	if err != nil {
+		writeRunError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, missionRunView(out))
+}
+
+// ListMissionRuns Run 历史（attempt 降序）。
+func (s *server) ListMissionRuns(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.missionRunsUnavailable(w) {
+		return
+	}
+	if _, ok, err := s.deps.Missions.Get(r.Context(), missionID); err != nil {
+		writeRunError(w, err)
+		return
+	} else if !ok {
+		writeError(w, http.StatusNotFound, "mission_not_found", "Mission 不存在")
+		return
+	}
+	list, err := s.deps.MissionRuns.ListRuns(r.Context(), missionID)
+	if err != nil {
+		writeRunError(w, err)
+		return
+	}
+	out := make([]apigen.MissionRunView, 0, len(list))
+	for _, run := range list {
+		out = append(out, missionRunView(run))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runs": out})
+}
+
+// GetRun Run 详情。
+func (s *server) GetRun(w http.ResponseWriter, r *http.Request, runID string) {
+	if s.missionRunsUnavailable(w) {
+		return
+	}
+	run, ok, err := s.deps.MissionRuns.GetRun(r.Context(), runID)
+	if err != nil {
+		writeRunError(w, err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "run_not_found", "Run 不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, missionRunView(run))
+}
+
+// GetMissionRunEvents Run 事件流（含围栏拒绝审计）。
+func (s *server) GetMissionRunEvents(w http.ResponseWriter, r *http.Request, runID string) {
+	if s.missionRunsUnavailable(w) {
+		return
+	}
+	events, ok, err := s.deps.MissionRuns.RunEventsByRun(r.Context(), runID)
+	if err != nil {
+		writeRunError(w, err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "run_not_found", "Run 不存在")
+		return
+	}
+	out := make([]apigen.MissionRunEvent, 0, len(events))
+	for _, e := range events {
+		out = append(out, missionRunEventView(e))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": out})
+}
+
+// GetSchedulerStatus 调度器诊断面。
+func (s *server) GetSchedulerStatus(w http.ResponseWriter, r *http.Request) {
+	if s.missionRunsUnavailable(w) {
+		return
+	}
+	st, err := s.deps.MissionRuns.Status(r.Context())
+	if err != nil {
+		writeRunError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, apigen.SchedulerStatus{
+		Enabled:             st["enabled"].(bool),
+		ScanIntervalSeconds: st["scan_interval_seconds"].(int),
+		Scans:               st["scans"].(int64),
+		LaunchedRuns:        st["launched_runs"].(int64),
+		ActiveRuns:          st["active_runs"].(int),
+		LastScanAt:          st["last_scan_at"].(string),
+		LastError:           st["last_error"].(string),
+	})
+}
+
+// writeRunError 执行域错误映射。
+func writeRunError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, missionrun.ErrRunNotFound):
+		writeError(w, http.StatusNotFound, "run_not_found", err.Error())
+	case errors.Is(err, missionrun.ErrMissionNotFound):
+		writeError(w, http.StatusNotFound, "mission_not_found", err.Error())
+	case errors.Is(err, missionrun.ErrMissionNotReady):
+		writeError(w, http.StatusConflict, "mission_not_ready", err.Error())
+	case errors.Is(err, missionrun.ErrNoExecutor):
+		writeError(w, http.StatusConflict, "no_executor", err.Error())
+	case errors.Is(err, missionrun.ErrSchedulerBusy):
+		writeError(w, http.StatusConflict, "scheduler_busy", err.Error())
+	case errors.Is(err, missionrun.ErrManifestBlocked):
+		writeError(w, http.StatusConflict, "manifest_blocked", err.Error())
+	case errors.Is(err, missionrun.ErrRunExists):
+		writeError(w, http.StatusConflict, "run_exists", err.Error())
+	case errors.Is(err, mosaicruntime.ErrLeaseConflictRuntime), errors.Is(err, mosaicruntime.ErrLeaseConflictWorkspace):
+		writeError(w, http.StatusConflict, "scheduler_busy", "资源被占（"+err.Error()+"）——下轮再试")
+	default:
+		writeError(w, http.StatusInternalServerError, "run_failed", err.Error())
+	}
+}
+
+func missionRunView(run missionrun.Run) apigen.MissionRunView {
+	req, _ := time.Parse(time.RFC3339, run.RequestedAt)
+	upd, _ := time.Parse(time.RFC3339, run.UpdatedAt)
+	return apigen.MissionRunView{
+		RunId: run.RunID, MissionId: run.MissionID, Attempt: run.Attempt,
+		LeaseId: run.LeaseID, ManifestId: run.ManifestID, RuntimeId: run.RuntimeID,
+		BindingId: run.BindingID, AgentId: run.AgentID,
+		State:       apigen.MissionRunViewState(run.State),
+		ErrorText:   run.ErrorText,
+		ResultBlock: run.ResultBlock,
+		FenceToken:  run.FenceToken,
+		Generation:  &run.Generation,
+		RequestedAt: req, UpdatedAt: upd,
+	}
+}
+
+func missionRunEventView(e missionrun.Event) apigen.MissionRunEvent {
+	at, _ := time.Parse(time.RFC3339, e.OccurredAt)
+	payload := e.Payload
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	return apigen.MissionRunEvent{
+		Seq: e.Seq, RunId: e.RunID,
+		EventType: apigen.MissionRunEventEventType(e.EventType),
+		Payload:   payload, OccurredAt: at,
 	}
 }
 

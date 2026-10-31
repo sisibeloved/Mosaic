@@ -48,6 +48,10 @@ export type RuntimeSyncResult = Schemas["RuntimeSyncResult"];
 /** 0.6.4 RuntimeLease（ADR-0027）。 */
 export type RuntimeLeaseView = Schemas["RuntimeLeaseView"];
 export type FenceCheckResult = Schemas["FenceCheckResult"];
+/** 0.6.5 Mission 执行（ADR-0028）。 */
+export type MissionRunView = Schemas["MissionRunView"];
+export type MissionRunEvent = Schemas["MissionRunEvent"];
+export type SchedulerStatus = Schemas["SchedulerStatus"];
 /** 0.5.5 职责准入（ADR-0022）：授权档案与 readiness report。 */
 export type AgentGrantView = Schemas["AgentGrantView"];
 export type AgentGrantPut = Schemas["AgentGrantPut"];
@@ -599,6 +603,22 @@ export const api = {
   },
   listMissionEvents(missionID: string): Promise<{ events: MissionEvent[] }> {
     return request(`/v1/missions/${encodeURIComponent(missionID)}/events`);
+  },
+  /** 0.6.5 手动调度一次执行（同步面——返回时 Run 已终态）。 */
+  createMissionRun(missionID: string): Promise<MissionRunView> {
+    return post(`/v1/missions/${encodeURIComponent(missionID)}/runs`, {});
+  },
+  listMissionRuns(missionID: string): Promise<{ runs: MissionRunView[] }> {
+    return request(`/v1/missions/${encodeURIComponent(missionID)}/runs`);
+  },
+  getMissionRun(runID: string): Promise<MissionRunView> {
+    return request(`/v1/mission-runs/${encodeURIComponent(runID)}`);
+  },
+  getMissionRunEvents(runID: string): Promise<{ events: MissionRunEvent[] }> {
+    return request(`/v1/mission-runs/${encodeURIComponent(runID)}/events`);
+  },
+  getSchedulerStatus(): Promise<SchedulerStatus> {
+    return request("/v1/scheduler/status");
   },
   /** 0.6.2 执行上下文清单历史（摘要，创建序倒序——各时点"会交付什么"）。 */
   listContextManifests(missionID: string): Promise<{ manifests: ContextManifestSummary[] }> {

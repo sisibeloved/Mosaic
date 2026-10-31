@@ -23,6 +23,10 @@ const (
 	StatusDraft    = "draft"    // 契约不完备（验收/来源/交付物缺失或 unassigned）
 	StatusReady    = "ready"    // 完备可受领（执行随 0.6.5 起）
 	StatusCanceled = "canceled" // 唯一终态；不可修订、不被迟到回调翻转
+	// StatusRunning 执行中投影（0.6.5 / ADR-0028）：领取租约创建 Run 后进入；
+	// Run 终态回 ready（可再执行）。非契约生命周期状态——不经 Revise/Cancel
+	// 的完备性判定，由 run 域经 MarkRunning/MarkReadyFromRunning 投影。
+	StatusRunning = "running"
 )
 
 // 事件类型（mission_events 流）。
@@ -167,6 +171,10 @@ type Store interface {
 	MissionVersions(ctx context.Context, missionID string) ([]Mission, bool, error)
 	// Events 事件流（seq 升序）；未知 ok=false。
 	MissionEvents(ctx context.Context, missionID string) ([]Event, bool, error)
+	// TransitionStatus 条件状态投影（0.6.5 / ADR-0028）：当前状态 == from
+	// 才更新为 to + 事件（单事务）；from 不符/Mission 未知/终态 = 无操作
+	// 成功（幂等——调用方序已知）。canceled 拒转。
+	TransitionStatus(ctx context.Context, missionID, from, to string, event Event) error
 }
 
 // Service 契约服务：校验单源 + 完备性判定单源 + CAS 编排。
@@ -278,7 +286,7 @@ func (s *Service) checkSource(ctx context.Context, src *RoomSource) error {
 
 // Revise 修订契约（= revise_mission）：全量替换 + 版本追加；expected_version
 // CAS——败者 ErrVersionConflict（可见重试）；终态拒修订；完备性重判
-//（draft ↔ ready 双向，事件留痕）。
+// （draft ↔ ready 双向，事件留痕）。
 func (s *Service) Revise(ctx context.Context, missionID string, expectedVersion int, ownerAgentID string, c Content) (Mission, error) {
 	if err := ValidateContent(c); err != nil {
 		return Mission{}, err
@@ -328,6 +336,32 @@ func (s *Service) Cancel(ctx context.Context, missionID string, expectedVersion 
 		return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
 	}
 	return out, nil
+}
+
+// MarkRunning 执行投影：ready → running（run 域创建 Run 后调用；仅
+// ready 可进——并发修订期间不误标；canceled 终态不可翻转）。
+func (s *Service) MarkRunning(ctx context.Context, missionID string) error {
+	return s.projectStatus(ctx, missionID, StatusReady, StatusRunning, "")
+}
+
+// MarkReadyFromRunning 执行投影：running → ready（Run 终态后回可执行；
+// reason 进事件 payload 供审计——fence_rejected/run_failed/restart_recovery）。
+func (s *Service) MarkReadyFromRunning(ctx context.Context, missionID, reason string) error {
+	return s.projectStatus(ctx, missionID, StatusRunning, StatusReady, reason)
+}
+
+// projectStatus 条件状态投影（from 不符或 Mission 未知 = 幂等无操作成功
+// ——调用方序已知；canceled 拒转）。status_changed 事件携 from/to/reason。
+func (s *Service) projectStatus(ctx context.Context, missionID, from, to, reason string) error {
+	payload, err := json.Marshal(map[string]string{"from": from, "to": to, "reason": reason})
+	if err != nil {
+		return fmt.Errorf("mission: 投影事件构造失败：%w", err)
+	}
+	ev := Event{MissionID: missionID, EventType: EventStatusChanged, Payload: payload, OccurredAt: s.now()}
+	if err := s.store.TransitionStatus(ctx, missionID, from, to, ev); err != nil {
+		return fmt.Errorf("mission: 状态投影失败：%w", err)
+	}
+	return nil
 }
 
 // Get 契约详情；未知 ok=false。

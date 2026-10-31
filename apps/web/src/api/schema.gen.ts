@@ -1863,6 +1863,82 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/missions/{mission_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Run 历史（attempt 序） */
+        get: operations["listMissionRuns"];
+        put?: never;
+        /**
+         * 手动调度一次执行（同步走调度路径：租约→清单→Run→执行）
+         * @description 与周期扫描同一条路径同步执行一次（ADR-0028 决策 2）：候选解析
+         *     （owner active Binding → 能力满足的 ready Runtime）→ 领取租约 →
+         *     装配存档清单（blocked → 释放租约返 blocked 事实）→ 创建 Run
+         *     （Mission → running）→ 提交执行。执行为同步面（返回时 Run 已
+         *     终态）；迟到围栏拒绝记审计。资源忙 409 scheduler_busy（下轮再试）。
+         */
+        post: operations["createMissionRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/mission-runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Run 详情 */
+        get: operations["getRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/mission-runs/{run_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Run 事件流（含围栏拒绝审计） */
+        get: operations["getMissionRunEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scheduler/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 调度器诊断面（扫描计数/在途/最近错误） */
+        get: operations["getSchedulerStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/harness/executables": {
         parameters: {
             query?: never;
@@ -3605,6 +3681,78 @@ export interface components {
         FenceCheckResult: {
             valid: boolean;
             reason: string;
+        };
+        /**
+         * @description Run（一次执行尝试，ADR-0028）：state ∈ pending | running |
+         *     completed | failed（unknown/暂停随 0.6.7/0.6.6）。attempt 同
+         *     Mission 递增；每 Mission 至多一个未终态。result_block 为正文
+         *     截断存档（≤8000 字——完整交付物随 0.6.8）；fence_rejected 的
+         *     迟到结果不落（见 run_events 审计）。
+         */
+        MissionRunView: {
+            /** @description run_ 前缀生成式 */
+            run_id: string;
+            mission_id: string;
+            attempt: number;
+            /** @description 本次执行的租约（释放/到期=围栏拒绝） */
+            lease_id: string;
+            /** @description 执行输入的存档清单（cmf_） */
+            manifest_id: string;
+            runtime_id: string;
+            binding_id: string;
+            agent_id: string;
+            /** @enum {string} */
+            state: "pending" | "running" | "completed" | "failed";
+            /** @description 失败原因（截断 1000 字；成功为空） */
+            error_text: string;
+            /** @description 结果正文截断存档（≤8000 字；未完成为空） */
+            result_block: string;
+            /** @description 本次执行围栏令牌（迟到提交核对用） */
+            fence_token: string;
+            /** @description 领取代次（围栏四关之一） */
+            generation?: number;
+            /** Format: date-time */
+            requested_at: string;
+            /** @description 实际开始（pending 为空串） */
+            started_at?: string;
+            /** @description 终态时刻（未终态为空串） */
+            finished_at?: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description run_events 流事件（migration v19；seq 升序即流序）。 */
+        MissionRunEvent: {
+            /** Format: int64 */
+            seq: number;
+            run_id: string;
+            /** @enum {string} */
+            event_type: "attempt_requested" | "started" | "completed" | "failed" | "fence_rejected";
+            /** @description 事件体——attempt_requested: {attempt, lease_id, manifest_id}；started: {}；completed: {late}；failed: {error}；fence_rejected: {reason, detail} */
+            payload: Record<string, never>;
+            /** Format: date-time */
+            occurred_at: string;
+        };
+        /** @description 调度器诊断面（ADR-0028 决策 2——全部事实在库，调度器自身无状态）。 */
+        SchedulerStatus: {
+            /** @description 周期扫描开关（装配注入） */
+            enabled: boolean;
+            scan_interval_seconds: number;
+            /**
+             * Format: int64
+             * @description 启动以来扫描轮数
+             */
+            scans: number;
+            /**
+             * Format: int64
+             * @description 启动以来拉起的 Run 数
+             */
+            launched_runs: number;
+            /** @description 当前未终态 Run 数（恢复语义见 ADR） */
+            active_runs: number;
+            /** @description 最近一轮扫描时刻（未扫为空串） */
+            last_scan_at: string;
+            /** @description 最近一轮错误（无错误为空串） */
+            last_error: string;
         };
         /** @description 预算（RFC-0018 §6.1：并发、总 Run 数、墙钟时长、重试与委派深度）——0.6.0 为契约声明事实，运行时强制随 0.6.5 Scheduler 落；缺省 {1, 32, 86400, 0, 0}（单 Agent、不重试、不委派起步）。 */
         MissionBudget: {
@@ -8168,6 +8316,220 @@ export interface operations {
             413: components["responses"]["TooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             /** @description 运行时域未装配（runtime_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listMissionRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Run 列表（attempt 降序——新在前） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        runs: components["schemas"]["MissionRunView"][];
+                    };
+                };
+            };
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Run 域未装配（run_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createMissionRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Run（completed/failed 终态，含结果/错误摘要） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionRunView"];
+                };
+            };
+            /** @description 请求不合法（invalid_run） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Mission 非 ready（mission_not_ready——running/canceled/draft）、无可用任职/运行时（no_executor）或资源被占（scheduler_busy） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description Run 域未装配（run_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionRunView"];
+                };
+            };
+            /** @description Run 不存在（run_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Run 域未装配（run_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getMissionRunEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 事件列表（seq 升序） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        events: components["schemas"]["MissionRunEvent"][];
+                    };
+                };
+            };
+            /** @description Run 不存在（run_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Run 域未装配（run_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getSchedulerStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 调度器状态 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchedulerStatus"];
+                };
+            };
+            /** @description Run 域未装配（run_unavailable） */
             503: {
                 headers: {
                     [name: string]: unknown;

@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 单 Agent Mission 执行（0.6.5 / RFC-0018 §6/§10.2 / ADR-0028，migration v19）：`internal/run` 新域——**Run**（一次执行尝试，run_ 前缀；(mission_id, attempt) 唯一 + 每 Mission 至多一个未终态行（部分唯一索引）；lease/manifest/runtime/binding/agent 绑定 + fence_token/generation；pending → running → completed | failed）+ **run_events** 流（attempt_requested / started / completed / failed / **fence_rejected**——迟到旧实例结果被围栏拒绝的审计事实）。**持久调度器**（5s 周期扫描 + `POST /v1/missions/{id}/runs` 手动触发）：对每个 ready Mission——owner active Binding 解析 → 能力满足的 ready Runtime（单 Agent 首个）→ 领取租约（ADR-0027）→ 装配存档清单（ADR-0025——执行存档输入）→ 创建 Run + Mission → running（状态投影 `TransitionStatus`）→ 提交执行 → 围栏核对（check-fence 四关）→ Run 终态 + 租约释放 + Mission 回 ready（可再执行 attempt+1）。清单 blocked → 释放租约返 manifest_blocked 409；无 ready Runtime/任职 → no_executor 409；资源被占 → scheduler_busy 409（下轮再试）。**执行器端口**（`Submit(ctx, ExecutionInput) → block`——app 注入 agent.Supervisor 适配，Kind=generate）；**启动恢复**：未终态 Run → failed（"结果未知；不会自动重跑"——RFC 禁止盲目重跑裁定）+ 租约释放 + Mission 回 ready。API 五端点（手动调度/Run 历史/Run 详情/Run 事件/调度器诊断面）+ 任务中心详情执行区（手动执行按钮 + Run 历史（attempt/状态/结果摘要/错误/围栏代次））。验证：域 UT（闭环/失败/围栏拒绝/资源忙/无执行面/清单 blocked/恢复不重跑/扫描多 Mission 调度）+ IT（v19 新库/未终态互斥/attempt 递增/事件回读/旧库升级）+ 端点（echo 全链/409 族/503）先红后绿；vet/-race/it/st 串行 + SPA 绿；真机冒烟 10 项 ALL-PASS（真实 CLI 发现链 + echo 适配器执行：completed attempt 1/2、Mission 回 ready、事件 3 条、租约释放、调度器诊断、重启 Run 历史保留——**周期调度器自动重复执行验证了持久调度面**）。
+
 ## [0.6.4] - 2026-10-30
 
 ### Fixed

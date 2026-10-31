@@ -3068,6 +3068,152 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /v1/missions/{mission_id}/runs:
+    post:
+      operationId: createMissionRun
+      summary: 手动调度一次执行（同步走调度路径：租约→清单→Run→执行）
+      description: |
+        与周期扫描同一条路径同步执行一次（ADR-0028 决策 2）：候选解析
+        （owner active Binding → 能力满足的 ready Runtime）→ 领取租约 →
+        装配存档清单（blocked → 释放租约返 blocked 事实）→ 创建 Run
+        （Mission → running）→ 提交执行。执行为同步面（返回时 Run 已
+        终态）；迟到围栏拒绝记审计。资源忙 409 scheduler_busy（下轮再试）。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: mission_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+      responses:
+        "201":
+          description: Run（completed/failed 终态，含结果/错误摘要）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MissionRunView" }
+        "400":
+          description: 请求不合法（invalid_run）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Mission 不存在（mission_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Mission 非 ready（mission_not_ready——running/canceled/draft）、无可用任职/运行时（no_executor）或资源被占（scheduler_busy）"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: Run 域未装配（run_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      operationId: listMissionRuns
+      summary: Run 历史（attempt 序）
+      parameters:
+        - name: mission_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: Run 列表（attempt 降序——新在前）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs]
+                properties:
+                  runs:
+                    type: array
+                    items: { $ref: "#/components/schemas/MissionRunView" }
+        "404":
+          description: Mission 不存在（mission_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: Run 域未装配（run_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/mission-runs/{run_id}:
+    get:
+      operationId: getRun
+      summary: Run 详情
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^run_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MissionRunView" }
+        "404":
+          description: Run 不存在（run_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: Run 域未装配（run_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/mission-runs/{run_id}/events:
+    get:
+      operationId: getMissionRunEvents
+      summary: Run 事件流（含围栏拒绝审计）
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^run_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 事件列表（seq 升序）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items: { $ref: "#/components/schemas/MissionRunEvent" }
+        "404":
+          description: Run 不存在（run_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: Run 域未装配（run_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/scheduler/status:
+    get:
+      operationId: getSchedulerStatus
+      summary: 调度器诊断面（扫描计数/在途/最近错误）
+      responses:
+        "200":
+          description: 调度器状态
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SchedulerStatus" }
+        "503":
+          description: Run 域未装配（run_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/harness/executables:
     get:
       operationId: listHarnessExecutables
@@ -5189,6 +5335,57 @@ components:
       properties:
         valid: { type: boolean }
         reason: { type: string }
+    MissionRunView:
+      type: object
+      required: [run_id, mission_id, attempt, lease_id, manifest_id, runtime_id, binding_id, agent_id, state, error_text, result_block, fence_token, requested_at, updated_at]
+      description: |
+        Run（一次执行尝试，ADR-0028）：state ∈ pending | running |
+        completed | failed（unknown/暂停随 0.6.7/0.6.6）。attempt 同
+        Mission 递增；每 Mission 至多一个未终态。result_block 为正文
+        截断存档（≤8000 字——完整交付物随 0.6.8）；fence_rejected 的
+        迟到结果不落（见 run_events 审计）。
+      properties:
+        run_id: { type: string, description: "run_ 前缀生成式" }
+        mission_id: { type: string }
+        attempt: { type: integer, minimum: 1 }
+        lease_id: { type: string, description: 本次执行的租约（释放/到期=围栏拒绝） }
+        manifest_id: { type: string, description: 执行输入的存档清单（cmf_） }
+        runtime_id: { type: string }
+        binding_id: { type: string }
+        agent_id: { type: string }
+        state: { type: string, enum: [pending, running, completed, failed] }
+        error_text: { type: string, description: 失败原因（截断 1000 字；成功为空） }
+        result_block: { type: string, description: 结果正文截断存档（≤8000 字；未完成为空） }
+        fence_token: { type: string, description: 本次执行围栏令牌（迟到提交核对用） }
+        generation: { type: integer, minimum: 1, description: 领取代次（围栏四关之一） }
+        requested_at: { type: string, format: date-time }
+        started_at: { type: string, description: 实际开始（pending 为空串） }
+        finished_at: { type: string, description: 终态时刻（未终态为空串） }
+        updated_at: { type: string, format: date-time }
+    MissionRunEvent:
+      type: object
+      required: [seq, run_id, event_type, payload, occurred_at]
+      description: run_events 流事件（migration v19；seq 升序即流序）。
+      properties:
+        seq: { type: integer, format: int64 }
+        run_id: { type: string }
+        event_type: { type: string, enum: [attempt_requested, started, completed, failed, fence_rejected] }
+        payload:
+          type: object
+          description: "事件体——attempt_requested: {attempt, lease_id, manifest_id}；started: {}；completed: {late}；failed: {error}；fence_rejected: {reason, detail}"
+        occurred_at: { type: string, format: date-time }
+    SchedulerStatus:
+      type: object
+      required: [enabled, scan_interval_seconds, scans, launched_runs, active_runs, last_scan_at, last_error]
+      description: 调度器诊断面（ADR-0028 决策 2——全部事实在库，调度器自身无状态）。
+      properties:
+        enabled: { type: boolean, description: 周期扫描开关（装配注入） }
+        scan_interval_seconds: { type: integer, minimum: 1 }
+        scans: { type: integer, format: int64, description: 启动以来扫描轮数 }
+        launched_runs: { type: integer, format: int64, description: 启动以来拉起的 Run 数 }
+        active_runs: { type: integer, description: 当前未终态 Run 数（恢复语义见 ADR） }
+        last_scan_at: { type: string, description: 最近一轮扫描时刻（未扫为空串） }
+        last_error: { type: string, description: 最近一轮错误（无错误为空串） }
     MissionBudget:
       type: object
       required: [concurrency, max_runs, max_wall_clock_seconds, max_retries, max_delegation_depth]

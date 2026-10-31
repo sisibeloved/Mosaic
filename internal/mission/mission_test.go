@@ -59,9 +59,9 @@ func TestCreateCompletenessTwoStates(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*Content){
-		"验收缺失":   func(c *Content) { c.AcceptanceCriteria = nil },
+		"验收缺失":  func(c *Content) { c.AcceptanceCriteria = nil },
 		"交付物缺失": func(c *Content) { c.DeliverableSpecs = nil },
-		"来源缺失":   func(c *Content) { c.SourceRefs = nil },
+		"来源缺失":  func(c *Content) { c.SourceRefs = nil },
 	} {
 		c := fullContent()
 		mutate(&c)
@@ -83,14 +83,16 @@ func TestCreateValidation(t *testing.T) {
 	ctx := context.Background()
 
 	for name, mutate := range map[string]func(*Content){
-		"objective 空":  func(c *Content) { c.Objective = "  " },
-		"scope 空":      func(c *Content) { c.Scope = "" },
-		"验收项空白":     func(c *Content) { c.AcceptanceCriteria = []string{" "} },
-		"来源模式":      func(c *Content) { c.SourceRefs = []string{"带 空格"} },
-		"预算部分":      func(c *Content) { c.Budget = Budget{Concurrency: 2} },
-		"预算越界":      func(c *Content) { c.Budget = Budget{Concurrency: 1, MaxRuns: 9999, MaxWallClockSeconds: 3600, MaxRetries: 0, MaxDelegationDepth: 0} },
-		"委派枚举":      func(c *Content) { c.Delegation = DelegationPolicy{Allowed: []string{"anyone"}} },
-		"约束上限":      func(c *Content) { c.Constraints = repeat(17, "c") },
+		"objective 空": func(c *Content) { c.Objective = "  " },
+		"scope 空":     func(c *Content) { c.Scope = "" },
+		"验收项空白":       func(c *Content) { c.AcceptanceCriteria = []string{" "} },
+		"来源模式":        func(c *Content) { c.SourceRefs = []string{"带 空格"} },
+		"预算部分":        func(c *Content) { c.Budget = Budget{Concurrency: 2} },
+		"预算越界": func(c *Content) {
+			c.Budget = Budget{Concurrency: 1, MaxRuns: 9999, MaxWallClockSeconds: 3600, MaxRetries: 0, MaxDelegationDepth: 0}
+		},
+		"委派枚举": func(c *Content) { c.Delegation = DelegationPolicy{Allowed: []string{"anyone"}} },
+		"约束上限": func(c *Content) { c.Constraints = repeat(17, "c") },
 	} {
 		c := fullContent()
 		mutate(&c)

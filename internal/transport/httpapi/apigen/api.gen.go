@@ -783,6 +783,57 @@ func (e MissionEventEventType) Valid() bool {
 	}
 }
 
+// Defines values for MissionRunEventEventType.
+const (
+	MissionRunEventEventTypeAttemptRequested MissionRunEventEventType = "attempt_requested"
+	MissionRunEventEventTypeCompleted        MissionRunEventEventType = "completed"
+	MissionRunEventEventTypeFailed           MissionRunEventEventType = "failed"
+	MissionRunEventEventTypeFenceRejected    MissionRunEventEventType = "fence_rejected"
+	MissionRunEventEventTypeStarted          MissionRunEventEventType = "started"
+)
+
+// Valid indicates whether the value is a known member of the MissionRunEventEventType enum.
+func (e MissionRunEventEventType) Valid() bool {
+	switch e {
+	case MissionRunEventEventTypeAttemptRequested:
+		return true
+	case MissionRunEventEventTypeCompleted:
+		return true
+	case MissionRunEventEventTypeFailed:
+		return true
+	case MissionRunEventEventTypeFenceRejected:
+		return true
+	case MissionRunEventEventTypeStarted:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MissionRunViewState.
+const (
+	MissionRunViewStateCompleted MissionRunViewState = "completed"
+	MissionRunViewStateFailed    MissionRunViewState = "failed"
+	MissionRunViewStatePending   MissionRunViewState = "pending"
+	MissionRunViewStateRunning   MissionRunViewState = "running"
+)
+
+// Valid indicates whether the value is a known member of the MissionRunViewState enum.
+func (e MissionRunViewState) Valid() bool {
+	switch e {
+	case MissionRunViewStateCompleted:
+		return true
+	case MissionRunViewStateFailed:
+		return true
+	case MissionRunViewStatePending:
+		return true
+	case MissionRunViewStateRunning:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for MissionSummaryStatus.
 const (
 	MissionSummaryStatusCanceled MissionSummaryStatus = "canceled"
@@ -3000,6 +3051,66 @@ type MissionRevise struct {
 	SourceRefs      []string  `json:"source_refs"`
 }
 
+// MissionRunEvent run_events 流事件（migration v19；seq 升序即流序）。
+type MissionRunEvent struct {
+	EventType  MissionRunEventEventType `json:"event_type"`
+	OccurredAt time.Time                `json:"occurred_at"`
+
+	// Payload 事件体——attempt_requested: {attempt, lease_id, manifest_id}；started: {}；completed: {late}；failed: {error}；fence_rejected: {reason, detail}
+	Payload map[string]interface{} `json:"payload"`
+	RunId   string                 `json:"run_id"`
+	Seq     int64                  `json:"seq"`
+}
+
+// MissionRunEventEventType defines model for MissionRunEvent.EventType.
+type MissionRunEventEventType string
+
+// MissionRunView Run（一次执行尝试，ADR-0028）：state ∈ pending | running |
+// completed | failed（unknown/暂停随 0.6.7/0.6.6）。attempt 同
+// Mission 递增；每 Mission 至多一个未终态。result_block 为正文
+// 截断存档（≤8000 字——完整交付物随 0.6.8）；fence_rejected 的
+// 迟到结果不落（见 run_events 审计）。
+type MissionRunView struct {
+	AgentId   string `json:"agent_id"`
+	Attempt   int    `json:"attempt"`
+	BindingId string `json:"binding_id"`
+
+	// ErrorText 失败原因（截断 1000 字；成功为空）
+	ErrorText string `json:"error_text"`
+
+	// FenceToken 本次执行围栏令牌（迟到提交核对用）
+	FenceToken string `json:"fence_token"`
+
+	// FinishedAt 终态时刻（未终态为空串）
+	FinishedAt *string `json:"finished_at,omitempty"`
+
+	// Generation 领取代次（围栏四关之一）
+	Generation *int `json:"generation,omitempty"`
+
+	// LeaseId 本次执行的租约（释放/到期=围栏拒绝）
+	LeaseId string `json:"lease_id"`
+
+	// ManifestId 执行输入的存档清单（cmf_）
+	ManifestId  string    `json:"manifest_id"`
+	MissionId   string    `json:"mission_id"`
+	RequestedAt time.Time `json:"requested_at"`
+
+	// ResultBlock 结果正文截断存档（≤8000 字；未完成为空）
+	ResultBlock string `json:"result_block"`
+
+	// RunId run_ 前缀生成式
+	RunId     string `json:"run_id"`
+	RuntimeId string `json:"runtime_id"`
+
+	// StartedAt 实际开始（pending 为空串）
+	StartedAt *string             `json:"started_at,omitempty"`
+	State     MissionRunViewState `json:"state"`
+	UpdatedAt time.Time           `json:"updated_at"`
+}
+
+// MissionRunViewState defines model for MissionRunView.State.
+type MissionRunViewState string
+
 // MissionSummary Mission 契约摘要。
 type MissionSummary struct {
 	ContractVersion int                  `json:"contract_version"`
@@ -3489,6 +3600,28 @@ type RuntimeViewLogin string
 
 // RuntimeViewState 0.6.3 子集（busy/draining/stopped 随 0.6.4/0.6.5）
 type RuntimeViewState string
+
+// SchedulerStatus 调度器诊断面（ADR-0028 决策 2——全部事实在库，调度器自身无状态）。
+type SchedulerStatus struct {
+	// ActiveRuns 当前未终态 Run 数（恢复语义见 ADR）
+	ActiveRuns int `json:"active_runs"`
+
+	// Enabled 周期扫描开关（装配注入）
+	Enabled bool `json:"enabled"`
+
+	// LastError 最近一轮错误（无错误为空串）
+	LastError string `json:"last_error"`
+
+	// LastScanAt 最近一轮扫描时刻（未扫为空串）
+	LastScanAt string `json:"last_scan_at"`
+
+	// LaunchedRuns 启动以来拉起的 Run 数
+	LaunchedRuns        int64 `json:"launched_runs"`
+	ScanIntervalSeconds int   `json:"scan_interval_seconds"`
+
+	// Scans 启动以来扫描轮数
+	Scans int64 `json:"scans"`
+}
 
 // SearchHit 检索命中（对外视图：无 seq/tenant；position 供时间线跳转）。
 type SearchHit struct {
@@ -4553,6 +4686,12 @@ type ServerInterface interface {
 	// TransitionAgentLifecycle Agent 生命周期转移（0.5.1 / ADR-0018）
 	// (POST /v1/identity/agents/{agent_id}/lifecycle)
 	TransitionAgentLifecycle(w http.ResponseWriter, r *http.Request, agentId string)
+	// GetRun Run 详情
+	// (GET /v1/mission-runs/{run_id})
+	GetRun(w http.ResponseWriter, r *http.Request, runId string)
+	// GetMissionRunEvents Run 事件流（含围栏拒绝审计）
+	// (GET /v1/mission-runs/{run_id}/events)
+	GetMissionRunEvents(w http.ResponseWriter, r *http.Request, runId string)
 	// ListMissions Mission 契约列表（0.6.0 / ADR-0023）
 	// (GET /v1/missions)
 	ListMissions(w http.ResponseWriter, r *http.Request)
@@ -4577,6 +4716,12 @@ type ServerInterface interface {
 	// ReviseMission 修订契约（全量替换 + 版本追加；CAS）
 	// (POST /v1/missions/{mission_id}/revise)
 	ReviseMission(w http.ResponseWriter, r *http.Request, missionId string)
+	// ListMissionRuns Run 历史（attempt 序）
+	// (GET /v1/missions/{mission_id}/runs)
+	ListMissionRuns(w http.ResponseWriter, r *http.Request, missionId string)
+	// CreateMissionRun 手动调度一次执行（同步走调度路径：租约→清单→Run→执行）
+	// (POST /v1/missions/{mission_id}/runs)
+	CreateMissionRun(w http.ResponseWriter, r *http.Request, missionId string)
 	// ListMissionVersions 契约不可变版本列表（升序）
 	// (GET /v1/missions/{mission_id}/versions)
 	ListMissionVersions(w http.ResponseWriter, r *http.Request, missionId string)
@@ -4670,6 +4815,9 @@ type ServerInterface interface {
 	// PrepareRuntime 准备（绑环境 + 确保工作区 + 探测 → ready/unhealthy）
 	// (POST /v1/runtimes/{runtime_id}/prepare)
 	PrepareRuntime(w http.ResponseWriter, r *http.Request, runtimeId string)
+	// GetSchedulerStatus 调度器诊断面（扫描计数/在途/最近错误）
+	// (GET /v1/scheduler/status)
+	GetSchedulerStatus(w http.ResponseWriter, r *http.Request)
 	// ListSlotBindings 任职记录列表（0.5.4 / ADR-0021）
 	// (GET /v1/slots/bindings)
 	ListSlotBindings(w http.ResponseWriter, r *http.Request, params ListSlotBindingsParams)
@@ -5986,6 +6134,58 @@ func (siw *ServerInterfaceWrapper) TransitionAgentLifecycle(w http.ResponseWrite
 	handler.ServeHTTP(w, r)
 }
 
+// GetRun operation middleware
+func (siw *ServerInterfaceWrapper) GetRun(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "run_id" -------------
+	var runId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "run_id", r.PathValue("run_id"), &runId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "run_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetRun(w, r, runId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetMissionRunEvents operation middleware
+func (siw *ServerInterfaceWrapper) GetMissionRunEvents(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "run_id" -------------
+	var runId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "run_id", r.PathValue("run_id"), &runId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "run_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMissionRunEvents(w, r, runId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListMissions operation middleware
 func (siw *ServerInterfaceWrapper) ListMissions(w http.ResponseWriter, r *http.Request) {
 
@@ -6161,6 +6361,58 @@ func (siw *ServerInterfaceWrapper) ReviseMission(w http.ResponseWriter, r *http.
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ReviseMission(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMissionRuns operation middleware
+func (siw *ServerInterfaceWrapper) ListMissionRuns(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMissionRuns(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateMissionRun operation middleware
+func (siw *ServerInterfaceWrapper) CreateMissionRun(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateMissionRun(w, r, missionId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -6983,6 +7235,20 @@ func (siw *ServerInterfaceWrapper) PrepareRuntime(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// GetSchedulerStatus operation middleware
+func (siw *ServerInterfaceWrapper) GetSchedulerStatus(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSchedulerStatus(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListSlotBindings operation middleware
 func (siw *ServerInterfaceWrapper) ListSlotBindings(w http.ResponseWriter, r *http.Request) {
 
@@ -7735,6 +8001,11 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/runtime-leases/{lease_id}/renew", wrapper.RenewRuntimeLease)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/runtime-leases/{lease_id}/release", wrapper.ReleaseRuntimeLease)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/runtime-leases/{lease_id}/check-fence", wrapper.CheckRuntimeLeaseFence)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/runs", wrapper.ListMissionRuns)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/runs", wrapper.CreateMissionRun)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/mission-runs/{run_id}", wrapper.GetRun)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/mission-runs/{run_id}/events", wrapper.GetMissionRunEvents)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/scheduler/status", wrapper.GetSchedulerStatus)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/enable", wrapper.EnableHarnessExecutable)

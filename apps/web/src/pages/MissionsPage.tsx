@@ -12,6 +12,7 @@ import {
   type ContextManifestView,
   type IdentityAgent,
   type MissionEvent,
+  type MissionRunView,
   type MissionSummary,
   type MissionView,
   type SlotInstanceView,
@@ -575,7 +576,101 @@ function MissionDetail({
 
       {/* 审校 P7：取消后仍渲染（只读——canceled 时仅禁新装配，历史/层内容可查） */}
       <ExecContextCard missionID={missionID} ownerAgentID={detail.owner_agent_id} canceled={detail.status === "canceled"} />
+
+      {/* 0.6.5 执行区：手动调度 + Run 历史（ADR-0028） */}
+      <MissionRunCard missionID={missionID} status={detail.status} onChanged={() => load()} />
     </section>
+  );
+}
+
+/** 执行区（0.6.5 / ADR-0028）：手动调度一次执行 + Run 历史。 */
+function MissionRunCard({ missionID, status, onChanged }: { missionID: string; status: string; onChanged: () => void }) {
+  const [runs, setRuns] = useState<MissionRunView[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const seq = useRef(0);
+
+  const load = () => {
+    const cur = ++seq.current;
+    setErr(null);
+    void api
+      .listMissionRuns(missionID)
+      .then((r) => {
+        if (seq.current !== cur) return;
+        setRuns(r.runs);
+      })
+      .catch((e) => {
+        if (seq.current !== cur) return;
+        setErr(e instanceof Error ? e.message : String(e));
+      });
+  };
+  useEffect(load, [missionID]);
+
+  const execute = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.createMissionRun(missionID);
+      load();
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stateClass = (s: string) => (s === "completed" ? "text-ok" : s === "failed" ? "text-danger" : "text-warn");
+
+  return (
+    <details className="mt-1">
+      <summary className="cursor-pointer select-none text-faint">
+        执行{runs === null ? "" : `（${runs.length} 次尝试）`}
+      </summary>
+      <div className="mt-1 flex flex-col gap-2">
+        {err && <p className="text-danger">{err}</p>}
+        {status === "ready" && (
+          <div className="flex items-center gap-2 text-xs">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void execute()}
+              className="rounded-lg bg-accent px-3 py-1.5 text-accent-contrast disabled:opacity-40"
+            >
+              {busy ? "执行中…" : "执行一次"}
+            </button>
+            <span className="text-faint">领取租约 → 装配清单 → 提交执行 → 围栏核对 → 终态释放（周期调度也在后台运行）</span>
+          </div>
+        )}
+        {runs !== null && runs.length > 0 && (
+          <ul className="flex flex-col gap-0.5">
+            {runs.map((r) => (
+              <li key={r.run_id} className="flex flex-wrap items-center gap-2 text-xs text-faint">
+                <span className="rounded bg-surface-3 px-1.5 py-px text-[10px] text-dim">#{r.attempt}</span>
+                <span className={stateClass(r.state)}>{r.state}</span>
+                {r.result_block && <span className="truncate" title={r.result_block}>{r.result_block.slice(0, 80)}…</span>}
+                {r.error_text && <span className="text-danger truncate" title={r.error_text}>{r.error_text.slice(0, 60)}</span>}
+                <button
+                  type="button"
+                  onClick={() => setExpanded(expanded === r.run_id ? null : r.run_id)}
+                  className="ml-auto shrink-0 underline text-[10px]"
+                >
+                  {expanded === r.run_id ? "收起" : "详情"}
+                </button>
+                {expanded === r.run_id && (
+                  <div className="w-full font-mono text-[10px] text-dim">
+                    <p>run: {r.run_id} · 租约 {r.lease_id} · 清单 {r.manifest_id}</p>
+                    <p>围栏 gen {r.generation ?? "?"} · {r.fence_token.slice(0, 16)}… · {absoluteTime(r.requested_at)}</p>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {runs !== null && runs.length === 0 && <p className="text-faint">尚无执行——点「执行一次」调度（或等待周期扫描）。</p>}
+      </div>
+    </details>
   );
 }
 

@@ -47,6 +47,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
 	"github.com/sisibeloved/Mosaic/internal/room"
+	missionrun "github.com/sisibeloved/Mosaic/internal/run"
 	mosaicruntime "github.com/sisibeloved/Mosaic/internal/runtime"
 	"github.com/sisibeloved/Mosaic/internal/settings"
 	"github.com/sisibeloved/Mosaic/internal/slot"
@@ -342,6 +343,24 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	if _, err := runtimeSvc.EnsureDefaultEnvironment(ctx, "默认工作区", filepath.Join(opts.DataDir, "workspace")); err != nil {
 		logger.Warn("默认环境确保失败（读面前惰性重试）", "err", err)
 	}
+	// Mission 执行域（RFC-0018 §10.2 / ADR-0028，0.6.5）：三件底座
+	// （清单/运行时/租约）首次被完整消费——调度器周期扫描 ready Mission，
+	// 领取租约 → 装配存档清单 → 创建 Run → supervisor 执行 → 围栏核对 →
+	// 终态 + 释放（Mission 回 ready 可再执行）。
+	runSvc := missionrun.New(store,
+		runMissionsAdapter{missionSvc},
+		runBindingsAdapter{slots: slotSvc},
+		runRuntimesAdapter{runtimes: runtimeSvc},
+		runLeasesAdapter{runtimes: runtimeSvc},
+		runManifestsAdapter{execctx: execCtxSvc},
+		supervisorExecutor{supervisor: supervisor},
+		missionrun.WithNow(clock))
+	if n, err := runSvc.RecoverUnfinished(ctx); err != nil {
+		logger.Warn("Run 恢复失败", "err", err)
+	} else if n > 0 {
+		logger.Info("Run 恢复：未终态置 failed（结果未知，不自动重跑）", "count", n)
+	}
+	runSvc.Start(ctx)
 	scanDone := make(chan struct{})
 	go func() {
 		defer close(scanDone)
@@ -400,6 +419,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Dispatch:         dispatchSvc,
 		Execctx:          execCtxSvc,
 		Runtimes:         runtimeSvc,
+		MissionRuns:      runSvc,
 		Logger:           logger,
 		Dev:              opts.Dev,
 		Budget:           budgetLimits,
@@ -846,6 +866,139 @@ func (l roomTaskLookup) RoomTaskExists(ctx context.Context, roomID, taskID strin
 		}
 	}
 	return false, nil
+}
+
+// runMissionsAdapter missionrun.Missions 的 Mission 域适配（ADR-0028）。
+type runMissionsAdapter struct{ svc *mission.Service }
+
+func (a runMissionsAdapter) ListReady(ctx context.Context) ([]missionrun.MissionRef, error) {
+	list, err := a.svc.ListMissions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []missionrun.MissionRef
+	for _, m := range list {
+		if m.Status == mission.StatusReady {
+			out = append(out, missionrun.MissionRef{MissionID: m.MissionID, OwnerAgentID: m.OwnerAgentID})
+		}
+	}
+	return out, nil
+}
+
+func (a runMissionsAdapter) SetRunning(ctx context.Context, missionID string) error {
+	return a.svc.MarkRunning(ctx, missionID)
+}
+
+func (a runMissionsAdapter) SetReadyFromRunning(ctx context.Context, missionID, reason string) error {
+	return a.svc.MarkReadyFromRunning(ctx, missionID, reason)
+}
+
+// runBindingsAdapter missionrun.Bindings 的职责域适配：owner 的 active
+// Binding 解析（slot.Service 单源）。
+type runBindingsAdapter struct{ slots *slot.Service }
+
+func (a runBindingsAdapter) ActiveOf(ctx context.Context, agentID string) (missionrun.BindingFacts, bool, error) {
+	instances, err := a.slots.ListInstances(ctx)
+	if err != nil {
+		return missionrun.BindingFacts{}, false, err
+	}
+	for _, inst := range instances {
+		bindings, err := a.slots.ListBindings(ctx, inst.SlotInstanceID)
+		if err != nil {
+			continue
+		}
+		for _, b := range bindings {
+			if b.AgentID == agentID && b.Status == slot.BindingActive {
+				return missionrun.BindingFacts{
+					BindingID:  b.BindingID,
+					AgentID:    b.AgentID,
+					RuntimeID:  "", // 0.6.5：Runtime 候选由 Runtimes 端口解析（单 Agent 首个 ready）
+					SlotSpecID: inst.SlotSpecID,
+				}, true, nil
+			}
+		}
+	}
+	return missionrun.BindingFacts{}, false, nil
+}
+
+// runRuntimesAdapter missionrun.Runtimes 适配：ready 首个且无活跃租约。
+type runRuntimesAdapter struct{ runtimes *mosaicruntime.Service }
+
+func (a runRuntimesAdapter) FirstReady(ctx context.Context) (missionrun.RuntimeRef, bool, error) {
+	list, err := a.runtimes.ListRuntimes(ctx)
+	if err != nil {
+		return missionrun.RuntimeRef{}, false, err
+	}
+	leases, err := a.runtimes.ListLeases(ctx, mosaicruntime.LeaseStateActive, "")
+	if err != nil {
+		return missionrun.RuntimeRef{}, false, err
+	}
+	busy := map[string]bool{}
+	for _, l := range leases {
+		busy[l.RuntimeID] = true
+	}
+	for _, rt := range list {
+		if rt.State == mosaicruntime.StateReady && !busy[rt.RuntimeID] {
+			return missionrun.RuntimeRef{RuntimeID: rt.RuntimeID, EnvironmentID: rt.EnvironmentID}, true, nil
+		}
+	}
+	return missionrun.RuntimeRef{}, false, nil
+}
+
+// runLeasesAdapter missionrun.Leases 适配（ADR-0027 服务同源——域间经
+// 小端口转发，不直接依赖 runtime 包）。
+type runLeasesAdapter struct{ runtimes *mosaicruntime.Service }
+
+func (a runLeasesAdapter) Acquire(ctx context.Context, runtimeID, missionID string, ttl int, limits map[string]int) (missionrun.Lease, error) {
+	l, err := a.runtimes.Acquire(ctx, runtimeID, missionID, ttl, limits)
+	if err != nil {
+		return missionrun.Lease{}, err
+	}
+	return missionrun.Lease{LeaseID: l.LeaseID, FenceToken: l.FenceToken, Generation: l.Generation, EnvironmentID: l.EnvironmentID}, nil
+}
+
+func (a runLeasesAdapter) Release(ctx context.Context, leaseID string) error {
+	_, err := a.runtimes.Release(ctx, leaseID)
+	return err
+}
+
+func (a runLeasesAdapter) CheckFence(ctx context.Context, leaseID, token string) (bool, string, error) {
+	return a.runtimes.CheckFence(ctx, leaseID, token)
+}
+
+// runManifestsAdapter missionrun.Manifests 适配（ADR-0025 Build 同源）。
+type runManifestsAdapter struct{ execctx *execctx.Service }
+
+func (a runManifestsAdapter) Build(ctx context.Context, missionID, bindingID string) (missionrun.Manifest, error) {
+	res, err := a.execctx.Build(ctx, missionID, bindingID)
+	if err != nil {
+		return missionrun.Manifest{}, err
+	}
+	return missionrun.Manifest{ManifestID: res.Manifest.ManifestID, State: res.Manifest.State, ReasonCode: res.Manifest.ReasonCode}, nil
+}
+
+// supervisorExecutor missionrun.Executor 适配：agent.Supervisor 提交
+// （Kind=generate，存档清单引用入 Inline；工作目录由 Runtime 绑定环境
+// 决定——0.6.3 已绑定）。阻塞至 Result 终值。
+type supervisorExecutor struct{ supervisor *agent.Supervisor }
+
+func (e supervisorExecutor) Submit(ctx context.Context, in missionrun.ExecutionInput) (string, error) {
+	profile := agent.Profile{ProfileID: in.AgentID, Adapter: "echo", DisplayName: in.AgentID}
+	h, err := e.supervisor.Submit(ctx, profile, agent.Task{
+		TaskID: "mrun:" + in.RunID, Kind: agent.KindGenerate,
+		ParticipantID: in.AgentID, RoomID: "mission:" + in.MissionID,
+		Deadline: time.Now().Add(30 * time.Minute),
+		Context:  agent.Context{Inline: in.Inline},
+	})
+	if err != nil {
+		return "", err
+	}
+	res, err := h.Result()
+	if err != nil {
+		return "", err
+	}
+	body, _ := res.Data["body"].(string)
+	return body, nil
 }
 
 // missionStateLookup runtime.Missions 的 Mission 域适配（ADR-0027）。

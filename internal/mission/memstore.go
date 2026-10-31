@@ -4,21 +4,21 @@ package mission
 // CAS 串行化、创建序摘要、事件 append-only）。
 
 import (
-	"fmt"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"sync"
 )
 
 type MemStore struct {
-	mu        sync.Mutex
-	missions  []Mission            // 创建序投影
-	versions  map[string][]Mission // 升序版本行
-	events    map[string][]Event
-	sources   map[[2]string]string // (room_id, task_id) → mission_id（ADR-0024 唯一映射）
-	bySource  map[string][2]string // mission_id → (room_id, task_id)
-	seq       int64
+	mu       sync.Mutex
+	missions []Mission            // 创建序投影
+	versions map[string][]Mission // 升序版本行
+	events   map[string][]Event
+	sources  map[[2]string]string // (room_id, task_id) → mission_id（ADR-0024 唯一映射）
+	bySource map[string][2]string // mission_id → (room_id, task_id)
+	seq      int64
 }
 
 func NewMemStore() *MemStore {
@@ -156,6 +156,24 @@ func (m *MemStore) MissionEvents(_ context.Context, missionID string) ([]Event, 
 		return nil, false, nil
 	}
 	return append([]Event(nil), m.events[missionID]...), true, nil
+}
+
+// TransitionStatus 条件状态投影（幂等无操作；事件 Seq 由存储赋）。
+func (m *MemStore) TransitionStatus(_ context.Context, missionID, from, to string, event Event) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i, ok := m.indexOfLocked(missionID)
+	if !ok || m.missions[i].Status != from {
+		return nil
+	}
+	if m.missions[i].Status == StatusCanceled {
+		return nil
+	}
+	m.missions[i].Status = to
+	m.seq++
+	event.Seq = m.seq
+	m.events[missionID] = append(m.events[missionID], event)
+	return nil
 }
 
 func (m *MemStore) indexOfLocked(missionID string) (int, bool) {
