@@ -254,3 +254,42 @@ func TestDesktopOverlayNative(t *testing.T) {
 		t.Fatalf("桌面面模型覆盖同样经 env 重定向生效：%v", exec.calls[0].env)
 	}
 }
+
+// TestDesktopSessionDBEnv：桌面面同样注入会话库私有化键（桌面 PiP 隔离的主战场
+// 正是桌面渠道，macOS 实证 2026-10-06）；未配置则不含（默认共享库旧行为）。
+func TestDesktopSessionDBEnv(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "zcode-session", "db.sqlite")
+	root, bundle := newDesktopInstall(t, true)
+	exec := &fakeExecer{outputs: []string{
+		resultStream(t, `{"action":"silent"}`),
+		resultStream(t, `{"action":"silent"}`),
+	}}
+	adapter := newDesktopAdapter(t, exec, root, bundle)
+	adapter.cfg.SessionDB = db
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "zcode"})
+	defer sess.Close()
+	h, err := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindEvaluateIntent})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if _, err := h.Result(); err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if !hasEnv(exec.calls[0].env, "ZCODE_SESSION_DB_PATH="+db) {
+		t.Fatalf("桌面面配置 SessionDB 后 env 应携 ZCODE_SESSION_DB_PATH：%v", exec.calls[0].env)
+	}
+
+	plain := newDesktopAdapter(t, exec, root, bundle)
+	sess2, _ := plain.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "zcode"})
+	defer sess2.Close()
+	h2, err := sess2.Run(context.Background(), agent.Task{TaskID: "t2", Kind: agent.KindEvaluateIntent})
+	if err != nil {
+		t.Fatalf("run2: %v", err)
+	}
+	if _, err := h2.Result(); err != nil {
+		t.Fatalf("result2: %v", err)
+	}
+	if hasEnv(exec.calls[1].env, "ZCODE_SESSION_DB_PATH=") {
+		t.Fatalf("未配置 SessionDB 不得注入该键（默认共享库旧行为）：%v", exec.calls[1].env)
+	}
+}

@@ -516,6 +516,10 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		// zcode 桌面渠道托管缓存根（bundle+provider 副本，见 zcode 适配器
 		// ensureDesktopCache）：与工作根同级——同在 mosaic 缓存位之下，随其清理。
 		zcodeCacheRoot := filepath.Join(filepath.Dir(workRoot), "zcode-desktop")
+		// zcode 会话库私有化（桌面 PiP 隔离，macOS 实证 2026-10-06）：默认共享库
+		// 被桌面版镜像进程盯上激活 CUA PiP 悬浮球——Mosaic 会话改落 Mosaic 托管
+		// 私有库（ZCODE_SESSION_DB_PATH），与缓存根同级；CLI 自建父目录无需 MkdirAll。
+		zcodeSessionDB := filepath.Join(filepath.Dir(workRoot), "zcode-session", "db.sqlite")
 		wslHomeCache := map[string]string{}
 		// resolveWorkDir 解析座位工作目录（fail closed）。WSL 面返回发行版内
 		// Linux 路径与 HOME（四轮复审 #4：HOME 非空且绝对路径才可用，无效跳过不缓存）。
@@ -650,13 +654,15 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 					// 副本（无感适配 2026-09-23，见 zcode 适配器包注释）。
 					cfg := zcode.Config{ZcodePath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir,
 						EvalModel: exe.EvalModel, Model: exe.Model,
-						Bundle: exe.Bundle, CacheRoot: zcodeCacheRoot}
+						Bundle: exe.Bundle, CacheRoot: zcodeCacheRoot, SessionDB: zcodeSessionDB}
 					if wslHome != "" {
 						cfg.WSLDistro = exe.Distro
 						cfg.WSLHome = wslHome
+						// WSL 面私有会话库在发行版内（原生面路径是宿主形态，不适用）。
+						cfg.SessionDB = path.Join(strings.TrimSuffix(wslHome, "/"), ".mosaic", "zcode-session", "db.sqlite")
 					}
 					if err := registerAdapter(profileID,
-						strings.Join([]string{exe.Path, exe.Bundle, dir, exe.Distro, wslHome, exe.Model, exe.EvalModel}, "\x1f"),
+						strings.Join([]string{exe.Path, exe.Bundle, dir, exe.Distro, wslHome, exe.Model, exe.EvalModel, cfg.SessionDB}, "\x1f"),
 						func() error { return supervisor.RegisterFor(profileID, zcode.New(cfg)) }); err != nil {
 						logger.Warn("zcode adapter register failed", "profile", profileID, "err", err)
 						continue

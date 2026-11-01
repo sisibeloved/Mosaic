@@ -231,6 +231,38 @@ func TestResumeAndCwdArgv(t *testing.T) {
 	}
 }
 
+// TestSessionDBEnvCLI：会话库私有化注入（桌面 PiP 隔离，macOS 实证 2026-10-06）——
+// 配置 SessionDB 时 CLI 面 env 携 ZCODE_SESSION_DB_PATH=<path>；不配置则不含
+// （默认共享库旧行为不变）。
+func TestSessionDBEnvCLI(t *testing.T) {
+	db := "/Users/u/Library/Caches/mosaic/zcode-session/db.sqlite"
+	exec := &fakeExecer{outputs: []string{
+		resultStream(t, `{"action":"silent"}`),
+		resultStream(t, `{"action":"silent"}`),
+	}}
+	withDB := New(Config{ZcodePath: "/home/u/.zcode/bin/zcode", Execer: exec, Timeout: 30 * time.Second, SessionDB: db})
+	sess, _ := withDB.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "zcode"})
+	defer sess.Close()
+	h, _ := sess.Run(context.Background(), agent.Task{TaskID: "t1", Kind: agent.KindEvaluateIntent})
+	if _, err := h.Result(); err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if !hasEnv(exec.calls[0].env, "ZCODE_SESSION_DB_PATH="+db) {
+		t.Fatalf("配置 SessionDB 后 env 应携 ZCODE_SESSION_DB_PATH：%v", exec.calls[0].env)
+	}
+
+	withoutDB := newTestAdapter(exec)
+	sess2, _ := withoutDB.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "zcode"})
+	defer sess2.Close()
+	h2, _ := sess2.Run(context.Background(), agent.Task{TaskID: "t2", Kind: agent.KindEvaluateIntent})
+	if _, err := h2.Result(); err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if hasEnv(exec.calls[1].env, "ZCODE_SESSION_DB_PATH=") {
+		t.Fatalf("未配置 SessionDB 不得注入该键（默认共享库旧行为）：%v", exec.calls[1].env)
+	}
+}
+
 // TestCancelStale：在途取消 → ErrStale（不发布正文）。
 func TestCancelStale(t *testing.T) {
 	exec := &fakeExecer{block: true}
