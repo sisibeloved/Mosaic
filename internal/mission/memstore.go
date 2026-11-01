@@ -66,6 +66,12 @@ func (m *MemStore) ReviseMission(_ context.Context, missionID string, expectedVe
 	if cur.ContractVersion != expectedVersion || cur.Status == StatusCanceled {
 		return Mission{}, false, nil
 	}
+	// 0.6.6 审校 P1：执行控制投影的事务内保持——next.Status 是服务层旧读
+	// 快照（读到 ready 后暂停/取消落地，控制命令不递增版本，CAS 版本面放行），
+	// 临界区内以现行状态为准（running/paused/canceling 不被陈旧 ready 盖回）。
+	if cur.Status == StatusRunning || cur.Status == StatusPaused || cur.Status == StatusCanceling {
+		next.Status = cur.Status
+	}
 	prevStatus := cur.Status
 	m.missions[idx] = next
 	m.versions[missionID] = append(m.versions[missionID], snapshot(next))
@@ -95,8 +101,10 @@ func (m *MemStore) PauseMission(_ context.Context, missionID string, expectedVer
 	return m.flipStatusLocked(idx, cur.Status, StatusPaused, reason, occurredAt), true, nil
 }
 
-// ResumeMission CAS 恢复（paused → ready）。
-func (m *MemStore) ResumeMission(_ context.Context, missionID string, expectedVersion int, occurredAt string) (Mission, bool, error) {
+// ResumeMission CAS 恢复（paused → target；target ∈ ready|draft 由服务层
+// 按当前契约完备性判定——0.6.6 审校 P2：暂停期间修订删验收后恢复不得直通
+// ready，否则缺验收契约直接入调度列）。
+func (m *MemStore) ResumeMission(_ context.Context, missionID string, expectedVersion int, target, occurredAt string) (Mission, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	idx, ok := m.indexOfLocked(missionID)
@@ -107,7 +115,7 @@ func (m *MemStore) ResumeMission(_ context.Context, missionID string, expectedVe
 	if cur.ContractVersion != expectedVersion || cur.Status != StatusPaused {
 		return Mission{}, false, nil
 	}
-	return m.flipStatusLocked(idx, cur.Status, StatusReady, "", occurredAt), true, nil
+	return m.flipStatusLocked(idx, cur.Status, target, "", occurredAt), true, nil
 }
 
 // MarkCanceling CAS 停止意图（非终态 → canceling）。
@@ -175,6 +183,25 @@ func (m *MemStore) ListMissions(_ context.Context) ([]Summary, error) {
 	defer m.mu.Unlock()
 	out := make([]Summary, 0, len(m.missions))
 	for _, ms := range m.missions {
+		out = append(out, Summary{
+			MissionID: ms.MissionID, ContractVersion: ms.ContractVersion, Status: ms.Status,
+			OwnerAgentID: ms.OwnerAgentID, Objective: ms.Objective,
+			CreatedAt: ms.CreatedAt, UpdatedAt: ms.UpdatedAt,
+		})
+	}
+	return out, nil
+}
+
+// ListMissionsByStatus 契约摘要（创建序，按状态过滤——恢复面枚举 canceling
+// 兑现收尾用，0.6.6 审校 P2）。
+func (m *MemStore) ListMissionsByStatus(_ context.Context, status string) ([]Summary, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []Summary{}
+	for _, ms := range m.missions {
+		if ms.Status != status {
+			continue
+		}
 		out = append(out, Summary{
 			MissionID: ms.MissionID, ContractVersion: ms.ContractVersion, Status: ms.Status,
 			OwnerAgentID: ms.OwnerAgentID, Objective: ms.Objective,

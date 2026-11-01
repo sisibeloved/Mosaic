@@ -57,6 +57,18 @@ func (p ctlMissions) FinishCanceling(ctx context.Context, id, reason string) err
 	return err
 }
 
+func (p ctlMissions) ListCanceling(ctx context.Context) ([]missionrun.MissionRef, error) {
+	list, err := p.svc.ListByStatus(ctx, mission.StatusCanceling)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]missionrun.MissionRef, 0, len(list))
+	for _, m := range list {
+		out = append(out, missionrun.MissionRef{MissionID: m.MissionID, OwnerAgentID: m.OwnerAgentID})
+	}
+	return out, nil
+}
+
 type ctlBindings struct{}
 
 func (ctlBindings) ActiveOf(_ context.Context, agentID string) (missionrun.BindingFacts, bool, error) {

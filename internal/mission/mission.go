@@ -179,8 +179,10 @@ type Store interface {
 	// 幂等由服务层先读实现——存储面只认 ready/running）。
 	PauseMission(ctx context.Context, missionID string, expectedVersion int, reason, occurredAt string) (Mission, bool, error)
 	// ResumeMission CAS 恢复：contract_version 匹配且 status = paused →
-	// ready + status_changed 事件，单事务；ok=false 同上。
-	ResumeMission(ctx context.Context, missionID string, expectedVersion int, occurredAt string) (Mission, bool, error)
+	// target（ready | draft——服务层按当前契约完备性判定，0.6.6 审校 P2：
+	// 暂停期间修订删验收后恢复不得直通 ready）+ status_changed 事件，单事务；
+	// ok=false 同上。
+	ResumeMission(ctx context.Context, missionID string, expectedVersion int, target, occurredAt string) (Mission, bool, error)
 	// MarkCanceling CAS 停止意图：contract_version 匹配且非终态 → canceling +
 	// status_changed（含 reason）事件，单事务；ok=false = 版本不匹配/终态/
 	// 未知（canceling 续驱幂等由服务层先读实现）。
@@ -192,6 +194,9 @@ type Store interface {
 	MissionByID(ctx context.Context, missionID string) (Mission, bool, error)
 	// List 契约摘要（创建序）。
 	ListMissions(ctx context.Context) ([]Summary, error)
+	// ListMissionsByStatus 契约摘要（创建序，按状态过滤——0.6.6 审校 P2：
+	// 重启恢复面枚举 canceling 兑现收尾用）。
+	ListMissionsByStatus(ctx context.Context, status string) ([]Summary, error)
 	// Versions 不可变版本行升序（每行含该版本完备性事实）；未知 ok=false。
 	MissionVersions(ctx context.Context, missionID string) ([]Mission, bool, error)
 	// Events 事件流（seq 升序）；未知 ok=false。
@@ -339,7 +344,10 @@ func (s *Service) Revise(ctx context.Context, missionID string, expectedVersion 
 	next.Status = statusOf(next)
 	// 0.6.6 / ADR-0029 决策 5：执行控制投影保持——running/paused/canceling
 	// 中修订不回写 draft/ready（在途 Run 不静默换输入；停止/完成后下一
-	// attempt 自然用新版本）。
+	// attempt 自然用新版本）。此处按旧读快照先行投影；权威保持在存储事务内
+	// （0.6.6 审校 P1：读到 ready 后暂停/取消落地不递增版本，CAS 版本面对该
+	// 交错放行——存储面以事务内现行状态覆盖本投影，防陈旧 ready 把
+	// paused/canceling 盖回调度列）。
 	switch cur.Status {
 	case StatusRunning, StatusPaused, StatusCanceling:
 		next.Status = cur.Status
@@ -398,9 +406,11 @@ func (s *Service) Pause(ctx context.Context, missionID string, expectedVersion i
 	return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
 }
 
-// Resume 恢复（= resume_mission）：paused → ready——此后调度器自动拾取
-// （不重启已停止的 Run：canceled 终态留档，新执行 attempt 递增）。幂等：
-// 已 ready（版本匹配）返回当前；其余状态拒绝。
+// Resume 恢复（= resume_mission）：paused → ready | draft——目标态按当前
+// 契约完备性重判（0.6.6 审校 P2：暂停期间修订删除验收条件后恢复不得直通
+// ready——缺验收契约直接入调度列；落 draft 待补齐，修订补齐完备即回 ready）。
+// 此后调度器自动拾取（不重启已停止的 Run：canceled 终态留档，新执行 attempt
+// 递增）。幂等：已 ready（版本匹配）返回当前；其余状态拒绝。
 func (s *Service) Resume(ctx context.Context, missionID string, expectedVersion int) (Mission, error) {
 	cur, ok, err := s.store.MissionByID(ctx, missionID)
 	if err != nil {
@@ -416,7 +426,8 @@ func (s *Service) Resume(ctx context.Context, missionID string, expectedVersion 
 		}
 		return cur, nil // 幂等：重试安全
 	case StatusPaused:
-		out, ok2, err := s.store.ResumeMission(ctx, missionID, expectedVersion, s.now())
+		target := statusOf(cur) // 完备性重判：ready | draft
+		out, ok2, err := s.store.ResumeMission(ctx, missionID, expectedVersion, target, s.now())
 		if err != nil {
 			return Mission{}, err
 		}
@@ -524,6 +535,12 @@ func (s *Service) Get(ctx context.Context, missionID string) (Mission, bool, err
 // List 契约摘要（创建序）。
 func (s *Service) ListMissions(ctx context.Context) ([]Summary, error) {
 	return s.store.ListMissions(ctx)
+}
+
+// ListByStatus 契约摘要（创建序，按状态过滤——恢复面枚举 canceling 兑现
+// 收尾用，0.6.6 审校 P2）。
+func (s *Service) ListByStatus(ctx context.Context, status string) ([]Summary, error) {
+	return s.store.ListMissionsByStatus(ctx, status)
 }
 
 // Versions 不可变版本行升序；未知 ok=false。

@@ -192,20 +192,31 @@ export function SettingsPage() {
   const loginFeishu = useCallback(async () => {
     try {
       const info = await api.feishuAuthorizeURL();
-      // 浏览器形态：window.open 生效。桌面壳 WebView（WKWebView/WebView2）不开
-      // 新窗口、返回 null——兜底请壳调系统浏览器（POST /v1/shell/open-external，
-      // 仅壳装配存在；服务端形态 404 走提示分支）。
+      // 返回值语义（MDN window.open）：features 带 noreferrer 时成功也返回
+      // null——null 本身不构成"弹窗被拦"的证据（0.6.6 审校 P2：曾据此误判，
+      // Web 形态飞书授权被当成弹窗失败——提示错误且轮询中断，而授权页其实
+      // 已正常弹出、自动绑定本可完成）。null 的两义性按环境兜底拆解：
+      //   - 桌面壳 WebView（WKWebView/WebView2）不开新窗口、恒 null——请壳调
+      //     系统浏览器（POST /v1/shell/open-external，仅壳装配存在）；
+      //   - Web 形态端点 404 只说明无壳——弹窗可能已正常打开（无法从返回值
+      //     分辨成功/被拦），按已打开继续（轮询兜底；真被拦时用户看不到
+      //     授权页，按提示允许弹窗后重试）。
       const win = window.open(info.url, "_blank", "noreferrer");
+      let shellFallback = false;
       if (!win) {
         try {
           await api.shellOpenExternal(info.url);
+          shellFallback = true;
         } catch {
-          setFsMsg("弹窗被拦截且桌面壳兜底不可用——请允许本站弹窗后重试。");
-          return;
+          shellFallback = false;
         }
       }
       if (info.auto_captured) {
-        setFsMsg("已打开授权页——在浏览器完成授权后这里会自动绑定，无需复制 code。");
+        setFsMsg(
+          shellFallback
+            ? "已在系统浏览器打开授权页——完成授权后这里会自动绑定，无需复制 code。"
+            : "授权页应已在新窗口打开（若未见弹出，请允许本站弹窗后重试）——完成授权后这里会自动绑定，无需复制 code。",
+        );
         void pollFeishuBind();
       } else {
         setFsMsg(

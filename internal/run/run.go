@@ -138,6 +138,9 @@ type Missions interface {
 	StatusOf(ctx context.Context, missionID string) (status string, ok bool, err error)
 	// FinishCanceling canceling → canceled（重启时停止意图兑现收尾；幂等）。
 	FinishCanceling(ctx context.Context, missionID, reason string) error
+	// ListCanceling 枚举滞留 canceling 的 Mission（0.6.6 审校 P2：恢复面
+	// 收尾兜底——"Run 已终态、收尾未兑现"不经未终态 Run 扫描可见）。
+	ListCanceling(ctx context.Context) ([]MissionRef, error)
 }
 
 // MissionRef 调度候选摘要。
@@ -225,6 +228,13 @@ func WithNewRunID(f func() string) Option     { return func(s *Service) { s.newR
 func WithSchedulerDisabled() Option           { return func(s *Service) { s.enabled = false } }
 func WithScanInterval(d time.Duration) Option { return func(s *Service) { s.scanInterval = d } }
 
+// WithCleanupBudget 清理面窗口（测试注入——窗口自收尾时刻起算，见
+// cleanupContext；0.6.6 审校 P1）。
+func WithCleanupBudget(d time.Duration) Option { return func(s *Service) { s.cleanupBudget = d } }
+
+// WithStopGrace 停止后有界等待执行器退出窗口（测试注入；0.6.6 审校 P1）。
+func WithStopGrace(d time.Duration) Option { return func(s *Service) { s.stopGrace = d } }
+
 // Service 执行域服务。
 type Service struct {
 	store     Store
@@ -238,14 +248,16 @@ type Service struct {
 	newRunID  func() string
 	stops     *stopRegistry // 控制停止注册表（0.6.6 / ADR-0029）
 
-	scanInterval time.Duration
-	enabled      bool
-	scans        atomic.Int64
-	launched     atomic.Int64
-	lastScanAt   atomic.Value
-	lastError    atomic.Value
-	stopCh       chan struct{}
-	stopOnce     sync.Once
+	scanInterval   time.Duration
+	enabled        bool
+	scans          atomic.Int64
+	launched       atomic.Int64
+	lastScanAt     atomic.Value
+	lastError      atomic.Value
+	stopCh         chan struct{}
+	stopOnce       sync.Once
+	cleanupBudget  time.Duration // 清理面上下文窗口（收尾时刻起算——0.6.6 审校 P1）
+	stopGrace      time.Duration // 停止后等执行器退出的有界窗口（0.6.6 审校 P1）
 }
 
 // stopEntry 注册表项：每 Run 独立取消上下文的 cancel 与停止原因。
@@ -303,12 +315,14 @@ func New(store Store, missions Missions, bindings Bindings, runtimes Runtimes,
 	s := &Service{
 		store: store, missions: missions, bindings: bindings, runtimes: runtimes,
 		leases: leases, manifests: manifests, executor: executor,
-		now:          func() string { return time.Now().UTC().Format(time.RFC3339Nano) },
-		newRunID:     func() string { return "run_" + randomSuffix() },
-		stops:        newStopRegistry(),
-		scanInterval: 5 * time.Second,
-		enabled:      true,
-		stopCh:       make(chan struct{}),
+		now:           func() string { return time.Now().UTC().Format(time.RFC3339Nano) },
+		newRunID:      func() string { return "run_" + randomSuffix() },
+		stops:         newStopRegistry(),
+		scanInterval:  5 * time.Second,
+		enabled:       true,
+		stopCh:        make(chan struct{}),
+		cleanupBudget: 30 * time.Second,
+		stopGrace:     10 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -439,15 +453,33 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 		return Run{}, err
 	}
 
+	// 0.6.6 审校 P1：停止句柄先于 Mission 投影注册——CreateRun 落库后 Run 即
+	// 可被 SignalStopByMission 扫描可见；句柄若晚于 SetRunning 注册，其间落地
+	// 的暂停（CAS 已翻转 paused）扫描得到 Run 而注册表无句柄——信号丢失、
+	// 执行照启结果照落。注册先行后该窗口内暂停二选一：信号命中取消 runCtx，
+	// 或 SetRunning changed=false 拒启动。
+	// （0.6.6 / ADR-0029 决策 2：执行上下文脱离请求——Background 派生每 Run
+	// 取消上下文。请求断开不中止执行；停止只经控制面或进程退出恢复面。）
+	runCtx, runCancel := context.WithCancel(context.Background())
+	s.stops.register(r.RunID, runCancel)
+	defer func() {
+		s.stops.unregister(r.RunID)
+		runCancel()
+	}()
+
 	// #7：SetRunning 须实际修改（changed=false = Mission 已 canceled/非 ready
 	// ——执行不启动，Run 置 failed 携原因）
 	changed, err := s.missions.SetRunning(ctx, ref.MissionID)
 	if err != nil {
-		s.finalizeFailed(ctx, &r, "Mission 状态投影失败: "+err.Error(), lease.LeaseID)
+		s.finalizeWithCleanup(func(cc context.Context) {
+			s.finalizeFailed(cc, &r, "Mission 状态投影失败: "+err.Error(), lease.LeaseID)
+		})
 		return r, nil
 	}
 	if !changed {
-		s.finalizeFailed(ctx, &r, "Mission 已取消或不再 ready——执行不启动", lease.LeaseID)
+		s.finalizeWithCleanup(func(cc context.Context) {
+			s.finalizeFailed(cc, &r, "Mission 已取消或不再 ready——执行不启动", lease.LeaseID)
+		})
 		return r, nil
 	}
 
@@ -458,7 +490,9 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 	if err := s.store.UpdateRun(ctx, r, []Event{{
 		RunID: r.RunID, EventType: EventStarted, OccurredAt: now, Payload: map[string]any{},
 	}}); err != nil {
-		s.finalizeFailed(ctx, &r, "run.started 落库失败: "+err.Error(), lease.LeaseID)
+		s.finalizeWithCleanup(func(cc context.Context) {
+			s.finalizeFailed(cc, &r, "run.started 落库失败: "+err.Error(), lease.LeaseID)
+		})
 		return r, nil
 	}
 
@@ -468,27 +502,15 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 		if ferr != nil {
 			why = "检查错误: " + ferr.Error()
 		}
-		s.finalizeFenceRejected(ctx, &r, lease.LeaseID, why, "")
+		s.finalizeWithCleanup(func(cc context.Context) {
+			s.finalizeFenceRejected(cc, &r, lease.LeaseID, why, "")
+		})
 		return r, nil
 	}
-
-	// 0.6.6 / ADR-0029 决策 2：执行上下文脱离请求——服务内 Background 派生
-	// 的每 Run 取消上下文（注册入停止注册表）。请求断开不中止执行（执行是
-	// 持久事实）；停止只经控制面（SignalStopByMission）或进程退出（恢复面）。
-	runCtx, runCancel := context.WithCancel(context.Background())
-	s.stops.register(r.RunID, runCancel)
-	defer func() {
-		s.stops.unregister(r.RunID)
-		runCancel()
-	}()
 
 	// 提交执行（阻塞至完成；#1：Inline 携存档清单内容块——非仅 ID）。
 	// 被停止时放弃执行器 goroutine——其结果经缓冲通道丢弃（迟到结果不落，
 	// 围栏已随释放失效）。
-	type execResult struct {
-		block string
-		err   error
-	}
 	done := make(chan execResult, 1)
 	go func() {
 		block, err := s.executor.Submit(runCtx, ExecutionInput{
@@ -499,13 +521,12 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 		done <- execResult{block: block, err: err}
 	}()
 
-	// #5：清理面独立上下文——请求断开后终态/释放/投影不遗留 running + 活跃租约
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cleanupCancel()
-
 	select {
 	case res := <-done:
-		// #4：围栏核对 + 终态写入同事务（FinalizeRun——防释放后旧结果落库）
+		// #4：围栏核对 + 终态写入同事务（FinalizeRun——防释放后旧结果落库）。
+		// 清理面上下文自此刻起算（0.6.6 审校 P1——窗口不再覆盖执行时长）。
+		cleanupCtx, cleanupCancel := s.cleanupContext()
+		defer cleanupCancel()
 		if res.err != nil {
 			err := s.finalizeRun(cleanupCtx, &r, lease, StateFailed, truncateS(res.err.Error(), 1000), "", "")
 			if err != nil {
@@ -525,9 +546,34 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 		if cause == "" {
 			cause = "unknown"
 		}
-		s.finalizeStopped(cleanupCtx, &r, lease, cause)
+		cleanupCtx, cleanupCancel := s.cleanupContext()
+		defer cleanupCancel()
+		if err := s.finalizeStopped(cleanupCtx, &r, lease, cause, done); err != nil {
+			return r, fmt.Errorf("%w：%v", ErrTerminalWrite, err)
+		}
 		return r, nil
 	}
+}
+
+// execResult 执行器单次结果（缓冲通道传递——停止后迟到结果丢弃面）。
+type execResult struct {
+	block string
+	err   error
+}
+
+// cleanupContext #5 清理面独立上下文：窗口自收尾时刻起算（0.6.6 审校 P1：
+// 此前自执行开始起表——任务时长超过窗口预算（缺省 30s）即完成时已耗尽，
+// 围栏检查/终态写入/租约释放全部随过期上下文静默失败，Run 滞留 running、
+// 租约滞留 active）。
+func (s *Service) cleanupContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), s.cleanupBudget)
+}
+
+// finalizeWithCleanup 前置失败路径的清理面入口（窗口同自此刻起算）。
+func (s *Service) finalizeWithCleanup(f func(ctx context.Context)) {
+	ctx, cancel := s.cleanupContext()
+	defer cancel()
+	f(ctx)
 }
 
 // SignalStopByMission 控制停止信号（ADR-0029 决策 2/3）：对 Mission 全部
@@ -660,11 +706,15 @@ func (s *Service) finalizeFenceRejected(ctx context.Context, r *Run, leaseID, re
 // finalizeStopped 控制停止终理化（0.6.6 / ADR-0029 决策 2）：Run →
 // canceled——单次 UpdateRun 同事务写 stop_requested{cause} + canceled 两
 // 事件；围栏核对保留（租约在手——失效/检查错误则追加 fence_rejected 审计，
-// 状态仍 canceled——停止事实不因围栏检查故障而悬置）；租约释放。Mission
-// 投影不动：停止路径下 Mission 必为 paused/canceling（非 running）——
+// 状态仍 canceled——停止事实不因围栏检查故障而悬置）。租约释放后于执行器
+// 退出（0.6.6 审校 P1：停止信号只取消上下文，执行器可能仍在收尾写工作区
+// ——先行释放即允许新执行同时改同一工作区；有界等待）。Mission 投影不动：
+// 停止路径下 Mission 必为 paused/canceling（非 running）——
 // SetReadyFromRunning 条件转移幂等无操作（ADR-0028 条件更新语义保证；
-// 防御性保留调用以兜底非控制路径的取消）。使用独立清理上下文。
-func (s *Service) finalizeStopped(ctx context.Context, r *Run, lease Lease, cause string) {
+// 防御性保留调用以兜底非控制路径的取消）。使用独立清理上下文（自此刻
+// 起算）。终态写库失败上抛 ErrTerminalWrite（0.6.6 审校 P2：不得吞错——
+// Run 滞留 running + 租约滞留 active 的事实对齐，不释放，恢复面兜底）。
+func (s *Service) finalizeStopped(ctx context.Context, r *Run, lease Lease, cause string, executorDone <-chan execResult) error {
 	now := s.now()
 	valid, fenceReason, ferr := s.leases.CheckFence(ctx, lease.LeaseID, lease.FenceToken)
 
@@ -687,12 +737,17 @@ func (s *Service) finalizeStopped(ctx context.Context, r *Run, lease Lease, caus
 			Payload: map[string]any{"reason": reason, "phase": "stop"}})
 	}
 	if err := s.store.UpdateRun(ctx, *r, events); err != nil {
-		// 终态落库失败：不吞错路径下无调用方可回报面（清理上下文）——留
-		// 给启动恢复兜底（RecoverUnfinished 重扫未终态）。
-		return
+		return fmt.Errorf("停止终态写入失败：%w", err)
+	}
+	// 租约释放后于执行器退出：真实面 ctx 取消即杀进程组（毫秒级退出）；超窗
+	// 仍释放——租约滞留到 TTL（工作区死锁）比短残余窗口更糟。
+	select {
+	case <-executorDone:
+	case <-time.After(s.stopGrace):
 	}
 	_ = s.leases.Release(ctx, lease.LeaseID)
 	_ = s.missions.SetReadyFromRunning(ctx, r.MissionID, "run_canceled")
+	return nil
 }
 
 // RecoverUnfinished #6 + 0.6.6 / ADR-0029 决策 4：未终态 Run 按 Mission
@@ -740,6 +795,24 @@ func (s *Service) RecoverUnfinished(ctx context.Context) (int, error) {
 		}}); err == nil {
 			// #6：Mission 停在 running——不回 ready（禁止自动调度）
 			_ = s.leases.Release(ctx, r.LeaseID)
+			n++
+		}
+	}
+
+	// 0.6.6 审校 P2：滞留 canceling 兜底——收尾兑现不只跟随未终态 Run：
+	// "Run 已终态（停止写库成功）、进程在控制面 FinishCancel 前退出"的
+	// Mission 无未终态 Run，须经状态枚举发现（幂等——未终态路径上面的循环
+	// 已收过，此处只补无在途面）。
+	canceling, err := s.missions.ListCanceling(ctx)
+	if err != nil {
+		return n, fmt.Errorf("run: 恢复枚举 canceling 失败：%w", err)
+	}
+	for _, ref := range canceling {
+		has, herr := s.HasUnfinished(ctx, ref.MissionID)
+		if herr != nil || has {
+			continue // 枚举瞬变（上面的循环刚处置或并发新建）——下轮恢复再兜
+		}
+		if err := s.missions.FinishCanceling(ctx, ref.MissionID, "recovery_stop"); err == nil {
 			n++
 		}
 	}

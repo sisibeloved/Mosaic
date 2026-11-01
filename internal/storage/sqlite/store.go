@@ -2691,6 +2691,13 @@ func (s *Store) ReviseMission(ctx context.Context, missionID string, expectedVer
 		if version != expectedVersion || status == mission.StatusCanceled {
 			return nil // ok=false：败因由服务层重读分辨
 		}
+		// 0.6.6 审校 P1：执行控制投影的事务内保持——next.Status 是服务层旧读
+		// 快照（读到 ready 后暂停/取消落地，控制命令不递增版本，CAS 版本面
+		// 放行），事务内以现行状态为准（running/paused/canceling 不被陈旧
+		// ready 盖回调度列）。
+		if status == mission.StatusRunning || status == mission.StatusPaused || status == mission.StatusCanceling {
+			next.Status = status
+		}
 		if _, err := q.ExecContext(ctx, `
 UPDATE missions SET contract_version = ?, status = ?, owner_agent_id = ?, objective = ?, content = ?, updated_at = ?
  WHERE mission_id = ?`,
@@ -2778,9 +2785,10 @@ func (s *Store) PauseMission(ctx context.Context, missionID string, expectedVers
 		})
 }
 
-// ResumeMission CAS 恢复（paused → ready）。
-func (s *Store) ResumeMission(ctx context.Context, missionID string, expectedVersion int, occurredAt string) (mission.Mission, bool, error) {
-	return s.transitionMissionIf(ctx, missionID, expectedVersion, mission.StatusReady, "", occurredAt,
+// ResumeMission CAS 恢复（paused → target；target ∈ ready|draft 由服务层
+// 按当前契约完备性判定——0.6.6 审校 P2）。
+func (s *Store) ResumeMission(ctx context.Context, missionID string, expectedVersion int, target, occurredAt string) (mission.Mission, bool, error) {
+	return s.transitionMissionIf(ctx, missionID, expectedVersion, target, "", occurredAt,
 		func(version int, status string) bool {
 			return version == expectedVersion && status == mission.StatusPaused
 		})
@@ -2896,6 +2904,28 @@ SELECT mission_id, contract_version, status, owner_agent_id, objective, created_
   FROM missions ORDER BY rowid`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: mission list: %w", err)
+	}
+	defer rows.Close()
+	out := []mission.Summary{}
+	for rows.Next() {
+		var sum mission.Summary
+		if err := rows.Scan(&sum.MissionID, &sum.ContractVersion, &sum.Status,
+			&sum.OwnerAgentID, &sum.Objective, &sum.CreatedAt, &sum.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("sqlite: scan mission summary: %w", err)
+		}
+		out = append(out, sum)
+	}
+	return out, rows.Err()
+}
+
+// ListMissionsByStatus 契约摘要（创建序，按状态过滤——0.6.6 审校 P2：
+// 重启恢复面枚举 canceling 兑现收尾用）。
+func (s *Store) ListMissionsByStatus(ctx context.Context, status string) ([]mission.Summary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT mission_id, contract_version, status, owner_agent_id, objective, created_at, updated_at
+  FROM missions WHERE status = ? ORDER BY rowid`, status)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: mission list by status: %w", err)
 	}
 	defer rows.Close()
 	out := []mission.Summary{}

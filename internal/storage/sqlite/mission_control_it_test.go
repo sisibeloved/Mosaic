@@ -37,11 +37,11 @@ func TestMissionControlStoreIT(t *testing.T) {
 	if _, ok, _ := store.PauseMission(ctx, m.MissionID, 1, "", "t2"); ok {
 		t.Fatal("存储面 paused 不可再暂停（服务层幂等先读）")
 	}
-	// Resume：非 paused ok=false；paused → ready
-	if _, ok, _ := store.ResumeMission(ctx, m.MissionID, 9, "t3"); ok {
+	// Resume：非 paused ok=false；paused → ready（target 由服务层完备性重判）
+	if _, ok, _ := store.ResumeMission(ctx, m.MissionID, 9, mission.StatusReady, "t3"); ok {
 		t.Fatal("版本不匹配恢复应 ok=false")
 	}
-	resumed, ok, err := store.ResumeMission(ctx, m.MissionID, 1, "t3")
+	resumed, ok, err := store.ResumeMission(ctx, m.MissionID, 1, mission.StatusReady, "t3")
 	if err != nil || !ok || resumed.Status != mission.StatusReady {
 		t.Fatalf("恢复: ok=%v err=%v status=%s", ok, err, resumed.Status)
 	}
@@ -68,13 +68,20 @@ func TestMissionControlStoreIT(t *testing.T) {
 	if err != nil || !ok || cing.Status != mission.StatusCanceling {
 		t.Fatalf("停止意图: ok=%v err=%v status=%s", ok, err, cing.Status)
 	}
-	// canceling 上修订 CAS 仍可用（投影保持由服务层保证——存储面版本行照落）
+	// canceling 上修订 CAS 仍可用（0.6.6 审校 P1：投影保持在存储事务内——
+	// 陈旧 ready 投影不覆盖现行控制状态，版本行照落）
 	next := m
 	next.ContractVersion = 2
-	next.Status = mission.StatusCanceling
+	next.Status = mission.StatusReady // 陈旧投影（读到 ready 后停止意图落地的交错）
 	next.UpdatedAt = "t5b"
 	if _, ok, _ := store.ReviseMission(ctx, m.MissionID, 1, next); !ok {
-		t.Fatal("canceling 修订应可用（服务层保持投影）")
+		t.Fatal("canceling 修订应可用")
+	}
+	if got, _, _ := store.MissionByID(ctx, m.MissionID); got.Status != mission.StatusCanceling {
+		t.Fatalf("陈旧修订投影不得覆盖 canceling（得到 %s）", got.Status)
+	}
+	if got, _, _ := store.MissionByID(ctx, m.MissionID); got.ContractVersion != 2 {
+		t.Fatalf("修订版本须递增: %+v", got)
 	}
 	done, ok, err := store.FinishCancel(ctx, m.MissionID, "计划变更", "t6")
 	if err != nil || !ok || done.Status != mission.StatusCanceled {
@@ -115,6 +122,20 @@ func TestMissionControlStoreIT(t *testing.T) {
 	}
 	if _, ok, _ := store.FinishCancel(ctx, d.MissionID, "", "t10"); !ok {
 		t.Fatal("draft 可收尾")
+	}
+
+	// 按状态过滤枚举（0.6.6 审校 P2：恢复面枚举 canceling 兑现收尾）
+	some := missionRow(mission.StatusCanceling, "ag_it")
+	some.MissionID = "mi_it_cing"
+	if _, err := store.CreateMission(ctx, some, nil); err != nil {
+		t.Fatalf("建 canceling: %v", err)
+	}
+	got, err := store.ListMissionsByStatus(ctx, mission.StatusCanceling)
+	if err != nil || len(got) != 1 || got[0].MissionID != "mi_it_cing" {
+		t.Fatalf("按状态枚举: %v err=%v", got, err)
+	}
+	if got, _ := store.ListMissionsByStatus(ctx, mission.StatusPaused); len(got) != 0 {
+		t.Fatalf("无 paused 行: %v", got)
 	}
 }
 

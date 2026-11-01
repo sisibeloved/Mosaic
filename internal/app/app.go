@@ -921,6 +921,20 @@ func (a runMissionsAdapter) FinishCanceling(ctx context.Context, missionID, reas
 	return err
 }
 
+// ListCanceling 枚举滞留 canceling 的 Mission（0.6.6 审校 P2：恢复面收尾
+// 兜底——"Run 已终态、控制面收尾未兑现"不经未终态 Run 扫描可见）。
+func (a runMissionsAdapter) ListCanceling(ctx context.Context) ([]missionrun.MissionRef, error) {
+	list, err := a.svc.ListByStatus(ctx, mission.StatusCanceling)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]missionrun.MissionRef, 0, len(list))
+	for _, m := range list {
+		out = append(out, missionrun.MissionRef{MissionID: m.MissionID, OwnerAgentID: m.OwnerAgentID})
+	}
+	return out, nil
+}
+
 // runBindingsAdapter missionrun.Bindings 的职责域适配：owner 的 active
 // Binding 解析（slot.Service 单源）。
 type runBindingsAdapter struct{ slots *slot.Service }

@@ -50,6 +50,17 @@ func (p epRunMissions) FinishCanceling(ctx context.Context, id, reason string) e
 	_, err := p.svc.FinishCancel(ctx, id, reason)
 	return err
 }
+func (p epRunMissions) ListCanceling(ctx context.Context) ([]missionrun.MissionRef, error) {
+	list, err := p.svc.ListByStatus(ctx, mission.StatusCanceling)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]missionrun.MissionRef, 0, len(list))
+	for _, m := range list {
+		out = append(out, missionrun.MissionRef{MissionID: m.MissionID, OwnerAgentID: m.OwnerAgentID})
+	}
+	return out, nil
+}
 
 type epRunBindings struct{ agentID string }
 

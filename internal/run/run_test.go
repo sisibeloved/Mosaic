@@ -54,9 +54,27 @@ func (f *fakeMissions) StatusOf(_ context.Context, id string) (string, bool, err
 	return st, ok, nil
 }
 
+// ListCanceling 枚举 canceling（0.6.6 审校 P2：恢复面收尾兜底——Run 已终态
+// 的滞留 canceling 不经未终态扫描可见）。
+func (f *fakeMissions) ListCanceling(_ context.Context) ([]MissionRef, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []MissionRef{}
+	for id, st := range f.status {
+		if st == "canceling" {
+			out = append(out, MissionRef{MissionID: id})
+		}
+	}
+	return out, nil
+}
+
+// FinishCanceling 收尾（对齐存储/服务语义：仅 canceling 可收尾，幂等不计数）。
 func (f *fakeMissions) FinishCanceling(_ context.Context, id, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.status[id] != "canceling" {
+		return nil
+	}
 	f.finishCancelCalls++
 	f.status[id] = "canceled"
 	return nil
@@ -76,11 +94,12 @@ func (f *fakeRuntimes) FirstReady(context.Context) (RuntimeRef, bool, error) {
 }
 
 type fakeLeases struct {
-	mu       sync.Mutex
-	acquired int
-	released int
-	fenceOK  bool
-	conflict bool
+	mu         sync.Mutex
+	acquired   int
+	released   int
+	fenceOK    bool
+	conflict   bool
+	releaseLog *eventLog // 可选：释放序审计（0.6.6 审校 P1 停止序断言）
 }
 
 func (f *fakeLeases) Acquire(_ context.Context, _, _ string, _ int, _ map[string]int) (Lease, error) {
@@ -92,8 +111,25 @@ func (f *fakeLeases) Acquire(_ context.Context, _, _ string, _ int, _ map[string
 	f.acquired++
 	return Lease{LeaseID: "lse_t", FenceToken: "fnc_t", Generation: f.acquired, EnvironmentID: "env_t"}, nil
 }
-func (f *fakeLeases) Release(_ context.Context, _ string) error { f.released++; return nil }
-func (f *fakeLeases) CheckFence(_ context.Context, _, _ string) (bool, string, error) {
+
+// Release / CheckFence 对过期上下文报错（对齐真实存储：过期 ctx 的 DB 操作
+// 失败——0.6.6 审校 P1 收尾窗口测试的失真防线）。
+func (f *fakeLeases) Release(ctx context.Context, _ string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	f.released++
+	f.mu.Unlock()
+	if f.releaseLog != nil {
+		f.releaseLog.add("release")
+	}
+	return nil
+}
+func (f *fakeLeases) CheckFence(ctx context.Context, _, _ string) (bool, string, error) {
+	if err := ctx.Err(); err != nil {
+		return false, "", err
+	}
 	if f.fenceOK {
 		return true, "", nil
 	}
