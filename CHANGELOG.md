@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-11-01
+
 ### Fixed
 
 - 修复 0.6.6 审校发现（独立审校报告"4 项 P1、4 项 P2，暂不建议发布"，审校范围 `v0.6.5..5ed2b24`）：**(1) P1 收尾窗口起表过早**——清理上下文（30s）在执行开始时创建，任务时长超过窗口（31 秒实证）即完成时已耗尽：围栏检查报 context deadline exceeded（保守拒绝）、终态写入/租约释放全部随过期上下文静默失败——Run 滞留 running、租约滞留 active 至 TTL。窗口改自收尾时刻起算（`WithCleanupBudget` 可注入，前置失败路径统一走清理面）。**(2) P1 停止句柄注册过晚**——句柄在 SetRunning/围栏复核之后注册，其间落地的暂停（CAS 已翻转 paused）SignalStopByMission 扫描可见 Run 而注册表无句柄：信号丢失、执行照启、结果照落（暂停语义失守）。注册改先行于 Mission 投影（CreateRun 落库即注册），窗口内暂停要么信号命中取消执行上下文、要么 SetRunning changed=false 拒启动。**(3) P1 并发修订覆盖暂停/取消**——Revise 服务层先读后写，读到 ready 后暂停/取消落地（控制命令不递增 contract_version，CAS 版本面对该交错放行），next.Status=ready 把 paused/canceling 盖回 ready——Mission 重新入调度列、停止意图丢失。执行控制投影的保持改由存储事务内以现行状态为准（SQLite/MemStore 同口径，服务层投影降为先行非权威）。**(4) P1 停止路径租约早释放**——终态写入后立即释放租约，执行器 goroutine 可能仍在收尾写工作区，新执行随即领取同一工作区（独占失守）。释放改后于执行器退出（有界等待缺省 10s，`WithStopGrace` 可注入；超窗仍释放——租约滞留到 TTL 比短残余窗口更糟）。**(5) P2 停止终态写库失败被吞**——finalizeStopped 对 UpdateRun 失败静默返回，调用方拿"成功"而 Run 卡 running。改上抛 `ErrTerminalWrite`（Run 滞留 running + 租约滞留 active 事实对齐不释放，恢复面兜底收尾）。**(6) P2 暂停期间删除验收后恢复直通 ready**——Resume 无条件 paused → ready，缺验收契约直接入调度列。恢复改按当前契约完备性重判目标态（ready | draft；`ResumeMission` 存储签名携 target，draft 待补齐、修订补齐完备即回 ready）。**(7) P2 重启漏"Run 已终态、Mission 滞 canceling"收尾**——恢复面只随未终态 Run 走，"停止写库成功、进程在控制面 FinishCancel 前退出"的 Mission 无未终态 Run 从此无人兑现。恢复面补状态枚举兜底（`ListCanceling` 端口 + `ListMissionsByStatus` 存储，无未终态即 FinishCanceling 幂等收尾；paused 合法长驻不动）。**(8) P2 Web 飞书授权误判弹窗失败**——`window.open(url, "_blank", "noreferrer")` 按 MDN 返回值语义成功也返回 null，Web 形态授权页已正常弹出却被判"弹窗被拦截"：错误提示且轮询中断（自动绑定本可完成）。null 不再构成失败证据：桌面壳走系统浏览器兜底照旧，Web 形态按已打开继续（轮询兜底，提示兼顾未见弹出的允许弹窗重试路径）。前七项定向复现测试先行（先红后绿）；第八项经返回值语义确认。
