@@ -198,7 +198,8 @@ func (s *session) execOnce(taskCtx context.Context, task agent.Task, prompt stri
 // 任务执行：评估提示词下直接交付报告正文（CLI 转录思考链明确"不要 JSON 包装"），
 // 无 JSON 可提取，座位整轮弃权。矫正追记附在原提示词之后（同会话：模型可见自己
 // 的跑偏输出），恢复该座位；仍失败则保留末次错误并附输出首行，排障不再依赖
-// CLI 侧转录。codex/kimi 同类输出形状失败未观测，不加重试（成本/时延纪律）。
+// CLI 侧转录。kimi 同类输出形状失败已于 2.1.1 观测（2026-10-02 实证：k3-256k
+// 输出内嵌未转义直引号），已补同构重试；codex 仍未观测，维持不重试（成本/时延纪律）。
 func (s *session) retryStrictTask(taskCtx context.Context, task agent.Task, prompt string, firstErr error, first Parsed) (agent.Result, error) {
 	second, err := s.execOnce(taskCtx, task, prompt+correctiveNote(task.Kind))
 	if err != nil {

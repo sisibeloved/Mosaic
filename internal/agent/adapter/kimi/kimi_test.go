@@ -452,3 +452,115 @@ func TestMemoryReviewAndHistoryQuery(t *testing.T) {
 		t.Fatalf("history_request 块不符: %+v", res2)
 	}
 }
+
+// kimiStream 构造一条 kimi -p stream-json 输出（meta 版本行 + assistant 内容 +
+// resume_hint）。2.1.1 实证：行 schema 与 0.39.1 同构（新增 tool/tool_calls 角色行
+// 被 ParseStream 跳过，不影响本结构）。
+func kimiStream(t *testing.T, version, assistantText, sessionID string) string {
+	t.Helper()
+	out := `{"role":"meta","type":"system.version","version":` + mustJSON(t, version) + `}` + "\n" +
+		`{"role":"assistant","content":` + mustJSON(t, assistantText) + `}` + "\n"
+	if sessionID != "" {
+		out += `{"role":"meta","type":"session.resume_hint","session_id":` + mustJSON(t, sessionID) + `}` + "\n"
+	}
+	return out
+}
+
+// TestEvalCorrectiveRetry（kimi 2.x 实证 2026-10-02：k3-256k 在严格 JSON 契约任务
+// 输出内嵌未转义直引号——意图评估座位整轮弃权；minimax v1.69 先例同构）：首跳
+// 散文 → 同会话矫正重试恢复座位；重试提示词 = 原提示词 + CORRECTION 追记，
+// argv 以 -S 首跳 session_id 续接（模型可见自己的跑偏输出）。
+func TestEvalCorrectiveRetry(t *testing.T) {
+	prose := "Let me analyze this discussion first. The participants are debating the rollout plan and I think..."
+	intentJSON := `{"action":"speak","type":"extend","public_rationale":"有实质补充","scores":{"relevance":0.8,"novelty":0.6,"urgency":0.4,"confidence":0.7}}`
+	exec := &fakeExecer{outputs: []string{
+		kimiStream(t, "2.1.1", prose, "sess_retry"),
+		kimiStream(t, "2.1.1", intentJSON, "sess_retry"),
+	}}
+	sess, _ := newTestAdapter(exec).Boot(context.Background(), agent.Profile{ProfileID: "p-retry", Adapter: "kimi"})
+	defer sess.Close()
+	h, err := sess.Run(context.Background(), agent.Task{TaskID: "t-retry", Kind: agent.KindEvaluateIntent})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	res, err := h.Result()
+	if err != nil {
+		t.Fatalf("矫正重试应恢复座位：%v", err)
+	}
+	if res.Block != agent.BlockTurnIntent {
+		t.Fatalf("block = %q", res.Block)
+	}
+	if err := agent.ValidateBlock(res.Block, res.Data); err != nil {
+		t.Fatalf("端口级结构校验: %v", err)
+	}
+	if len(exec.calls) != 2 {
+		t.Fatalf("应恰好 2 次调用：%d", len(exec.calls))
+	}
+	if !strings.Contains(exec.calls[1].stdin, "CORRECTION") {
+		t.Fatalf("重试提示词应含矫正追记：%q", exec.calls[1].stdin)
+	}
+	if !strings.Contains(strings.Join(exec.calls[1].argv, "\x00"), "-S\x00sess_retry") {
+		t.Fatalf("重试应同会话续接（-S sess_retry）：%v", exec.calls[1].argv)
+	}
+	if res.Usage != nil {
+		t.Fatalf("kimi 无 usage 面，重试不得虚构合计：%+v", res.Usage)
+	}
+}
+
+// TestEvalRetryExhausted：两跳皆散文 → 保留末次错误并附输出首行（排障不再依赖
+// CLI 侧转录）；重试仅一次，不得无限循环。
+func TestEvalRetryExhausted(t *testing.T) {
+	exec := &fakeExecer{outputs: []string{
+		kimiStream(t, "2.1.1", "first prose answer without any JSON", "sess_x"),
+		kimiStream(t, "2.1.1", "second prose answer still no JSON", "sess_x"),
+	}}
+	sess, _ := newTestAdapter(exec).Boot(context.Background(), agent.Profile{ProfileID: "p-exh", Adapter: "kimi"})
+	defer sess.Close()
+	h, err := sess.Run(context.Background(), agent.Task{TaskID: "t-exh", Kind: agent.KindEvaluateIntent})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	_, err = h.Result()
+	if err == nil || !strings.Contains(err.Error(), "重试后仍不可解析") {
+		t.Fatalf("两跳皆失败应报重试耗尽：%v", err)
+	}
+	if !strings.Contains(err.Error(), "second prose answer") {
+		t.Fatalf("错误应附末次输出首行：%v", err)
+	}
+	if len(exec.calls) != 2 {
+		t.Fatalf("应恰好 2 次调用（重试仅一次）：%d", len(exec.calls))
+	}
+}
+
+// TestGenerateNoCorrectiveRetry：generate 非严格 JSON 契约任务（裸引号由
+// NormalizeGenerateJSON 宽松修复、纯散文有回退），映射层失败不做矫正重试
+// （成本/时延纪律与 minimax/zcode 同口径）。用决策 JSON 误入生成位（映射层
+// 必失败）钉住调用次数。
+func TestGenerateNoCorrectiveRetry(t *testing.T) {
+	exec := &fakeExecer{outputs: []string{
+		kimiStream(t, "2.1.1", `{"action":"silent","public_rationale":"跑偏"}`, "sess_g"),
+	}}
+	sess, _ := newTestAdapter(exec).Boot(context.Background(), agent.Profile{ProfileID: "p-noretry", Adapter: "kimi"})
+	defer sess.Close()
+	h, _ := sess.Run(context.Background(), agent.Task{TaskID: "t-g", Kind: agent.KindGenerate,
+		Grant: &agent.Grant{GrantID: "g", Rank: 1, Epoch: 1}})
+	if _, err := h.Result(); err == nil {
+		t.Fatal("决策 JSON 误入生成位应拒绝发布")
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("generate 不得矫正重试：%d 次调用", len(exec.calls))
+	}
+}
+
+// TestEnvDisablesAutoUpdate（2.x 实证 rollout.log：Mosaic 的任务进程参与用户 CLI
+// 升级 rollout 判定）：后台实例 env 恒置 NO_AUTO_UPDATE——桌面壳后台纪律，
+// agent 进程不触碰用户 CLI 升级通道。
+func TestEnvDisablesAutoUpdate(t *testing.T) {
+	env := kimiEnvWithHome("/x/bin/kimi", "/home/u")
+	joined := strings.Join(env, "\n")
+	for _, key := range []string{"KIMI_CODE_NO_AUTO_UPDATE=1", "KIMI_CLI_NO_AUTO_UPDATE=1"} {
+		if !strings.Contains(joined, key) {
+			t.Fatalf("env 缺 %s：%v", key, env)
+		}
+	}
+}

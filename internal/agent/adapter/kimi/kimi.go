@@ -14,6 +14,14 @@
 // --prompt with --yolo/--auto."）——无头 -p 形态自带审批语义（工具直接执行，
 // 狗粮已证 web 抓取可用），无权限旗标可叠加，维持现状（-p 是唯一无头通道，
 // 见上——无替代形态可换轨）。
+// 2.x 适配（实证 2026-10-02，本机 0.39.1→2.1.1 升级后）：默认模型切到
+// k3-256k，严格 JSON 契约任务的输出形状漂移首次在 kimi 上观测（意图评估的
+// public_rationale 内嵌未转义直引号——ExtractJSON 报 invalid character '婚'，
+// 座位整轮弃权）——补上与 minimax v1.69/zcode 同构的一次矫正重试（v1.69 裁定
+// "codex/kimi 未观测不加重试"至此对 kimi 失效；codex 仍未观测、维持不重试）。
+// 另：2.x 每次启动查更新（rollout.log 实证 Mosaic 的任务进程参与了用户 CLI 的
+// 升级 rollout 判定）——env 置 KIMI_CODE_NO_AUTO_UPDATE/KIMI_CLI_NO_AUTO_UPDATE，
+// 后台实例不触碰用户 CLI 的升级通道（桌面壳后台纪律：agent 进程零 UI 副作用）。
 package kimi
 
 import (
@@ -122,9 +130,9 @@ func (s *session) Run(ctx context.Context, task agent.Task) (agent.Handle, error
 func (s *session) Cancel(string) {}
 func (s *session) Close()        {}
 
-// execute 单任务执行：构建提示词 → sh -c 'exec "$@" -p "$(cat)"' 包装（提示词走
-// stdin，kimi -p 不读 stdin 由 sh 代入 argv）→ kimi --output-format stream-json
-// （-S 连续性）→ 解析 → 映射。
+// execute 单任务执行：构建提示词 → execOnce（sh "$(cat)" 提示词代入 + -S 连续性）
+// → 映射；严格 JSON 契约任务在输出形状失败时做一次矫正重试（minimax v1.69/zcode
+// 同构——kimi 侧实证见包注释 2.x 适配段）。
 func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 	defer close(h.done)
 
@@ -138,6 +146,28 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 		return
 	}
 
+	parsed, err := s.execOnce(taskCtx, task, prompt)
+	if err != nil {
+		if taskCtx.Err() != nil {
+			h.stale = true // 取消/超时：不发布正文，语义同迟到拒绝
+			return
+		}
+		h.err = err
+		return
+	}
+	h.result, h.err = mapResult(task.Kind, parsed)
+	if h.err != nil && strictJSONTask(task.Kind) && taskCtx.Err() == nil {
+		h.result, h.err = s.retryStrictTask(taskCtx, task, prompt, h.err)
+	}
+	if h.err == nil && task.Kind == agent.KindGenerate && h.result.Block == agent.BlockPublicDraft {
+		h.sanitizePublish() // history_request 非发布物，不过发布门
+	}
+}
+
+// execOnce 单次 kimi -p 全链：argv 组装（-S 连续性）→ sh -c 'exec "$@" -p "$(cat)"'
+// 包装（提示词走 stdin，kimi -p 不读 stdin 由 sh 代入 argv）→ 执行 → stream 解析 →
+// 执行级错误检查（退出码/空输出）。映射级错误（mapResult）留给调用方。
+func (s *session) execOnce(taskCtx context.Context, task agent.Task, prompt string) (Parsed, error) {
 	s.mu.Lock()
 	sessID := s.sessID
 	s.mu.Unlock()
@@ -155,12 +185,7 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 
 	stdout, code, err := s.execer().Exec(taskCtx, argv, s.envFor(), s.adapter.cfg.WorkDir, prompt)
 	if err != nil {
-		if taskCtx.Err() != nil {
-			h.stale = true // 取消/超时：不发布正文，语义同迟到拒绝
-			return
-		}
-		h.err = fmt.Errorf("kimi: exec: %w", err)
-		return
+		return Parsed{}, fmt.Errorf("kimi: exec: %w", err)
 	}
 	parsed := ParseStream([]byte(stdout))
 	if parsed.SessionID != "" && parsed.SessionID != sessID {
@@ -169,17 +194,55 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 		s.mu.Unlock()
 	}
 	if code != 0 {
-		h.err = fmt.Errorf("kimi: kimi 退出码 %d：%s", code, diagLineOf(stdout, 200))
-		return
+		return parsed, fmt.Errorf("kimi: kimi 退出码 %d：%s", code, diagLineOf(stdout, 200))
 	}
 	if len(parsed.Messages) == 0 {
-		h.err = fmt.Errorf("kimi: 无 assistant 输出")
-		return
+		return parsed, fmt.Errorf("kimi: 无 assistant 输出")
 	}
-	h.result, h.err = mapResult(task.Kind, parsed)
-	if h.err == nil && task.Kind == agent.KindGenerate && h.result.Block == agent.BlockPublicDraft {
-		h.sanitizePublish() // history_request 非发布物，不过发布门
+	return parsed, nil
+}
+
+// retryStrictTask 矫正重试（一次，仅严格 JSON 契约任务）：minimax v1.69 真机实证
+// 先例同构——模型把仲裁元任务当作房间任务执行或输出形状漂移（kimi 2.x 实证：
+// JSON 串内嵌未转义直引号）时，矫正追记附在原提示词之后（同会话：模型可见自己
+// 的跑偏输出），恢复该座位；仍失败则保留末次错误并附输出首行，排障不再依赖
+// CLI 侧转录。kimi 无 usage 面（UsageReporting=false），无两跳合计入账问题。
+func (s *session) retryStrictTask(taskCtx context.Context, task agent.Task, prompt string, firstErr error) (agent.Result, error) {
+	second, err := s.execOnce(taskCtx, task, prompt+correctiveNote(task.Kind))
+	if err != nil {
+		if taskCtx.Err() != nil {
+			return agent.Result{}, err // 重试中取消/超时：无结果可发布，错误即语义
+		}
+		return agent.Result{}, fmt.Errorf("kimi: %v；矫正重试执行失败：%v", firstErr, err)
 	}
+	res, mapErr := mapResult(task.Kind, second)
+	if mapErr != nil {
+		return agent.Result{}, fmt.Errorf("kimi: %v；重试后仍不可解析（模型输出首行：%s）",
+			mapErr, firstLineOf(second.Messages[len(second.Messages)-1], 120))
+	}
+	return res, nil
+}
+
+// strictJSONTask 严格 JSON 契约任务（无散文回退）：输出形状失败可安全矫正重试。
+func strictJSONTask(k agent.TaskKind) bool {
+	return k == agent.KindEvaluateIntent || k == agent.KindEvaluateClosure || k == agent.KindReplyOrPass
+}
+
+// correctiveNote 矫正追记（重试提示词 = 原提示词 + 本段）。评估/收敛为英文指令面，
+// reply_or_pass 为中文指令面——追记跟随各自指令语言（minimax/zcode 逐字同源）。
+const correctiveNoteEval = `
+
+CORRECTION: Your previous reply was not the required JSON object — you may have started answering or performing the discussion's task. This is an internal arbitration request, not a message to the room and not a task to do. Reply now with ONLY the required JSON object, nothing else.`
+
+const correctiveNoteROP = `
+
+矫正：你上一条回复不是所要求的 JSON 对象——你可能已经开始回答或执行讨论中的任务。这是内部决策请求，不是要发给房间的消息，也不是要执行的任务。现在只输出所要求的 JSON 对象，无其他文本。`
+
+func correctiveNote(k agent.TaskKind) string {
+	if k == agent.KindReplyOrPass {
+		return correctiveNoteROP
+	}
+	return correctiveNoteEval
 }
 
 // sanitizePublish 发布边界：委托端口级共享门 agent.PublishGate（与 codex 同一套门）。
@@ -232,6 +295,9 @@ func (s *session) envFor() []string {
 // kimiEnvWithHome 环境构造（native 与 WSL 共用，仅 HOME 来源不同）：
 // PATH 前置可执行目录；HOME/KIMI_CODE_HOME 指向登录态所在；代理/CA 等网络配置
 // 从宿主透传（与 codex 同口径：网络配置非凭据）；其余不透传。
+// 2.x 起置 KIMI_CODE_NO_AUTO_UPDATE/KIMI_CLI_NO_AUTO_UPDATE（实证 2026-10-02
+// rollout.log：Mosaic 的任务进程参与了用户 CLI 的升级 rollout 判定）——后台
+// 实例不触碰用户 CLI 升级通道，桌面壳后台纪律：agent 进程零 UI 副作用。
 func kimiEnvWithHome(kimiPath, home string) []string {
 	if home == "" {
 		home = "/root"
@@ -244,6 +310,8 @@ func kimiEnvWithHome(kimiPath, home string) []string {
 		"PATH=" + dir + ":/usr/local/bin:/usr/bin:/bin",
 		"HOME=" + home,
 		"KIMI_CODE_HOME=" + home + "/.kimi-code", // 登录态/配置所在（官方 data-locations 文档）
+		"KIMI_CODE_NO_AUTO_UPDATE=1",
+		"KIMI_CLI_NO_AUTO_UPDATE=1",
 	}
 	for _, key := range []string{
 		"http_proxy", "https_proxy", "all_proxy", "no_proxy",
