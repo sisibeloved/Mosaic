@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // nativeRunKey 测试桩 runs 键：经 loginShellArgs 构造（跨平台形态——Windows
@@ -28,8 +29,9 @@ func updateTestRegistry(t *testing.T) (*Registry, string) {
 }
 
 // TestUpdateChannelSpecs：三通道分派（ADR-0016，负责人裁定 2026-10-27——
-// registry / self-update / mosaic；mcode 归 self-update：`mcode update` 子命令
-// 实证在席，npm 面仅作检测）。
+// registry / self-update / mosaic；mcode 2026-10-27 归 self-update，2026-11-01
+// 实证改归 registry：mcode 0.6.1 的 `update` 子命令需交互确认——无 TTY 时打印
+// npm 指引即退出 0，更新静默未生效；npm 直装参数按 mcode 自荐命令钉死）。
 func TestUpdateChannelSpecs(t *testing.T) {
 	cases := map[string]struct {
 		channel   string
@@ -38,7 +40,7 @@ func TestUpdateChannelSpecs(t *testing.T) {
 	}{
 		"codex":   {"registry", true, true},
 		"claude":  {"self-update", true, true},
-		"minimax": {"self-update", true, true},
+		"minimax": {"registry", true, true},
 		"kimi":    {"self-update", false, true},
 		"zcode":   {"mosaic", true, false},
 	}
@@ -59,9 +61,15 @@ func TestUpdateChannelSpecs(t *testing.T) {
 		t.Fatal("registry 通道应绑定仓库客户端")
 	}
 	if !reflect.DeepEqual(updateFamilies["kimi"].selfArgs, []string{"upgrade", "--yes"}) ||
-		!reflect.DeepEqual(updateFamilies["minimax"].selfArgs, []string{"update"}) ||
 		!reflect.DeepEqual(updateFamilies["claude"].selfArgs, []string{"update"}) {
 		t.Fatal("self-update 子命令与实证不符")
+	}
+	// mcode npm 直装参数钉死（实证 2026-11-01：mcode update 打印的自荐命令——
+	// optional 平台二进制与 better-sqlite3 构建脚本依赖，缺参即静默残缺安装）
+	if cmd := updateFamilies["minimax"].repo.installCmd("@minimax-ai/code"); !strings.Contains(cmd, "--include=optional") ||
+		!strings.Contains(cmd, "--ignore-scripts=false") ||
+		!strings.Contains(cmd, "--allow-scripts=@minimax-ai/code,better-sqlite3") {
+		t.Fatalf("minimax npm 直装须钉 mcode 自荐参数：%s", cmd)
 	}
 	if updateFamilies["zcode"].gitRepo != "zai-org/ZCode" {
 		t.Fatal("mosaic 通道信号仓应为 zai-org/ZCode")
@@ -562,5 +570,144 @@ func TestStartUpdateFailureStreamsError(t *testing.T) {
 	}
 	if !sawFailed {
 		t.Fatal("应收到 failed 终态")
+	}
+}
+
+
+// TestZcodeDesktopCheckUsesAppVersion（2026-11-01 负责人反馈"zcode 没有更新
+// 按钮"根因之一）：app:zcode-desktop 渠道登记的版本是内核号（0.16.9），与
+// feed/tag 的应用版本方案（3.x）跨系不可比——检测基线须取 App bundle 版本
+// （Info.plist CFBundleShortVersionString），使对照可比、徽标有意义。
+func TestZcodeDesktopCheckUsesAppVersion(t *testing.T) {
+	reg, _ := updateTestRegistry(t)
+	// 模拟桌面安装位：<app>/Contents/MacOS/ZCode + ../Info.plist（3.17.1）
+	root := t.TempDir()
+	app := filepath.Join(root, "ZCode.app")
+	macOS := filepath.Join(app, "Contents", "MacOS")
+	if err := os.MkdirAll(macOS, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exePath := filepath.Join(macOS, "ZCode")
+	if err := os.WriteFile(exePath, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plist := `<?xml version="1.0"?>
+<plist><dict><key>CFBundleShortVersionString</key><string>3.17.1</string></dict></plist>`
+	if err := os.WriteFile(filepath.Join(app, "Contents", "Info.plist"), []byte(plist), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg.exes = []Executable{{
+		ID: "z_desk", Adapter: "zcode", Runtime: "native", Channel: ChannelAppZcodeDesktop,
+		Path: exePath, Version: "0.16.9", Enabled: true,
+	}}
+	runner := newFakeRunner()
+	// 无 app-update.yml → feed 不可知 → 回退源码 tag（v3.18.0）
+	runner.runs[nativeRunKey("git ls-remote --tags --refs https://github.com/zai-org/ZCode.git")] =
+		"abc123\trefs/tags/v3.18.0\n"
+
+	check, err := reg.CheckUpdate(context.Background(), "z_desk", runner)
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if check.CurrentSemver != "3.17.1" {
+		t.Fatalf("检测基线须取 App 版本（得到 %q）——内核号 0.16.9 与 3.x 方案不可比", check.CurrentSemver)
+	}
+	if check.Latest != "3.18.0" || check.UpToDate || !check.Comparable {
+		t.Fatalf("对照须可比且有更新徽标: %+v", check)
+	}
+}
+
+// TestUpdateNoOpVersionNote（mcode 0.6.1 实证：update 打印指引即退 0——任务
+// "成功"而版本未变）：更新退出 0 但版本回探与更新前相同 → 过程日志须提示
+// "版本未变化"（不再静默呈现已更新假象）。
+func TestUpdateNoOpVersionNote(t *testing.T) {
+	reg, _ := updateTestRegistry(t)
+	reg.exes = []Executable{{
+		ID: "k_noop", Adapter: "kimi", Runtime: "native",
+		Path: "/home/u/.kimi-code/bin/kimi", Version: "2.1.1", Enabled: true,
+	}}
+	runner := newFakeRunner()
+	runner.homes["native|"] = "/home/u"
+	runner.runs[nativeRunKey(shellQuote("/home/u/.kimi-code/bin/kimi")+" upgrade --yes")] = "已最新\n"
+	runner.runs["native||/home/u/.kimi-code/bin/kimi --version"] = "2.1.1\n"
+
+	if started, err := reg.StartUpdate(context.Background(), "k_noop", runner); err != nil || !started {
+		t.Fatalf("start: %v %v", started, err)
+	}
+	ch, cancel, ok := reg.SubscribeUpdateEvents("k_noop")
+	if !ok {
+		t.Fatal("订阅")
+	}
+	defer cancel()
+	var lines []string
+	var final UpdateEvent
+	deadline := time.After(2 * time.Second)
+collect:
+	for final.Kind == "" {
+		select {
+		case ev, open := <-ch:
+			if !open {
+				break collect
+			}
+			if ev.Kind == "line" {
+				lines = append(lines, ev.Line)
+			} else {
+				final = ev
+			}
+		case <-deadline:
+			t.Fatal("任务未终态")
+		}
+	}
+	if final.Kind != "done" {
+		t.Fatalf("幂等无操作应正常终态: %+v", final)
+	}
+	var noted bool
+	for _, l := range lines {
+		if strings.Contains(l, "版本未变化") {
+			noted = true
+		}
+	}
+	if !noted {
+		t.Fatalf("版本未变化须有提示行: %+v", lines)
+	}
+}
+
+// TestDesktopFeedURLLayouts（2026-11-01 修正回归）：resources/app-update.yml
+// 双布局——Windows 安装根与 exe 同级；macOS .app 内在 Contents/ 下（exe 上溯
+// 两级，此前只查同级致 mac 恒落空回退源码 tag）。
+func TestDesktopFeedURLLayouts(t *testing.T) {
+	// macOS：root/ZCode.app/Contents/{MacOS/ZCode, resources/app-update.yml}
+	macRoot := t.TempDir()
+	macExe := filepath.Join(macRoot, "ZCode.app", "Contents", "MacOS", "ZCode")
+	macYml := filepath.Join(macRoot, "ZCode.app", "Contents", "resources", "app-update.yml")
+	// Windows：root/ZCode.exe + root/resources/app-update.yml
+	winRoot := t.TempDir()
+	winExe := filepath.Join(winRoot, "ZCode.exe")
+	winYml := filepath.Join(winRoot, "resources", "app-update.yml")
+	for _, tc := range []struct{ name, exe, yml string }{
+		{"macOS .app 布局", macExe, macYml},
+		{"Windows 安装根布局", winExe, winYml},
+	} {
+		if err := os.MkdirAll(filepath.Dir(tc.exe), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(tc.exe, []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(tc.yml), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(tc.yml, []byte("provider: generic\nurl: http://localhost:8081\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		reg, _ := updateTestRegistry(t)
+		reg.exes = []Executable{{
+			ID: "z_f", Adapter: "zcode", Runtime: "native", Channel: ChannelAppZcodeDesktop,
+			Path: tc.exe, Version: "3.17.1", Enabled: true,
+		}}
+		got, ok := reg.desktopFeedURL()
+		if !ok || got != "http://localhost:8081" {
+			t.Fatalf("%s：feed 须可达（得到 %q ok=%v）", tc.name, got, ok)
+		}
 	}
 }

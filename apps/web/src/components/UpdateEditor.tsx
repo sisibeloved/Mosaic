@@ -128,7 +128,7 @@ export function UpdateEditor({ exe, onUpdated }: { exe: Executable; onUpdated: (
                 新版本 {check.latest}
               </span>
             ) : null}
-            {check.can_update && (
+            {check.can_update ? (
               <button
                 type="button"
                 disabled={updating || knownCurrent}
@@ -144,9 +144,21 @@ export function UpdateEditor({ exe, onUpdated }: { exe: Executable; onUpdated: (
               >
                 {updating ? "更新中…" : "更新到最新"}
               </button>
+            ) : (
+              // 2026-11-01 负责人反馈"zcode 没有更新按钮"：无自动通道的家族也
+              // 呈现按钮形态（禁用）+ 指引——官方桌面版在应用内自更新、自建打包
+              // 可放置 ~/.mosaic/update/<adapter>.sh 接入 Mosaic 驱动。
+              <button
+                type="button"
+                disabled
+                title={check.note || "该 CLI 无自动更新通道"}
+                className="rounded-lg bg-surface-3 px-2 py-0.5 text-[11px] text-dim disabled:opacity-60"
+              >
+                更新到最新
+              </button>
             )}
-            {check.note && !hasUpdate && (
-              <span className="text-[11px] text-faint">{truncateStr(check.note, 110)}</span>
+            {check.note && (
+              <span className="text-[11px] text-faint">{truncateStr(check.note, 160)}</span>
             )}
           </>
         )}

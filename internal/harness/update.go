@@ -52,10 +52,20 @@ type packageRepo interface {
 }
 
 // npmRepo npm 仓库（镜像源/代理随登录 shell 环境——包注释实证）。
-type npmRepo struct{}
+// installArgs：安装命令附加参数——mcode（@minimax-ai/code）实证（2026-11-01）
+// 须钉 mcode 自荐参数（--include=optional 平台二进制 + --ignore-scripts=false
+// --allow-scripts=…better-sqlite3 构建脚本），缺参即静默残缺安装（codex 同类
+// optional 缺失先例）。
+type npmRepo struct{ installArgs string }
 
-func (npmRepo) latestCmd(pkg string) string  { return "npm view " + pkg + " version" }
-func (npmRepo) installCmd(pkg string) string { return "npm install -g " + pkg + "@latest" }
+func (npmRepo) latestCmd(pkg string) string { return "npm view " + pkg + " version" }
+func (r npmRepo) installCmd(pkg string) string {
+	cmd := "npm install -g " + pkg + "@latest"
+	if r.installArgs != "" {
+		cmd += " " + r.installArgs
+	}
+	return cmd
+}
 func (npmRepo) parseLatest(out string) string {
 	v := strings.TrimSpace(lastLine(out))
 	if semverLike(v) {
@@ -74,9 +84,10 @@ type familySpec struct {
 	note     string      // 无检测面/无自动面时的指引（check note 呈现）
 }
 
-// updateFamilies 家族通道分派（实证 2026-10-27；mcode 归 self-update——
-// 负责人裁定口径 + `mcode update` 子命令实证 "Check for and install a
-// Minimax Code update"，npm 面仅作检测）。
+// updateFamilies 家族通道分派（实证 2026-10-27；mcode 2026-11-01 改归
+// registry——负责人反馈实证：mcode 0.6.1 的 `update` 子命令需交互确认，无
+// TTY 时打印 npm 指引即退出 0，更新静默未生效；npm 直装参数按 mcode 自荐
+// 命令钉死）。
 var updateFamilies = map[string]familySpec{
 	"codex": {channel: "registry", repo: npmRepo{}, pkg: "@openai/codex"},
 	"claude": {
@@ -85,9 +96,9 @@ var updateFamilies = map[string]familySpec{
 		note:     "原生安装位（~/.local/bin）不受 npm 管辖——更新走官方自更新（claude update）；检测借 npm 分发面查最新版",
 	},
 	"minimax": {
-		channel: "self-update", repo: npmRepo{}, pkg: "@minimax-ai/code",
-		selfArgs: []string{"update"},
-		note:     "更新走官方自更新子命令（mcode update）；检测借 npm 分发面查最新版",
+		channel: "registry", repo: npmRepo{installArgs: "--ignore-scripts=false --include=optional --allow-scripts=@minimax-ai/code,better-sqlite3"},
+		pkg:     "@minimax-ai/code",
+		note:    "mcode 0.6.1 的 update 子命令需交互确认（无终端时打印指引即退出——更新静默未生效，实证 2026-11-01）；改走 npm 直装，参数按 mcode 自荐命令钉死",
 	},
 	"kimi": {
 		channel:  "self-update",
@@ -172,6 +183,19 @@ func (r *Registry) CheckUpdate(ctx context.Context, id string, runner Runner) (U
 	check.CurrentSemver = extractSemver(exe.Version)
 	if spec.note != "" {
 		check.Note = spec.note
+	}
+	// zcode 桌面渠道（2026-11-01 负责人反馈"没有更新按钮"根因之一）：登记版本
+	// 是内核号（0.16.9），与 feed/tag 的应用版本方案（3.x）跨系不可比——检测
+	// 基线改取 App bundle 版本（Info.plist CFBundleShortVersionString；读不到
+	// 回退内核号，由 verdict 的不可比口径兜底）。官方桌面版经应用内自更新
+	// （Mosaic 不驱动 electron-updater）；自建打包脚本通道照旧。
+	if exe.Adapter == "zcode" && exe.Channel == ChannelAppZcodeDesktop {
+		if v := desktopAppBundleVersion(exe.Path); v != "" {
+			check.CurrentSemver = v
+			check.Note = fmt.Sprintf("官方桌面版经应用内自更新（ZCode 应用内检查更新）；此处以应用版本 %s 对照上游信号（内核 %s 随应用分发）。自建打包分发可放置 ~/.mosaic/update/zcode.sh 由 Mosaic 驱动更新", v, strings.TrimSpace(exe.Version))
+		} else {
+			check.Note = "官方桌面版经应用内自更新（ZCode 应用内检查更新）；本机未读到 App 版本号——以内核版本对照（与上游应用版本方案不可比时不判更新）。自建打包分发可放置 ~/.mosaic/update/zcode.sh 由 Mosaic 驱动更新"
+		}
 	}
 	if spec.channel == "mosaic" && runner != nil {
 		// mosaic 更新面 = 约定脚本在位（检测面独立于脚本）。
@@ -301,8 +325,10 @@ func (r *Registry) gitRepoLatest(ctx context.Context, runner Runner, exe Executa
 
 // desktopFeedURL 定位桌面渠道安装声明的更新源：app:zcode-desktop 注册项安装
 // 目录下 resources/app-update.yml 的 `url:` 行（electron-builder 产物，实录
-// "provider: generic / url: http://localhost:8081"）。文件读取走宿主 os 包
-// （native Windows 安装路径；服务端不在 Windows 宿主时读不到即跳过——如实）。
+// "provider: generic / url: http://localhost:8081"）。布局双候选（2026-11-01
+// 修正：Windows 安装根与 exe 同级；macOS .app 内在 Contents/ 下——上溯两级，
+// 此前只查 exe 同级，mac 恒落空回退源码 tag）。文件读取走宿主 os 包（读不到
+// 即跳过——如实）。
 func (r *Registry) desktopFeedURL() (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -310,8 +336,14 @@ func (r *Registry) desktopFeedURL() (string, bool) {
 		if e.Adapter != "zcode" || e.Channel != ChannelAppZcodeDesktop || e.Runtime != string(RuntimeNative) {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(filepath.Dir(e.Path), "resources", "app-update.yml"))
-		if err != nil {
+		var raw []byte
+		for _, dir := range []string{filepath.Dir(e.Path), filepath.Dir(filepath.Dir(e.Path))} {
+			if b, err := os.ReadFile(filepath.Join(dir, "resources", "app-update.yml")); err == nil {
+				raw = b
+				break
+			}
+		}
+		if raw == nil {
 			continue
 		}
 		for _, line := range strings.Split(string(raw), "\n") {
@@ -324,6 +356,40 @@ func (r *Registry) desktopFeedURL() (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// desktopAppBundleVersion 桌面安装位的 App 版本号（darwin：MacOS 上溯两级
+// 的 Contents/Info.plist CFBundleShortVersionString——与 feed latest.yml 同
+// 方案，使对照可比；非 darwin 或读不到返回空，调用方回退内核版本）。
+func desktopAppBundleVersion(exePath string) string {
+	if goruntimeOS != "darwin" || exePath == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(exePath)), "Info.plist"))
+	if err != nil {
+		return ""
+	}
+	// 最小面解析（不引 plist 依赖）：定位键后的首个 <string> 值
+	content := string(raw)
+	i := strings.Index(content, "CFBundleShortVersionString")
+	if i < 0 {
+		return ""
+	}
+	rest := content[i+len("CFBundleShortVersionString"):]
+	j := strings.Index(rest, "<string>")
+	if j < 0 {
+		return ""
+	}
+	rest = rest[j+len("<string>"):]
+	k := strings.Index(rest, "</string>")
+	if k < 0 {
+		return ""
+	}
+	v := strings.TrimSpace(rest[:k])
+	if semverLike(v) {
+		return v
+	}
+	return ""
 }
 
 // fetchFeedVersion GET <feed>/latest.yml 取 version 行（electron-updater 清单，
@@ -712,6 +778,12 @@ func (r *Registry) runUpdateJob(exe Executable, argv []string, job *updateJob, r
 		return
 	}
 	version := strings.TrimSpace(firstLine(vout))
+	if extractSemver(version) != "" && extractSemver(version) == extractSemver(exe.Version) {
+		// 无变化防线（mcode 0.6.1 实证：update 打印指引即退 0——命令"成功"而
+		// 版本未变）：如实提示，不再静默呈现"已更新"假象（kimi 幂等无操作同面，
+		// 提示文案对两者皆中性）。
+		job.emit("版本未变化（" + strings.TrimSpace(exe.Version) + "）——已是最新或更新未生效，见上方日志")
+	}
 	if err := r.RefreshVersion(exe.ID, version); err != nil {
 		job.finish(UpdateEvent{Kind: "failed", Error: err.Error()})
 		return

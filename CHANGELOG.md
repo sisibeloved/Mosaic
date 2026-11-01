@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- mcode 更新修复（负责人反馈实证 2026-11-01）：mcode 0.6.1 的 `update` 子命令需交互确认——Mosaic 无终端环境下它打印 npm 指引即退出 0，任务呈"已更新"而版本未动（静默假象）。minimax 家族由 self-update 改归 **registry npm 直装**，安装参数按 mcode 自荐命令钉死（`--include=optional` 平台二进制 + `--ignore-scripts=false --allow-scripts=@minimax-ai/code,better-sqlite3` 构建脚本——缺参即静默残缺安装，codex 同类 optional 缺失先例）；真机实证 0.6.1 → 0.7.4。并加**无变化防线**：更新退出 0 但版本回探与更新前相同时，过程日志如实提示"版本未变化——已是最新或更新未生效"（kimi 幂等无操作同面，文案中性）。
+- zcode 检测与更新面修复（负责人反馈"没有更新按钮"，三处）：**(1)** 检测基线改取 **App bundle 版本**（Info.plist CFBundleShortVersionString，darwin）——登记的内核号 0.16.9 与 feed/tag 的应用版本方案（3.x）跨系不可比，恒"不可比不判更新"；基线改 App 版本后对照有意义（真机：3.17.1 vs 源码 tag 3.17.1 → 已是最新）。**(2)** UI 无自动通道的家族此前整行隐藏更新按钮——改为呈现**禁用态按钮 + 指引**（官方桌面版应用内自更新；自建打包可放置 `~/.mosaic/update/zcode.sh` 接入 Mosaic 驱动），note 随更新徽标同显。**(3)** `desktopFeedURL` 只按 Windows 安装根布局（exe 同级）找 `resources/app-update.yml`——macOS .app 内在 `Contents/` 下（上溯两级），mac 上恒落空回退源码 tag；双布局候选修正（真机实证 feed 已定位 http://localhost:8081，不可达如实回退并注明）。
+
 ### Added
 
 - **Run 崩溃恢复：unknown、迟到结果及禁止盲目重跑**（0.6 领域第八件 / ADR-0030，RFC-0018 §3.2/§11.3/§11.5、AT-12）：兑现 RFC 的保守 unknown 语义——结果不可判定即 unknown、Mission 明示等待核验、用户显式处置后方可再执行、迟到结果只审计不发布。
