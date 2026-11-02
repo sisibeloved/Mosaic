@@ -37,6 +37,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/attach"
 	"github.com/sisibeloved/Mosaic/internal/backup"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
+	"github.com/sisibeloved/Mosaic/internal/delivery"
 	"github.com/sisibeloved/Mosaic/internal/dispatch"
 	"github.com/sisibeloved/Mosaic/internal/doc"
 	"github.com/sisibeloved/Mosaic/internal/execctx"
@@ -366,6 +367,11 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		logger.Info("Run 恢复：未终态按停止意图分派（无意图者 unknown + Mission waiting 待核验；不自动重跑）", "count", n)
 	}
 	runSvc.Start(ctx)
+	// 交付域（RFC-0018 §10.2 / ADR-0031，0.6.8）：submit_result 不自动送验——
+	// 只读 mission/run 事实 + Run 流回执；对 Mission 零副作用。
+	deliverySvc := delivery.New(store,
+		deliveryMissionsAdapter{missionSvc}, deliveryRunsAdapter{runSvc},
+		delivery.WithNow(clock))
 	scanDone := make(chan struct{})
 	go func() {
 		defer close(scanDone)
@@ -426,6 +432,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Runtimes:         runtimeSvc,
 		MissionRuns:      runSvc,
 		MissionControl:   missioncontrol.New(missionSvc, runSvc),
+		Delivery:         deliverySvc,
 		Logger:           logger,
 		Dev:              opts.Dev,
 		Budget:           budgetLimits,
@@ -1116,6 +1123,33 @@ func (e supervisorExecutor) Submit(ctx context.Context, in missionrun.ExecutionI
 	}
 	body, _ := res.Data["body"].(string)
 	return body, nil
+}
+
+// deliveryMissionsAdapter delivery.Missions 只读适配（ADR-0031）。
+type deliveryMissionsAdapter struct{ svc *mission.Service }
+
+func (a deliveryMissionsAdapter) MissionFacts(ctx context.Context, missionID string) (delivery.MissionFacts, bool, error) {
+	m, ok, err := a.svc.Get(ctx, missionID)
+	if err != nil || !ok {
+		return delivery.MissionFacts{}, ok, err
+	}
+	return delivery.MissionFacts{MissionID: m.MissionID, ContractVersion: m.ContractVersion, Status: m.Status}, true, nil
+}
+
+// deliveryRunsAdapter delivery.Runs 适配：只读事实 + 事件流回执追加。
+type deliveryRunsAdapter struct{ svc *missionrun.Service }
+
+func (a deliveryRunsAdapter) RunFacts(ctx context.Context, runID string) (delivery.RunFacts, bool, error) {
+	r, ok, err := a.svc.GetRun(ctx, runID)
+	if err != nil || !ok {
+		return delivery.RunFacts{}, ok, err
+	}
+	return delivery.RunFacts{RunID: r.RunID, MissionID: r.MissionID, Attempt: r.Attempt, Generation: r.Generation,
+		State: r.State, Resolution: r.Resolution}, true, nil
+}
+
+func (a deliveryRunsAdapter) AppendReceipt(ctx context.Context, runID, eventType string, payload map[string]any) error {
+	return a.svc.AppendReceipt(ctx, runID, eventType, payload)
 }
 
 // missionStateLookup runtime.Missions 的 Mission 域适配（ADR-0027）。

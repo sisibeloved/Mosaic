@@ -28,6 +28,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/extdocs"
 	goruntime "runtime"
 
+	"github.com/sisibeloved/Mosaic/internal/delivery"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/monitor"
@@ -78,6 +79,9 @@ type Deps struct {
 	Runtimes *mosaicruntime.Service
 	// MissionRuns Mission 执行域（RFC-0018 §10.2 / ADR-0028，0.6.5；nil 时端点 503）。
 	MissionRuns *missionrun.Service
+	// Delivery 交付域（RFC-0018 §10.2 / ADR-0031，0.6.8；nil 时端点 503）：
+	// submit_result 不自动送验——提交对 Mission 零副作用。
+	Delivery *delivery.Service
 	// MissionControl 任务控制编排（RFC-0018 §3.2/§11.2 / ADR-0029，0.6.6）：
 	// mission 状态机 CAS + run 停止面组合（app 注入 missioncontrol 服务；
 	// nil 时 pause/resume/cancel 端点 503）。
@@ -3021,6 +3025,151 @@ func (s *server) ResolveMissionRun(w http.ResponseWriter, r *http.Request, runID
 		return
 	}
 	writeJSON(w, http.StatusOK, missionRunView(out))
+}
+
+// ---- 交付域端点（0.6.8 / ADR-0031）----
+
+func (s *server) deliveryUnavailable(w http.ResponseWriter) bool {
+	if s.deps.Delivery == nil {
+		writeError(w, http.StatusServiceUnavailable, "delivery_unavailable", "交付域未装配")
+		return true
+	}
+	return false
+}
+
+// SubmitDeliveryPackage submit_result——不自动送验（Mission 状态/版本不变）。
+func (s *server) SubmitDeliveryPackage(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.deliveryUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.DeliveryPackageSubmit
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	sub := delivery.Submission{
+		RunID: req.RunId, Generation: req.Generation, ExpectedVersion: req.ExpectedVersion,
+		ArtifactRefs:         req.ArtifactRefs,
+		AcceptanceMapping:    mappingOf(req.AcceptanceMapping),
+		VerificationEvidence: derefStr(req.VerificationEvidence),
+		OpenItems:            derefStrs(req.OpenItems),
+		Risks:                derefStrs(req.Risks),
+		ActionReceipts:       derefStrs(req.ActionReceipts),
+		SuggestedMemory:      derefStrs(req.SuggestedMemory),
+		Notes:                derefStr(req.Notes),
+	}
+	out, err := s.deps.Delivery.Submit(r.Context(), missionID, sub)
+	if err != nil {
+		writeDeliveryError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, deliveryPackageView(out))
+}
+
+// ListDeliveryPackages Mission 交付包列表（倒序）。
+func (s *server) ListDeliveryPackages(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.deliveryUnavailable(w) {
+		return
+	}
+	list, ok, err := s.deps.Delivery.List(r.Context(), missionID)
+	if err != nil {
+		writeDeliveryError(w, err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "mission_not_found", "Mission 不存在")
+		return
+	}
+	out := make([]apigen.DeliveryPackageView, 0, len(list))
+	for _, p := range list {
+		out = append(out, deliveryPackageView(p))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"packages": out})
+}
+
+// GetDeliveryPackage 单包。
+func (s *server) GetDeliveryPackage(w http.ResponseWriter, r *http.Request, packageID string) {
+	if s.deliveryUnavailable(w) {
+		return
+	}
+	p, ok, err := s.deps.Delivery.Get(r.Context(), packageID)
+	if err != nil {
+		writeDeliveryError(w, err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "package_not_found", "交付包不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, deliveryPackageView(p))
+}
+
+func mappingOf(in []apigen.AcceptanceMappingEntry) []delivery.MappingEntry {
+	out := make([]delivery.MappingEntry, 0, len(in))
+	for _, e := range in {
+		out = append(out, delivery.MappingEntry{Criterion: e.Criterion, Evidence: e.Evidence})
+	}
+	return out
+}
+
+func derefStrs(p *[]string) []string {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func deliveryPackageView(p delivery.Package) apigen.DeliveryPackageView {
+	at, _ := time.Parse(time.RFC3339, p.SubmittedAt)
+	mapping := make([]apigen.AcceptanceMappingEntry, 0, len(p.AcceptanceMapping))
+	for _, e := range p.AcceptanceMapping {
+		mapping = append(mapping, apigen.AcceptanceMappingEntry{Criterion: e.Criterion, Evidence: e.Evidence})
+	}
+	return apigen.DeliveryPackageView{
+		PackageId: p.PackageID, MissionId: p.MissionID, RunId: p.RunID,
+		Attempt: p.Attempt, Generation: p.Generation, ContractVersion: p.ContractVersion,
+		ArtifactRefs: p.ArtifactRefs, AcceptanceMapping: mapping,
+		VerificationEvidence: p.VerificationEvidence,
+		OpenItems:            p.OpenItems, Risks: p.Risks, ActionReceipts: p.ActionReceipts,
+		SuggestedMemory: p.SuggestedMemory, Notes: p.Notes, SubmittedAt: at,
+	}
+}
+
+// writeDeliveryError 交付域错误映射。
+func writeDeliveryError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, delivery.ErrInvalidDelivery):
+		writeError(w, http.StatusBadRequest, "invalid_delivery", err.Error())
+	case errors.Is(err, delivery.ErrMissionNotFound):
+		writeError(w, http.StatusNotFound, "mission_not_found", err.Error())
+	case errors.Is(err, delivery.ErrRunNotFound):
+		writeError(w, http.StatusNotFound, "run_not_found", err.Error())
+	case errors.Is(err, delivery.ErrPackageNotFound):
+		writeError(w, http.StatusNotFound, "package_not_found", err.Error())
+	case errors.Is(err, delivery.ErrVersionConflict):
+		writeError(w, http.StatusConflict, "version_conflict", err.Error())
+	case errors.Is(err, delivery.ErrStaleGeneration):
+		writeError(w, http.StatusConflict, "stale_generation", err.Error())
+	case errors.Is(err, delivery.ErrRunMismatch):
+		writeError(w, http.StatusConflict, "run_mission_mismatch", err.Error())
+	case errors.Is(err, delivery.ErrRunNotDeliverable):
+		writeError(w, http.StatusConflict, "run_not_deliverable", err.Error())
+	case errors.Is(err, delivery.ErrMissionCanceled):
+		writeError(w, http.StatusConflict, "mission_canceled", err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "delivery_failed", err.Error())
+	}
 }
 
 // GetMissionRunEvents Run 事件流（含围栏拒绝审计）。

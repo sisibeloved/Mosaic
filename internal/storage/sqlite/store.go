@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/contextx"
+	"github.com/sisibeloved/Mosaic/internal/delivery"
 	"github.com/sisibeloved/Mosaic/internal/dispatch"
 	"github.com/sisibeloved/Mosaic/internal/doc"
 	"github.com/sisibeloved/Mosaic/internal/execctx"
@@ -552,6 +553,31 @@ var migrationV20 = []string{
 	"INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (20, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
 }
 
+// migrationV21（RFC-0018 §3.3/§10.2 / ADR-0031，0.6.8）：DeliveryPackage 成果提交
+// ——append-only 交付包行（溯源 Run/代次/契约版本 + RFC §10.2 最小结构 JSON 列）。
+// 幂等 DDL。
+const migrationV21 = `
+CREATE TABLE IF NOT EXISTS delivery_packages (
+  package_id            TEXT PRIMARY KEY,
+  mission_id            TEXT NOT NULL,
+  run_id                TEXT NOT NULL,
+  attempt               INTEGER NOT NULL,
+  generation            INTEGER NOT NULL,
+  contract_version      INTEGER NOT NULL,
+  artifact_refs         TEXT NOT NULL DEFAULT '[]',
+  acceptance_mapping    TEXT NOT NULL DEFAULT '[]',
+  verification_evidence TEXT NOT NULL DEFAULT '',
+  open_items            TEXT NOT NULL DEFAULT '[]',
+  risks                 TEXT NOT NULL DEFAULT '[]',
+  action_receipts       TEXT NOT NULL DEFAULT '[]',
+  suggested_memory      TEXT NOT NULL DEFAULT '[]',
+  notes                 TEXT NOT NULL DEFAULT '',
+  submitted_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_delivery_mission ON delivery_packages(mission_id, submitted_at);
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (21, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+`
+
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
 // modernc v1.57.0 / SQLite 3.53.3：unicode61 对中文整串成单 token 不可用，
 // trigram 对 CJK 子串 ≥3 字与英文均正确命中；<3 字查询由 SearchMessages
@@ -651,6 +677,11 @@ func Open(path string) (*Store, error) {
 			db.Close()
 			return nil, fmt.Errorf("sqlite: migration v20: %w", err)
 		}
+	}
+	// v21 迁移（ADR-0031 / 0.6.8）：delivery_packages（幂等 DDL）
+	if _, err := db.Exec(migrationV21); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("sqlite: migration v21: %w", err)
 	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -3078,6 +3109,114 @@ INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES
 		return nil
 	})
 	return changed, err
+}
+
+// ---- 交付域（RFC-0018 §10.2 / ADR-0031，0.6.8；v21 表）----
+
+const deliveryCols = `package_id, mission_id, run_id, attempt, generation, contract_version, artifact_refs, acceptance_mapping, verification_evidence, open_items, risks, action_receipts, suggested_memory, notes, submitted_at`
+
+func scanPackage(row interface{ Scan(...any) error }) (delivery.Package, error) {
+	var p delivery.Package
+	var refs, mapping, open, risks, receipts, memory string
+	if err := row.Scan(&p.PackageID, &p.MissionID, &p.RunID, &p.Attempt, &p.Generation, &p.ContractVersion,
+		&refs, &mapping, &p.VerificationEvidence, &open, &risks, &receipts, &memory, &p.Notes, &p.SubmittedAt); err != nil {
+		return delivery.Package{}, err
+	}
+	for name, dst := range map[string]*[]string{"artifact_refs": &p.ArtifactRefs, "open_items": &p.OpenItems,
+		"risks": &p.Risks, "action_receipts": &p.ActionReceipts, "suggested_memory": &p.SuggestedMemory} {
+		src := map[string]string{"artifact_refs": refs, "open_items": open, "risks": risks,
+			"action_receipts": receipts, "suggested_memory": memory}[name]
+		if err := json.Unmarshal([]byte(src), dst); err != nil {
+			return delivery.Package{}, fmt.Errorf("sqlite: package %s unmarshal: %w", name, err)
+		}
+		if *dst == nil {
+			*dst = []string{}
+		}
+	}
+	if err := json.Unmarshal([]byte(mapping), &p.AcceptanceMapping); err != nil {
+		return delivery.Package{}, fmt.Errorf("sqlite: package acceptance_mapping unmarshal: %w", err)
+	}
+	if p.AcceptanceMapping == nil {
+		p.AcceptanceMapping = []delivery.MappingEntry{}
+	}
+	return p, nil
+}
+
+func jsonList(v any) (string, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("sqlite: package list marshal: %w", err)
+	}
+	return string(b), nil
+}
+
+// CreatePackage append-only 建行（主键撞键报错）。
+func (s *Store) CreatePackage(ctx context.Context, p delivery.Package) error {
+	refs, err := jsonList(p.ArtifactRefs)
+	if err != nil {
+		return err
+	}
+	mapping, err := jsonList(p.AcceptanceMapping)
+	if err != nil {
+		return err
+	}
+	open, err := jsonList(p.OpenItems)
+	if err != nil {
+		return err
+	}
+	risks, err := jsonList(p.Risks)
+	if err != nil {
+		return err
+	}
+	receipts, err := jsonList(p.ActionReceipts)
+	if err != nil {
+		return err
+	}
+	memory, err := jsonList(p.SuggestedMemory)
+	if err != nil {
+		return err
+	}
+	return s.identityWriteTx(ctx, func(q identityExec) error {
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO delivery_packages (`+deliveryCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			p.PackageID, p.MissionID, p.RunID, p.Attempt, p.Generation, p.ContractVersion,
+			refs, mapping, p.VerificationEvidence, open, risks, receipts, memory, p.Notes, p.SubmittedAt); err != nil {
+			return fmt.Errorf("sqlite: insert delivery package: %w", err)
+		}
+		return nil
+	})
+}
+
+// ListPackagesByMission submitted_at 倒序（同刻按 rowid 倒序）。
+func (s *Store) ListPackagesByMission(ctx context.Context, missionID string) ([]delivery.Package, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+deliveryCols+`
+  FROM delivery_packages WHERE mission_id = ? ORDER BY submitted_at DESC, rowid DESC`, missionID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list delivery packages: %w", err)
+	}
+	defer rows.Close()
+	out := []delivery.Package{}
+	for rows.Next() {
+		p, err := scanPackage(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: scan delivery package: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// PackageByID 单查；未知 ok=false。
+func (s *Store) PackageByID(ctx context.Context, packageID string) (delivery.Package, bool, error) {
+	p, err := scanPackage(s.db.QueryRowContext(ctx,
+		`SELECT `+deliveryCols+` FROM delivery_packages WHERE package_id = ?`, packageID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return delivery.Package{}, false, nil
+	}
+	if err != nil {
+		return delivery.Package{}, false, fmt.Errorf("sqlite: package by id: %w", err)
+	}
+	return p, true, nil
 }
 
 // ---- 网关首切片域（RFC-0018 §11.2/§11.2.1 / ADR-0024，0.6.1；v14 表）----

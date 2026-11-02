@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sisibeloved/Mosaic/internal/delivery"
 	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/missioncontrol"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
@@ -167,10 +168,22 @@ func runTestServer(t *testing.T, opts ...func(*runTestCfg)) (*httptest.Server, *
 		cfg.capture.runSvc = runSvc
 		cfg.capture.runStore = runStore
 	}
+	// 0.6.8：交付域（真 mission/run 适配）
+	deliverySvc := delivery.New(delivery.NewMemStore(), epDeliveryMissions{mSvc}, epDeliveryRuns{runSvc},
+		delivery.WithNow(func() string { seq++; return "2026-11-01T12:00:" + pad2(seq%60) + ".000Z" }),
+		delivery.WithNewPackageID(func() string { seq++; return "dlv_r" + itoa(seq) }))
 	ts := httptest.NewServer(New(Deps{Missions: mSvc, MissionRuns: runSvc, Identity: ident,
-		MissionControl: missioncontrol.New(mSvc, runSvc, ctlOpts...)}))
+		MissionControl: missioncontrol.New(mSvc, runSvc, ctlOpts...), Delivery: deliverySvc}))
 	t.Cleanup(ts.Close)
 	return ts, mSvc, leases
+}
+
+// pad2 两位秒（交付包 submitted_at 单调递增——列表倒序断言用）。
+func pad2(n int64) string {
+	if n < 10 {
+		return "0" + itoa(n)
+	}
+	return itoa(n)
 }
 
 type runTestCfg struct {

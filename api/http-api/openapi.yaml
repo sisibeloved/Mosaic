@@ -3245,6 +3245,116 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /v1/missions/{mission_id}/delivery-packages:
+    post:
+      operationId: submitDeliveryPackage
+      summary: 提交交付包（submit_result——不自动送验）
+      description: |
+        0.6.8 / ADR-0031：对一次**可交付** Run（completed，或 unknown 且处置
+        verified_completed）提交结构化交付包（RFC §10.2 最小结构：成果引用、
+        验收逐项对应、验证证据、未解决项、风险、动作回执、建议记忆变更）。
+        **零副作用**：不改 Mission 状态/版本、不产生通知、不触发验收（AT-10
+        "submit_result 不自动送验"——送验随 0.6.9 request_review）。校验：
+        generation 须等于 Run 实际代次（否则 409 stale_generation——调用方视图
+        陈旧）；expected_version 须等于 Mission 当前 contract_version（验收对应
+        锚定契约版本）；Run 须属该 Mission。完备性不在此检查（先交付再补证
+        ——缺项由 request_review 拒绝）。append-only：每次提交新建一行（补证
+        = 新包），Run 流记 delivery_submitted 审计。canceled Mission 拒绝。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: mission_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeliveryPackageSubmit" }
+      responses:
+        "201":
+          description: 已提交（Mission 状态不变）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeliveryPackageView" }
+        "400":
+          description: 形状/上限不合法（invalid_delivery）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Mission 或 Run 不存在（mission_not_found / run_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 版本冲突（version_conflict）/ 代次陈旧（stale_generation）/ Run 不属该 Mission（run_mission_mismatch）/ Run 不可交付（run_not_deliverable）/ Mission 已取消（mission_canceled）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: 交付域未装配（delivery_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      operationId: listDeliveryPackages
+      summary: Mission 交付包列表（submitted_at 倒序——首项即当前交付包）
+      parameters:
+        - name: mission_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 交付包列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [packages]
+                properties:
+                  packages:
+                    type: array
+                    items: { $ref: "#/components/schemas/DeliveryPackageView" }
+        "404":
+          description: Mission 不存在（mission_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: 交付域未装配（delivery_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/delivery-packages/{package_id}:
+    get:
+      operationId: getDeliveryPackage
+      summary: 单个交付包（供 request_review 的 delivery_package_ref 寻址）
+      parameters:
+        - name: package_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^dlv_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 交付包
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeliveryPackageView" }
+        "404":
+          description: 交付包不存在（package_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: 交付域未装配（delivery_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/mission-runs/{run_id}:
     get:
       operationId: getRun
@@ -5491,6 +5601,51 @@ components:
       properties:
         valid: { type: boolean }
         reason: { type: string }
+    AcceptanceMappingEntry:
+      type: object
+      required: [criterion, evidence]
+      additionalProperties: false
+      description: 验收逐项对应（criterion 为契约版本内验收条文快照；evidence 为对应证据/说明——可空，补证随后续提交）。
+      properties:
+        criterion: { type: string, minLength: 1, maxLength: 256 }
+        evidence: { type: string, maxLength: 1000 }
+    DeliveryPackageSubmit:
+      type: object
+      required: [run_id, generation, expected_version, artifact_refs, acceptance_mapping]
+      additionalProperties: false
+      description: 交付包提交请求体（0.6.8 / ADR-0031；RFC §10.2 最小结构）。完备性不在提交面检查。
+      properties:
+        run_id: { type: string, pattern: "^run_[0-9A-Za-z_-]+$", description: 来源 Run（须 completed 或 unknown+verified_completed） }
+        generation: { type: integer, minimum: 1, description: 调用方所见 Run 代次——与实际不符 409 stale_generation }
+        expected_version: { type: integer, minimum: 1, description: 调用方所见 Mission contract_version——不符 409 version_conflict }
+        artifact_refs: { type: array, maxItems: 16, items: { type: string, minLength: 1, maxLength: 256 }, description: 成果引用（工作区路径/文档引用/URL——引用非正文） }
+        acceptance_mapping: { type: array, maxItems: 16, items: { $ref: "#/components/schemas/AcceptanceMappingEntry" } }
+        verification_evidence: { type: string, maxLength: 4000, description: 验证证据（负责人验证过程——不能仅拼接 Worker 回复） }
+        open_items: { type: array, maxItems: 16, items: { type: string, minLength: 1, maxLength: 256 } }
+        risks: { type: array, maxItems: 8, items: { type: string, minLength: 1, maxLength: 256 } }
+        action_receipts: { type: array, maxItems: 16, items: { type: string, minLength: 1, maxLength: 128 }, description: 动作回执引用（结构化随工具域） }
+        suggested_memory: { type: array, maxItems: 8, items: { type: string, minLength: 1, maxLength: 256 }, description: 建议记忆变更（随 0.7 消费；本版留痕） }
+        notes: { type: string, maxLength: 1000 }
+    DeliveryPackageView:
+      type: object
+      required: [package_id, mission_id, run_id, attempt, generation, contract_version, artifact_refs, acceptance_mapping, verification_evidence, open_items, risks, action_receipts, suggested_memory, notes, submitted_at]
+      description: 交付包（append-only；Mission 当前交付包 = submitted_at 最新）。
+      properties:
+        package_id: { type: string, description: "dlv_ 前缀生成式" }
+        mission_id: { type: string }
+        run_id: { type: string, description: 来源 Run }
+        attempt: { type: integer, minimum: 1, description: 来源 Run 的 attempt }
+        generation: { type: integer, minimum: 1, description: 来源 Run 的代次（提交时核对） }
+        contract_version: { type: integer, minimum: 1, description: 交付对应的契约版本（验收逐项对应锚定） }
+        artifact_refs: { type: array, items: { type: string } }
+        acceptance_mapping: { type: array, items: { $ref: "#/components/schemas/AcceptanceMappingEntry" } }
+        verification_evidence: { type: string }
+        open_items: { type: array, items: { type: string } }
+        risks: { type: array, items: { type: string } }
+        action_receipts: { type: array, items: { type: string } }
+        suggested_memory: { type: array, items: { type: string } }
+        notes: { type: string }
+        submitted_at: { type: string, format: date-time }
     MissionRunView:
       type: object
       required: [run_id, mission_id, attempt, lease_id, manifest_id, runtime_id, binding_id, agent_id, state, error_text, result_block, fence_token, requested_at, updated_at, resolution]
@@ -5537,10 +5692,10 @@ components:
       properties:
         seq: { type: integer, format: int64 }
         run_id: { type: string }
-        event_type: { type: string, enum: [attempt_requested, started, completed, failed, fence_rejected, stop_requested, canceled, unknown, late_result, resolved] }
+        event_type: { type: string, enum: [attempt_requested, started, completed, failed, fence_rejected, stop_requested, canceled, unknown, late_result, resolved, delivery_submitted] }
         payload:
           type: object
-          description: "事件体——attempt_requested: {attempt, lease_id, manifest_id}；started: {}；completed: {late}；failed: {error}；fence_rejected: {reason, detail}；stop_requested/canceled: {cause}（0.6.6）；unknown: {recovery}（0.6.7 重启结果不可判定）；late_result: {outcome, preview, generation, published:false, phase}（停止后迟到结果只审计）；resolved: {outcome, note}（核验处置）"
+          description: "事件体——attempt_requested: {attempt, lease_id, manifest_id}；started: {}；completed: {late}；failed: {error}；fence_rejected: {reason, detail}；stop_requested/canceled: {cause}（0.6.6）；unknown: {recovery}（0.6.7 重启结果不可判定）；late_result: {outcome, preview, generation, published:false, phase}（停止后迟到结果只审计）；resolved: {outcome, note}（核验处置）；delivery_submitted: {package_id}（0.6.8 交付包提交审计——不自动送验）"
         occurred_at: { type: string, format: date-time }
     SchedulerStatus:
       type: object

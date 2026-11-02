@@ -10,6 +10,7 @@ import {
   type BindingView,
   type ContextManifestSummary,
   type ContextManifestView,
+  type DeliveryPackageView,
   type IdentityAgent,
   type MissionEvent,
   type MissionRunView,
@@ -626,7 +627,166 @@ function MissionDetail({
 
       {/* 0.6.5 执行区：手动调度 + Run 历史（ADR-0028） */}
       <MissionRunCard missionID={missionID} status={detail.status} onChanged={() => load()} />
+
+      {/* 0.6.8 交付区：submit_result 不自动送验（ADR-0031） */}
+      <MissionDeliveryCard missionID={missionID} detail={detail} onChanged={() => load()} />
     </section>
+  );
+}
+
+/** 交付区（0.6.8 / ADR-0031）：当前交付包摘要 + 历史 + 提交表单。提交对
+ *  Mission 状态零副作用——"执行成功 / 成果提交 / 验收通过"三事实分离。 */
+function MissionDeliveryCard({ missionID, detail, onChanged }: { missionID: string; detail: MissionView; onChanged: () => void }) {
+  const [packages, setPackages] = useState<DeliveryPackageView[] | null>(null);
+  const [runs, setRuns] = useState<MissionRunView[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
+  const [runID, setRunID] = useState("");
+  const [refs, setRefs] = useState("");
+  const [evidence, setEvidence] = useState<string[]>([]);
+  const [verification, setVerification] = useState("");
+  const [openItems, setOpenItems] = useState("");
+  const [risks, setRisks] = useState("");
+  const [notes, setNotes] = useState("");
+  const seq = useRef(0);
+
+  const load = () => {
+    const cur = ++seq.current;
+    setErr(null);
+    void Promise.all([api.listDeliveryPackages(missionID), api.listMissionRuns(missionID)])
+      .then(([p, r]) => {
+        if (seq.current !== cur) return;
+        setPackages(p.packages);
+        setRuns(r.runs);
+      })
+      .catch((e) => {
+        if (seq.current !== cur) return;
+        setErr(e instanceof Error ? e.message : String(e));
+      });
+  };
+  useEffect(load, [missionID]);
+  useEffect(() => {
+    setEvidence(detail.acceptance_criteria.map(() => ""));
+  }, [detail.contract_version, detail.acceptance_criteria.length]);
+
+  // 可交付 Run：completed，或 unknown 且处置 verified_completed（ADR-0030）
+  const deliverable = runs.filter((r) => r.state === "completed" || (r.state === "unknown" && r.resolution === "verified_completed"));
+  const latest = packages && packages.length > 0 ? packages[0] : null;
+  const canceled = detail.status === "canceled";
+
+  const submit = async () => {
+    const run = deliverable.find((r) => r.run_id === runID);
+    if (!run) {
+      setErr("请选择可交付的 Run");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.submitDeliveryPackage(missionID, {
+        run_id: run.run_id,
+        generation: run.generation ?? 1,
+        expected_version: detail.contract_version,
+        artifact_refs: splitLines(refs),
+        acceptance_mapping: detail.acceptance_criteria.map((c, i) => ({ criterion: c, evidence: evidence[i] ?? "" })),
+        verification_evidence: verification.trim() || undefined,
+        open_items: splitLines(openItems),
+        risks: splitLines(risks),
+        notes: notes.trim() || undefined,
+      });
+      setFormOpen(false);
+      setRefs("");
+      setVerification("");
+      setOpenItems("");
+      setRisks("");
+      setNotes("");
+      setEvidence(detail.acceptance_criteria.map(() => ""));
+      load();
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const coverage = (p: DeliveryPackageView) => `${p.acceptance_mapping.filter((m) => m.evidence.trim()).length}/${p.acceptance_mapping.length}`;
+
+  return (
+    <details className="mt-1">
+      <summary className="cursor-pointer select-none text-faint">
+        交付{packages === null ? "" : packages.length === 0 ? "（未提交）" : `（${packages.length} 次提交）`}
+      </summary>
+      <div className="mt-1 flex flex-col gap-2 text-xs">
+        {err && <p className="text-danger">{err}</p>}
+        {latest ? (
+          <div className="rounded-lg bg-surface-2 p-2">
+            <p>
+              <span className="text-ok">当前交付包</span> <span className="font-mono text-faint">{latest.package_id}</span>
+              <span className="ml-2 text-faint">来源 Run #{latest.attempt}（gen {latest.generation}）· 契约 v{latest.contract_version} · {absoluteTime(latest.submitted_at)}</span>
+            </p>
+            <p className="text-dim">
+              成果引用 {latest.artifact_refs.length} 项 · 验收对应 {coverage(latest)} 有证据 · 未解决 {latest.open_items.length} · 风险 {latest.risks.length}
+            </p>
+            {latest.artifact_refs.length > 0 && <p className="font-mono text-faint">{latest.artifact_refs.join("；")}</p>}
+            <p className="text-warn">已提交成果——尚未送验（request_review / 验收随 0.6.9）。</p>
+          </div>
+        ) : (
+          packages !== null && <p className="text-faint">尚未提交交付包——执行成功 ≠ 成果提交 ≠ 验收通过（三个独立事实）。</p>
+        )}
+        {!canceled && (
+          <button type="button" onClick={() => setFormOpen((o) => !o)} className="self-start rounded-lg bg-surface-3 px-2 py-1 disabled:opacity-40" disabled={deliverable.length === 0}>
+            {formOpen ? "收起提交" : latest ? "补证 / 再提交" : "提交交付包"}
+          </button>
+        )}
+        {!canceled && deliverable.length === 0 && <span className="text-faint">无可交付 Run（需 completed 或 unknown 已核验达成）。</span>}
+        {formOpen && !canceled && (
+          <div className="flex flex-col gap-1.5 rounded-lg bg-surface-2 p-2">
+            <select value={runID} onChange={(e) => setRunID(e.target.value)} className="rounded border border-border bg-surface px-1.5 py-1">
+              <option value="">选择来源 Run</option>
+              {deliverable.map((r) => (
+                <option key={r.run_id} value={r.run_id}>
+                  #{r.attempt} {r.state}{r.resolution ? `（${r.resolution}）` : ""} · gen {r.generation ?? "?"}
+                </option>
+              ))}
+            </select>
+            <textarea value={refs} onChange={(e) => setRefs(e.target.value)} placeholder="成果引用（每行一项：工作区路径 / 文档引用 / URL；≤16 项）" rows={2} className="rounded border border-border bg-surface px-1.5 py-1 outline-none" />
+            <p className="text-faint">验收逐项对应（证据可留空——先交付再补证；缺项由送验时拒绝）：</p>
+            {detail.acceptance_criteria.map((c, i) => (
+              <div key={i} className="flex items-center gap-1.5">
+                <span className="w-1/3 truncate text-dim" title={c}>{c}</span>
+                <input value={evidence[i] ?? ""} onChange={(e) => setEvidence(evidence.map((v, j) => (j === i ? e.target.value : v)))} placeholder="证据 / 说明（≤1000 字）" className="min-w-0 flex-1 rounded border border-border bg-surface px-1.5 py-0.5 outline-none" />
+              </div>
+            ))}
+            <textarea value={verification} onChange={(e) => setVerification(e.target.value)} placeholder="验证证据（负责人验证过程——不能仅拼接执行回复；≤4000 字）" rows={2} className="rounded border border-border bg-surface px-1.5 py-1 outline-none" />
+            <div className="grid gap-1.5 sm:grid-cols-2">
+              <textarea value={openItems} onChange={(e) => setOpenItems(e.target.value)} placeholder="未解决项（每行一项，≤16）" rows={2} className="rounded border border-border bg-surface px-1.5 py-1 outline-none" />
+              <textarea value={risks} onChange={(e) => setRisks(e.target.value)} placeholder="风险（每行一项，≤8）" rows={2} className="rounded border border-border bg-surface px-1.5 py-1 outline-none" />
+            </div>
+            <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="备注（可选，≤1000 字）" className="rounded border border-border bg-surface px-1.5 py-1 outline-none" />
+            <div className="flex items-center gap-2">
+              <button type="button" disabled={busy || !runID} onClick={() => void submit()} className="rounded-lg bg-accent px-3 py-1.5 text-accent-contrast disabled:opacity-40">
+                {busy ? "提交中…" : "提交（不自动送验）"}
+              </button>
+              <span className="text-faint">基于契约 v{detail.contract_version}；提交不改变任务状态。</span>
+            </div>
+          </div>
+        )}
+        {packages !== null && packages.length > 1 && (
+          <details>
+            <summary className="cursor-pointer select-none text-faint">历史提交（{packages.length - 1}）</summary>
+            <ul className="mt-1 flex flex-col gap-0.5">
+              {packages.slice(1).map((p) => (
+                <li key={p.package_id} className="font-mono text-[10px] text-faint">
+                  {p.package_id} · Run #{p.attempt} · 验收对应 {coverage(p)} · {absoluteTime(p.submitted_at)}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </div>
+    </details>
   );
 }
 

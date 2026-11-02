@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- **DeliveryPackage 成果提交：`submit_result` 不自动送验**（0.6 领域第九件 / ADR-0031，RFC-0018 §3.3/§10.2/§11.2、AT-10）：兑现"执行成功 / 成果提交 / 验收通过是三个互不替代的事实"中的第二个——结构化交付包的提交、留痕与读面，对 Mission 状态**零副作用**。
+  - **DeliveryPackage 域**（internal/delivery，migration v21 一表）：dlv_ 前缀、溯源来源 Run（run_id / attempt / generation）与契约版本；RFC §10.2 最小结构——成果引用（引用非正文）、验收逐项对应 [{criterion, evidence}]（criterion 为契约版本内条文快照，evidence 可空——补证路径）、验证证据、未解决项、风险、动作回执（本版引用串）、建议记忆变更（随 0.7 消费）、备注。append-only：每次提交新建一行（补证 = 新包，旧包不改写）；"当前交付包" = submitted_at 最新。
+  - **提交面** `POST /v1/missions/{id}/delivery-packages`：来源 Run 须可交付（`completed`，或 `unknown` 且处置 `verified_completed`——ADR-0030 用户 attest 的完成；failed/canceled/在途/未处置 409 run_not_deliverable）；`generation` 须等于 Run 实际代次（409 stale_generation——调用方视图陈旧，拒绝而非静默改写）；`expected_version` 须等于 Mission 当前契约版本（409 version_conflict——验收对应锚定契约版本）；Run 须属该 Mission（409 run_mission_mismatch）；canceled Mission 拒绝（409 mission_canceled，读面照常）。**完备性不在提交面检查**（先交付再补证——缺必需项由 0.6.9 request_review 拒绝）。
+  - **不自动送验**：提交不改 Mission 状态/版本/updated_at、不写 mission_events、不产生通知、不触发验收——ready/running/waiting/paused 各态均可提交（交付是对已完成 Run 的事实陈述，与控制态正交）；端口上无任何 Mission 变更方法（结构性保证）。提交回执落来源 Run 事件流 `delivery_submitted{package_id}`（事件追加不改行）。
+  - **读面**：`GET /v1/missions/{id}/delivery-packages`（倒序——首项即当前）、`GET /v1/delivery-packages/{package_id}`（供 0.6.9 `delivery_package_ref` 寻址）。
+  - **校验单源**：artifact_refs ≤16×256、acceptance_mapping ≤16（criterion 1–256 / evidence ≤1000）、verification_evidence ≤4000、open_items ≤16×256、risks ≤8×256、action_receipts ≤16×128、suggested_memory ≤8×256、notes ≤1000；空切片往返 `[]`（400 invalid_delivery）。
+  - **契约面**：三端点 + DeliveryPackageSubmit / DeliveryPackageView / AcceptanceMappingEntry；MissionRunEvent 事件枚举 += delivery_submitted。
+  - **SPA**：任务详情「交付」区——当前交付包摘要（来源 Run、验收对应有证据 n/m、未解决/风险计数）、历史提交折叠、提交表单（选可交付 Run、逐条验收证据、成果引用/验证证据/未解决项/风险/备注）；明示"已提交成果——尚未送验（验收随 0.6.9）"。
+
 ## [0.6.7] - 2026-11-02
 
 ### Fixed

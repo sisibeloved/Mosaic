@@ -1943,6 +1943,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/missions/{mission_id}/delivery-packages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Mission 交付包列表（submitted_at 倒序——首项即当前交付包） */
+        get: operations["listDeliveryPackages"];
+        put?: never;
+        /**
+         * 提交交付包（submit_result——不自动送验）
+         * @description 0.6.8 / ADR-0031：对一次**可交付** Run（completed，或 unknown 且处置
+         *     verified_completed）提交结构化交付包（RFC §10.2 最小结构：成果引用、
+         *     验收逐项对应、验证证据、未解决项、风险、动作回执、建议记忆变更）。
+         *     **零副作用**：不改 Mission 状态/版本、不产生通知、不触发验收（AT-10
+         *     "submit_result 不自动送验"——送验随 0.6.9 request_review）。校验：
+         *     generation 须等于 Run 实际代次（否则 409 stale_generation——调用方视图
+         *     陈旧）；expected_version 须等于 Mission 当前 contract_version（验收对应
+         *     锚定契约版本）；Run 须属该 Mission。完备性不在此检查（先交付再补证
+         *     ——缺项由 request_review 拒绝）。append-only：每次提交新建一行（补证
+         *     = 新包），Run 流记 delivery_submitted 审计。canceled Mission 拒绝。
+         */
+        post: operations["submitDeliveryPackage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/delivery-packages/{package_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 单个交付包（供 request_review 的 delivery_package_ref 寻址） */
+        get: operations["getDeliveryPackage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/mission-runs/{run_id}": {
         parameters: {
             query?: never;
@@ -3765,6 +3812,56 @@ export interface components {
             valid: boolean;
             reason: string;
         };
+        /** @description 验收逐项对应（criterion 为契约版本内验收条文快照；evidence 为对应证据/说明——可空，补证随后续提交）。 */
+        AcceptanceMappingEntry: {
+            criterion: string;
+            evidence: string;
+        };
+        /** @description 交付包提交请求体（0.6.8 / ADR-0031；RFC §10.2 最小结构）。完备性不在提交面检查。 */
+        DeliveryPackageSubmit: {
+            /** @description 来源 Run（须 completed 或 unknown+verified_completed） */
+            run_id: string;
+            /** @description 调用方所见 Run 代次——与实际不符 409 stale_generation */
+            generation: number;
+            /** @description 调用方所见 Mission contract_version——不符 409 version_conflict */
+            expected_version: number;
+            /** @description 成果引用（工作区路径/文档引用/URL——引用非正文） */
+            artifact_refs: string[];
+            acceptance_mapping: components["schemas"]["AcceptanceMappingEntry"][];
+            /** @description 验证证据（负责人验证过程——不能仅拼接 Worker 回复） */
+            verification_evidence?: string;
+            open_items?: string[];
+            risks?: string[];
+            /** @description 动作回执引用（结构化随工具域） */
+            action_receipts?: string[];
+            /** @description 建议记忆变更（随 0.7 消费；本版留痕） */
+            suggested_memory?: string[];
+            notes?: string;
+        };
+        /** @description 交付包（append-only；Mission 当前交付包 = submitted_at 最新）。 */
+        DeliveryPackageView: {
+            /** @description dlv_ 前缀生成式 */
+            package_id: string;
+            mission_id: string;
+            /** @description 来源 Run */
+            run_id: string;
+            /** @description 来源 Run 的 attempt */
+            attempt: number;
+            /** @description 来源 Run 的代次（提交时核对） */
+            generation: number;
+            /** @description 交付对应的契约版本（验收逐项对应锚定） */
+            contract_version: number;
+            artifact_refs: string[];
+            acceptance_mapping: components["schemas"]["AcceptanceMappingEntry"][];
+            verification_evidence: string;
+            open_items: string[];
+            risks: string[];
+            action_receipts: string[];
+            suggested_memory: string[];
+            notes: string;
+            /** Format: date-time */
+            submitted_at: string;
+        };
         /**
          * @description Run（一次执行尝试，ADR-0028/0029/0030）：state ∈ pending | running |
          *     completed | failed | canceled | unknown（0.6.6 暂停/取消停止；0.6.7
@@ -3829,8 +3926,8 @@ export interface components {
             seq: number;
             run_id: string;
             /** @enum {string} */
-            event_type: "attempt_requested" | "started" | "completed" | "failed" | "fence_rejected" | "stop_requested" | "canceled" | "unknown" | "late_result" | "resolved";
-            /** @description 事件体——attempt_requested: {attempt, lease_id, manifest_id}；started: {}；completed: {late}；failed: {error}；fence_rejected: {reason, detail}；stop_requested/canceled: {cause}（0.6.6）；unknown: {recovery}（0.6.7 重启结果不可判定）；late_result: {outcome, preview, generation, published:false, phase}（停止后迟到结果只审计）；resolved: {outcome, note}（核验处置） */
+            event_type: "attempt_requested" | "started" | "completed" | "failed" | "fence_rejected" | "stop_requested" | "canceled" | "unknown" | "late_result" | "resolved" | "delivery_submitted";
+            /** @description 事件体——attempt_requested: {attempt, lease_id, manifest_id}；started: {}；completed: {late}；failed: {error}；fence_rejected: {reason, detail}；stop_requested/canceled: {cause}（0.6.6）；unknown: {recovery}（0.6.7 重启结果不可判定）；late_result: {outcome, preview, generation, published:false, phase}（停止后迟到结果只审计）；resolved: {outcome, note}（核验处置）；delivery_submitted: {package_id}（0.6.8 交付包提交审计——不自动送验） */
             payload: Record<string, never>;
             /** Format: date-time */
             occurred_at: string;
@@ -8659,6 +8756,153 @@ export interface operations {
             413: components["responses"]["TooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             /** @description Run 域未装配（run_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listDeliveryPackages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 交付包列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        packages: components["schemas"]["DeliveryPackageView"][];
+                    };
+                };
+            };
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 交付域未装配（delivery_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    submitDeliveryPackage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeliveryPackageSubmit"];
+            };
+        };
+        responses: {
+            /** @description 已提交（Mission 状态不变） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryPackageView"];
+                };
+            };
+            /** @description 形状/上限不合法（invalid_delivery） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Mission 或 Run 不存在（mission_not_found / run_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 版本冲突（version_conflict）/ 代次陈旧（stale_generation）/ Run 不属该 Mission（run_mission_mismatch）/ Run 不可交付（run_not_deliverable）/ Mission 已取消（mission_canceled） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 交付域未装配（delivery_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getDeliveryPackage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 交付包 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryPackageView"];
+                };
+            };
+            /** @description 交付包不存在（package_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 交付域未装配（delivery_unavailable） */
             503: {
                 headers: {
                     [name: string]: unknown;

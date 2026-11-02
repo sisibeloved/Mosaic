@@ -1016,6 +1016,17 @@ func (s *Service) RecoverUnfinished(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// AppendReceipt 外域回执追加（0.6.8 / ADR-0031：交付包提交审计
+// delivery_submitted 落来源 Run 流——事件追加不改 Run 行）。
+func (s *Service) AppendReceipt(ctx context.Context, runID, eventType string, payload map[string]any) error {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	return s.store.AppendRunEvents(ctx, runID, []Event{{
+		RunID: runID, EventType: eventType, OccurredAt: s.now(), Payload: payload,
+	}})
+}
+
 // GetRun / ListRuns / RunEventsByRun 读面。
 func (s *Service) GetRun(ctx context.Context, runID string) (Run, bool, error) {
 	return s.store.RunByID(ctx, runID)

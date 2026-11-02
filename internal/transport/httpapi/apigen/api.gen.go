@@ -785,16 +785,17 @@ func (e MissionEventEventType) Valid() bool {
 
 // Defines values for MissionRunEventEventType.
 const (
-	MissionRunEventEventTypeAttemptRequested MissionRunEventEventType = "attempt_requested"
-	MissionRunEventEventTypeCanceled         MissionRunEventEventType = "canceled"
-	MissionRunEventEventTypeCompleted        MissionRunEventEventType = "completed"
-	MissionRunEventEventTypeFailed           MissionRunEventEventType = "failed"
-	MissionRunEventEventTypeFenceRejected    MissionRunEventEventType = "fence_rejected"
-	MissionRunEventEventTypeLateResult       MissionRunEventEventType = "late_result"
-	MissionRunEventEventTypeResolved         MissionRunEventEventType = "resolved"
-	MissionRunEventEventTypeStarted          MissionRunEventEventType = "started"
-	MissionRunEventEventTypeStopRequested    MissionRunEventEventType = "stop_requested"
-	MissionRunEventEventTypeUnknown          MissionRunEventEventType = "unknown"
+	MissionRunEventEventTypeAttemptRequested  MissionRunEventEventType = "attempt_requested"
+	MissionRunEventEventTypeCanceled          MissionRunEventEventType = "canceled"
+	MissionRunEventEventTypeCompleted         MissionRunEventEventType = "completed"
+	MissionRunEventEventTypeDeliverySubmitted MissionRunEventEventType = "delivery_submitted"
+	MissionRunEventEventTypeFailed            MissionRunEventEventType = "failed"
+	MissionRunEventEventTypeFenceRejected     MissionRunEventEventType = "fence_rejected"
+	MissionRunEventEventTypeLateResult        MissionRunEventEventType = "late_result"
+	MissionRunEventEventTypeResolved          MissionRunEventEventType = "resolved"
+	MissionRunEventEventTypeStarted           MissionRunEventEventType = "started"
+	MissionRunEventEventTypeStopRequested     MissionRunEventEventType = "stop_requested"
+	MissionRunEventEventTypeUnknown           MissionRunEventEventType = "unknown"
 )
 
 // Valid indicates whether the value is a known member of the MissionRunEventEventType enum.
@@ -805,6 +806,8 @@ func (e MissionRunEventEventType) Valid() bool {
 	case MissionRunEventEventTypeCanceled:
 		return true
 	case MissionRunEventEventTypeCompleted:
+		return true
+	case MissionRunEventEventTypeDeliverySubmitted:
 		return true
 	case MissionRunEventEventTypeFailed:
 		return true
@@ -1950,6 +1953,12 @@ func (e RequestRestoreJSONBodyConfirm) Valid() bool {
 	}
 }
 
+// AcceptanceMappingEntry 验收逐项对应（criterion 为契约版本内验收条文快照；evidence 为对应证据/说明——可空，补证随后续提交）。
+type AcceptanceMappingEntry struct {
+	Criterion string `json:"criterion"`
+	Evidence  string `json:"evidence"`
+}
+
 // AgentEvent agent_events 流事件（migration v8；seq 升序即流序）。
 type AgentEvent struct {
 	AgentId string `json:"agent_id"`
@@ -2368,6 +2377,64 @@ type DelegationPolicy struct {
 
 // DelegationPolicyAllowed defines model for DelegationPolicy.Allowed.
 type DelegationPolicyAllowed string
+
+// DeliveryPackageSubmit 交付包提交请求体（0.6.8 / ADR-0031；RFC §10.2 最小结构）。完备性不在提交面检查。
+type DeliveryPackageSubmit struct {
+	AcceptanceMapping []AcceptanceMappingEntry `json:"acceptance_mapping"`
+
+	// ActionReceipts 动作回执引用（结构化随工具域）
+	ActionReceipts *[]string `json:"action_receipts,omitempty"`
+
+	// ArtifactRefs 成果引用（工作区路径/文档引用/URL——引用非正文）
+	ArtifactRefs []string `json:"artifact_refs"`
+
+	// ExpectedVersion 调用方所见 Mission contract_version——不符 409 version_conflict
+	ExpectedVersion int `json:"expected_version"`
+
+	// Generation 调用方所见 Run 代次——与实际不符 409 stale_generation
+	Generation int       `json:"generation"`
+	Notes      *string   `json:"notes,omitempty"`
+	OpenItems  *[]string `json:"open_items,omitempty"`
+	Risks      *[]string `json:"risks,omitempty"`
+
+	// RunId 来源 Run（须 completed 或 unknown+verified_completed）
+	RunId string `json:"run_id"`
+
+	// SuggestedMemory 建议记忆变更（随 0.7 消费；本版留痕）
+	SuggestedMemory *[]string `json:"suggested_memory,omitempty"`
+
+	// VerificationEvidence 验证证据（负责人验证过程——不能仅拼接 Worker 回复）
+	VerificationEvidence *string `json:"verification_evidence,omitempty"`
+}
+
+// DeliveryPackageView 交付包（append-only；Mission 当前交付包 = submitted_at 最新）。
+type DeliveryPackageView struct {
+	AcceptanceMapping []AcceptanceMappingEntry `json:"acceptance_mapping"`
+	ActionReceipts    []string                 `json:"action_receipts"`
+	ArtifactRefs      []string                 `json:"artifact_refs"`
+
+	// Attempt 来源 Run 的 attempt
+	Attempt int `json:"attempt"`
+
+	// ContractVersion 交付对应的契约版本（验收逐项对应锚定）
+	ContractVersion int `json:"contract_version"`
+
+	// Generation 来源 Run 的代次（提交时核对）
+	Generation int      `json:"generation"`
+	MissionId  string   `json:"mission_id"`
+	Notes      string   `json:"notes"`
+	OpenItems  []string `json:"open_items"`
+
+	// PackageId dlv_ 前缀生成式
+	PackageId string   `json:"package_id"`
+	Risks     []string `json:"risks"`
+
+	// RunId 来源 Run
+	RunId                string    `json:"run_id"`
+	SubmittedAt          time.Time `json:"submitted_at"`
+	SuggestedMemory      []string  `json:"suggested_memory"`
+	VerificationEvidence string    `json:"verification_evidence"`
+}
 
 // DevNote defines model for DevNote.
 type DevNote struct {
@@ -3161,7 +3228,7 @@ type MissionRunEvent struct {
 	EventType  MissionRunEventEventType `json:"event_type"`
 	OccurredAt time.Time                `json:"occurred_at"`
 
-	// Payload 事件体——attempt_requested: {attempt, lease_id, manifest_id}；started: {}；completed: {late}；failed: {error}；fence_rejected: {reason, detail}；stop_requested/canceled: {cause}（0.6.6）；unknown: {recovery}（0.6.7 重启结果不可判定）；late_result: {outcome, preview, generation, published:false, phase}（停止后迟到结果只审计）；resolved: {outcome, note}（核验处置）
+	// Payload 事件体——attempt_requested: {attempt, lease_id, manifest_id}；started: {}；completed: {late}；failed: {error}；fence_rejected: {reason, detail}；stop_requested/canceled: {cause}（0.6.6）；unknown: {recovery}（0.6.7 重启结果不可判定）；late_result: {outcome, preview, generation, published:false, phase}（停止后迟到结果只审计）；resolved: {outcome, note}（核验处置）；delivery_submitted: {package_id}（0.6.8 交付包提交审计——不自动送验）
 	Payload map[string]interface{} `json:"payload"`
 	RunId   string                 `json:"run_id"`
 	Seq     int64                  `json:"seq"`
@@ -4622,6 +4689,9 @@ type CancelMissionJSONRequestBody = MissionCancel
 // BuildContextManifestJSONRequestBody defines body for BuildContextManifest for application/json ContentType.
 type BuildContextManifestJSONRequestBody = ContextManifestBuildRequest
 
+// SubmitDeliveryPackageJSONRequestBody defines body for SubmitDeliveryPackage for application/json ContentType.
+type SubmitDeliveryPackageJSONRequestBody = DeliveryPackageSubmit
+
 // PauseMissionJSONRequestBody defines body for PauseMission for application/json ContentType.
 type PauseMissionJSONRequestBody = MissionPause
 
@@ -4690,6 +4760,9 @@ type ServerInterface interface {
 	// GetContextManifest 执行上下文清单详情（含层内容块与 Receipt）
 	// (GET /v1/context-manifests/{manifest_id})
 	GetContextManifest(w http.ResponseWriter, r *http.Request, manifestId string)
+	// GetDeliveryPackage 单个交付包（供 request_review 的 delivery_package_ref 寻址）
+	// (GET /v1/delivery-packages/{package_id})
+	GetDeliveryPackage(w http.ResponseWriter, r *http.Request, packageId string)
 	// DispatchRequest 网关投递（复核 + 幂等 + 建契约 + 回执）
 	// (POST /v1/dispatch/dispatch)
 	DispatchRequest(w http.ResponseWriter, r *http.Request)
@@ -4858,6 +4931,12 @@ type ServerInterface interface {
 	// BuildContextManifest 装配执行上下文清单（存档 Manifest + Receipt）
 	// (POST /v1/missions/{mission_id}/context-manifests)
 	BuildContextManifest(w http.ResponseWriter, r *http.Request, missionId string)
+	// ListDeliveryPackages Mission 交付包列表（submitted_at 倒序——首项即当前交付包）
+	// (GET /v1/missions/{mission_id}/delivery-packages)
+	ListDeliveryPackages(w http.ResponseWriter, r *http.Request, missionId string)
+	// SubmitDeliveryPackage 提交交付包（submit_result——不自动送验）
+	// (POST /v1/missions/{mission_id}/delivery-packages)
+	SubmitDeliveryPackage(w http.ResponseWriter, r *http.Request, missionId string)
 	// ListMissionEvents Mission 事件流（只读审计面）
 	// (GET /v1/missions/{mission_id}/events)
 	ListMissionEvents(w http.ResponseWriter, r *http.Request, missionId string)
@@ -5100,6 +5179,32 @@ func (siw *ServerInterfaceWrapper) GetContextManifest(w http.ResponseWriter, r *
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetContextManifest(w, r, manifestId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetDeliveryPackage operation middleware
+func (siw *ServerInterfaceWrapper) GetDeliveryPackage(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "package_id" -------------
+	var packageId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "package_id", r.PathValue("package_id"), &packageId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "package_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetDeliveryPackage(w, r, packageId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -6489,6 +6594,58 @@ func (siw *ServerInterfaceWrapper) BuildContextManifest(w http.ResponseWriter, r
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.BuildContextManifest(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListDeliveryPackages operation middleware
+func (siw *ServerInterfaceWrapper) ListDeliveryPackages(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListDeliveryPackages(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SubmitDeliveryPackage operation middleware
+func (siw *ServerInterfaceWrapper) SubmitDeliveryPackage(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SubmitDeliveryPackage(w, r, missionId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8237,6 +8394,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/runtime-leases/{lease_id}/check-fence", wrapper.CheckRuntimeLeaseFence)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/runs", wrapper.ListMissionRuns)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/runs", wrapper.CreateMissionRun)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/delivery-packages", wrapper.ListDeliveryPackages)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/delivery-packages", wrapper.SubmitDeliveryPackage)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/delivery-packages/{package_id}", wrapper.GetDeliveryPackage)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/mission-runs/{run_id}", wrapper.GetRun)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/mission-runs/{run_id}/events", wrapper.GetMissionRunEvents)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/mission-runs/{run_id}/resolve", wrapper.ResolveMissionRun)
