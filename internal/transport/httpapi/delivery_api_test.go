@@ -43,10 +43,6 @@ func (p epDeliveryRuns) RunFacts(ctx context.Context, id string) (delivery.RunFa
 		State: r.State, Resolution: r.Resolution}, true, nil
 }
 
-func (p epDeliveryRuns) AppendReceipt(ctx context.Context, runID, eventType string, payload map[string]any) error {
-	return p.svc.AppendReceipt(ctx, runID, eventType, payload)
-}
-
 type runDoc struct {
 	RunID      string `json:"run_id"`
 	State      string `json:"state"`

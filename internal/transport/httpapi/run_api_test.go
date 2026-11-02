@@ -51,6 +51,7 @@ func (p epRunMissions) FinishCanceling(ctx context.Context, id, reason string) e
 	_, err := p.svc.FinishCancel(ctx, id, reason)
 	return err
 }
+
 // SetWaiting / ClearWaiting（0.6.7 / ADR-0030：恢复分派结果不可判定 → waiting；
 // 处置后回调度列）。
 func (p epRunMissions) SetWaiting(ctx context.Context, id, reason string) error {
@@ -169,7 +170,18 @@ func runTestServer(t *testing.T, opts ...func(*runTestCfg)) (*httptest.Server, *
 		cfg.capture.runStore = runStore
 	}
 	// 0.6.8：交付域（真 mission/run 适配）
-	deliverySvc := delivery.New(delivery.NewMemStore(), epDeliveryMissions{mSvc}, epDeliveryRuns{runSvc},
+	deliveryStore := delivery.NewMemStore().
+		WithGuard(func(id string) (int, string, bool) {
+			m, ok, err := mSvc.Get(context.Background(), id)
+			if err != nil || !ok {
+				return 0, "", false
+			}
+			return m.ContractVersion, m.Status, true
+		}).
+		WithReceiptSink(func(ctx context.Context, runID, eventType string, payload map[string]any) error {
+			return runSvc.AppendReceipt(ctx, runID, eventType, payload)
+		})
+	deliverySvc := delivery.New(deliveryStore, epDeliveryMissions{mSvc}, epDeliveryRuns{runSvc},
 		delivery.WithNow(func() string { seq++; return "2026-11-01T12:00:" + pad2(seq%60) + ".000Z" }),
 		delivery.WithNewPackageID(func() string { seq++; return "dlv_r" + itoa(seq) }))
 	ts := httptest.NewServer(New(Deps{Missions: mSvc, MissionRuns: runSvc, Identity: ident,

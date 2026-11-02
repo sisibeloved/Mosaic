@@ -1136,7 +1136,8 @@ func (a deliveryMissionsAdapter) MissionFacts(ctx context.Context, missionID str
 	return delivery.MissionFacts{MissionID: m.MissionID, ContractVersion: m.ContractVersion, Status: m.Status}, true, nil
 }
 
-// deliveryRunsAdapter delivery.Runs 适配：只读事实 + 事件流回执追加。
+// deliveryRunsAdapter delivery.Runs 只读适配（回执由 SQLite 存储随包同事务落
+// Run 流——0.6.8 审校 #2）。
 type deliveryRunsAdapter struct{ svc *missionrun.Service }
 
 func (a deliveryRunsAdapter) RunFacts(ctx context.Context, runID string) (delivery.RunFacts, bool, error) {
@@ -1146,10 +1147,6 @@ func (a deliveryRunsAdapter) RunFacts(ctx context.Context, runID string) (delive
 	}
 	return delivery.RunFacts{RunID: r.RunID, MissionID: r.MissionID, Attempt: r.Attempt, Generation: r.Generation,
 		State: r.State, Resolution: r.Resolution}, true, nil
-}
-
-func (a deliveryRunsAdapter) AppendReceipt(ctx context.Context, runID, eventType string, payload map[string]any) error {
-	return a.svc.AppendReceipt(ctx, runID, eventType, payload)
 }
 
 // missionStateLookup runtime.Missions 的 Mission 域适配（ADR-0027）。

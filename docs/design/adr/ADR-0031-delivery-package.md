@@ -59,6 +59,13 @@ POST /v1/missions/{mission_id}/delivery-packages
 - **契约版本 CAS**：`expected_version` 须等于 Mission 当前 contract_version
   （验收逐项对应锚定契约版本——契约已修订则交付映射陈旧，409
   `version_conflict` 携当前版本）。
+- **守卫在写包事务内权威复核**（v0.2 审校 #1）：服务层对 Mission 的预读只用
+  于早拒与清晰错误；存储层 `CreatePackage` 在同一事务内重读 missions 行——
+  契约版本不符 / 已取消 / 不存在分别以 version_conflict / mission_canceled /
+  mission_not_found 拒绝，整体不落。读-写之间的并发修订或取消不再放行。
+- **包与回执同事务**（v0.2 审校 #2）：`delivery_submitted` 回执随包在同一事务
+  写入来源 Run 流（存储层组合——同库单事务）；不存在"包已落、回执永久缺失"
+  的部分成功，请求中断即整体不落、重试恰一包一回执。Runs 端口退回只读。
 - **不自动送验**（AT-10 核心）：提交对 Mission.status **零变更**、不产生通知
   （回房随 0.6.10）、不触发任何验收流程——Mission 仍停在其当前状态（ready /
   running / waiting / paused 均可提交——交付是对已完成 Run 的事实陈述，与
@@ -71,8 +78,10 @@ POST /v1/missions/{mission_id}/delivery-packages
 
 ### 3. 读面
 
-- `GET /v1/missions/{mission_id}/delivery-packages` → 列表（submitted_at 倒序
-  ——首项即当前交付包）。
+- `GET /v1/missions/{mission_id}/delivery-packages` → 列表（**按真实提交时间**
+  倒序——首项即当前交付包；v0.2 审校 #3：submitted_at 为 RFC3339Nano 小数位
+  可变，字符串序会把 `.1Z` 排在更晚的 `.11Z` 之前——两存储均按解析时间比较，
+  同刻按插入序倒序）。
 - `GET /v1/delivery-packages/{package_id}` → 单包（供 0.6.9
   `delivery_package_ref` 寻址）。
 - Mission canceled 后读面照常（历史可查）。
@@ -100,7 +109,9 @@ notes ≤1000。空切片补齐 `[]`（JSON 往返稳定）。超限 → 400
 任务详情增「交付」区：当前交付包摘要（来源 Run #attempt、成果引用、验收
 对应覆盖 n/m、未解决项/风险计数）+ 历史包折叠 + 提交表单（选可交付 Run、
 逐条验收证据、成果引用/证据/未解决项/风险）。提交后 Mission 状态区不变——
-UI 明示"已提交成果——尚未送验（验收随 0.6.9）"。
+UI 明示"已提交成果——尚未送验（验收随 0.6.9）"。可交付 Run 资格列表随执行
+进度刷新（v0.2 审校 #4：10s 轮询 + 详情变化即刻重载；只刷新包/Run 列表，
+表单草稿独立不受影响）。
 
 ## 非目标
 
@@ -139,3 +150,7 @@ UI 明示"已提交成果——尚未送验（验收随 0.6.9）"。
 ## 修订记录
 
 - v0.1（2026-11-02）：首版（随 0.6.8 实施）。
+- v0.2（2026-11-02）：审校修复（独立审校 1 P1 + 3 P2）——#1 P1 写包事务内
+  权威复核 Mission 版本/取消（并发修订或取消后不再放行）；#2 P2 包与回执同
+  事务（Runs 端口退回只读；无部分成功）；#3 P2 列表按真实提交时间倒序（两
+  存储 + 小数位回归）；#4 P2 交付卡资格列表随执行进度刷新且保留草稿。

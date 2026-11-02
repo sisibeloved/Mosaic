@@ -666,6 +666,14 @@ function MissionDeliveryCard({ missionID, detail, onChanged }: { missionID: stri
       });
   };
   useEffect(load, [missionID]);
+  // 审校 #4：可交付 Run 资格列表须随执行卡进度刷新——10s 轮询（后台调度器完成/
+  // 核验处置落地）+ 详情变化即刻重载（手动执行/核验经父层 onChanged 更新
+  // detail）。只刷新 packages/runs，不触碰表单草稿（refs/evidence/… 独立 state）。
+  useEffect(() => {
+    const timer = setInterval(load, 10_000);
+    return () => clearInterval(timer);
+  }, [missionID]);
+  useEffect(load, [detail.updated_at, detail.status]);
   useEffect(() => {
     setEvidence(detail.acceptance_criteria.map(() => ""));
   }, [detail.contract_version, detail.acceptance_criteria.length]);

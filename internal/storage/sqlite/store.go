@@ -3150,8 +3150,10 @@ func jsonList(v any) (string, error) {
 	return string(b), nil
 }
 
-// CreatePackage append-only 建行（主键撞键报错）。
-func (s *Store) CreatePackage(ctx context.Context, p delivery.Package) error {
+// CreatePackage 单事务（0.6.8 审校 #1/#2）：复核 missions 行（契约版本 ==
+// p.ContractVersion 且非 canceled——端口读与写之间的并发修订/取消在此拒绝）→
+// 写包 → 写来源 Run 流回执；任一步失败整体回滚（无"包落了回执丢"）。
+func (s *Store) CreatePackage(ctx context.Context, p delivery.Package, receipt delivery.Receipt) error {
 	refs, err := jsonList(p.ArtifactRefs)
 	if err != nil {
 		return err
@@ -3176,21 +3178,50 @@ func (s *Store) CreatePackage(ctx context.Context, p delivery.Package) error {
 	if err != nil {
 		return err
 	}
+	receiptPayload, err := runEventPayloadJSON(receipt.Payload)
+	if err != nil {
+		return err
+	}
 	return s.identityWriteTx(ctx, func(q identityExec) error {
+		// 事务内权威守卫（审校 #1）
+		var version int
+		var status string
+		err := q.QueryRowContext(ctx,
+			`SELECT contract_version, status FROM missions WHERE mission_id = ?`, p.MissionID).Scan(&version, &status)
+		if errors.Is(err, sql.ErrNoRows) {
+			return delivery.ErrMissionNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("sqlite: delivery guard probe: %w", err)
+		}
+		if status == mission.StatusCanceled {
+			return fmt.Errorf("%w: 不再受理交付", delivery.ErrMissionCanceled)
+		}
+		if version != p.ContractVersion {
+			return fmt.Errorf("%w: 期望 v%d，当前 v%d", delivery.ErrVersionConflict, p.ContractVersion, version)
+		}
 		if _, err := q.ExecContext(ctx, `
 INSERT INTO delivery_packages (`+deliveryCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			p.PackageID, p.MissionID, p.RunID, p.Attempt, p.Generation, p.ContractVersion,
 			refs, mapping, p.VerificationEvidence, open, risks, receipts, memory, p.Notes, p.SubmittedAt); err != nil {
 			return fmt.Errorf("sqlite: insert delivery package: %w", err)
 		}
+		// 回执同事务（审校 #2）
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO run_events (run_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+			receipt.RunID, receipt.EventType, receiptPayload, p.SubmittedAt); err != nil {
+			return fmt.Errorf("sqlite: insert delivery receipt: %w", err)
+		}
 		return nil
 	})
 }
 
-// ListPackagesByMission submitted_at 倒序（同刻按 rowid 倒序）。
+// ListPackagesByMission 按真实提交时间倒序（0.6.8 审校 #3：submitted_at 为
+// RFC3339Nano 小数位可变，字符串序错位——先按 rowid 倒序取出，再按解析时间
+// 稳定排序；同刻保持插入倒序）。
 func (s *Store) ListPackagesByMission(ctx context.Context, missionID string) ([]delivery.Package, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+deliveryCols+`
-  FROM delivery_packages WHERE mission_id = ? ORDER BY submitted_at DESC, rowid DESC`, missionID)
+  FROM delivery_packages WHERE mission_id = ? ORDER BY rowid DESC`, missionID)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list delivery packages: %w", err)
 	}
@@ -3203,7 +3234,13 @@ func (s *Store) ListPackagesByMission(ctx context.Context, missionID string) ([]
 		}
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return delivery.LaterThan(out[i].SubmittedAt, out[j].SubmittedAt)
+	})
+	return out, nil
 }
 
 // PackageByID 单查；未知 ok=false。

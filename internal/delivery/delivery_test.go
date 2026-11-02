@@ -21,7 +21,8 @@ func (f fakeMissions) MissionFacts(_ context.Context, id string) (MissionFacts, 
 
 type fakeRuns struct {
 	facts    map[string]RunFacts
-	receipts []string // runID:eventType:package_id
+	receipts []string // runID:eventType:package_id（经存储回执汇捕获——与包同"事务"）
+	sinkErr  error    // 回执汇故障注入（原子性：包不得落）
 }
 
 func (f *fakeRuns) RunFacts(_ context.Context, id string) (RunFacts, bool, error) {
@@ -29,7 +30,11 @@ func (f *fakeRuns) RunFacts(_ context.Context, id string) (RunFacts, bool, error
 	return r, ok, nil
 }
 
-func (f *fakeRuns) AppendReceipt(_ context.Context, runID, eventType string, payload map[string]any) error {
+// sink 存储回执汇（MemStore 在写包的同一临界区内调用——失败则包不落）。
+func (f *fakeRuns) sink(_ context.Context, runID, eventType string, payload map[string]any) error {
+	if f.sinkErr != nil {
+		return f.sinkErr
+	}
 	pid, _ := payload["package_id"].(string)
 	f.receipts = append(f.receipts, runID+":"+eventType+":"+pid)
 	return nil
@@ -39,9 +44,12 @@ type fixture struct {
 	svc      *Service
 	missions fakeMissions
 	runs     *fakeRuns
+	store    *MemStore
+	// txFacts 事务时真值（审校 #1：读-写之间可被并发修订/取消改写）；nil = 与端口读值一致
+	txFacts map[string]MissionFacts
 }
 
-func newFixture(t *testing.T) fixture {
+func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	missions := fakeMissions{facts: map[string]MissionFacts{
 		"mi_a": {MissionID: "mi_a", ContractVersion: 2, Status: "ready"},
@@ -60,10 +68,23 @@ func newFixture(t *testing.T) fixture {
 	}}
 	var n int
 	tick := 0
-	svc := New(NewMemStore(), missions, runs,
+	f := &fixture{missions: missions, runs: runs}
+	store := NewMemStore().
+		WithGuard(func(missionID string) (int, string, bool) {
+			src := missions.facts
+			if f.txFacts != nil {
+				src = f.txFacts
+			}
+			m, ok := src[missionID]
+			return m.ContractVersion, m.Status, ok
+		}).
+		WithReceiptSink(runs.sink)
+	svc := New(store, missions, runs,
 		WithNow(func() string { tick++; return "2026-11-01T12:00:0" + string(rune('0'+tick)) + ".000Z" }),
 		WithNewPackageID(func() string { n++; return "dlv_t" + string(rune('0'+n)) }))
-	return fixture{svc: svc, missions: missions, runs: runs}
+	f.svc = svc
+	f.store = store
+	return f
 }
 
 func goodSubmission(runID string, gen, ver int) Submission {
@@ -250,5 +271,83 @@ func TestRepeatSubmitAppendOnly(t *testing.T) {
 	old, _, _ := f.svc.Get(ctx, p1.PackageID)
 	if old.AcceptanceMapping[1].Evidence != "" {
 		t.Fatalf("旧包不得被改写: %+v", old)
+	}
+}
+
+// TestSubmitGuardInTxVersionDrift 审校 #1：端口读到 v2、写包事务时契约已修订为
+// v3（并发修订）→ 必须在同一事务复核并以 version_conflict 拒绝；不落包不记回执。
+func TestSubmitGuardInTxVersionDrift(t *testing.T) {
+	f := newFixture(t)
+	f.txFacts = map[string]MissionFacts{"mi_a": {MissionID: "mi_a", ContractVersion: 3, Status: "ready"}}
+	ctx := context.Background()
+	_, err := f.svc.Submit(ctx, "mi_a", goodSubmission("run_ok", 3, 2))
+	if !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("读-写间契约修订须版本冲突: %v", err)
+	}
+	if list, _, _ := f.svc.List(ctx, "mi_a"); len(list) != 0 {
+		t.Fatalf("不得落包: %+v", list)
+	}
+	if len(f.runs.receipts) != 0 {
+		t.Fatalf("不得记回执: %v", f.runs.receipts)
+	}
+}
+
+// TestSubmitGuardInTxCancelDrift 审校 #1：端口读到 ready、写包事务时已取消 →
+// mission_canceled 拒绝；不落包不记回执。
+func TestSubmitGuardInTxCancelDrift(t *testing.T) {
+	f := newFixture(t)
+	f.txFacts = map[string]MissionFacts{"mi_a": {MissionID: "mi_a", ContractVersion: 2, Status: "canceled"}}
+	ctx := context.Background()
+	if _, err := f.svc.Submit(ctx, "mi_a", goodSubmission("run_ok", 3, 2)); !errors.Is(err, ErrMissionCanceled) {
+		t.Fatalf("读-写间取消须拒绝: %v", err)
+	}
+	if list, _, _ := f.svc.List(ctx, "mi_a"); len(list) != 0 || len(f.runs.receipts) != 0 {
+		t.Fatalf("不得落包/记回执: %+v %v", list, f.runs.receipts)
+	}
+}
+
+// TestReceiptAtomicWithPackage 审校 #2：回执与包同事务——回执写失败则包不落，
+// 调用方得到明确错误（无"部分成功"）；恢复后重试恰一包一回执。
+func TestReceiptAtomicWithPackage(t *testing.T) {
+	f := newFixture(t)
+	f.runs.sinkErr = errors.New("run_events 写失败")
+	ctx := context.Background()
+	if _, err := f.svc.Submit(ctx, "mi_a", goodSubmission("run_ok", 3, 2)); err == nil {
+		t.Fatal("回执失败须报错")
+	}
+	if list, _, _ := f.svc.List(ctx, "mi_a"); len(list) != 0 {
+		t.Fatalf("回执失败包不得落（原子）: %+v", list)
+	}
+	f.runs.sinkErr = nil
+	p, err := f.svc.Submit(ctx, "mi_a", goodSubmission("run_ok", 3, 2))
+	if err != nil {
+		t.Fatalf("恢复后重试: %v", err)
+	}
+	list, _, _ := f.svc.List(ctx, "mi_a")
+	if len(list) != 1 || len(f.runs.receipts) != 1 || !strings.HasSuffix(f.runs.receipts[0], p.PackageID) {
+		t.Fatalf("恰一包一回执: %+v %v", list, f.runs.receipts)
+	}
+}
+
+// TestListOrderByRealTime 审校 #3：submitted_at 为 RFC3339Nano（小数位可变）——
+// 须按真实时间倒序，不得按字符串（".1Z" 字符串序会排在更晚的 ".11Z" 之前）。
+func TestListOrderByRealTime(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	stamps := []string{"2026-11-01T12:00:00.1Z", "2026-11-01T12:00:00.011Z", "2026-11-01T12:00:00.11Z"}
+	i := 0
+	WithNow(func() string { s := stamps[i%len(stamps)]; i++; return s })(f.svc)
+	for range stamps {
+		if _, err := f.svc.Submit(ctx, "mi_a", goodSubmission("run_ok", 3, 2)); err != nil {
+			t.Fatalf("提交: %v", err)
+		}
+	}
+	list, _, _ := f.svc.List(ctx, "mi_a")
+	got := []string{list[0].SubmittedAt, list[1].SubmittedAt, list[2].SubmittedAt}
+	want := []string{"2026-11-01T12:00:00.11Z", "2026-11-01T12:00:00.1Z", "2026-11-01T12:00:00.011Z"}
+	for k := range want {
+		if got[k] != want[k] {
+			t.Fatalf("真实时间倒序: got %v want %v", got, want)
+		}
 	}
 }

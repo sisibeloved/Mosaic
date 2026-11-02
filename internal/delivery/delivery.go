@@ -55,8 +55,6 @@ var (
 	ErrMissionCanceled = errors.New("delivery: Mission 已取消")
 	// ErrPackageNotFound 交付包不存在。
 	ErrPackageNotFound = errors.New("delivery: 交付包不存在")
-	// ErrReceiptWrite 包已落库但回执审计写入失败（不吞错——调用方可见；包仍存在）。
-	ErrReceiptWrite = errors.New("delivery: 交付回执写入失败")
 )
 
 // MappingEntry 验收逐项对应：criterion 为契约版本内验收条文快照，evidence 为
@@ -124,18 +122,50 @@ type RunFacts struct {
 	Resolution string
 }
 
-// Runs 执行域端口：只读事实 + 事件流回执追加（不改 Run 行）。
+// Runs 执行域只读端口（回执由存储层随包同事务落 Run 流——端口不再承担写）。
 type Runs interface {
 	RunFacts(ctx context.Context, runID string) (RunFacts, bool, error)
-	AppendReceipt(ctx context.Context, runID, eventType string, payload map[string]any) error
+}
+
+// Receipt 提交回执（来源 Run 流事件——与包同事务落库，0.6.8 审校 #2）。
+type Receipt struct {
+	RunID     string
+	EventType string
+	Payload   map[string]any
 }
 
 // Store 持久化端口（append-only）。
 type Store interface {
-	CreatePackage(ctx context.Context, p Package) error
-	// ListPackagesByMission submitted_at 倒序（首项即当前交付包）。
+	// CreatePackage 单事务：**复核 Mission 行**（contract_version == p.ContractVersion
+	// 且 status != canceled——0.6.8 审校 #1：端口读与写之间的并发修订/取消不得
+	// 放行）→ 写包 → 写回执（Run 流事件，同事务——审校 #2：无"包落了回执丢"
+	// 的部分成功）。守卫不符分别返回 ErrVersionConflict / ErrMissionCanceled /
+	// ErrMissionNotFound；任一步失败整体不落。
+	CreatePackage(ctx context.Context, p Package, receipt Receipt) error
+	// ListPackagesByMission 按**真实提交时间**倒序（首项即当前交付包；
+	// submitted_at 为 RFC3339Nano 小数位可变——不得按字符串序，审校 #3）。
 	ListPackagesByMission(ctx context.Context, missionID string) ([]Package, error)
 	PackageByID(ctx context.Context, packageID string) (Package, bool, error)
+}
+
+// SubmittedTime 解析 submitted_at（RFC3339Nano）；不可解析 ok=false（调用方退回
+// 字符串序兜底——两存储共用，审校 #3）。
+func SubmittedTime(s string) (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// LaterThan 真实时间倒序比较（a 晚于 b）；任一不可解析退回字符串比较。
+func LaterThan(a, b string) bool {
+	ta, oka := SubmittedTime(a)
+	tb, okb := SubmittedTime(b)
+	if oka && okb {
+		return ta.After(tb)
+	}
+	return a > b
 }
 
 // Option 装配选项。
@@ -175,9 +205,10 @@ func newPackageID() string {
 	return "dlv_" + strconv.FormatInt(time.Now().UnixMilli(), 36) + hex.EncodeToString(b[:])
 }
 
-// Submit = submit_result（ADR-0031 决策 2）：形状校验 → Mission 事实（存在/
-// 非 canceled/契约版本 CAS）→ Run 事实（存在/归属/代次/可交付）→ 落包 →
-// Run 流回执。对 Mission 零副作用；完备性不在此检查（先交付再补证）。
+// Submit = submit_result（ADR-0031 决策 2）：形状校验 → Mission 事实预读（存在/
+// 非 canceled/契约版本——早拒）→ Run 事实（存在/归属/代次/可交付）→ 存储单
+// 事务（事务内复核 Mission 版本与取消 + 落包 + Run 流回执——审校 #1/#2）。对
+// Mission 零副作用；完备性不在此检查（先交付再补证）。
 func (s *Service) Submit(ctx context.Context, missionID string, sub Submission) (Package, error) {
 	if err := Validate(sub); err != nil {
 		return Package{}, err
@@ -224,12 +255,13 @@ func (s *Service) Submit(ctx context.Context, missionID string, sub Submission) 
 		Notes:                sub.Notes,
 		SubmittedAt:          s.now(),
 	}
-	if err := s.store.CreatePackage(ctx, p); err != nil {
+	// 单事务：事务内复核 Mission（版本/取消）→ 包 → 回执（审校 #1/#2）。端口
+	// 预读只用于早拒与清晰错误；权威判定在存储事务内。
+	if err := s.store.CreatePackage(ctx, p, Receipt{
+		RunID: r.RunID, EventType: EventDeliverySubmitted,
+		Payload: map[string]any{"package_id": p.PackageID},
+	}); err != nil {
 		return Package{}, err
-	}
-	if err := s.runs.AppendReceipt(ctx, r.RunID, EventDeliverySubmitted, map[string]any{"package_id": p.PackageID}); err != nil {
-		// 包已是事实（append-only，列表可见）；回执审计失败不吞——调用方可见。
-		return p, fmt.Errorf("%w: %v", ErrReceiptWrite, err)
 	}
 	return p, nil
 }
