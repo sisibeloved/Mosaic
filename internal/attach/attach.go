@@ -6,6 +6,9 @@
 //  2. post_message 携带 tokens → Resolve 校验（存在/未过期/哈希一致）→
 //     固化为 Descriptor 嵌入事件载荷。
 //
+// Agent 工作区交付（§2.6）由房间引擎在发布围栏通过后调用同一 SaveIncoming /
+// Resolve 流程，源路径由各适配器限制在当前 Profile 工作区内。
+//
 // 上限（RFC-0013 §2.2 建议值）：单附件 8MiB；每消息 ≤4 件（命令面校验）；
 // 每房间总量 512MiB（上传前检查，超限拒收）。
 //
@@ -66,6 +69,7 @@ type Descriptor struct {
 	SizeBytes    int64  `json:"size_bytes"`
 	StoragePath  string `json:"storage_path"` // 相对数据目录
 	SHA256       string `json:"sha256"`
+	Caption      string `json:"caption,omitempty"`
 }
 
 // UploadMeta 上传响应（第一步产物；token 进 post_message.attachments）。

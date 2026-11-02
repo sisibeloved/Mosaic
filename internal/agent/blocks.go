@@ -557,6 +557,11 @@ func validatePublicDraft(data map[string]any) error {
 			return err
 		}
 	}
+	if raw, ok := data["deliver_assets"]; ok {
+		if _, err := NormalizeDeliverAssets(raw); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

@@ -129,6 +129,7 @@ func (e *Engine) publishEndorsed(ctx context.Context, roomID string, stimulus pr
 		e.revoke(ctx, roomID, grantEnv.EventID, grantID, "", stimulus, "room_paused", draft.Usage)
 		return
 	}
+	e.materializeDeliverAssets(ctx, roomID, sel.ParticipantID, &draft)
 	msg := e.newEnv(roomID, protocol.EventMessagePosted,
 		protocol.Actor{ParticipantID: sel.ParticipantID, Kind: "agent"}, grantEnv.EventID, "", draft.Data)
 	msg.ThreadID = stimulus.ThreadID

@@ -2041,10 +2041,13 @@ type AttachedDoc struct {
 // AttachmentDescriptor message.posted 载荷与快照 Timeline 中的附件描述子（RFC-0013 §2.1 封闭字段集）。
 type AttachmentDescriptor struct {
 	AttachmentId string `json:"attachment_id"`
-	Mime         string `json:"mime"`
-	Name         string `json:"name"`
-	Sha256       string `json:"sha256"`
-	SizeBytes    int64  `json:"size_bytes"`
+
+	// Caption Agent 交付附件的可选公开说明；人工上传可缺省
+	Caption   *string `json:"caption,omitempty"`
+	Mime      string  `json:"mime"`
+	Name      string  `json:"name"`
+	Sha256    string  `json:"sha256"`
+	SizeBytes int64   `json:"size_bytes"`
 
 	// StoragePath 相对数据目录的存储路径
 	StoragePath string `json:"storage_path"`

@@ -81,6 +81,8 @@ type EngineConfig struct {
 	// AttachExcerpt 可选：附件语境摘录渲染器（RFC-0013）——nil = 不注入附件
 	// 内容（纯测试装配）；生产由 app 注入（读数据目录 + RedactSecrets）。
 	AttachExcerpt func(contextx.AttachmentInfo) string
+	// AgentAttachments 可选：Agent 工作区产物的受管附件导入口；nil = 正文保留并标记附件不可用。
+	AgentAttachments AgentAttachmentStore
 	// Docs 可选：doc_ops 代写面（RFC-0014 §2.7）——nil = 无文档面（doc_ops
 	// 到达一律降级为空 refs；纯测试装配）。生产注入 *doc.Service。
 	Docs DocProxy
@@ -1289,6 +1291,7 @@ func (e *Engine) publishMessage(ctx context.Context, roomID, roundID string, sti
 		e.revoke(ctx, roomID, grantEnv.EventID, grantID, roundID, stimulus, "room_paused", draft.Usage)
 		return revealRevoked
 	}
+	e.materializeDeliverAssets(ctx, roomID, sel.ParticipantID, &draft)
 	// RFC-0014 §2.7 透明纪律：doc_ops 与公开说明消息同波——文档事件先于正文
 	// 落库（refs 卡片渲染时可解析），写面指令本身不进消息载荷（载荷是描述子
 	// 封闭投影）。op 失败降级为跳过（不翻波）；围栏已过才代写——围栏违例不产

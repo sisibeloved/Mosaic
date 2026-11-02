@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 )
@@ -111,6 +112,29 @@ func (s *Supervisor) CapableOf(profile Profile, has func(Capabilities) bool) boo
 		return false
 	}
 	return has(adapter.Capabilities())
+}
+
+// deliverAssetReader 是适配器可选的工作区产物读取能力。
+type deliverAssetReader interface {
+	ReadDeliverAsset(ctx context.Context, source string) (io.ReadCloser, error)
+}
+
+// ReadDeliverAsset 按 Profile 定位实际适配器并读取其受管工作区产物。
+func (s *Supervisor) ReadDeliverAsset(ctx context.Context, profile Profile, source string) (io.ReadCloser, error) {
+	s.mu.Lock()
+	adapter, ok := s.adapters[profile.ProfileID]
+	if !ok {
+		adapter, ok = s.adapters[profile.Adapter]
+	}
+	s.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("agent: adapter %q not registered", profile.Adapter)
+	}
+	reader, ok := adapter.(deliverAssetReader)
+	if !ok {
+		return nil, fmt.Errorf("agent: adapter %q 不支持工作区附件", profile.Adapter)
+	}
+	return reader.ReadDeliverAsset(ctx, source)
 }
 
 // Shutdown 关闭全部逻辑会话。

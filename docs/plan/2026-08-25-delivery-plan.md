@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.53 |
+| 版本 | v2.54 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -179,6 +179,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.54 | 2026-11-02 | Mosaic 项目组 / ZCode | **v0.6.9 重切——并入 MiniMax 原生 deliver-assets 附件投递修复（负责人裁定：属 bugfix，随当前版本发布）**。v2.53 行所述"不入本版"作废：CHANGELOG 条目自 [Unreleased] 移入 [0.6.9] Fixed（置顶），发布说明增补"修复（MiniMax 附件投递）"段。修复内容：适配器分离正文与 ≤4 件工作区产物（畸形块拒发布、不泄漏内部 XML）；发布围栏通过后按发言 Profile 导入既有受管附件库（Native/WSL 均限定当前 Agent 工作区内普通文件——拒路径穿越/符号链接逃逸/目录与其他类型，WSL 原始二进制流），复用 8 MiB/房间配额/MIME/SHA-256 与房间删除级联；单件失败保留正文并标注附件不可用，不伪装成功；附件描述子 += 可选 caption（≤500 字、过秘密剔除；OpenAPI + message.posted schema/fixture + 两端生成物）、RFC-0013 §2.6、SPA 卡片显示 caption。验证：生成物一致性 + gofmt + vet + UT + race + it/st 串行 + SPA 绿 + 真机冒烟 35 项复跑 ALL-PASS。发布链：修复提交 + CI 三平台绿 → Release v0.6.9 删除重建、tag v0.6.9 自 84ea128 重打至修复提交、产物于新 tag 干净 worktree 重建替换 |
 | v2.53 | 2026-11-02 | Mosaic 项目组 / ZCode | **定版 v0.6.9（负责人指令："发布"）——0.6 领域线第十件**。CHANGELOG [Unreleased]（Added Mission 验收 request_review / review_mission + Fixed 三轮审校 3 P1 + 12 P2 / 2 P1 + 8 P2 + 2 P3 / 4 P2——31 项全部关闭）定版 **[0.6.9] - 2026-11-02**，保留空 [Unreleased]（工作区另有未提交的 MiniMax deliver-assets 工作线——其 CHANGELOG 条目不属本版，留在新 [Unreleased]，代码不入本版产物）；README 当前版本推进 v0.6.9、路线图 0.6 系列标注 0.6.0–0.6.9 已交付与 0.6.10 指向；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.6.9 + GitHub Release 发布说明与 Windows 产物（于 tag 的干净 worktree 重建，与 tag 严格一致）；CI 三平台绿基线（1f8fadd 已验，定版提交复验） |
 | v2.52 | 2026-11-02 | Mosaic 项目组 / ZCode | **0.6.9 三审收口（独立复审报告：4 项 P2——上轮 R1–R12 中 10 项关闭，R3/R4 各留一前端边界 + 旧库兼容 + 测试缺口）——ADR-0032 v0.4 修订**。#1 送验选择随契约版本切换/列表重载即清（加载失败同清——不持旧包发送），发送前再核所选包版本；#2 受审包加载失败原地重试；#4 同包同版本在审匹配重试先行走幂等路径（必需项检查只对新一轮——v22/v23 升级库在审包不因证据口径收紧 409）；#5 终态处置测试补正（ready 期建 Run 后转 accepted 断言 ErrMissionTerminal）。全量 vet/-race + it/st + SPA 绿；真机冒烟 35 项 ALL-PASS（新增同包幂等重试 200） |
 | v2.51 | 2026-11-02 | Mosaic 项目组 / ZCode | **0.6.9 复审修复（独立复审报告：2 P1 + 8 P2 + 2 P3；上轮 15 项中 7 关闭 8 部分修复）——ADR-0032 v0.3 修订**。R1 P1 未决 Run 双向堵（CreateRun 写事务内核对 ready|running + RecordReview 接受事务内复查——反向提交顺序与 v22 残留形态均拦）；R2 P1 migration v24 幂等补正（reviewing/accepted 轮次 0→1 恢复可裁定 + canceled 清锚——R9 同修，兼容已跑 v23 库）；R10 裁定事务核对包锚（预填未来轮次+换包交错按实际锚拒——事件不可能记作旧包）；R5/R7/R8 终态写事务内核对（execctx 新建清单/回执、run 处置、lease 领取——迟到交错不落库，既有查询照常）；R6 判空统一 Unicode White_Space ∪ U+FEFF（前后端同集）；R12 轮次仅 reviewing/accepted 公开；R3/R4/R11 SPA（包列表随提交刷新+当前版本过滤、受审包一致才可裁定、accepted 装配卡只读）。UT/IT（含 R1 双向顺序、R2 v23 形状残留升级、终态守卫交错对照）先红后绿；全量 vet/-race + it/st + SPA 绿；真机冒烟扩至 34 项 ALL-PASS（BOM 证据 409 / 送验后手动触发 409 且零陈旧 Run / 退回轮次 0 / accepted 轮次 2） |

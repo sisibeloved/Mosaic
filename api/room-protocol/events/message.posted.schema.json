@@ -88,7 +88,8 @@
         "mime": { "type": "string" },
         "size_bytes": { "type": "integer", "minimum": 0 },
         "storage_path": { "type": "string" },
-        "sha256": { "type": "string" }
+        "sha256": { "type": "string" },
+        "caption": { "type": "string", "maxLength": 500, "description": "Agent 交付附件的可选公开说明；人工上传可缺省" }
       },
       "additionalProperties": false
     },

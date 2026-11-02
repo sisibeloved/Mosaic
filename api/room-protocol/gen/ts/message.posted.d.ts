@@ -102,6 +102,10 @@ export interface AttachmentDescriptor {
   size_bytes: number;
   storage_path: string;
   sha256: string;
+  /**
+   * Agent 交付附件的可选公开说明；人工上传可缺省
+   */
+  caption?: string;
 }
 /**
  * 文档引用描述子（RFC-0014 §2.4 封闭字段集；anchor_block_id 锚定块级位置，卡片/编辑器据此定位）

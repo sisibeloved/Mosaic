@@ -3077,6 +3077,8 @@ export interface components {
             /** @description 相对数据目录的存储路径 */
             storage_path: string;
             sha256: string;
+            /** @description Agent 交付附件的可选公开说明；人工上传可缺省 */
+            caption?: string;
         };
         /** @description 任务执行视图（M4-1）：status ∈ requested | running | completed | failed | canceled | unknown；迟到审计（late）不改终态。 */
         RunView: {

@@ -154,9 +154,9 @@ function BubbleActions({
 }
 
 /** 附件卡片（RFC-0013）：名称/大小，点击经下载端点取回文件；image/* 缩略图
- * 预览（同源本地内容——与 Markdown 不渲外链 img 的白名单规则不冲突：那是防
- * 外链请求/追踪/布局破坏，此处是用户自传的有界本地文件）。 */
-function AttachmentCards({ roomID, attachments }: { roomID: string | null; attachments?: { attachment_id: string; name: string; mime?: string; size_bytes: number }[] }) {
+ * 预览（同源受管本地内容——与 Markdown 不渲外链 img 的白名单规则不冲突：那是防
+ * 外链请求/追踪/布局破坏，此处仅展示已导入附件库的文件）。 */
+function AttachmentCards({ roomID, attachments }: { roomID: string | null; attachments?: { attachment_id: string; name: string; mime?: string; size_bytes: number; caption?: string }[] }) {
   if (!attachments || attachments.length === 0) return null;
   return (
     <div className="mt-1.5 flex flex-col gap-1">
@@ -191,6 +191,7 @@ function AttachmentCards({ roomID, attachments }: { roomID: string | null; attac
                 {isImage ? "🖼️" : "📎"} {a.name} · {(a.size_bytes / 1024).toFixed(0)} KiB
               </span>
             )}
+            {a.caption && <span className="max-w-full text-[11px] leading-5 text-dim">{a.caption}</span>}
           </div>
         );
       })}

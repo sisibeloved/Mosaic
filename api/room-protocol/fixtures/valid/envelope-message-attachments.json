@@ -24,7 +24,8 @@
         "mime": "text/plain",
         "size_bytes": 1024,
         "storage_path": "attachments/rooms/room_01H8TESTROOM00000000000000/att_01h8testatt000000000000000",
-        "sha256": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+        "sha256": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "caption": "构建日志与失败诊断"
       }
     ]
   },

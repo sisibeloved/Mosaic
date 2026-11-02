@@ -717,6 +717,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			// v1.36 曾漏配此处，主动波从未排上（dogfood 实证），勿再省略。
 			ProactiveSilence: 5 * time.Minute,
 			AttachExcerpt:    attachExcerpt,
+			AgentAttachments: attachStore,
 			Docs:             docSvc, // RFC-0014 §2.7：doc_ops 引擎代写面（actor 记为该 bot）
 			Sheets:           docSvc, // RFC-0017 §4.3：sheet_ops 引擎代写面（同一 doc.Service）
 			// §2.7 读面①：文档摘录注入（8k runes 有界 + DLP 秘密形状剔除——附件摘录同纪律）。

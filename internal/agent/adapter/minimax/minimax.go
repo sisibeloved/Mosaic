@@ -253,16 +253,24 @@ func correctiveNote(k agent.TaskKind) string {
 	return correctiveNoteEval
 }
 
-// sanitizePublish 发布边界：委托端口级共享门 agent.PublishGate（与 codex/kimi 同一套门）。
+// sanitizePublish 发布边界：先分离 mcode 交付附件，再委托端口级共享发布门。
 func (h *handle) sanitizePublish() {
 	body, _ := h.result.Data["body"].(string)
-	clean, rels, err := agent.PublishGate(body, h.result.Data["declared_relations"])
+	text, assets, err := splitDeliverAssets(body)
+	if err != nil {
+		h.err = err
+		return
+	}
+	clean, rels, err := agent.PublishGate(text, h.result.Data["declared_relations"])
 	if err != nil {
 		h.err = fmt.Errorf("minimax: %w", err)
 		return
 	}
 	h.result.Data["body"] = clean
 	h.result.Data["declared_relations"] = rels
+	if len(assets) > 0 {
+		h.result.Data["deliver_assets"] = assets
+	}
 }
 
 func (s *session) execer() Execer {
