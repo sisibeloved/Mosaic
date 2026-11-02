@@ -219,9 +219,18 @@ func TestROPEngineSpeakAndPass(t *testing.T) {
 	if ad.ropCalls != 1 {
 		t.Fatalf("单次路径应恰一次调用, got %d", ad.ropCalls)
 	}
-	mu.Lock()
-	metricOK := len(metrics) > 0 && strings.Contains(metrics[0], "named_single/reply_or_pass/published")
-	mu.Unlock()
+	// 指标在引擎 goroutine 内晚于发布事件入账（append → recordROPIntent →
+	// ropMetric）；ropWait 以事件可见为准返回，立即断言会与引擎尾段竞态
+	// （Windows 调度下实证偶发）——轮询等待。
+	metricOK := false
+	for deadline := time.Now().Add(3 * time.Second); !metricOK && time.Now().Before(deadline); {
+		mu.Lock()
+		metricOK = len(metrics) > 0 && strings.Contains(metrics[0], "named_single/reply_or_pass/published")
+		mu.Unlock()
+		if !metricOK {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
 	if !metricOK {
 		t.Fatalf("指标应入账")
 	}
