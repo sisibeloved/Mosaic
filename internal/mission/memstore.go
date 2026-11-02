@@ -297,7 +297,7 @@ func (m *MemStore) RequestReview(_ context.Context, missionID string, expectedVe
 
 // RecordReview 条件裁定（0.6.9；v0.2 #3 轮次守卫）：reviewing 且轮次相符 → to
 // （accepted 保留锚 / ready 清锚——轮次回 0）。
-func (m *MemStore) RecordReview(_ context.Context, missionID string, expectedVersion, expectedRound int, to string, event Event) (Mission, bool, error) {
+func (m *MemStore) RecordReview(_ context.Context, missionID string, expectedVersion, expectedRound int, to string, event Event, expectedPackage string) (Mission, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	i, ok := m.indexOfLocked(missionID)
@@ -305,7 +305,9 @@ func (m *MemStore) RecordReview(_ context.Context, missionID string, expectedVer
 		return Mission{}, false, ErrMissionNotFound
 	}
 	cur := m.missions[i]
-	if cur.ContractVersion != expectedVersion || cur.Status != StatusReviewing || cur.ReviewRound != expectedRound {
+	// 复审 R10：包锚一并核对（预填未来轮次 + 换包交错 → 锚不符拒绝）
+	if cur.ContractVersion != expectedVersion || cur.Status != StatusReviewing || cur.ReviewRound != expectedRound ||
+		(expectedPackage != "" && cur.ReviewPackageID != expectedPackage) {
 		return Mission{}, false, nil
 	}
 	cur.Status = to

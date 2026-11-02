@@ -153,6 +153,16 @@ reviewer 预填契约验收人）；accepted → 终态徽章，控制区与交�
 ## 修订记录
 
 - v0.1（2026-11-02）：首版（随 0.6.9 实施）。
+- v0.3（2026-11-02）：复审修复（2 P1 + 8 P2 + 2 P3）——R1 P1 未决 Run 双向堵
+  （CreateRun 写事务内核对任务仍是 ready|running——送验后过期调度拒绝并释放；
+  RecordReview 接受事务内复查未决 Run）；R2 P1 migration v24（v23 升级残留补正：
+  reviewing/accepted 轮次 0 → 1 恢复可裁定；canceled 行清受审包锚——R9）；R10 裁
+  定事务核对包锚（预填未来轮次 + 换包交错时按实际锚拒绝，事件不可能记作旧包）；
+  R5/R7/R8 终态写事务内核对（execctx 新建清单、ResolveRun 处置、AcquireLease 租
+  约——迟到交错写入不再落库）；R6 判空统一（Unicode White_Space ∪ U+FEFF——
+  blankTrimmed/blankTrim 前后端同集）；R12 轮次仅 reviewing/accepted 公开（库内
+  单调计数不受影响）；R3/R4/R11 SPA（包列表随提交刷新 + 当前版本过滤收紧、受审
+  包加载成功且一致才可裁定、accepted 装配卡只读）。
 - v0.2（2026-11-02）：审校修复（独立审校 3 P1 + 12 P2）——#1 P1 送验轮次守卫
   （migration v23 missions.review_round 单调递增；裁定请求携 review_round，
   SQLite/MemStore 裁定事务内核对轮次+包+契约版本+状态——旧标签页/迟到/重放的

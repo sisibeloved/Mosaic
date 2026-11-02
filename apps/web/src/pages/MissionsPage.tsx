@@ -23,6 +23,11 @@ import { absoluteTime } from "../lib/ui";
 const splitLines = (s: string): string[] =>
   s.split("\n").map((x) => x.trim()).filter(Boolean);
 
+// 复审 R6：证据判空统一口径 = Unicode White_Space ∪ U+FEFF ∪ U+0085（与服务端
+// blankTrimmed 同集——Go TrimSpace 不含 BOM、JS trim 不含 NEL，取并集）。
+const blankTrim = (s: string): string => s.replace(/^[\s\uFEFF\u0085]+|[\s\uFEFF\u0085]+$/g, "");
+const hasEvidence = (s: string): boolean => blankTrim(s) !== "";
+
 function statusClass(status: string): string {
   if (status === "accepted") return "text-ok font-semibold";
   if (status === "ready" || status === "running") return "text-ok";
@@ -340,6 +345,10 @@ function MissionDetail({
   const [reviseOpen, setReviseOpen] = useState(false);
   const [form, setForm] = useState({ objective: "", scope: "", acceptance: "", deliverables: "", sources: "", owner: "" });
   const [cancelReason, setCancelReason] = useState("");
+  const [sendablePkgs, setSendablePkgs] = useState<DeliveryPackageView[]>([]);
+  const [pkgTick, setPkgTick] = useState(0); // 复审 R3：交付卡提交后刷新送验列表
+  const [reviewedPkg, setReviewedPkg] = useState<DeliveryPackageView | null>(null);
+  const [reviewPkgErr, setReviewPkgErr] = useState<string | null>(null);
   // 审校 #4：裁定草稿按轮次隔离——新一轮从契约重新初始化（验收人预填 #7、逐项备注、清原因）
   useEffect(() => {
     if (!detail) return;
@@ -356,39 +365,47 @@ function MissionDetail({
       .listDeliveryPackages(missionID)
       .then(({ packages }) => {
         if (cancelled) return;
-        setSendablePkgs(packages.filter((x) => x.contract_version === detail.contract_version));
-        setReviewPkgID((cur) => (packages.some((x) => x.package_id === cur) ? cur : packages[0]?.package_id ?? ""));
+        // 复审 R3：只在当前契约版本的包内保留/默认选择（修订后旧包被过滤即不再
+        // 作为默认；列表为空清空选择——不得发出已隐藏的旧包）
+        const cur0 = packages.filter((x) => x.contract_version === detail.contract_version);
+        setSendablePkgs(cur0);
+        setReviewPkgID((cur) => (cur0.some((x) => x.package_id === cur) ? cur : cur0[0]?.package_id ?? ""));
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [missionID, detail?.status, detail?.updated_at, detail?.contract_version]);
+  }, [missionID, detail?.status, detail?.updated_at, detail?.contract_version, pkgTick]);
   // 审校 #14：reviewing/accepted 时加载受审包详情（逐项证据可核对）
   useEffect(() => {
-    if (!detail || !detail.review_package_id) {
-      setReviewedPkg(null);
-      return;
-    }
+    // 复审 R4：切换受审包先清旧证据与错误；按当前包 ID 记录加载/失败——加载成功
+    // 且与本轮包一致才允许裁定（catch 显式留错，不再静默）。
+    setReviewedPkg(null);
+    setReviewPkgErr(null);
+    const pid = detail?.review_package_id;
+    if (!pid) return;
     let cancelled = false;
     void api
-      .getDeliveryPackage(detail.review_package_id)
+      .getDeliveryPackage(pid)
       .then((pkg) => {
         if (!cancelled) setReviewedPkg(pkg);
       })
-      .catch(() => undefined);
+      .catch((e) => {
+        if (!cancelled) setReviewPkgErr(e instanceof Error ? e.message : String(e));
+      });
     return () => {
       cancelled = true;
     };
   }, [detail?.review_package_id]);
+  // 裁定可用：本轮包加载成功且与展示一致（R4）
+  const reviewEvidenceReady =
+    detail?.status === "reviewing" && reviewedPkg !== null && reviewedPkg.package_id === detail?.review_package_id;
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewReason, setReviewReason] = useState("");
   const [reviewReviewer, setReviewReviewer] = useState("");
   // 审校 #4/#6/#7/#14：按送验轮次隔离的裁定草稿 + 送验选包 + 受审包详情
   const [itemNotes, setItemNotes] = useState<string[]>([]);
   const [reviewPkgID, setReviewPkgID] = useState("");
-  const [sendablePkgs, setSendablePkgs] = useState<DeliveryPackageView[]>([]);
-  const [reviewedPkg, setReviewedPkg] = useState<DeliveryPackageView | null>(null);
   const seq = useRef(0);
 
   const load = () => {
@@ -491,7 +508,7 @@ function MissionDetail({
               <ul className="mt-0.5 flex flex-col gap-0.5">
                 {reviewedPkg.acceptance_mapping.map((m, i) => (
                   <li key={i} className="text-[11px]">
-                    <span className="text-dim">{m.criterion}</span> — <span className="text-faint">{m.evidence.trim() || "（无证据）"}</span>
+                    <span className="text-dim">{m.criterion}</span> — <span className="text-faint">{blankTrim(m.evidence) || "（无证据）"}</span>
                   </li>
                 ))}
               </ul>
@@ -555,7 +572,7 @@ function MissionDetail({
                 {sendablePkgs.length === 0 && <option value="">（无当前版本交付包）</option>}
                 {sendablePkgs.map((x) => (
                   <option key={x.package_id} value={x.package_id}>
-                    {x.package_id.slice(0, 12)}… · Run #{x.attempt} · 证据 {x.acceptance_mapping.filter((m) => m.evidence.trim()).length}/{detail.acceptance_criteria.length}
+                    {x.package_id.slice(0, 12)}… · Run #{x.attempt} · 证据 {x.acceptance_mapping.filter((m) => hasEvidence(m.evidence)).length}/{detail.acceptance_criteria.length}
                   </option>
                 ))}
               </select>
@@ -565,6 +582,7 @@ function MissionDetail({
                 onClick={() =>
                   void act(async () => {
                     if (detail.mission_id !== missionID) throw new Error("详情未就绪，已阻止写入");
+                    if (!sendablePkgs.some((x) => x.package_id === reviewPkgID)) throw new Error("所选包不在当前契约版本列表——重新选择");
                     await api.requestMissionReview(missionID, detail.contract_version, reviewPkgID);
                   })
                 }
@@ -623,6 +641,8 @@ function MissionDetail({
 
       {detail.status === "reviewing" && reviewOpen && (
         <div className="flex flex-col gap-2 rounded-lg bg-surface-2 p-2">
+          {reviewPkgErr && <p className="text-danger">受审包加载失败：{reviewPkgErr}（裁定需本轮证据加载成功）</p>}
+          {!reviewPkgErr && !reviewEvidenceReady && <p className="text-warn">正在加载本轮受审包证据……</p>}
           {reviewedPkg && (
             <div className="rounded border border-border bg-surface p-2">
               <p className="text-faint">受审包 <span className="font-mono">{reviewedPkg.package_id}</span>（第 {detail.review_round} 轮 · Run #{reviewedPkg.attempt} · gen {reviewedPkg.generation}）</p>
@@ -631,7 +651,7 @@ function MissionDetail({
                 {reviewedPkg.acceptance_mapping.map((m, i) => (
                   <li key={i} className="text-[11px]">
                     <span className="text-dim">{m.criterion}</span>
-                    <span className={m.evidence.trim() ? "text-ok" : "text-warn"}> — {m.evidence.trim() || "（无证据）"}</span>
+                    <span className={hasEvidence(m.evidence) ? "text-ok" : "text-warn"}> — {blankTrim(m.evidence) || "（无证据）"}</span>
                   </li>
                 ))}
               </ul>
@@ -665,7 +685,7 @@ function MissionDetail({
           <div className="flex items-center gap-2">
             <button
               type="button"
-              disabled={busy}
+              disabled={busy || !reviewEvidenceReady}
               onClick={() =>
                 void act(async () => {
                   if (detail.mission_id !== missionID) throw new Error("详情未就绪，已阻止写入");
@@ -686,7 +706,7 @@ function MissionDetail({
             </button>
             <button
               type="button"
-              disabled={busy}
+              disabled={busy || !reviewEvidenceReady}
               onClick={() =>
                 void act(async () => {
                   if (detail.mission_id !== missionID) throw new Error("详情未就绪，已阻止写入");
@@ -829,20 +849,20 @@ function MissionDetail({
       </details>
 
       {/* 审校 P7：取消后仍渲染（只读——canceled 时仅禁新装配，历史/层内容可查） */}
-      <ExecContextCard missionID={missionID} ownerAgentID={detail.owner_agent_id} canceled={detail.status === "canceled"} />
+      <ExecContextCard missionID={missionID} ownerAgentID={detail.owner_agent_id} canceled={detail.status === "canceled" || detail.status === "accepted"} />
 
       {/* 0.6.5 执行区：手动调度 + Run 历史（ADR-0028） */}
       <MissionRunCard missionID={missionID} status={detail.status} onChanged={() => load()} />
 
       {/* 0.6.8 交付区：submit_result 不自动送验（ADR-0031） */}
-      <MissionDeliveryCard missionID={missionID} detail={detail} onChanged={() => load()} />
+      <MissionDeliveryCard missionID={missionID} detail={detail} onChanged={() => load()} onPackagesChanged={() => setPkgTick((x) => x + 1)} />
     </section>
   );
 }
 
 /** 交付区（0.6.8 / ADR-0031）：当前交付包摘要 + 历史 + 提交表单。提交对
  *  Mission 状态零副作用——"执行成功 / 成果提交 / 验收通过"三事实分离。 */
-function MissionDeliveryCard({ missionID, detail, onChanged }: { missionID: string; detail: MissionView; onChanged: () => void }) {
+function MissionDeliveryCard({ missionID, detail, onChanged, onPackagesChanged }: { missionID: string; detail: MissionView; onChanged: () => void; onPackagesChanged: () => void }) {
   const [packages, setPackages] = useState<DeliveryPackageView[] | null>(null);
   const [runs, setRuns] = useState<MissionRunView[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -920,6 +940,7 @@ function MissionDeliveryCard({ missionID, detail, onChanged }: { missionID: stri
       setEvidence(detail.acceptance_criteria.map(() => ""));
       load();
       onChanged();
+      onPackagesChanged(); // 复审 R3：新包立即可送验（刷新父层包列表）
     } catch (e) {
       setErr(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
     } finally {
@@ -927,7 +948,7 @@ function MissionDeliveryCard({ missionID, detail, onChanged }: { missionID: stri
     }
   };
 
-  const coverage = (p: DeliveryPackageView) => `${p.acceptance_mapping.filter((m) => m.evidence.trim()).length}/${p.acceptance_mapping.length}`;
+  const coverage = (p: DeliveryPackageView) => `${p.acceptance_mapping.filter((m) => hasEvidence(m.evidence)).length}/${p.acceptance_mapping.length}`;
 
   return (
     <details className="mt-1">

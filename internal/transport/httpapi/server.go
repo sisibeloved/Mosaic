@@ -2253,6 +2253,14 @@ func missionContentOf(budget *apigen.MissionBudget, constraints *[]string, deleg
 }
 
 // missionView mission.Mission → apigen.MissionView（内容平铺）。
+// reviewRoundView 轮次投影（复审 R12）：非 reviewing/accepted → 0。
+func reviewRoundView(m mission.Mission) int {
+	if m.Status != mission.StatusReviewing && m.Status != mission.StatusAccepted {
+		return 0
+	}
+	return m.ReviewRound
+}
+
 func missionView(m mission.Mission) apigen.MissionView {
 	ts, _ := time.Parse(time.RFC3339, m.CreatedAt)
 	us, _ := time.Parse(time.RFC3339, m.UpdatedAt)
@@ -2286,7 +2294,10 @@ func missionView(m mission.Mission) apigen.MissionView {
 	}
 	return apigen.MissionView{
 		MissionId: m.MissionID, ContractVersion: m.ContractVersion,
-		Status: apigen.MissionViewStatus(m.Status), WaitingReason: m.WaitingReason, ReviewPackageId: m.ReviewPackageID, ReviewRound: m.ReviewRound, OwnerAgentId: m.OwnerAgentID,
+		Status: apigen.MissionViewStatus(m.Status), WaitingReason: m.WaitingReason, ReviewPackageId: m.ReviewPackageID,
+		// 复审 R12：轮次仅 reviewing/accepted 公开（OpenAPI 约定其余状态为 0）；
+		// 库内计数单调递增不受影响
+		ReviewRound: reviewRoundView(m), OwnerAgentId: m.OwnerAgentID,
 		Requester: m.Requester, Reviewer: m.Reviewer, RoomSource: roomSource,
 		Objective: m.Objective, Scope: m.Scope,
 		Constraints: constraints, AcceptanceCriteria: acceptance,

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/sisibeloved/Mosaic/internal/mission"
 )
@@ -130,6 +131,13 @@ func (s *Service) Review(ctx context.Context, missionID string, expectedVersion,
 	return s.missions.RecordReview(ctx, missionID, expectedVersion, reviewRound, d)
 }
 
+// blankTrimmed 去 Unicode White_Space ∪ U+FEFF（复审 R6 前后端统一口径）。
+func blankTrimmed(s string) string {
+	return strings.TrimFunc(s, func(r rune) bool {
+		return unicode.IsSpace(r) || r == '\ufeff'
+	})
+}
+
 // missingRequired 必需交付项（本版口径，ADR-0032 决策 2）：成果引用非空 + 当前
 // 契约每条验收标准在包的 acceptance_mapping 中有对应条目且证据非空。
 func missingRequired(m mission.Mission, p PackageFacts) []string {
@@ -140,8 +148,10 @@ func missingRequired(m mission.Mission, p PackageFacts) []string {
 	for _, c := range m.AcceptanceCriteria {
 		covered := false
 		for _, e := range p.AcceptanceMapping {
-			// 审校 #1：纯空白证据不算证据（TrimSpace 后非空）
-			if e.Criterion == c && strings.TrimSpace(e.Evidence) != "" {
+			// 审校 #1 / 复审 R6：纯空白证据不算证据——判空字符集 = Unicode
+			// White_Space ∪ U+FEFF（Go TrimSpace 不含 BOM、JS trim 不含 NEL，
+			// 取并集统一前后端口径；证据原文保留）
+			if e.Criterion == c && blankTrimmed(e.Evidence) != "" {
 				covered = true
 				break
 			}

@@ -3,6 +3,7 @@ package run
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -14,10 +15,19 @@ type MemStore struct {
 	nextSeq int64
 	runs    map[string]Run
 	events  []Event
+	// missionStatus 事务内任务状态钩子（复审 R1/R7：CreateRun 核对 ready、
+	// ResolveRun 核对终态——SQLite 同款语义的内存件；nil = 放行）。
+	missionStatus func(missionID string) (string, bool)
 }
 
 // NewMemStore 建空库。
 func NewMemStore() *MemStore { return &MemStore{runs: map[string]Run{}} }
+
+// WithMissionStatus 注入任务状态源（测试装配）。
+func (m *MemStore) WithMissionStatus(f func(missionID string) (string, bool)) *MemStore {
+	m.missionStatus = f
+	return m
+}
 
 // CreateRun 建行（每 Mission 至多一个未终态）+ attempt_requested 事件。
 func (m *MemStore) CreateRun(_ context.Context, r Run) (Run, error) {
@@ -26,6 +36,12 @@ func (m *MemStore) CreateRun(_ context.Context, r Run) (Run, error) {
 	for _, e := range m.runs {
 		if e.MissionID == r.MissionID && (e.State == StatePending || e.State == StateRunning) {
 			return Run{}, ErrRunExists
+		}
+	}
+	// 复审 R1：任务须仍是 ready（过期调度拒绝；状态源未装配 = 放行——简单件）
+	if m.missionStatus != nil {
+		if st, ok := m.missionStatus(r.MissionID); ok && st != "ready" && st != "running" {
+			return Run{}, fmt.Errorf("%w（当前 %s）——过期调度拒绝", ErrMissionNotReady, st)
 		}
 	}
 	r.Attempt = m.maxAttemptLocked(r.MissionID) + 1
@@ -125,6 +141,12 @@ func (m *MemStore) ResolveRun(_ context.Context, runID, resolution, note, resolv
 	r, ok := m.runs[runID]
 	if !ok {
 		return Run{}, false, ErrRunNotFound
+	}
+	// 复审 R7：写事务内终态核对（状态源未装配 = 放行——简单件）
+	if m.missionStatus != nil {
+		if st, ok := m.missionStatus(r.MissionID); ok && (st == "accepted" || st == "canceled") {
+			return Run{}, false, fmt.Errorf("%w（Mission %s）", ErrMissionTerminal, st)
+		}
 	}
 	if r.State != StateUnknown || r.Resolution != "" {
 		return Run{}, false, nil

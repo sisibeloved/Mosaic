@@ -245,11 +245,12 @@ type Store interface {
 	// 事件，单事务；ok=false = 版本不匹配/非 ready。**送验事务内**复核无在途/
 	// 未处置 Run（ErrUnsettledRuns——审校 #2）。
 	RequestReview(ctx context.Context, missionID string, expectedVersion int, packageID string, event Event) (Mission, bool, error)
-	// RecordReview 条件裁定（0.6.9；v0.2 #3：轮次守卫）：contract_version 匹配、
-	// status == reviewing **且 review_round == expectedRound** → to（accepted 保留
-	// 锚 / ready 清锚）+ 事件，单事务；ok=false = 版本不匹配/非 reviewing/轮次
-	// 不符（旧标签页、迟到或重放的旧轮次裁定一律拒绝）。
-	RecordReview(ctx context.Context, missionID string, expectedVersion, expectedRound int, to string, event Event) (Mission, bool, error)
+	// RecordReview 条件裁定（0.6.9；v0.2 #3 轮次守卫 + 复审 R10 包核对）：
+	// contract_version 匹配、status == reviewing、review_round == expectedRound
+	// **且受审包 == expectedPackage（调用方预读锚）** → to（accepted 保留锚 /
+	// ready 清锚）+ 事件（按核对后的实际锚——预填未来轮次与换包交错时锚已换
+	// → 拒绝，事件不可能记作旧包）；accepted 前事务内复查未决 Run（复审 R1）。
+	RecordReview(ctx context.Context, missionID string, expectedVersion, expectedRound int, to string, event Event, expectedPackage string) (Mission, bool, error)
 }
 
 // Service 契约服务：校验单源 + 完备性判定单源 + CAS 编排。
@@ -705,7 +706,7 @@ func (s *Service) RecordReview(ctx context.Context, missionID string, expectedVe
 	}
 	out, ok2, err := s.store.RecordReview(ctx, missionID, expectedVersion, reviewRound, to, Event{
 		MissionID: missionID, EventType: EventStatusChanged, Payload: payload, OccurredAt: s.now(),
-	})
+	}, cur.ReviewPackageID)
 	if err != nil {
 		return Mission{}, err
 	}

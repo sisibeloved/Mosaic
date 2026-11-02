@@ -594,6 +594,18 @@ var migrationV23 = []string{
 	"INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (23, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
 }
 
+// migrationV24（0.6.9 复审 R2/R9 / ADR-0032 v0.2）：v23 升级残留数据补正——
+// 在审/已验收任务的轮次 0 补为 1（否则裁定 0 被拒、1 与库存 0 冲突——卡死）；
+// v22 已取消行的受审包引用清空（与新取消同口径；在审与已接受的包及事件保留）。
+// 纯 UPDATE 天然幂等，重复执行安全。
+const migrationV24 = `
+UPDATE missions SET review_round = 1
+ WHERE status IN ('reviewing', 'accepted') AND review_round = 0;
+UPDATE missions SET review_package_id = ''
+ WHERE status IN ('canceling', 'canceled') AND review_package_id != '';
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (24, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+`
+
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
 // modernc v1.57.0 / SQLite 3.53.3：unicode61 对中文整串成单 token 不可用，
 // trigram 对 CJK 子串 ≥3 字与英文均正确命中；<3 字查询由 SearchMessages
@@ -713,6 +725,11 @@ func Open(path string) (*Store, error) {
 			db.Close()
 			return nil, fmt.Errorf("sqlite: migration v23: %w", err)
 		}
+	}
+	// v24 迁移（0.6.9 复审 R2/R9）：升级残留补正（幂等 UPDATE）
+	if _, err := db.Exec(migrationV24); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("sqlite: migration v24: %w", err)
 	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -3346,9 +3363,12 @@ INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES
 	return s.MissionByID(ctx, missionID)
 }
 
-// RecordReview 条件裁定（0.6.9；v0.2 #3 轮次守卫）：单事务——版本 + reviewing +
-// **轮次相符**三守卫 → to（ready 清锚 / accepted 保留锚；轮次单调不复位）+ 事件。
-func (s *Store) RecordReview(ctx context.Context, missionID string, expectedVersion, expectedRound int, to string, event mission.Event) (mission.Mission, bool, error) {
+// RecordReview 条件裁定（0.6.9；v0.2 #3 轮次守卫 + 复审 R10 包核对）：单事务——
+// 版本 + reviewing + **轮次相符** + **受审包相符**（调用方预读的锚——预填未来
+// 轮次与"退回 A 送验 B"交错时，锚已换为 B → 拒绝，事件不可能记作 A）四守卫 →
+// to（ready 清锚 / accepted 保留锚；轮次单调不复位）+ 事件（按核对后的实际锚）。
+// 复审 R1：接受（to=accepted）前复查未决 Run——未核验的执行不能随任务被接受。
+func (s *Store) RecordReview(ctx context.Context, missionID string, expectedVersion, expectedRound int, to string, event mission.Event, expectedPackage string) (mission.Mission, bool, error) {
 	ok := false
 	err := s.identityWriteTx(ctx, func(q identityExec) error {
 		var version, round int
@@ -3362,8 +3382,21 @@ func (s *Store) RecordReview(ctx context.Context, missionID string, expectedVers
 		if err != nil {
 			return fmt.Errorf("sqlite: record review probe: %w", err)
 		}
-		if version != expectedVersion || status != mission.StatusReviewing || round != expectedRound {
+		if version != expectedVersion || status != mission.StatusReviewing || round != expectedRound ||
+			(expectedPackage != "" && anchor != expectedPackage) {
 			return nil
+		}
+		if to == mission.StatusAccepted {
+			var unsettled int
+			if err := q.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM runs WHERE mission_id = ? AND
+  (state IN ('pending','running') OR (state = 'unknown' AND resolution = ''))`,
+				missionID).Scan(&unsettled); err != nil {
+				return fmt.Errorf("sqlite: accept unsettled probe: %w", err)
+			}
+			if unsettled > 0 {
+				return fmt.Errorf("%w：%d 条未决", mission.ErrUnsettledRuns, unsettled)
+			}
 		}
 		if to == mission.StatusReady {
 			if _, err := q.ExecContext(ctx, `
@@ -3996,6 +4029,21 @@ func (s *Store) CreateManifest(ctx context.Context, m execctx.Manifest, r execct
 		return fmt.Errorf("sqlite: receipt accounting marshal: %w", err)
 	}
 	return s.identityWriteTx(ctx, func(q identityExec) error {
+		// 复审 R5：新建清单与回执的同一事务内核对终态——预读 reviewing 后接受
+		// 落地的迟到装配不再落库（既有清单/回执查询照常；mission 行不存在 =
+		// 测试播种形态放行，生产任务行恒存在）。
+		var mstate string
+		if merr := q.QueryRowContext(ctx,
+			`SELECT status FROM missions WHERE mission_id = ?`, m.MissionID).Scan(&mstate); merr == nil {
+			if mstate == mission.StatusCanceled {
+				return execctx.ErrMissionCanceled
+			}
+			if mstate == mission.StatusAccepted {
+				return execctx.ErrMissionAccepted
+			}
+		} else if merr != nil && !errors.Is(merr, sql.ErrNoRows) {
+			return fmt.Errorf("sqlite: manifest mission probe: %w", merr)
+		}
 		var existing string
 		err := q.QueryRowContext(ctx,
 			`SELECT manifest_id FROM exec_context_manifests WHERE mission_id = ? AND digest = ?`,
@@ -4357,6 +4405,20 @@ func scanLeaseRow(row interface{ Scan(...any) error }) (mosaicruntime.Lease, err
 // 兜底）→ 代次 = 当代 MAX+1 → 插入。
 func (s *Store) AcquireLease(ctx context.Context, lease mosaicruntime.Lease) (mosaicruntime.Lease, error) {
 	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		// 复审 R8：写事务内核对占用主体终态——预读 reviewing 后接受落地的迟到
+		// 领取不再落库（终态不占排他资源，另一 ready 任务不被阻塞）。
+		var mstate string
+		if merr := q.QueryRowContext(ctx,
+			`SELECT status FROM missions WHERE mission_id = ?`, lease.MissionID).Scan(&mstate); merr == nil {
+			if mstate == "canceled" {
+				return mosaicruntime.ErrMissionCanceled
+			}
+			if mstate == "accepted" {
+				return mosaicruntime.ErrMissionAccepted
+			}
+		} else if !errors.Is(merr, sql.ErrNoRows) {
+			return fmt.Errorf("sqlite: lease mission probe: %w", merr)
+		}
 		var conflictRuntime, conflictEnv string
 		err := q.QueryRowContext(ctx,
 			`SELECT lease_id FROM runtime_leases WHERE state = 'active' AND runtime_id = ?`,
@@ -4598,7 +4660,9 @@ func runEventPayloadJSON(payload map[string]any) (string, error) {
 }
 
 // CreateRun 建行（部分唯一索引兜底每 Mission 至多一未终态——撞键
-// ErrRunExists）+ attempt_requested 事件同事务。
+// ErrRunExists）+ attempt_requested 事件同事务。复审 R1：写事务内核对任务
+// 仍是 ready——调度读列表与落 Run 之间送验/暂停/取消落地时，过期调度在此
+// 拒绝（ErrMissionNotReady，调用方释放租约）。
 func (s *Store) CreateRun(ctx context.Context, r missionrun.Run) (missionrun.Run, error) {
 	err := s.identityWriteTx(ctx, func(q identityExec) error {
 		var existing string
@@ -4617,6 +4681,16 @@ func (s *Store) CreateRun(ctx context.Context, r missionrun.Run) (missionrun.Run
 			return fmt.Errorf("sqlite: run attempt probe: %w", err)
 		}
 		r.Attempt = int(maxAtt.Int64) + 1
+		// 复审 R1：任务须仍是 ready | running（过期调度拒绝——送验/暂停/取消/
+		// waiting/accepted 落地后不得再起 Run；running 容纳直插播种与恢复形态；
+		// mission 行不存在 = 测试播种放行，生产任务行恒存在）
+		var mstate string
+		if merr := q.QueryRowContext(ctx,
+			`SELECT status FROM missions WHERE mission_id = ?`, r.MissionID).Scan(&mstate); merr == nil && mstate != "ready" && mstate != "running" {
+			return fmt.Errorf("%w（当前 %s）——过期调度拒绝", missionrun.ErrMissionNotReady, mstate)
+		} else if merr != nil && !errors.Is(merr, sql.ErrNoRows) {
+			return fmt.Errorf("sqlite: run mission probe: %w", merr)
+		}
 		if _, err := q.ExecContext(ctx, `
 INSERT INTO runs (run_id, mission_id, attempt, lease_id, manifest_id, runtime_id, binding_id, agent_id, state, error_text, result_block, fence_token, generation, requested_at, started_at, finished_at, updated_at, resolution, resolution_note, resolved_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -4654,10 +4728,21 @@ func (s *Store) ResolveRun(ctx context.Context, runID, resolution, note, resolve
 	ok := false
 	err := s.identityWriteTx(ctx, func(q identityExec) error {
 		var exists int
-		if err := q.QueryRowContext(ctx, `SELECT 1 FROM runs WHERE run_id = ?`, runID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		var missionID string
+		if err := q.QueryRowContext(ctx, `SELECT 1, mission_id FROM runs WHERE run_id = ?`, runID).Scan(&exists, &missionID); errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w：%s", missionrun.ErrRunNotFound, runID)
 		} else if err != nil {
 			return fmt.Errorf("sqlite: resolve probe: %w", err)
+		}
+		// 复审 R7：事务内终态核对
+		var mstate string
+		if merr := q.QueryRowContext(ctx,
+			`SELECT status FROM missions WHERE mission_id = ?`, missionID).Scan(&mstate); merr == nil {
+			if mstate == "accepted" || mstate == "canceled" {
+				return fmt.Errorf("%w（Mission %s）", missionrun.ErrMissionTerminal, mstate)
+			}
+		} else if !errors.Is(merr, sql.ErrNoRows) {
+			return fmt.Errorf("sqlite: resolve mission probe: %w", merr)
 		}
 		res, err := q.ExecContext(ctx, `
 UPDATE runs SET resolution = ?, resolution_note = ?, resolved_at = ?, updated_at = ?
