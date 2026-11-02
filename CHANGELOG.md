@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.6.9] - 2026-11-02
+
 ### Added
 
 - **Mission 验收：`request_review` 与 `review_mission`**（0.6 领域第十件 / ADR-0032，RFC-0018 §3.2/§10.2/§11.2、AT-10）：三事实中的第三件——**验收通过**。Mission 首次拥有"完成"终态。

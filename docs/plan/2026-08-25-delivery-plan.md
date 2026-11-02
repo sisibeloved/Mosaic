@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.52 |
+| 版本 | v2.53 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -26,7 +26,7 @@
 
 ## 0.2 当前 Roadmap
 
-当前产品版本为 **v0.6.8**（0.6 领域已交付 0.6.0–0.6.8：MissionContract、房间交办/网关首切片、执行上下文清单、本地 Environment/Runtime、RuntimeLease、单 Agent Mission 执行、Mission 暂停/恢复/取消、Run 崩溃恢复与 DeliveryPackage 成果提交；0.6.9 Mission 验收已实施待定版）；0.5 领域线已收官；0.6 的 RFC 已于 2026-10-30 增补内嵌轻量级智能体网关设计（§0.6 说明，尚未实现）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
+当前产品版本为 **v0.6.9**（0.6 领域已交付 0.6.0–0.6.9：MissionContract、房间交办/网关首切片、执行上下文清单、本地 Environment/Runtime、RuntimeLease、单 Agent Mission 执行、Mission 暂停/恢复/取消、Run 崩溃恢复、DeliveryPackage 成果提交与 Mission 验收；下一件 0.6.10 执行结果回房未开工）；0.5 领域线已收官；0.6 的 RFC 已于 2026-10-30 增补内嵌轻量级智能体网关设计（§0.6 说明，尚未实现）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
 
 | 版本线 | 领域 / 产品目标 | 设计来源 / RFC-0018 阶段映射 |
 |---|---|---|
@@ -179,6 +179,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.53 | 2026-11-02 | Mosaic 项目组 / ZCode | **定版 v0.6.9（负责人指令："发布"）——0.6 领域线第十件**。CHANGELOG [Unreleased]（Added Mission 验收 request_review / review_mission + Fixed 三轮审校 3 P1 + 12 P2 / 2 P1 + 8 P2 + 2 P3 / 4 P2——31 项全部关闭）定版 **[0.6.9] - 2026-11-02**，保留空 [Unreleased]（工作区另有未提交的 MiniMax deliver-assets 工作线——其 CHANGELOG 条目不属本版，留在新 [Unreleased]，代码不入本版产物）；README 当前版本推进 v0.6.9、路线图 0.6 系列标注 0.6.0–0.6.9 已交付与 0.6.10 指向；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.6.9 + GitHub Release 发布说明与 Windows 产物（于 tag 的干净 worktree 重建，与 tag 严格一致）；CI 三平台绿基线（1f8fadd 已验，定版提交复验） |
 | v2.52 | 2026-11-02 | Mosaic 项目组 / ZCode | **0.6.9 三审收口（独立复审报告：4 项 P2——上轮 R1–R12 中 10 项关闭，R3/R4 各留一前端边界 + 旧库兼容 + 测试缺口）——ADR-0032 v0.4 修订**。#1 送验选择随契约版本切换/列表重载即清（加载失败同清——不持旧包发送），发送前再核所选包版本；#2 受审包加载失败原地重试；#4 同包同版本在审匹配重试先行走幂等路径（必需项检查只对新一轮——v22/v23 升级库在审包不因证据口径收紧 409）；#5 终态处置测试补正（ready 期建 Run 后转 accepted 断言 ErrMissionTerminal）。全量 vet/-race + it/st + SPA 绿；真机冒烟 35 项 ALL-PASS（新增同包幂等重试 200） |
 | v2.51 | 2026-11-02 | Mosaic 项目组 / ZCode | **0.6.9 复审修复（独立复审报告：2 P1 + 8 P2 + 2 P3；上轮 15 项中 7 关闭 8 部分修复）——ADR-0032 v0.3 修订**。R1 P1 未决 Run 双向堵（CreateRun 写事务内核对 ready|running + RecordReview 接受事务内复查——反向提交顺序与 v22 残留形态均拦）；R2 P1 migration v24 幂等补正（reviewing/accepted 轮次 0→1 恢复可裁定 + canceled 清锚——R9 同修，兼容已跑 v23 库）；R10 裁定事务核对包锚（预填未来轮次+换包交错按实际锚拒——事件不可能记作旧包）；R5/R7/R8 终态写事务内核对（execctx 新建清单/回执、run 处置、lease 领取——迟到交错不落库，既有查询照常）；R6 判空统一 Unicode White_Space ∪ U+FEFF（前后端同集）；R12 轮次仅 reviewing/accepted 公开；R3/R4/R11 SPA（包列表随提交刷新+当前版本过滤、受审包一致才可裁定、accepted 装配卡只读）。UT/IT（含 R1 双向顺序、R2 v23 形状残留升级、终态守卫交错对照）先红后绿；全量 vet/-race + it/st + SPA 绿；真机冒烟扩至 34 项 ALL-PASS（BOM 证据 409 / 送验后手动触发 409 且零陈旧 Run / 退回轮次 0 / accepted 轮次 2） |
 | v2.50 | 2026-11-02 | Mosaic 项目组 / ZCode | **0.6.9 审校修复（独立审校报告：3 P1 + 12 P2 全确认，"建议暂缓 0.6.9 定版"；"最先要修的是 #3"）——ADR-0032 v0.2 修订**。**(1) P1 #3 旧裁定落到下一轮**：migration v23 missions.review_round（送验轮次单调递增——同包重审也递增，单比包 ID 不足以防串轮）；裁定请求必填 review_round（缺 400），SQLite/MemStore 裁定事务内核对轮次+包+契约版本+状态（旧标签页/迟到/重放 409 invalid_transition）。**(2) P1 #1 空白证据**：送验按 TrimSpace 判证据非空（任务页与送端口径一致），缺项 409 携标准清单。**(3) P1 #2 未核验 Run 随任务被接受**：送验前置（review.Runs 端口 Unsettled）+ SQLite 送验事务内权威复核（ErrUnsettledRuns→409 runs_unsettled）；ready 残留崩溃形态恢复同样进 waiting（MarkWaiting 扩 ready）；accepted/canceled 终态封处置入口（run.ErrMissionTerminal→409 mission_terminal）。**(4) P2 ×12**：#8 并发送验同包幂等（CAS 未胜重读同包同版本返回当前）；#12 expected_version 预读校验；#10 退回事件 to=ready；#13 两段取消清受审包锚（两存储）；#9 验收人 ≤64 字；#5/#15/#16 accepted 门（SPA 按钮隐藏 + execctx 拒装配 + runtime 拒租约，均 409 mission_accepted、读取照常）；#4/#6/#7/#14 SPA（裁定草稿按轮次隔离、送验选包、验收人预填+逐项备注、受审包详情可核对）。全量 vet/-race + it/st 串行 + SPA 绿；真机冒烟扩至 31 项 ALL-PASS（空白证据 409 / 旧轮次 409 / 缺轮次 400 / 取消清锚 / accepted 拒装配与租约——历史读取照常） |
