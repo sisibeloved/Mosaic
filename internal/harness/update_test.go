@@ -600,6 +600,11 @@ func TestZcodeDesktopCheckUsesAppVersion(t *testing.T) {
 		ID: "z_desk", Adapter: "zcode", Runtime: "native", Channel: ChannelAppZcodeDesktop,
 		Path: exePath, Version: "0.16.9", Enabled: true,
 	}}
+	// 跨平台可测：Info.plist 读取按宿主 OS 守卫（仅 darwin 布局）——替换包级
+	// 可变面（loginShellArgs 同源），三平台 CI 都能测到解析逻辑
+	prevOS := goruntimeOS
+	goruntimeOS = "darwin"
+	defer func() { goruntimeOS = prevOS }()
 	runner := newFakeRunner()
 	// 无 app-update.yml → feed 不可知 → 回退源码 tag（v3.18.0）
 	runner.runs[nativeRunKey("git ls-remote --tags --refs https://github.com/zai-org/ZCode.git")] =
