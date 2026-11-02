@@ -1977,6 +1977,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/mission-runs/{run_id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 核验处置 unknown Run（reconciliation——禁止盲目重跑的兑现）
+         * @description 0.6.7 / ADR-0030：对重启恢复判为 unknown（结果不可判定）的 Run 作显式
+         *     处置——outcome ∈ verified_completed（核验副作用已达成）| verified_failed
+         *     （核验未达成）| discarded（放弃核验）。Run 状态**保持 unknown**（系统
+         *     从未观测到完成——处置是用户 attest，不改写为系统事实），处置事实落
+         *     resolution / resolution_note / resolved_at + resolved 事件；随后 Mission
+         *     waiting → ready | draft（完备性重判，清 waiting_reason）——此后方可再
+         *     执行（attempt+1）。三种结论均允许再执行（0.6.7 尚无 Mission 完成态）。
+         *     幂等：同 outcome 重复 200 当前；异 outcome 409 run_already_resolved；
+         *     非 unknown 409 run_not_unknown。
+         */
+        post: operations["resolveMissionRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/scheduler/status": {
         parameters: {
             query?: never;
@@ -3738,12 +3766,12 @@ export interface components {
             reason: string;
         };
         /**
-         * @description Run（一次执行尝试，ADR-0028/0029）：state ∈ pending | running |
-         *     completed | failed | canceled（0.6.6 暂停/取消停止；unknown 随
-         *     0.6.7）。attempt 同
-         *     Mission 递增；每 Mission 至多一个未终态。result_block 为正文
-         *     截断存档（≤8000 字——完整交付物随 0.6.8）；fence_rejected 的
-         *     迟到结果不落（见 run_events 审计）。
+         * @description Run（一次执行尝试，ADR-0028/0029/0030）：state ∈ pending | running |
+         *     completed | failed | canceled | unknown（0.6.6 暂停/取消停止；0.6.7
+         *     unknown = 重启恢复时结果不可判定——终态但可核验处置，见 resolution）。
+         *     attempt 同 Mission 递增；每 Mission 至多一个未终态。result_block 为
+         *     正文截断存档（≤8000 字——完整交付物随 0.6.8）；fence_rejected /
+         *     late_result 的迟到结果不落（见 run_events 审计）。
          */
         MissionRunView: {
             /** @description run_ 前缀生成式 */
@@ -3758,7 +3786,16 @@ export interface components {
             binding_id: string;
             agent_id: string;
             /** @enum {string} */
-            state: "pending" | "running" | "completed" | "failed" | "canceled";
+            state: "pending" | "running" | "completed" | "failed" | "canceled" | "unknown";
+            /**
+             * @description unknown 的核验处置结论（0.6.7；空 = 未处置；非 unknown 恒空）
+             * @enum {string}
+             */
+            resolution: "" | "verified_completed" | "verified_failed" | "discarded";
+            /** @description 处置备注（≤500 字） */
+            resolution_note?: string;
+            /** @description 处置时刻（未处置为空串） */
+            resolved_at?: string;
             /** @description 失败原因（截断 1000 字；成功为空） */
             error_text: string;
             /** @description 结果正文截断存档（≤8000 字；未完成为空） */
@@ -3776,14 +3813,24 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /** @description unknown Run 核验处置请求体（0.6.7 / ADR-0030）。 */
+        RunResolve: {
+            /**
+             * @description 核验结论（用户 attest——不改写 Run 状态）
+             * @enum {string}
+             */
+            outcome: "verified_completed" | "verified_failed" | "discarded";
+            /** @description 可选备注（记入 resolution_note 与 resolved 事件） */
+            note?: string;
+        };
         /** @description run_events 流事件（migration v19；seq 升序即流序）。 */
         MissionRunEvent: {
             /** Format: int64 */
             seq: number;
             run_id: string;
             /** @enum {string} */
-            event_type: "attempt_requested" | "started" | "completed" | "failed" | "fence_rejected";
-            /** @description 事件体——attempt_requested: {attempt, lease_id, manifest_id}；started: {}；completed: {late}；failed: {error}；fence_rejected: {reason, detail} */
+            event_type: "attempt_requested" | "started" | "completed" | "failed" | "fence_rejected" | "stop_requested" | "canceled" | "unknown" | "late_result" | "resolved";
+            /** @description 事件体——attempt_requested: {attempt, lease_id, manifest_id}；started: {}；completed: {late}；failed: {error}；fence_rejected: {reason, detail}；stop_requested/canceled: {cause}（0.6.6）；unknown: {recovery}（0.6.7 重启结果不可判定）；late_result: {outcome, preview, generation, published:false, phase}（停止后迟到结果只审计）；resolved: {outcome, note}（核验处置） */
             payload: Record<string, never>;
             /** Format: date-time */
             occurred_at: string;
@@ -3809,6 +3856,8 @@ export interface components {
             last_scan_at: string;
             /** @description 最近一轮错误（无错误为空串） */
             last_error: string;
+            /** @description 未处置 unknown Run 数（0.6.7——RFC §11.5 记录 unknown 数；处置后归零） */
+            unresolved_unknown_runs: number;
         };
         /** @description 预算（RFC-0018 §6.1：并发、总 Run 数、墙钟时长、重试与委派深度）——0.6.0 为契约声明事实，运行时强制随 0.6.5 Scheduler 落；缺省 {1, 32, 86400, 0, 0}（单 Agent、不重试、不委派起步）。 */
         MissionBudget: {
@@ -3910,7 +3959,9 @@ export interface components {
             /** @description 当前契约版本（修订 +1） */
             contract_version: number;
             /** @enum {string} */
-            status: "draft" | "ready" | "running" | "paused" | "canceling" | "canceled";
+            status: "draft" | "ready" | "running" | "waiting" | "paused" | "canceling" | "canceled";
+            /** @description 等待原因（0.6.7 / ADR-0030：waiting 态的一等事实；本版取值 reconciliation = 有 unknown Run 待核验处置；非 waiting 为空串；暂停期间保留——恢复据此回 waiting） */
+            waiting_reason: string;
             /** @description 负责人（空 = 显式 unassigned，§3.3 不变量） */
             owner_agent_id: string;
             /** @description 请求人（0.6.0 恒 owner——本地单用户） */
@@ -3939,7 +3990,7 @@ export interface components {
             mission_id: string;
             contract_version: number;
             /** @enum {string} */
-            status: "draft" | "ready" | "running" | "paused" | "canceling" | "canceled";
+            status: "draft" | "ready" | "running" | "waiting" | "paused" | "canceling" | "canceled";
             owner_agent_id: string;
             objective: string;
             /** Format: date-time */
@@ -8689,6 +8740,71 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description Run 域未装配（run_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    resolveMissionRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunResolve"];
+            };
+        };
+        responses: {
+            /** @description 已处置（state 仍 unknown，resolution 已落） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionRunView"];
+                };
+            };
+            /** @description outcome 非法或 note 超限（invalid_resolution） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Run 不存在（run_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 非 unknown（run_not_unknown）或已以不同结论处置（run_already_resolved） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             /** @description Run 域未装配（run_unavailable） */
             503: {
                 headers: {

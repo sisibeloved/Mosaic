@@ -50,6 +50,17 @@ func (p epRunMissions) FinishCanceling(ctx context.Context, id, reason string) e
 	_, err := p.svc.FinishCancel(ctx, id, reason)
 	return err
 }
+// SetWaiting / ClearWaiting（0.6.7 / ADR-0030：恢复分派结果不可判定 → waiting；
+// 处置后回调度列）。
+func (p epRunMissions) SetWaiting(ctx context.Context, id, reason string) error {
+	_, err := p.svc.MarkWaiting(ctx, id, reason)
+	return err
+}
+func (p epRunMissions) ClearWaiting(ctx context.Context, id string) error {
+	_, err := p.svc.ClearWaiting(ctx, id)
+	return err
+}
+
 func (p epRunMissions) ListCanceling(ctx context.Context) ([]missionrun.MissionRef, error) {
 	list, err := p.svc.ListByStatus(ctx, mission.StatusCanceling)
 	if err != nil {
@@ -137,7 +148,8 @@ func runTestServer(t *testing.T, opts ...func(*runTestCfg)) (*httptest.Server, *
 	if cfg.executorOverride != nil {
 		executor = cfg.executorOverride
 	}
-	runSvc := missionrun.New(missionrun.NewMemStore(),
+	runStore := missionrun.NewMemStore()
+	runSvc := missionrun.New(runStore,
 		epRunMissions{mSvc},
 		epRunBindings{agentID: "ag_r1"},
 		epRunRuntimes{has: cfg.hasRuntime},
@@ -150,6 +162,10 @@ func runTestServer(t *testing.T, opts ...func(*runTestCfg)) (*httptest.Server, *
 	var ctlOpts []missioncontrol.Option
 	if cfg.cancelWait > 0 {
 		ctlOpts = append(ctlOpts, missioncontrol.WithCancelWait(cfg.cancelWait))
+	}
+	if cfg.capture != nil {
+		cfg.capture.runSvc = runSvc
+		cfg.capture.runStore = runStore
 	}
 	ts := httptest.NewServer(New(Deps{Missions: mSvc, MissionRuns: runSvc, Identity: ident,
 		MissionControl: missioncontrol.New(mSvc, runSvc, ctlOpts...)}))
@@ -165,6 +181,13 @@ type runTestCfg struct {
 	fenceOK          bool
 	executorOverride missionrun.Executor // 控制面测试：阻塞/卡死执行器
 	cancelWait       time.Duration       // 控制面有界等待（0 = 缺省 10s）
+	capture          *runHandles         // 0.6.7：回传 run 服务/存储句柄（恢复/处置测试播种）
+}
+
+// runHandles 端点测试可取的 run 域句柄。
+type runHandles struct {
+	runSvc   *missionrun.Service
+	runStore *missionrun.MemStore
 }
 
 func readyMission(t *testing.T, mSvc *mission.Service, owner string) string {

@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Run 崩溃恢复：unknown、迟到结果及禁止盲目重跑**（0.6 领域第八件 / ADR-0030，RFC-0018 §3.2/§11.3/§11.5、AT-12）：兑现 RFC 的保守 unknown 语义——结果不可判定即 unknown、Mission 明示等待核验、用户显式处置后方可再执行、迟到结果只审计不发布。
+  - **Run `unknown` 终态**：重启恢复时无停止意图（Mission running）的在途 Run → `unknown`（此前记为 failed 并附"结果未知"文本——把"不可判定"伪装成"已知失败"）；`unknown{recovery}` 事件；租约释放（进程已死）。`failed` 从此只表示已观测到的失败。canceling/paused 停止意图分派路径不变（0.6.6）。
+  - **Mission `waiting` 态 + `waiting_reason`**（migration v20 加列）：running → waiting(reconciliation)——出调度列直至处置；等待原因是一等事实（任务中心展示"为什么不动"）；暂停保留等待原因、恢复据此回 waiting（暂停/恢复不绕过禁止盲目重跑）；取消两段照常；修订保持投影（存储事务内）。此前 Mission 永久滞留 running 且用户除取消外无出路。
+  - **核验处置面** `POST /v1/mission-runs/{id}/resolve`（outcome ∈ verified_completed | verified_failed | discarded，note ≤500）：**Run 状态保持 unknown**（系统未观测到完成——处置是用户 attest，不冒充系统事实），处置事实落 resolution / resolution_note / resolved_at（migration v20 加列）+ `resolved` 事件（条件更新：state='unknown' AND resolution=''）；随后 Mission waiting → ready | draft（完备性重判，清等待原因）——再执行只能发生在显式处置之后。幂等同结论 200；异结论 409 run_already_resolved；非 unknown 409 run_not_unknown。
+  - **迟到结果只审计**（AT-12）：停止后执行器结果在宽限内到达即记 `late_result` 事件（outcome/preview/generation/published=false/phase），宽限后由后台等待审计——Run 行不变、结果不落 result_block、不发布（此前经缓冲通道静默丢弃）。存储新增事件追加面 AppendRunEvents（终态行只增审计、不重写行）。
+  - **可观测**：`GET /v1/scheduler/status` += `unresolved_unknown_runs`（RFC §11.5 记录 unknown 数，处置后归零）。
+  - **契约面**：MissionView/MissionSummary `status` 枚举 += waiting；MissionView += waiting_reason；MissionRunView `state` 枚举 += unknown，+= resolution/resolution_note/resolved_at；RunResolve 请求体；MissionRunEvent 事件枚举补齐（含 0.6.6 漏登的 stop_requested/canceled）+ unknown/late_result/resolved。
+  - **SPA**：任务详情 waiting 徽章与等待原因说明（不以通用"重试"掩盖）；执行区 unknown Run 行内处置控件（已达成 / 未达成 / 放弃 + 备注）与已处置徽章；暂停按钮含 waiting。
+  - **迁移 v20**：runs 处置三列 + missions.waiting_reason——逐语句执行、重复加列容忍；v0.6.6 旧库自动升级，旧行处置列缺省空；历史 failed（结果未知）行不回溯改写。
+
 ## [0.6.6] - 2026-11-01
 
 ### Fixed

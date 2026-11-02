@@ -15,6 +15,7 @@ type fakeMissions struct {
 	mu                sync.Mutex
 	ready             []MissionRef
 	status            map[string]string
+	waitingReason     map[string]string // 0.6.7：等待原因（waiting 态一等事实）
 	setRuns           []string
 	finishCancelCalls int
 }
@@ -77,6 +78,36 @@ func (f *fakeMissions) FinishCanceling(_ context.Context, id, _ string) error {
 	}
 	f.finishCancelCalls++
 	f.status[id] = "canceled"
+	return nil
+}
+
+// SetWaiting running → waiting(reason)（0.6.7 / ADR-0030：恢复分派结果不可
+// 判定——对齐 mission 域条件投影：仅 running 可进 waiting）。
+func (f *fakeMissions) SetWaiting(_ context.Context, id, reason string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.status[id] != "running" {
+		return nil
+	}
+	f.status[id] = "waiting"
+	if f.waitingReason == nil {
+		f.waitingReason = map[string]string{}
+	}
+	f.waitingReason[id] = reason
+	return nil
+}
+
+// ClearWaiting waiting → ready（处置后回调度列；fake 恒视为完备）+ 清等待原因。
+func (f *fakeMissions) ClearWaiting(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.status[id] != "waiting" {
+		return nil
+	}
+	f.status[id] = "ready"
+	if f.waitingReason != nil {
+		f.waitingReason[id] = ""
+	}
 	return nil
 }
 
@@ -161,7 +192,7 @@ func itoa(n int) string { return string(rune('0' + n)) }
 
 func newFixture(t *testing.T) fixture {
 	t.Helper()
-	missions := &fakeMissions{status: map[string]string{}}
+	missions := &fakeMissions{status: map[string]string{}, waitingReason: map[string]string{}}
 	leases := &fakeLeases{fenceOK: true}
 	exec := &fakeExecutor{block: "执行结果正文"}
 	var n int
@@ -312,12 +343,13 @@ func TestRecoverNoAutoReschedule(t *testing.T) {
 		t.Fatalf("恢复: %d %v", n, err)
 	}
 	got, _, _ := f.svc.GetRun(ctx, "run_seed")
-	if got.State != StateFailed || !strings.Contains(got.ErrorText, "结果未知") {
+	// 0.6.7 / ADR-0030：结果不可判定 → unknown（非 failed）
+	if got.State != StateUnknown || !strings.Contains(got.ErrorText, "结果未知") {
 		t.Fatalf("恢复事实: %+v", got)
 	}
-	// #6：Mission 停在 running（不回 ready）——扫描不自动调度
-	if f.missions.status["mi_a"] != "running" {
-		t.Fatalf("恢复后 Mission 须停在 running: %v", f.missions.status)
+	// #6 → 0.6.7：Mission 进 waiting(reconciliation)（出调度列——扫描不自动调度）
+	if f.missions.status["mi_a"] != "waiting" {
+		t.Fatalf("恢复后 Mission 须 waiting: %v", f.missions.status)
 	}
 }
 

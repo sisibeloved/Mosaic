@@ -28,6 +28,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // Run 状态（pending 为事务内瞬态——落库即 running；canceled 为 0.6.6 控制停
@@ -38,9 +39,24 @@ const (
 	StateCompleted = "completed"
 	StateFailed    = "failed"
 	// StateCanceled 控制停止终态（0.6.6 / ADR-0029）：暂停/取消的停止信号
-	// 使然——结果不落（迟到结果经缓冲通道丢弃），attempt 已消耗。
+	// 使然——结果不落（迟到结果只审计），attempt 已消耗。
 	StateCanceled = "canceled"
+	// StateUnknown 结果不可判定终态（0.6.7 / ADR-0030）：进程重启时在执行且
+	// Mission 无停止意图——系统未观测到完成也未观测到失败。终态（出未终态
+	// 口径）但**可核验处置**（resolution），处置不改写状态（用户 attest 非
+	// 系统事实）；Mission 同步进 waiting(reconciliation) 直至处置。
+	StateUnknown = "unknown"
 )
+
+// 处置结论（unknown Run 的核验结果——用户 attest）。
+const (
+	ResolutionVerifiedCompleted = "verified_completed"
+	ResolutionVerifiedFailed    = "verified_failed"
+	ResolutionDiscarded         = "discarded"
+)
+
+// WaitingReconciliation Mission 等待原因：有未处置 unknown Run。
+const WaitingReconciliation = "reconciliation"
 
 // 事件类型（run_events 流）。
 const (
@@ -54,6 +70,14 @@ const (
 	EventStopRequested = "stop_requested"
 	// EventCanceled Run canceled 终态事件（payload.cause 同上）。
 	EventCanceled = "canceled"
+	// EventUnknown 结果不可判定终态事件（0.6.7 / ADR-0030；payload.recovery=true）。
+	EventUnknown = "unknown"
+	// EventLateResult 停止后迟到结果审计（0.6.7——AT-12"旧结果只审计"）：
+	// payload {outcome: ok|error, preview, generation, published:false, phase}。
+	// Run 行不变、结果不落、不发布。
+	EventLateResult = "late_result"
+	// EventResolved unknown 处置事件（payload {outcome, note}）。
+	EventResolved = "resolved"
 )
 
 // 领域错误。
@@ -74,6 +98,12 @@ var (
 	ErrFenceRejected = errors.New("run: 围栏复核失败")
 	// ErrTerminalWrite 终态落库失败（结果有但库未收——返回错误给调用方）。
 	ErrTerminalWrite = errors.New("run: 终态落库失败")
+	// ErrRunNotUnknown 处置目标非 unknown（0.6.7）。
+	ErrRunNotUnknown = errors.New("run: Run 非 unknown，不可处置")
+	// ErrRunAlreadyResolved 已以不同结论处置（同结论幂等返回当前）。
+	ErrRunAlreadyResolved = errors.New("run: Run 已处置")
+	// ErrInvalidResolution 处置结论/备注不合法。
+	ErrInvalidResolution = errors.New("run: 处置不合法")
 )
 
 // Run 一次执行尝试（run_ 前缀；attempt 同 Mission 递增）。
@@ -95,6 +125,10 @@ type Run struct {
 	StartedAt   string `json:"started_at"`
 	FinishedAt  string `json:"finished_at"`
 	UpdatedAt   string `json:"updated_at"`
+	// 处置三列（0.6.7 / ADR-0030；非 unknown 恒空）：核验结论 / 备注 / 时刻。
+	Resolution     string `json:"resolution"`
+	ResolutionNote string `json:"resolution_note"`
+	ResolvedAt     string `json:"resolved_at"`
 }
 
 // Event run_events 流事件。
@@ -141,6 +175,12 @@ type Missions interface {
 	// ListCanceling 枚举滞留 canceling 的 Mission（0.6.6 审校 P2：恢复面
 	// 收尾兜底——"Run 已终态、收尾未兑现"不经未终态 Run 扫描可见）。
 	ListCanceling(ctx context.Context) ([]MissionRef, error)
+	// SetWaiting running → waiting(reason)（0.6.7 / ADR-0030：恢复分派结果不可
+	// 判定——出调度列直至处置；幂等条件转移）。
+	SetWaiting(ctx context.Context, missionID, reason string) error
+	// ClearWaiting waiting → ready|draft（处置后回调度列，完备性重判，清等待
+	// 原因；幂等条件转移——Mission 已取消/暂停时无操作）。
+	ClearWaiting(ctx context.Context, missionID string) error
 }
 
 // MissionRef 调度候选摘要。
@@ -218,6 +258,14 @@ type Store interface {
 	ListUnfinished(ctx context.Context) ([]Run, error)
 	RunEvents(ctx context.Context, runID string) ([]Event, error)
 	NextAttempt(ctx context.Context, missionID string) (int, error)
+	// ResolveRun 条件处置（0.6.7）：state='unknown' AND resolution='' 才落三列
+	// + 事件（单事务）；ok=false = 非 unknown/已处置（服务方重读分辨幂等）；
+	// 未知 Run → ErrRunNotFound。
+	ResolveRun(ctx context.Context, runID, resolution, note, resolvedAt string) (Run, bool, error)
+	// AppendRunEvents 事件追加（不重写行——终态行只增审计）。
+	AppendRunEvents(ctx context.Context, runID string, events []Event) error
+	// ListUnresolvedUnknown 未处置 unknown Run（诊断计数）。
+	ListUnresolvedUnknown(ctx context.Context) ([]Run, error)
 }
 
 // 选项。
@@ -248,16 +296,16 @@ type Service struct {
 	newRunID  func() string
 	stops     *stopRegistry // 控制停止注册表（0.6.6 / ADR-0029）
 
-	scanInterval   time.Duration
-	enabled        bool
-	scans          atomic.Int64
-	launched       atomic.Int64
-	lastScanAt     atomic.Value
-	lastError      atomic.Value
-	stopCh         chan struct{}
-	stopOnce       sync.Once
-	cleanupBudget  time.Duration // 清理面上下文窗口（收尾时刻起算——0.6.6 审校 P1）
-	stopGrace      time.Duration // 停止后等执行器退出的有界窗口（0.6.6 审校 P1）
+	scanInterval  time.Duration
+	enabled       bool
+	scans         atomic.Int64
+	launched      atomic.Int64
+	lastScanAt    atomic.Value
+	lastError     atomic.Value
+	stopCh        chan struct{}
+	stopOnce      sync.Once
+	cleanupBudget time.Duration // 清理面上下文窗口（收尾时刻起算——0.6.6 审校 P1）
+	stopGrace     time.Duration // 停止后等执行器退出的有界窗口（0.6.6 审校 P1）
 }
 
 // stopEntry 注册表项：每 Run 独立取消上下文的 cancel 与停止原因。
@@ -365,12 +413,18 @@ func (s *Service) Status(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	unresolved, err := s.store.ListUnresolvedUnknown(ctx)
+	if err != nil {
+		return nil, err
+	}
 	lastScan, _ := s.lastScanAt.Load().(string)
 	lastErr, _ := s.lastError.Load().(string)
 	return map[string]any{
 		"enabled": s.enabled, "scan_interval_seconds": int(s.scanInterval.Seconds()),
 		"scans": s.scans.Load(), "launched_runs": s.launched.Load(),
 		"active_runs": len(unfinished), "last_scan_at": lastScan, "last_error": lastErr,
+		// 0.6.7 / RFC §11.5：记录 unknown 数（处置后归零）
+		"unresolved_unknown_runs": len(unresolved),
 	}, nil
 }
 
@@ -741,13 +795,83 @@ func (s *Service) finalizeStopped(ctx context.Context, r *Run, lease Lease, caus
 	}
 	// 租约释放后于执行器退出：真实面 ctx 取消即杀进程组（毫秒级退出）；超窗
 	// 仍释放——租约滞留到 TTL（工作区死锁）比短残余窗口更糟。
+	// 0.6.7 / ADR-0030 决策 4（AT-12"旧结果只审计"）：执行器结果在宽限内到达
+	// → 即刻审计 late_result；宽限后 → 后台等待审计。Run 行不变、结果不落、
+	// 不发布（此前经缓冲通道静默丢弃）。
 	select {
-	case <-executorDone:
+	case res := <-executorDone:
+		s.auditLateResult(ctx, r.RunID, r.Generation, res, "after_stop")
 	case <-time.After(s.stopGrace):
+		go s.awaitLateResult(r.RunID, r.Generation, executorDone)
 	}
 	_ = s.leases.Release(ctx, lease.LeaseID)
 	_ = s.missions.SetReadyFromRunning(ctx, r.MissionID, "run_canceled")
 	return nil
+}
+
+// auditLateResult 迟到结果审计事件（事件追加——不重写终态行；写失败 best-effort
+// ——审计面无回报方，不影响已落的停止事实）。
+func (s *Service) auditLateResult(ctx context.Context, runID string, generation int, res execResult, phase string) {
+	outcome, preview := "ok", res.block
+	if res.err != nil {
+		outcome, preview = "error", res.err.Error()
+	}
+	_ = s.store.AppendRunEvents(ctx, runID, []Event{{
+		RunID: runID, EventType: EventLateResult, OccurredAt: s.now(),
+		Payload: map[string]any{
+			"outcome": outcome, "preview": truncateS(preview, 400),
+			"generation": generation, "published": false, "phase": phase,
+		},
+	}})
+}
+
+// awaitLateResult 宽限后的后台等待审计（每个被放弃的执行器一个 goroutine——
+// 有界于被放弃执行数；进程退出即消亡，重启后无进程内迟到源）。
+func (s *Service) awaitLateResult(runID string, generation int, executorDone <-chan execResult) {
+	res := <-executorDone
+	ctx, cancel := s.cleanupContext()
+	defer cancel()
+	s.auditLateResult(ctx, runID, generation, res, "after_stop")
+}
+
+// ResolveRun 核验处置（0.6.7 / ADR-0030 决策 3——禁止盲目重跑的兑现）：
+// unknown Run 的用户 attest——**状态保持 unknown**（系统未观测到完成，不冒充
+// 系统事实），处置事实落 resolution 三列 + resolved 事件（存储条件更新：
+// state='unknown' AND resolution=”）；随后 Mission waiting → ready|draft
+// （ClearWaiting 条件转移——已取消/暂停无操作，处置事实仍落 Run）。幂等：
+// 同结论返回当前；异结论 ErrRunAlreadyResolved；非 unknown ErrRunNotUnknown。
+func (s *Service) ResolveRun(ctx context.Context, runID, outcome, note string) (Run, error) {
+	switch outcome {
+	case ResolutionVerifiedCompleted, ResolutionVerifiedFailed, ResolutionDiscarded:
+	default:
+		return Run{}, fmt.Errorf("%w: outcome 须为 verified_completed | verified_failed | discarded", ErrInvalidResolution)
+	}
+	if utf8.RuneCountInString(note) > 500 {
+		return Run{}, fmt.Errorf("%w: note ≤500 字", ErrInvalidResolution)
+	}
+	out, ok, err := s.store.ResolveRun(ctx, runID, outcome, note, s.now())
+	if err != nil {
+		return Run{}, err
+	}
+	if !ok {
+		cur, found, err := s.store.RunByID(ctx, runID)
+		if err != nil {
+			return Run{}, err
+		}
+		if !found {
+			return Run{}, ErrRunNotFound
+		}
+		if cur.State != StateUnknown {
+			return Run{}, fmt.Errorf("%w（当前 %s）", ErrRunNotUnknown, cur.State)
+		}
+		if cur.Resolution == outcome {
+			return cur, nil // 幂等：重试安全，不重复记事件
+		}
+		return Run{}, fmt.Errorf("%w（已 %s）", ErrRunAlreadyResolved, cur.Resolution)
+	}
+	// Mission 回调度列（waiting → ready|draft）——用户显式处置后方可再执行
+	_ = s.missions.ClearWaiting(ctx, out.MissionID)
+	return out, nil
 }
 
 // RecoverUnfinished #6 + 0.6.6 / ADR-0029 决策 4：未终态 Run 按 Mission
@@ -755,8 +879,9 @@ func (s *Service) finalizeStopped(ctx context.Context, r *Run, lease Lease, caus
 //   - canceling：Run → canceled（停止请求在途时重启——结果未知）+ 收尾
 //     兑现（canceling → canceled）
 //   - paused：Run → canceled（同上）+ Mission 停 paused
-//   - 其余（running）：Run → failed（结果未知）+ Mission 停 running
-//     （0.6.5 语义不变——不自动重跑，等待用户决定）
+//   - 其余（running，无停止意图）：Run → unknown（结果不可判定——0.6.7 /
+//     ADR-0030；此前 failed）+ Mission → waiting(reconciliation)（出调度列，
+//     等待用户核验处置——禁止盲目重跑）
 func (s *Service) RecoverUnfinished(ctx context.Context) (int, error) {
 	unfinished, err := s.store.ListUnfinished(ctx)
 	if err != nil {
@@ -785,16 +910,19 @@ func (s *Service) RecoverUnfinished(ctx context.Context) (int, error) {
 			}
 			continue
 		}
-		r.State = StateFailed
-		r.ErrorText = "进程重启时在执行——结果未知；请确认后手动再执行（不会自动重跑）"
+		// 0.6.7 / ADR-0030 决策 1/2：无停止意图的在途 Run → unknown（结果不可
+		// 判定——非 failed）+ 租约释放（进程已死）+ Mission → waiting
+		// (reconciliation)（出调度列直至用户处置——禁止盲目重跑）。
+		r.State = StateUnknown
+		r.ErrorText = "进程重启时在执行——结果未知；须核验工作区副作用后处置（verified_completed / verified_failed / discarded），不会自动重跑"
 		r.FinishedAt = now
 		r.UpdatedAt = now
 		if err := s.store.UpdateRun(ctx, r, []Event{{
-			RunID: r.RunID, EventType: EventFailed, OccurredAt: now,
-			Payload: map[string]any{"error": r.ErrorText, "recovery": true},
+			RunID: r.RunID, EventType: EventUnknown, OccurredAt: now,
+			Payload: map[string]any{"recovery": true},
 		}}); err == nil {
-			// #6：Mission 停在 running——不回 ready（禁止自动调度）
 			_ = s.leases.Release(ctx, r.LeaseID)
+			_ = s.missions.SetWaiting(ctx, r.MissionID, WaitingReconciliation)
 			n++
 		}
 	}

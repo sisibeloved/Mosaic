@@ -786,10 +786,15 @@ func (e MissionEventEventType) Valid() bool {
 // Defines values for MissionRunEventEventType.
 const (
 	MissionRunEventEventTypeAttemptRequested MissionRunEventEventType = "attempt_requested"
+	MissionRunEventEventTypeCanceled         MissionRunEventEventType = "canceled"
 	MissionRunEventEventTypeCompleted        MissionRunEventEventType = "completed"
 	MissionRunEventEventTypeFailed           MissionRunEventEventType = "failed"
 	MissionRunEventEventTypeFenceRejected    MissionRunEventEventType = "fence_rejected"
+	MissionRunEventEventTypeLateResult       MissionRunEventEventType = "late_result"
+	MissionRunEventEventTypeResolved         MissionRunEventEventType = "resolved"
 	MissionRunEventEventTypeStarted          MissionRunEventEventType = "started"
+	MissionRunEventEventTypeStopRequested    MissionRunEventEventType = "stop_requested"
+	MissionRunEventEventTypeUnknown          MissionRunEventEventType = "unknown"
 )
 
 // Valid indicates whether the value is a known member of the MissionRunEventEventType enum.
@@ -797,13 +802,47 @@ func (e MissionRunEventEventType) Valid() bool {
 	switch e {
 	case MissionRunEventEventTypeAttemptRequested:
 		return true
+	case MissionRunEventEventTypeCanceled:
+		return true
 	case MissionRunEventEventTypeCompleted:
 		return true
 	case MissionRunEventEventTypeFailed:
 		return true
 	case MissionRunEventEventTypeFenceRejected:
 		return true
+	case MissionRunEventEventTypeLateResult:
+		return true
+	case MissionRunEventEventTypeResolved:
+		return true
 	case MissionRunEventEventTypeStarted:
+		return true
+	case MissionRunEventEventTypeStopRequested:
+		return true
+	case MissionRunEventEventTypeUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MissionRunViewResolution.
+const (
+	MissionRunViewResolutionDiscarded         MissionRunViewResolution = "discarded"
+	MissionRunViewResolutionEmpty             MissionRunViewResolution = ""
+	MissionRunViewResolutionVerifiedCompleted MissionRunViewResolution = "verified_completed"
+	MissionRunViewResolutionVerifiedFailed    MissionRunViewResolution = "verified_failed"
+)
+
+// Valid indicates whether the value is a known member of the MissionRunViewResolution enum.
+func (e MissionRunViewResolution) Valid() bool {
+	switch e {
+	case MissionRunViewResolutionDiscarded:
+		return true
+	case MissionRunViewResolutionEmpty:
+		return true
+	case MissionRunViewResolutionVerifiedCompleted:
+		return true
+	case MissionRunViewResolutionVerifiedFailed:
 		return true
 	default:
 		return false
@@ -817,6 +856,7 @@ const (
 	MissionRunViewStateFailed    MissionRunViewState = "failed"
 	MissionRunViewStatePending   MissionRunViewState = "pending"
 	MissionRunViewStateRunning   MissionRunViewState = "running"
+	MissionRunViewStateUnknown   MissionRunViewState = "unknown"
 )
 
 // Valid indicates whether the value is a known member of the MissionRunViewState enum.
@@ -832,6 +872,8 @@ func (e MissionRunViewState) Valid() bool {
 		return true
 	case MissionRunViewStateRunning:
 		return true
+	case MissionRunViewStateUnknown:
+		return true
 	default:
 		return false
 	}
@@ -845,6 +887,7 @@ const (
 	MissionSummaryStatusPaused    MissionSummaryStatus = "paused"
 	MissionSummaryStatusReady     MissionSummaryStatus = "ready"
 	MissionSummaryStatusRunning   MissionSummaryStatus = "running"
+	MissionSummaryStatusWaiting   MissionSummaryStatus = "waiting"
 )
 
 // Valid indicates whether the value is a known member of the MissionSummaryStatus enum.
@@ -862,6 +905,8 @@ func (e MissionSummaryStatus) Valid() bool {
 		return true
 	case MissionSummaryStatusRunning:
 		return true
+	case MissionSummaryStatusWaiting:
+		return true
 	default:
 		return false
 	}
@@ -875,6 +920,7 @@ const (
 	MissionViewStatusPaused    MissionViewStatus = "paused"
 	MissionViewStatusReady     MissionViewStatus = "ready"
 	MissionViewStatusRunning   MissionViewStatus = "running"
+	MissionViewStatusWaiting   MissionViewStatus = "waiting"
 )
 
 // Valid indicates whether the value is a known member of the MissionViewStatus enum.
@@ -891,6 +937,8 @@ func (e MissionViewStatus) Valid() bool {
 	case MissionViewStatusReady:
 		return true
 	case MissionViewStatusRunning:
+		return true
+	case MissionViewStatusWaiting:
 		return true
 	default:
 		return false
@@ -1089,6 +1137,27 @@ func (e RouteDecisionViewStatus) Valid() bool {
 	case RouteDecisionViewStatusBlocked:
 		return true
 	case RouteDecisionViewStatusResolved:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RunResolveOutcome.
+const (
+	RunResolveOutcomeDiscarded         RunResolveOutcome = "discarded"
+	RunResolveOutcomeVerifiedCompleted RunResolveOutcome = "verified_completed"
+	RunResolveOutcomeVerifiedFailed    RunResolveOutcome = "verified_failed"
+)
+
+// Valid indicates whether the value is a known member of the RunResolveOutcome enum.
+func (e RunResolveOutcome) Valid() bool {
+	switch e {
+	case RunResolveOutcomeDiscarded:
+		return true
+	case RunResolveOutcomeVerifiedCompleted:
+		return true
+	case RunResolveOutcomeVerifiedFailed:
 		return true
 	default:
 		return false
@@ -3092,7 +3161,7 @@ type MissionRunEvent struct {
 	EventType  MissionRunEventEventType `json:"event_type"`
 	OccurredAt time.Time                `json:"occurred_at"`
 
-	// Payload 事件体——attempt_requested: {attempt, lease_id, manifest_id}；started: {}；completed: {late}；failed: {error}；fence_rejected: {reason, detail}
+	// Payload 事件体——attempt_requested: {attempt, lease_id, manifest_id}；started: {}；completed: {late}；failed: {error}；fence_rejected: {reason, detail}；stop_requested/canceled: {cause}（0.6.6）；unknown: {recovery}（0.6.7 重启结果不可判定）；late_result: {outcome, preview, generation, published:false, phase}（停止后迟到结果只审计）；resolved: {outcome, note}（核验处置）
 	Payload map[string]interface{} `json:"payload"`
 	RunId   string                 `json:"run_id"`
 	Seq     int64                  `json:"seq"`
@@ -3101,12 +3170,12 @@ type MissionRunEvent struct {
 // MissionRunEventEventType defines model for MissionRunEvent.EventType.
 type MissionRunEventEventType string
 
-// MissionRunView Run（一次执行尝试，ADR-0028/0029）：state ∈ pending | running |
-// completed | failed | canceled（0.6.6 暂停/取消停止；unknown 随
-// 0.6.7）。attempt 同
-// Mission 递增；每 Mission 至多一个未终态。result_block 为正文
-// 截断存档（≤8000 字——完整交付物随 0.6.8）；fence_rejected 的
-// 迟到结果不落（见 run_events 审计）。
+// MissionRunView Run（一次执行尝试，ADR-0028/0029/0030）：state ∈ pending | running |
+// completed | failed | canceled | unknown（0.6.6 暂停/取消停止；0.6.7
+// unknown = 重启恢复时结果不可判定——终态但可核验处置，见 resolution）。
+// attempt 同 Mission 递增；每 Mission 至多一个未终态。result_block 为
+// 正文截断存档（≤8000 字——完整交付物随 0.6.8）；fence_rejected /
+// late_result 的迟到结果不落（见 run_events 审计）。
 type MissionRunView struct {
 	AgentId   string `json:"agent_id"`
 	Attempt   int    `json:"attempt"`
@@ -3132,6 +3201,15 @@ type MissionRunView struct {
 	MissionId   string    `json:"mission_id"`
 	RequestedAt time.Time `json:"requested_at"`
 
+	// Resolution unknown 的核验处置结论（0.6.7；空 = 未处置；非 unknown 恒空）
+	Resolution MissionRunViewResolution `json:"resolution"`
+
+	// ResolutionNote 处置备注（≤500 字）
+	ResolutionNote *string `json:"resolution_note,omitempty"`
+
+	// ResolvedAt 处置时刻（未处置为空串）
+	ResolvedAt *string `json:"resolved_at,omitempty"`
+
 	// ResultBlock 结果正文截断存档（≤8000 字；未完成为空）
 	ResultBlock string `json:"result_block"`
 
@@ -3144,6 +3222,9 @@ type MissionRunView struct {
 	State     MissionRunViewState `json:"state"`
 	UpdatedAt time.Time           `json:"updated_at"`
 }
+
+// MissionRunViewResolution unknown 的核验处置结论（0.6.7；空 = 未处置；非 unknown 恒空）
+type MissionRunViewResolution string
 
 // MissionRunViewState defines model for MissionRunView.State.
 type MissionRunViewState string
@@ -3204,6 +3285,9 @@ type MissionView struct {
 
 	// UpdatedAt 最近修订/转移时间
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// WaitingReason 等待原因（0.6.7 / ADR-0030：waiting 态的一等事实；本版取值 reconciliation = 有 unknown Run 待核验处置；非 waiting 为空串；暂停期间保留——恢复据此回 waiting）
+	WaitingReason string `json:"waiting_reason"`
 }
 
 // MissionViewStatus defines model for MissionView.Status.
@@ -3432,6 +3516,18 @@ type RouteDecisionViewSelectionSource string
 // RouteDecisionViewStatus defines model for RouteDecisionView.Status.
 type RouteDecisionViewStatus string
 
+// RunResolve unknown Run 核验处置请求体（0.6.7 / ADR-0030）。
+type RunResolve struct {
+	// Note 可选备注（记入 resolution_note 与 resolved 事件）
+	Note *string `json:"note,omitempty"`
+
+	// Outcome 核验结论（用户 attest——不改写 Run 状态）
+	Outcome RunResolveOutcome `json:"outcome"`
+}
+
+// RunResolveOutcome 核验结论（用户 attest——不改写 Run 状态）
+type RunResolveOutcome string
+
 // RunView 任务执行视图（M4-1）：status ∈ requested | running | completed | failed | canceled | unknown；迟到审计（late）不改终态。
 type RunView struct {
 	// Assignee 负责人（agent 座位）
@@ -3658,6 +3754,9 @@ type SchedulerStatus struct {
 
 	// Scans 启动以来扫描轮数
 	Scans int64 `json:"scans"`
+
+	// UnresolvedUnknownRuns 未处置 unknown Run 数（0.6.7——RFC §11.5 记录 unknown 数；处置后归零）
+	UnresolvedUnknownRuns int `json:"unresolved_unknown_runs"`
 }
 
 // SearchHit 检索命中（对外视图：无 seq/tenant；position 供时间线跳转）。
@@ -4511,6 +4610,9 @@ type CreateIdentityAgentJSONRequestBody = ManualAgentRequest
 // TransitionAgentLifecycleJSONRequestBody defines body for TransitionAgentLifecycle for application/json ContentType.
 type TransitionAgentLifecycleJSONRequestBody = LifecycleTransitionRequest
 
+// ResolveMissionRunJSONRequestBody defines body for ResolveMissionRun for application/json ContentType.
+type ResolveMissionRunJSONRequestBody = RunResolve
+
 // CreateMissionJSONRequestBody defines body for CreateMission for application/json ContentType.
 type CreateMissionJSONRequestBody = MissionCreate
 
@@ -4735,6 +4837,9 @@ type ServerInterface interface {
 	// GetMissionRunEvents Run 事件流（含围栏拒绝审计）
 	// (GET /v1/mission-runs/{run_id}/events)
 	GetMissionRunEvents(w http.ResponseWriter, r *http.Request, runId string)
+	// ResolveMissionRun 核验处置 unknown Run（reconciliation——禁止盲目重跑的兑现）
+	// (POST /v1/mission-runs/{run_id}/resolve)
+	ResolveMissionRun(w http.ResponseWriter, r *http.Request, runId string)
 	// ListMissions Mission 契约列表（0.6.0 / ADR-0023）
 	// (GET /v1/missions)
 	ListMissions(w http.ResponseWriter, r *http.Request)
@@ -6226,6 +6331,32 @@ func (siw *ServerInterfaceWrapper) GetMissionRunEvents(w http.ResponseWriter, r 
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetMissionRunEvents(w, r, runId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResolveMissionRun operation middleware
+func (siw *ServerInterfaceWrapper) ResolveMissionRun(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "run_id" -------------
+	var runId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "run_id", r.PathValue("run_id"), &runId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "run_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResolveMissionRun(w, r, runId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8108,6 +8239,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/runs", wrapper.CreateMissionRun)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/mission-runs/{run_id}", wrapper.GetRun)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/mission-runs/{run_id}/events", wrapper.GetMissionRunEvents)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/mission-runs/{run_id}/resolve", wrapper.ResolveMissionRun)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/scheduler/status", wrapper.GetSchedulerStatus)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables", wrapper.ListHarnessExecutables)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables", wrapper.AddHarnessExecutable)

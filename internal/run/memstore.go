@@ -104,6 +104,53 @@ func (m *MemStore) NextAttempt(_ context.Context, missionID string) (int, error)
 	return m.maxAttemptLocked(missionID) + 1, nil
 }
 
+// ResolveRun 条件处置（0.6.7）：state=unknown 且未处置才落三列 + resolved 事件。
+func (m *MemStore) ResolveRun(_ context.Context, runID, resolution, note, resolvedAt string) (Run, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.runs[runID]
+	if !ok {
+		return Run{}, false, ErrRunNotFound
+	}
+	if r.State != StateUnknown || r.Resolution != "" {
+		return Run{}, false, nil
+	}
+	r.Resolution = resolution
+	r.ResolutionNote = note
+	r.ResolvedAt = resolvedAt
+	r.UpdatedAt = resolvedAt
+	m.runs[runID] = r
+	m.appendLocked(Event{RunID: runID, EventType: EventResolved, OccurredAt: resolvedAt,
+		Payload: map[string]any{"outcome": resolution, "note": note}})
+	return r, true, nil
+}
+
+// AppendRunEvents 事件追加（不重写行）。
+func (m *MemStore) AppendRunEvents(_ context.Context, runID string, events []Event) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.runs[runID]; !ok {
+		return ErrRunNotFound
+	}
+	for _, e := range events {
+		m.appendLocked(e)
+	}
+	return nil
+}
+
+// ListUnresolvedUnknown 未处置 unknown。
+func (m *MemStore) ListUnresolvedUnknown(_ context.Context) ([]Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []Run
+	for _, r := range m.runs {
+		if r.State == StateUnknown && r.Resolution == "" {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
 func (m *MemStore) maxAttemptLocked(missionID string) int {
 	max := 0
 	for _, r := range m.runs {

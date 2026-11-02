@@ -25,7 +25,7 @@ const splitLines = (s: string): string[] =>
 function statusClass(status: string): string {
   if (status === "ready" || status === "running") return "text-ok";
   if (status === "canceled") return "text-danger line-through";
-  // paused（阻止新调度）/ canceling（停止进行中）与 draft 同暖色系
+  // paused（阻止新调度）/ waiting（等待核验）/ canceling（停止进行中）与 draft 同暖色系
   if (status === "canceling") return "text-danger";
   return "text-warn";
 }
@@ -420,7 +420,16 @@ function MissionDetail({
         <p className="text-danger">停止进行中——在途 Run 终止后自动完成取消；若长时间停留可再点「续驱停止」，重启后由恢复分派兜底。</p>
       )}
       {detail.status === "paused" && (
-        <p className="text-warn">已暂停——不进入调度；在途执行已在安全边界停止（Run 记 canceled）。点「恢复」回到 ready 自动调度。</p>
+        <p className="text-warn">
+          已暂停——不进入调度；在途执行已在安全边界停止（Run 记 canceled）。
+          {detail.waiting_reason ? "恢复后回到等待核验（有 unknown Run 待处置）。" : "点「恢复」回到 ready 自动调度。"}
+        </p>
+      )}
+      {detail.status === "waiting" && (
+        <p className="text-warn">
+          等待核验（{detail.waiting_reason || "reconciliation"}）——进程重启时有执行在途、结果未知（Run 记 unknown）。
+          不会自动重跑：请在下方执行区核对工作区副作用后处置（已达成 / 未达成 / 放弃），处置后回到调度列。
+        </p>
       )}
 
       {detail.status !== "canceled" && (
@@ -443,7 +452,7 @@ function MissionDetail({
           >
             {reviseOpen ? "收起修订" : "修订契约"}
           </button>
-          {(detail.status === "ready" || detail.status === "running") && (
+          {(detail.status === "ready" || detail.status === "running" || detail.status === "waiting") && (
             <button
               type="button"
               disabled={busy || !owned}
@@ -665,7 +674,24 @@ function MissionRunCard({ missionID, status, onChanged }: { missionID: string; s
   };
 
   const stateClass = (s: string) =>
-    s === "completed" ? "text-ok" : s === "failed" ? "text-danger" : s === "canceled" ? "text-dim line-through" : "text-warn";
+    s === "completed" ? "text-ok" : s === "failed" ? "text-danger" : s === "canceled" ? "text-dim line-through" : s === "unknown" ? "text-warn font-semibold" : "text-warn";
+
+  // 0.6.7 / ADR-0030：unknown 核验处置（状态保持 unknown；处置后 Mission 回调度列）
+  const [resolveNote, setResolveNote] = useState("");
+  const resolve = async (runID: string, outcome: "verified_completed" | "verified_failed" | "discarded") => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.resolveMissionRun(runID, outcome, resolveNote.trim() || undefined);
+      setResolveNote("");
+      load();
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <details className="mt-1">
@@ -695,6 +721,31 @@ function MissionRunCard({ missionID, status, onChanged }: { missionID: string; s
                 <span className={stateClass(r.state)}>{r.state}</span>
                 {r.result_block && <span className="truncate" title={r.result_block}>{r.result_block.slice(0, 80)}…</span>}
                 {r.error_text && <span className="text-danger truncate" title={r.error_text}>{r.error_text.slice(0, 60)}</span>}
+                {r.state === "unknown" && r.resolution && (
+                  <span className="rounded bg-surface-3 px-1.5 py-px text-[10px] text-dim" title={r.resolution_note ?? ""}>
+                    已处置：{r.resolution}
+                  </span>
+                )}
+                {r.state === "unknown" && !r.resolution && (
+                  <div className="flex w-full flex-wrap items-center gap-1.5">
+                    <span className="text-warn">结果未知——核对工作区副作用后处置：</span>
+                    <input
+                      value={resolveNote}
+                      onChange={(e) => setResolveNote(e.target.value)}
+                      placeholder="备注（可选，≤500 字）"
+                      className="min-w-0 flex-1 rounded border border-border bg-surface-2 px-1.5 py-0.5 outline-none"
+                    />
+                    <button type="button" disabled={busy} onClick={() => void resolve(r.run_id, "verified_completed")} className="rounded-lg bg-surface-3 px-2 py-0.5 text-ok disabled:opacity-40">
+                      已达成
+                    </button>
+                    <button type="button" disabled={busy} onClick={() => void resolve(r.run_id, "verified_failed")} className="rounded-lg bg-surface-3 px-2 py-0.5 text-danger disabled:opacity-40">
+                      未达成
+                    </button>
+                    <button type="button" disabled={busy} onClick={() => void resolve(r.run_id, "discarded")} className="rounded-lg bg-surface-3 px-2 py-0.5 disabled:opacity-40">
+                      放弃
+                    </button>
+                  </div>
+                )}
                 <button
                   type="button"
                   onClick={() => setExpanded(expanded === r.run_id ? null : r.run_id)}

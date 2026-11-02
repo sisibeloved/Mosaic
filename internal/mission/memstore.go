@@ -69,9 +69,10 @@ func (m *MemStore) ReviseMission(_ context.Context, missionID string, expectedVe
 	// 0.6.6 审校 P1：执行控制投影的事务内保持——next.Status 是服务层旧读
 	// 快照（读到 ready 后暂停/取消落地，控制命令不递增版本，CAS 版本面放行），
 	// 临界区内以现行状态为准（running/paused/canceling 不被陈旧 ready 盖回）。
-	if cur.Status == StatusRunning || cur.Status == StatusPaused || cur.Status == StatusCanceling {
+	if cur.Status == StatusRunning || cur.Status == StatusPaused || cur.Status == StatusCanceling || cur.Status == StatusWaiting {
 		next.Status = cur.Status
 	}
+	next.WaitingReason = cur.WaitingReason // 等待原因随行（修订不触碰）
 	prevStatus := cur.Status
 	m.missions[idx] = next
 	m.versions[missionID] = append(m.versions[missionID], snapshot(next))
@@ -95,7 +96,7 @@ func (m *MemStore) PauseMission(_ context.Context, missionID string, expectedVer
 		return Mission{}, false, ErrMissionNotFound
 	}
 	cur := m.missions[idx]
-	if cur.ContractVersion != expectedVersion || (cur.Status != StatusReady && cur.Status != StatusRunning) {
+	if cur.ContractVersion != expectedVersion || (cur.Status != StatusReady && cur.Status != StatusRunning && cur.Status != StatusWaiting) {
 		return Mission{}, false, nil
 	}
 	return m.flipStatusLocked(idx, cur.Status, StatusPaused, reason, occurredAt), true, nil
@@ -153,6 +154,11 @@ func (m *MemStore) FinishCancel(_ context.Context, missionID, reason, occurredAt
 func (m *MemStore) flipStatusLocked(idx int, from, to, reason, occurredAt string) Mission {
 	cur := m.missions[idx]
 	cur.Status = to
+	// 0.6.7：等待原因——paused 保留（恢复据此回 waiting）、回 waiting 保留；
+	// 其余目标（ready/draft/canceling/canceled）清空。
+	if to != StatusPaused && to != StatusWaiting {
+		cur.WaitingReason = ""
+	}
 	cur.UpdatedAt = occurredAt
 	m.missions[idx] = cur
 	payload := map[string]string{"from": from, "to": to}
@@ -249,6 +255,25 @@ func (m *MemStore) TransitionStatus(_ context.Context, missionID, from, to strin
 		return false, nil
 	}
 	m.missions[i].Status = to
+	if to != StatusWaiting {
+		m.missions[i].WaitingReason = "" // 出 waiting 即清原因（0.6.7）
+	}
+	m.seq++
+	event.Seq = m.seq
+	m.events[missionID] = append(m.events[missionID], event)
+	return true, nil
+}
+
+// MarkWaiting 条件进 waiting + 等待原因（0.6.7 / ADR-0030）。
+func (m *MemStore) MarkWaiting(_ context.Context, missionID, from, reason string, event Event) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i, ok := m.indexOfLocked(missionID)
+	if !ok || m.missions[i].Status != from || m.missions[i].Status == StatusCanceled {
+		return false, nil
+	}
+	m.missions[i].Status = StatusWaiting
+	m.missions[i].WaitingReason = reason
 	m.seq++
 	event.Seq = m.seq
 	m.events[missionID] = append(m.events[missionID], event)

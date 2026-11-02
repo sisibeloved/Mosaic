@@ -363,7 +363,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	if n, err := runSvc.RecoverUnfinished(ctx); err != nil {
 		logger.Warn("Run 恢复失败", "err", err)
 	} else if n > 0 {
-		logger.Info("Run 恢复：未终态置 failed（结果未知，不自动重跑）", "count", n)
+		logger.Info("Run 恢复：未终态按停止意图分派（无意图者 unknown + Mission waiting 待核验；不自动重跑）", "count", n)
 	}
 	runSvc.Start(ctx)
 	scanDone := make(chan struct{})
@@ -918,6 +918,19 @@ func (a runMissionsAdapter) StatusOf(ctx context.Context, missionID string) (str
 // FinishCanceling 重启时停止意图兑现收尾（canceling → canceled；幂等）。
 func (a runMissionsAdapter) FinishCanceling(ctx context.Context, missionID, reason string) error {
 	_, err := a.svc.FinishCancel(ctx, missionID, reason)
+	return err
+}
+
+// SetWaiting running → waiting(reason)（0.6.7 / ADR-0030：恢复分派结果不可判定
+// ——出调度列直至处置）。
+func (a runMissionsAdapter) SetWaiting(ctx context.Context, missionID, reason string) error {
+	_, err := a.svc.MarkWaiting(ctx, missionID, reason)
+	return err
+}
+
+// ClearWaiting waiting → ready|draft（处置后回调度列，完备性重判）。
+func (a runMissionsAdapter) ClearWaiting(ctx context.Context, missionID string) error {
+	_, err := a.svc.ClearWaiting(ctx, missionID)
 	return err
 }
 

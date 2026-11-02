@@ -540,6 +540,18 @@ CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, seq);
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (19, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 `
 
+// migrationV20（RFC-0018 §3.2/§11.3 / ADR-0030，0.6.7）：Run 崩溃恢复——
+// runs 处置三列（unknown 的核验结论/备注/时刻）+ missions.waiting_reason（等待
+// 原因，waiting 态一等事实）。逐语句执行、重复加列容忍（新库经 v19 建 runs
+// 后再加列；旧库直接加列；再次打开全部 duplicate column 容忍）。
+var migrationV20 = []string{
+	"ALTER TABLE runs ADD COLUMN resolution TEXT NOT NULL DEFAULT ''",
+	"ALTER TABLE runs ADD COLUMN resolution_note TEXT NOT NULL DEFAULT ''",
+	"ALTER TABLE runs ADD COLUMN resolved_at TEXT NOT NULL DEFAULT ''",
+	"ALTER TABLE missions ADD COLUMN waiting_reason TEXT NOT NULL DEFAULT ''",
+	"INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (20, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+}
+
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
 // modernc v1.57.0 / SQLite 3.53.3：unicode61 对中文整串成单 token 不可用，
 // trigram 对 CJK 子串 ≥3 字与英文均正确命中；<3 字查询由 SearchMessages
@@ -631,6 +643,14 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(migrationV19); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: migration v19: %w", err)
+	}
+	// v20 迁移（ADR-0030 / 0.6.7）：runs 处置三列 + missions.waiting_reason——
+	// 逐语句执行，重复加列容忍（多语句单 Exec 会在首个 duplicate 处中止）。
+	for _, stmt := range migrationV20 {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("sqlite: migration v20: %w", err)
+		}
 	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -2630,13 +2650,13 @@ SELECT agent_id, skills, tools, context, runtime_capabilities, workspace_access,
 // ---- Mission 契约域（RFC-0018 §3.1/§3.2/§6.1 / ADR-0023，0.6.0；v13 表，端口实现）----
 
 // missionCols missions 投影读取列。
-const missionCols = `mission_id, contract_version, status, owner_agent_id, requester, objective, content, created_at, updated_at`
+const missionCols = `mission_id, contract_version, status, owner_agent_id, requester, objective, content, created_at, updated_at, waiting_reason`
 
 func scanMission(row interface{ Scan(...any) error }) (mission.Mission, error) {
 	var m mission.Mission
 	var content string
 	if err := row.Scan(&m.MissionID, &m.ContractVersion, &m.Status, &m.OwnerAgentID,
-		&m.Requester, &m.Objective, &content, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		&m.Requester, &m.Objective, &content, &m.CreatedAt, &m.UpdatedAt, &m.WaitingReason); err != nil {
 		return mission.Mission{}, err
 	}
 	if err := json.Unmarshal([]byte(content), &m.Content); err != nil {
@@ -2695,7 +2715,7 @@ func (s *Store) ReviseMission(ctx context.Context, missionID string, expectedVer
 		// 快照（读到 ready 后暂停/取消落地，控制命令不递增版本，CAS 版本面
 		// 放行），事务内以现行状态为准（running/paused/canceling 不被陈旧
 		// ready 盖回调度列）。
-		if status == mission.StatusRunning || status == mission.StatusPaused || status == mission.StatusCanceling {
+		if status == mission.StatusRunning || status == mission.StatusPaused || status == mission.StatusCanceling || status == mission.StatusWaiting {
 			next.Status = status
 		}
 		if _, err := q.ExecContext(ctx, `
@@ -2752,9 +2772,13 @@ func (s *Store) transitionMissionIf(ctx context.Context, missionID string, expec
 		if !guard(version, status) {
 			return nil
 		}
-		if _, err := q.ExecContext(ctx,
-			`UPDATE missions SET status = ?, updated_at = ? WHERE mission_id = ?`,
-			to, occurredAt, missionID); err != nil {
+		// 0.6.7：等待原因——paused 保留（恢复据此回 waiting）、回 waiting 保留；
+		// 其余目标（ready/draft/canceling/canceled）清空。
+		setSQL := `UPDATE missions SET status = ?, updated_at = ?, waiting_reason = '' WHERE mission_id = ?`
+		if to == mission.StatusPaused || to == mission.StatusWaiting {
+			setSQL = `UPDATE missions SET status = ?, updated_at = ? WHERE mission_id = ?`
+		}
+		if _, err := q.ExecContext(ctx, setSQL, to, occurredAt, missionID); err != nil {
 			return fmt.Errorf("sqlite: control mission: %w", err)
 		}
 		payload := map[string]string{"from": status, "to": to}
@@ -2781,7 +2805,7 @@ func (s *Store) transitionMissionIf(ctx context.Context, missionID string, expec
 func (s *Store) PauseMission(ctx context.Context, missionID string, expectedVersion int, reason, occurredAt string) (mission.Mission, bool, error) {
 	return s.transitionMissionIf(ctx, missionID, expectedVersion, mission.StatusPaused, reason, occurredAt,
 		func(version int, status string) bool {
-			return version == expectedVersion && (status == mission.StatusReady || status == mission.StatusRunning)
+			return version == expectedVersion && (status == mission.StatusReady || status == mission.StatusRunning || status == mission.StatusWaiting)
 		})
 }
 
@@ -2836,9 +2860,9 @@ func (s *Store) CreateMission(ctx context.Context, m mission.Mission, src *missi
 			}
 		}
 		if _, err := q.ExecContext(ctx, `
-INSERT INTO missions (`+missionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO missions (`+missionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			m.MissionID, m.ContractVersion, m.Status, m.OwnerAgentID, m.Requester,
-			m.Objective, string(raw), m.CreatedAt, m.UpdatedAt); err != nil {
+			m.Objective, string(raw), m.CreatedAt, m.UpdatedAt, m.WaitingReason); err != nil {
 			return fmt.Errorf("sqlite: create mission: %w", err)
 		}
 		if err := insertMissionVersion(ctx, q, m, string(raw)); err != nil {
@@ -2995,9 +3019,12 @@ func (s *Store) TransitionStatus(ctx context.Context, missionID, from, to string
 		if current != from || current == mission.StatusCanceled {
 			return nil
 		}
-		res, err := q.ExecContext(ctx,
-			`UPDATE missions SET status = ?, updated_at = ? WHERE mission_id = ?`,
-			to, event.OccurredAt, missionID)
+		// 0.6.7：出 waiting 即清等待原因（to = waiting 时保留——调用方序已知）
+		setSQL := `UPDATE missions SET status = ?, updated_at = ?, waiting_reason = '' WHERE mission_id = ?`
+		if to == mission.StatusWaiting {
+			setSQL = `UPDATE missions SET status = ?, updated_at = ? WHERE mission_id = ?`
+		}
+		res, err := q.ExecContext(ctx, setSQL, to, event.OccurredAt, missionID)
 		if err != nil {
 			return fmt.Errorf("sqlite: transition update: %w", err)
 		}
@@ -3008,6 +3035,44 @@ func (s *Store) TransitionStatus(ctx context.Context, missionID, from, to string
 INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
 			missionID, event.EventType, string(event.Payload), event.OccurredAt); err != nil {
 			return fmt.Errorf("sqlite: transition event: %w", err)
+		}
+		changed = true
+		return nil
+	})
+	return changed, err
+}
+
+// MarkWaiting 条件进 waiting + 等待原因（0.6.7 / ADR-0030）：当前状态 == from
+// 才置 waiting、waiting_reason=reason + 事件（单事务）；不符 = 无操作。
+func (s *Store) MarkWaiting(ctx context.Context, missionID, from, reason string, event mission.Event) (bool, error) {
+	changed := false
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		changed = false
+		var current string
+		err := q.QueryRowContext(ctx,
+			`SELECT status FROM missions WHERE mission_id = ?`, missionID).Scan(&current)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("sqlite: waiting probe: %w", err)
+		}
+		if current != from || current == mission.StatusCanceled {
+			return nil
+		}
+		res, err := q.ExecContext(ctx,
+			`UPDATE missions SET status = ?, waiting_reason = ?, updated_at = ? WHERE mission_id = ?`,
+			mission.StatusWaiting, reason, event.OccurredAt, missionID)
+		if err != nil {
+			return fmt.Errorf("sqlite: waiting update: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return nil
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+			missionID, event.EventType, string(event.Payload), event.OccurredAt); err != nil {
+			return fmt.Errorf("sqlite: waiting event: %w", err)
 		}
 		changed = true
 		return nil
@@ -4196,13 +4261,14 @@ UPDATE runtime_leases SET state = 'expired', updated_at = ?
 
 // ---- Mission 执行域（RFC-0018 §6/§10.2 / ADR-0028，0.6.5；v19 表）----
 
-const runScanColumns = `run_id, mission_id, attempt, lease_id, manifest_id, runtime_id, binding_id, agent_id, state, error_text, result_block, fence_token, generation, requested_at, started_at, finished_at, updated_at`
+const runScanColumns = `run_id, mission_id, attempt, lease_id, manifest_id, runtime_id, binding_id, agent_id, state, error_text, result_block, fence_token, generation, requested_at, started_at, finished_at, updated_at, resolution, resolution_note, resolved_at`
 
 func scanRunRow(row interface{ Scan(...any) error }) (missionrun.Run, error) {
 	var r missionrun.Run
 	if err := row.Scan(&r.RunID, &r.MissionID, &r.Attempt, &r.LeaseID, &r.ManifestID,
 		&r.RuntimeID, &r.BindingID, &r.AgentID, &r.State, &r.ErrorText, &r.ResultBlock,
-		&r.FenceToken, &r.Generation, &r.RequestedAt, &r.StartedAt, &r.FinishedAt, &r.UpdatedAt); err != nil {
+		&r.FenceToken, &r.Generation, &r.RequestedAt, &r.StartedAt, &r.FinishedAt, &r.UpdatedAt,
+		&r.Resolution, &r.ResolutionNote, &r.ResolvedAt); err != nil {
 		return missionrun.Run{}, err
 	}
 	return r, nil
@@ -4240,11 +4306,12 @@ func (s *Store) CreateRun(ctx context.Context, r missionrun.Run) (missionrun.Run
 		}
 		r.Attempt = int(maxAtt.Int64) + 1
 		if _, err := q.ExecContext(ctx, `
-INSERT INTO runs (run_id, mission_id, attempt, lease_id, manifest_id, runtime_id, binding_id, agent_id, state, error_text, result_block, fence_token, generation, requested_at, started_at, finished_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO runs (run_id, mission_id, attempt, lease_id, manifest_id, runtime_id, binding_id, agent_id, state, error_text, result_block, fence_token, generation, requested_at, started_at, finished_at, updated_at, resolution, resolution_note, resolved_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.RunID, r.MissionID, r.Attempt, r.LeaseID, r.ManifestID, r.RuntimeID,
 			r.BindingID, r.AgentID, r.State, r.ErrorText, r.ResultBlock,
-			r.FenceToken, r.Generation, r.RequestedAt, r.StartedAt, r.FinishedAt, r.UpdatedAt); err != nil {
+			r.FenceToken, r.Generation, r.RequestedAt, r.StartedAt, r.FinishedAt, r.UpdatedAt,
+			r.Resolution, r.ResolutionNote, r.ResolvedAt); err != nil {
 			if isUniqueViolation(err) {
 				return fmt.Errorf("%w：%s", missionrun.ErrRunExists, r.MissionID)
 			}
@@ -4268,15 +4335,103 @@ INSERT INTO run_events (run_id, event_type, payload, occurred_at) VALUES (?, ?, 
 	return r, nil
 }
 
+// ResolveRun 条件处置（0.6.7 / ADR-0030）：state='unknown' AND resolution=” 才落
+// 三列 + resolved 事件（单事务）；ok=false = 非 unknown/已处置（服务方重读分辨
+// 幂等）；未知 Run → ErrRunNotFound。
+func (s *Store) ResolveRun(ctx context.Context, runID, resolution, note, resolvedAt string) (missionrun.Run, bool, error) {
+	ok := false
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		var exists int
+		if err := q.QueryRowContext(ctx, `SELECT 1 FROM runs WHERE run_id = ?`, runID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w：%s", missionrun.ErrRunNotFound, runID)
+		} else if err != nil {
+			return fmt.Errorf("sqlite: resolve probe: %w", err)
+		}
+		res, err := q.ExecContext(ctx, `
+UPDATE runs SET resolution = ?, resolution_note = ?, resolved_at = ?, updated_at = ?
+ WHERE run_id = ? AND state = ? AND resolution = ''`,
+			resolution, note, resolvedAt, resolvedAt, runID, missionrun.StateUnknown)
+		if err != nil {
+			return fmt.Errorf("sqlite: resolve run: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return nil
+		}
+		payload, err := runEventPayloadJSON(map[string]any{"outcome": resolution, "note": note})
+		if err != nil {
+			return err
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO run_events (run_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+			runID, missionrun.EventResolved, payload, resolvedAt); err != nil {
+			return fmt.Errorf("sqlite: insert run event: %w", err)
+		}
+		ok = true
+		return nil
+	})
+	if err != nil || !ok {
+		return missionrun.Run{}, ok, err
+	}
+	got, found, err := s.RunByID(ctx, runID)
+	if err != nil || !found {
+		return missionrun.Run{}, false, err
+	}
+	return got, true, nil
+}
+
+// AppendRunEvents 事件追加（不重写行——终态行只增审计）。
+func (s *Store) AppendRunEvents(ctx context.Context, runID string, events []missionrun.Event) error {
+	return s.identityWriteTx(ctx, func(q identityExec) error {
+		var exists int
+		if err := q.QueryRowContext(ctx, `SELECT 1 FROM runs WHERE run_id = ?`, runID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w：%s", missionrun.ErrRunNotFound, runID)
+		} else if err != nil {
+			return fmt.Errorf("sqlite: append probe: %w", err)
+		}
+		for _, e := range events {
+			payload, err := runEventPayloadJSON(e.Payload)
+			if err != nil {
+				return err
+			}
+			if _, err := q.ExecContext(ctx, `
+INSERT INTO run_events (run_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+				runID, e.EventType, payload, e.OccurredAt); err != nil {
+				return fmt.Errorf("sqlite: insert run event: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
+// ListUnresolvedUnknown 未处置 unknown Run（诊断计数——RFC §11.5）。
+func (s *Store) ListUnresolvedUnknown(ctx context.Context) ([]missionrun.Run, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+runScanColumns+`
+  FROM runs WHERE state = ? AND resolution = '' ORDER BY rowid`, missionrun.StateUnknown)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list unresolved unknown: %w", err)
+	}
+	defer rows.Close()
+	out := []missionrun.Run{}
+	for rows.Next() {
+		r, err := scanRunRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: scan unresolved unknown: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // UpdateRun 全行替换 + 事件同事务。
 func (s *Store) UpdateRun(ctx context.Context, r missionrun.Run, events []missionrun.Event) error {
 	return s.identityWriteTx(ctx, func(q identityExec) error {
 		res, err := q.ExecContext(ctx, `
-UPDATE runs SET mission_id=?, attempt=?, lease_id=?, manifest_id=?, runtime_id=?, binding_id=?, agent_id=?, state=?, error_text=?, result_block=?, fence_token=?, generation=?, requested_at=?, started_at=?, finished_at=?, updated_at=?
+UPDATE runs SET mission_id=?, attempt=?, lease_id=?, manifest_id=?, runtime_id=?, binding_id=?, agent_id=?, state=?, error_text=?, result_block=?, fence_token=?, generation=?, requested_at=?, started_at=?, finished_at=?, updated_at=?, resolution=?, resolution_note=?, resolved_at=?
  WHERE run_id = ?`,
 			r.MissionID, r.Attempt, r.LeaseID, r.ManifestID, r.RuntimeID, r.BindingID,
 			r.AgentID, r.State, r.ErrorText, r.ResultBlock, r.FenceToken, r.Generation,
-			r.RequestedAt, r.StartedAt, r.FinishedAt, r.UpdatedAt, r.RunID)
+			r.RequestedAt, r.StartedAt, r.FinishedAt, r.UpdatedAt,
+			r.Resolution, r.ResolutionNote, r.ResolvedAt, r.RunID)
 		if err != nil {
 			return fmt.Errorf("sqlite: update run: %w", err)
 		}

@@ -57,6 +57,14 @@ func (p ctlMissions) FinishCanceling(ctx context.Context, id, reason string) err
 	return err
 }
 
+func (p ctlMissions) SetWaiting(ctx context.Context, id, reason string) error {
+	_, err := p.svc.MarkWaiting(ctx, id, reason)
+	return err
+}
+func (p ctlMissions) ClearWaiting(ctx context.Context, id string) error {
+	_, err := p.svc.ClearWaiting(ctx, id)
+	return err
+}
 func (p ctlMissions) ListCanceling(ctx context.Context) ([]missionrun.MissionRef, error) {
 	list, err := p.svc.ListByStatus(ctx, mission.StatusCanceling)
 	if err != nil {

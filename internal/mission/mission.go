@@ -40,7 +40,17 @@ const (
 	// （停止意图持久化先行）→ 在途 Run 停止后 → canceled。可长期停留
 	// （执行器不响应取消时——"待停止"可见，可续驱，重启恢复兜底）。
 	StatusCanceling = "canceling"
+	// StatusWaiting 等待态（0.6.7 / ADR-0030；RFC §3.2 running ↔ waiting）：
+	// running → waiting(reason)——本版唯一原因 reconciliation（重启恢复判
+	// 为 unknown 的 Run 待核验处置）。出调度列直至处置（waiting → ready|
+	// draft 完备性重判）；暂停保留等待原因、恢复据此回 waiting（不绕过
+	// 禁止盲目重跑）；取消两段照常；修订保持投影。
+	StatusWaiting = "waiting"
 )
+
+// WaitingReconciliation 等待原因：有 unknown Run 待核验处置（run 域同名常量
+// 同义——域间不互相 import）。
+const WaitingReconciliation = "reconciliation"
 
 // 事件类型（mission_events 流）。
 const (
@@ -112,6 +122,7 @@ type Mission struct {
 	MissionID       string      `json:"mission_id"`
 	ContractVersion int         `json:"contract_version"`
 	Status          string      `json:"status"`
+	WaitingReason   string      `json:"waiting_reason"` // 等待原因（0.6.7；waiting 态一等事实，暂停期间保留；非 waiting 空）
 	OwnerAgentID    string      `json:"owner_agent_id"` // 空 = 显式 unassigned（§3.3）
 	Requester       string      `json:"requester"`
 	RoomSource      *RoomSource `json:"room_source"` // 房间交办来源（非房间交办 null；创建事实）
@@ -173,8 +184,9 @@ type Store interface {
 	// + contract_revised（及完备性变化时 status_changed）事件，单事务；
 	// ok=false = 版本不匹配或已终态（服务方重读区分）。
 	ReviseMission(ctx context.Context, missionID string, expectedVersion int, next Mission) (Mission, bool, error)
-	// PauseMission CAS 暂停（0.6.6 / ADR-0029）：contract_version 匹配且
-	// status ∈ (ready, running) → paused + status_changed（from/to/reason）
+	// PauseMission CAS 暂停（0.6.6 / ADR-0029；0.6.7 += waiting——等待原因
+	// 保留）：contract_version 匹配且 status ∈ (ready, running, waiting) →
+	// paused + status_changed（from/to/reason）
 	// 事件，单事务；ok=false = 版本不匹配/状态不合法/未知（服务方重读区分；
 	// 幂等由服务层先读实现——存储面只认 ready/running）。
 	PauseMission(ctx context.Context, missionID string, expectedVersion int, reason, occurredAt string) (Mission, bool, error)
@@ -203,8 +215,12 @@ type Store interface {
 	MissionEvents(ctx context.Context, missionID string) ([]Event, bool, error)
 	// TransitionStatus 条件状态投影（0.6.5 / ADR-0028）：当前状态 == from
 	// 才更新为 to + 事件（单事务）；from 不符/Mission 未知/终态 = 无操作
-	// 成功（幂等——调用方序已知）。canceled 拒转。
+	// 成功（幂等——调用方序已知）。canceled 拒转。0.6.7：to != waiting 时
+	// 清 waiting_reason（出 waiting 即清原因）。
 	TransitionStatus(ctx context.Context, missionID, from, to string, event Event) (changed bool, err error)
+	// MarkWaiting 条件进 waiting（0.6.7 / ADR-0030）：当前状态 == from 才置
+	// waiting + waiting_reason=reason + 事件（单事务）；不符 = 无操作。
+	MarkWaiting(ctx context.Context, missionID, from, reason string, event Event) (changed bool, err error)
 }
 
 // Service 契约服务：校验单源 + 完备性判定单源 + CAS 编排。
@@ -349,7 +365,7 @@ func (s *Service) Revise(ctx context.Context, missionID string, expectedVersion 
 	// 交错放行——存储面以事务内现行状态覆盖本投影，防陈旧 ready 把
 	// paused/canceling 盖回调度列）。
 	switch cur.Status {
-	case StatusRunning, StatusPaused, StatusCanceling:
+	case StatusRunning, StatusPaused, StatusCanceling, StatusWaiting:
 		next.Status = cur.Status
 	}
 	next.UpdatedAt = s.now()
@@ -389,7 +405,7 @@ func (s *Service) Pause(ctx context.Context, missionID string, expectedVersion i
 				return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
 			}
 			return cur, nil // 幂等：重试安全
-		case StatusReady, StatusRunning:
+		case StatusReady, StatusRunning, StatusWaiting:
 			out, ok2, err := s.store.PauseMission(ctx, missionID, expectedVersion, reason, s.now())
 			if err != nil {
 				return Mission{}, err
@@ -427,6 +443,11 @@ func (s *Service) Resume(ctx context.Context, missionID string, expectedVersion 
 		return cur, nil // 幂等：重试安全
 	case StatusPaused:
 		target := statusOf(cur) // 完备性重判：ready | draft
+		if cur.WaitingReason != "" {
+			// 0.6.7 / ADR-0030：暂停前在 waiting（unknown 待处置）——恢复回
+			// waiting 而非 ready（暂停/恢复不绕过禁止盲目重跑）
+			target = StatusWaiting
+		}
 		out, ok2, err := s.store.ResumeMission(ctx, missionID, expectedVersion, target, s.now())
 		if err != nil {
 			return Mission{}, err
@@ -510,6 +531,36 @@ func (s *Service) MarkRunning(ctx context.Context, missionID string) (bool, erro
 func (s *Service) MarkReadyFromRunning(ctx context.Context, missionID, reason string) error {
 	_, err := s.projectStatus(ctx, missionID, StatusRunning, StatusReady, reason)
 	return err
+}
+
+// MarkWaiting 等待投影（0.6.7 / ADR-0030）：running → waiting(reason)——恢复
+// 分派结果不可判定时由 run 域调用；出调度列直至 ClearWaiting。幂等条件转移
+// （非 running 无操作 changed=false）。
+func (s *Service) MarkWaiting(ctx context.Context, missionID, reason string) (bool, error) {
+	payload, err := json.Marshal(map[string]string{"from": StatusRunning, "to": StatusWaiting, "reason": reason})
+	if err != nil {
+		return false, fmt.Errorf("mission: 投影事件构造失败：%w", err)
+	}
+	ev := Event{MissionID: missionID, EventType: EventStatusChanged, Payload: payload, OccurredAt: s.now()}
+	changed, err := s.store.MarkWaiting(ctx, missionID, StatusRunning, reason, ev)
+	if err != nil {
+		return false, fmt.Errorf("mission: 等待投影失败：%w", err)
+	}
+	return changed, nil
+}
+
+// ClearWaiting 出等待（处置后）：waiting → ready | draft（完备性重判——等待
+// 期间修订削验收不盲回 ready）+ 清等待原因。幂等条件转移（非 waiting 无操作
+// ——Mission 已取消/暂停时处置事实仍落 Run 侧）。
+func (s *Service) ClearWaiting(ctx context.Context, missionID string) (bool, error) {
+	cur, ok, err := s.store.MissionByID(ctx, missionID)
+	if err != nil {
+		return false, err
+	}
+	if !ok || cur.Status != StatusWaiting {
+		return false, nil
+	}
+	return s.projectStatus(ctx, missionID, StatusWaiting, statusOf(cur), "resolved")
 }
 
 // projectStatus 条件状态投影（from 不符或 Mission 未知 = 幂等无操作

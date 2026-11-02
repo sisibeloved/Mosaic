@@ -3301,6 +3301,60 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /v1/mission-runs/{run_id}/resolve:
+    post:
+      operationId: resolveMissionRun
+      summary: 核验处置 unknown Run（reconciliation——禁止盲目重跑的兑现）
+      description: |
+        0.6.7 / ADR-0030：对重启恢复判为 unknown（结果不可判定）的 Run 作显式
+        处置——outcome ∈ verified_completed（核验副作用已达成）| verified_failed
+        （核验未达成）| discarded（放弃核验）。Run 状态**保持 unknown**（系统
+        从未观测到完成——处置是用户 attest，不改写为系统事实），处置事实落
+        resolution / resolution_note / resolved_at + resolved 事件；随后 Mission
+        waiting → ready | draft（完备性重判，清 waiting_reason）——此后方可再
+        执行（attempt+1）。三种结论均允许再执行（0.6.7 尚无 Mission 完成态）。
+        幂等：同 outcome 重复 200 当前；异 outcome 409 run_already_resolved；
+        非 unknown 409 run_not_unknown。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^run_[0-9A-Za-z_-]+$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RunResolve" }
+      responses:
+        "200":
+          description: 已处置（state 仍 unknown，resolution 已落）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MissionRunView" }
+        "400":
+          description: outcome 非法或 note 超限（invalid_resolution）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Run 不存在（run_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 非 unknown（run_not_unknown）或已以不同结论处置（run_already_resolved）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: Run 域未装配（run_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/scheduler/status:
     get:
       operationId: getSchedulerStatus
@@ -5439,14 +5493,14 @@ components:
         reason: { type: string }
     MissionRunView:
       type: object
-      required: [run_id, mission_id, attempt, lease_id, manifest_id, runtime_id, binding_id, agent_id, state, error_text, result_block, fence_token, requested_at, updated_at]
+      required: [run_id, mission_id, attempt, lease_id, manifest_id, runtime_id, binding_id, agent_id, state, error_text, result_block, fence_token, requested_at, updated_at, resolution]
       description: |
-        Run（一次执行尝试，ADR-0028/0029）：state ∈ pending | running |
-        completed | failed | canceled（0.6.6 暂停/取消停止；unknown 随
-        0.6.7）。attempt 同
-        Mission 递增；每 Mission 至多一个未终态。result_block 为正文
-        截断存档（≤8000 字——完整交付物随 0.6.8）；fence_rejected 的
-        迟到结果不落（见 run_events 审计）。
+        Run（一次执行尝试，ADR-0028/0029/0030）：state ∈ pending | running |
+        completed | failed | canceled | unknown（0.6.6 暂停/取消停止；0.6.7
+        unknown = 重启恢复时结果不可判定——终态但可核验处置，见 resolution）。
+        attempt 同 Mission 递增；每 Mission 至多一个未终态。result_block 为
+        正文截断存档（≤8000 字——完整交付物随 0.6.8）；fence_rejected /
+        late_result 的迟到结果不落（见 run_events 审计）。
       properties:
         run_id: { type: string, description: "run_ 前缀生成式" }
         mission_id: { type: string }
@@ -5456,7 +5510,10 @@ components:
         runtime_id: { type: string }
         binding_id: { type: string }
         agent_id: { type: string }
-        state: { type: string, enum: [pending, running, completed, failed, canceled] }
+        state: { type: string, enum: [pending, running, completed, failed, canceled, unknown] }
+        resolution: { type: string, enum: ["", verified_completed, verified_failed, discarded], description: "unknown 的核验处置结论（0.6.7；空 = 未处置；非 unknown 恒空）" }
+        resolution_note: { type: string, description: 处置备注（≤500 字） }
+        resolved_at: { type: string, description: 处置时刻（未处置为空串） }
         error_text: { type: string, description: 失败原因（截断 1000 字；成功为空） }
         result_block: { type: string, description: 结果正文截断存档（≤8000 字；未完成为空） }
         fence_token: { type: string, description: 本次执行围栏令牌（迟到提交核对用） }
@@ -5465,6 +5522,14 @@ components:
         started_at: { type: string, description: 实际开始（pending 为空串） }
         finished_at: { type: string, description: 终态时刻（未终态为空串） }
         updated_at: { type: string, format: date-time }
+    RunResolve:
+      type: object
+      required: [outcome]
+      additionalProperties: false
+      description: unknown Run 核验处置请求体（0.6.7 / ADR-0030）。
+      properties:
+        outcome: { type: string, enum: [verified_completed, verified_failed, discarded], description: 核验结论（用户 attest——不改写 Run 状态） }
+        note: { type: string, maxLength: 500, description: 可选备注（记入 resolution_note 与 resolved 事件） }
     MissionRunEvent:
       type: object
       required: [seq, run_id, event_type, payload, occurred_at]
@@ -5472,14 +5537,14 @@ components:
       properties:
         seq: { type: integer, format: int64 }
         run_id: { type: string }
-        event_type: { type: string, enum: [attempt_requested, started, completed, failed, fence_rejected] }
+        event_type: { type: string, enum: [attempt_requested, started, completed, failed, fence_rejected, stop_requested, canceled, unknown, late_result, resolved] }
         payload:
           type: object
-          description: "事件体——attempt_requested: {attempt, lease_id, manifest_id}；started: {}；completed: {late}；failed: {error}；fence_rejected: {reason, detail}"
+          description: "事件体——attempt_requested: {attempt, lease_id, manifest_id}；started: {}；completed: {late}；failed: {error}；fence_rejected: {reason, detail}；stop_requested/canceled: {cause}（0.6.6）；unknown: {recovery}（0.6.7 重启结果不可判定）；late_result: {outcome, preview, generation, published:false, phase}（停止后迟到结果只审计）；resolved: {outcome, note}（核验处置）"
         occurred_at: { type: string, format: date-time }
     SchedulerStatus:
       type: object
-      required: [enabled, scan_interval_seconds, scans, launched_runs, active_runs, last_scan_at, last_error]
+      required: [enabled, scan_interval_seconds, scans, launched_runs, active_runs, last_scan_at, last_error, unresolved_unknown_runs]
       description: 调度器诊断面（ADR-0028 决策 2——全部事实在库，调度器自身无状态）。
       properties:
         enabled: { type: boolean, description: 周期扫描开关（装配注入） }
@@ -5489,6 +5554,7 @@ components:
         active_runs: { type: integer, description: 当前未终态 Run 数（恢复语义见 ADR） }
         last_scan_at: { type: string, description: 最近一轮扫描时刻（未扫为空串） }
         last_error: { type: string, description: 最近一轮错误（无错误为空串） }
+        unresolved_unknown_runs: { type: integer, description: 未处置 unknown Run 数（0.6.7——RFC §11.5 记录 unknown 数；处置后归零） }
     MissionBudget:
       type: object
       required: [concurrency, max_runs, max_wall_clock_seconds, max_retries, max_delegation_depth]
@@ -5631,7 +5697,7 @@ components:
         expected_version: { type: integer, minimum: 1, description: 调用方所见 contract_version；不匹配 409 version_conflict }
     MissionView:
       type: object
-      required: [mission_id, contract_version, status, owner_agent_id, requester, reviewer, objective, scope, constraints, acceptance_criteria, deliverable_specs, source_refs, return_targets, budget, delegation, created_at, updated_at]
+      required: [mission_id, contract_version, status, waiting_reason, owner_agent_id, requester, reviewer, objective, scope, constraints, acceptance_criteria, deliverable_specs, source_refs, return_targets, budget, delegation, created_at, updated_at]
       description: |
         Mission 契约（ADR-0023 / 0.6.0 + ADR-0024 房间来源 / 0.6.1）。
         status：draft（契约不完备——验收/来源/交付物缺失或 unassigned）/
@@ -5645,7 +5711,8 @@ components:
           allOf: [{ $ref: "#/components/schemas/RoomSource" }]
           description: 房间交办来源（非房间交办为 null）
         contract_version: { type: integer, minimum: 1, description: 当前契约版本（修订 +1） }
-        status: { type: string, enum: [draft, ready, running, paused, canceling, canceled] }
+        status: { type: string, enum: [draft, ready, running, waiting, paused, canceling, canceled] }
+        waiting_reason: { type: string, description: "等待原因（0.6.7 / ADR-0030：waiting 态的一等事实；本版取值 reconciliation = 有 unknown Run 待核验处置；非 waiting 为空串；暂停期间保留——恢复据此回 waiting）" }
         owner_agent_id: { type: string, description: 负责人（空 = 显式 unassigned，§3.3 不变量） }
         requester: { type: string, description: 请求人（0.6.0 恒 owner——本地单用户） }
         reviewer: { type: string, description: 验收人（空 = 请求人自验） }
@@ -5667,7 +5734,7 @@ components:
       properties:
         mission_id: { type: string }
         contract_version: { type: integer }
-        status: { type: string, enum: [draft, ready, running, paused, canceling, canceled] }
+        status: { type: string, enum: [draft, ready, running, waiting, paused, canceling, canceled] }
         owner_agent_id: { type: string }
         objective: { type: string }
         created_at: { type: string, format: date-time }

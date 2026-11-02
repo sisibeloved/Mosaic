@@ -244,7 +244,7 @@ func TestSignalStopNoInFlight(t *testing.T) {
 
 // TestRecoverDispatchByIntent 恢复分派（ADR-0029 决策 4）：canceling →
 // Run canceled + 收尾兑现；paused → Run canceled + 停 paused；running →
-// failed 结果未知 + 停 running（0.6.5 语义回归）。
+// unknown 结果不可判定 + waiting（0.6.7 / ADR-0030；此前 failed + 停 running）。
 func TestRecoverDispatchByIntent(t *testing.T) {
 	for _, tc := range []struct {
 		intent     string
@@ -254,7 +254,7 @@ func TestRecoverDispatchByIntent(t *testing.T) {
 	}{
 		{"canceling", StateCanceled, "canceled", 1},
 		{"paused", StateCanceled, "paused", 0},
-		{"running", StateFailed, "running", 0},
+		{"running", StateUnknown, "waiting", 0}, // 0.6.7：结果不可判定 → unknown + waiting
 	} {
 		f := newFixture(t)
 		ctx := context.Background()

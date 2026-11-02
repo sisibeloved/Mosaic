@@ -2277,7 +2277,7 @@ func missionView(m mission.Mission) apigen.MissionView {
 	}
 	return apigen.MissionView{
 		MissionId: m.MissionID, ContractVersion: m.ContractVersion,
-		Status: apigen.MissionViewStatus(m.Status), OwnerAgentId: m.OwnerAgentID,
+		Status: apigen.MissionViewStatus(m.Status), WaitingReason: m.WaitingReason, OwnerAgentId: m.OwnerAgentID,
 		Requester: m.Requester, Reviewer: m.Reviewer, RoomSource: roomSource,
 		Objective: m.Objective, Scope: m.Scope,
 		Constraints: constraints, AcceptanceCriteria: acceptance,
@@ -2983,6 +2983,46 @@ func (s *server) GetRun(w http.ResponseWriter, r *http.Request, runID string) {
 	writeJSON(w, http.StatusOK, missionRunView(run))
 }
 
+// ResolveMissionRun 核验处置 unknown Run（0.6.7 / ADR-0030——禁止盲目重跑的
+// 兑现）：状态保持 unknown，处置事实落 resolution + resolved 事件；Mission
+// waiting → ready|draft。幂等同结论 200；异结论 409 run_already_resolved；非
+// unknown 409 run_not_unknown。
+func (s *server) ResolveMissionRun(w http.ResponseWriter, r *http.Request, runID string) {
+	if s.missionRunsUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.RunResolve
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	if req.Outcome == "" {
+		writeError(w, http.StatusBadRequest, "invalid_resolution", "outcome 必填（verified_completed | verified_failed | discarded）")
+		return
+	}
+	if n := utf8.RuneCountInString(derefStr(req.Note)); n > 500 {
+		writeError(w, http.StatusBadRequest, "invalid_resolution", "note ≤500 字")
+		return
+	}
+	out, err := s.deps.MissionRuns.ResolveRun(r.Context(), runID, string(req.Outcome), derefStr(req.Note))
+	if err != nil {
+		writeRunError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, missionRunView(out))
+}
+
 // GetMissionRunEvents Run 事件流（含围栏拒绝审计）。
 func (s *server) GetMissionRunEvents(w http.ResponseWriter, r *http.Request, runID string) {
 	if s.missionRunsUnavailable(w) {
@@ -3022,6 +3062,8 @@ func (s *server) GetSchedulerStatus(w http.ResponseWriter, r *http.Request) {
 		ActiveRuns:          st["active_runs"].(int),
 		LastScanAt:          st["last_scan_at"].(string),
 		LastError:           st["last_error"].(string),
+		// 0.6.7 / RFC §11.5：未处置 unknown 计数
+		UnresolvedUnknownRuns: st["unresolved_unknown_runs"].(int),
 	})
 }
 
@@ -3042,6 +3084,12 @@ func writeRunError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "manifest_blocked", err.Error())
 	case errors.Is(err, missionrun.ErrRunExists):
 		writeError(w, http.StatusConflict, "run_exists", err.Error())
+	case errors.Is(err, missionrun.ErrInvalidResolution):
+		writeError(w, http.StatusBadRequest, "invalid_resolution", err.Error())
+	case errors.Is(err, missionrun.ErrRunNotUnknown):
+		writeError(w, http.StatusConflict, "run_not_unknown", err.Error())
+	case errors.Is(err, missionrun.ErrRunAlreadyResolved):
+		writeError(w, http.StatusConflict, "run_already_resolved", err.Error())
 	case errors.Is(err, mosaicruntime.ErrLeaseConflictRuntime), errors.Is(err, mosaicruntime.ErrLeaseConflictWorkspace):
 		writeError(w, http.StatusConflict, "scheduler_busy", "资源被占（"+err.Error()+"）——下轮再试")
 	default:
@@ -3063,12 +3111,20 @@ func missionRunView(run missionrun.Run) apigen.MissionRunView {
 		FenceToken:  run.FenceToken,
 		Generation:  &run.Generation,
 		RequestedAt: req, UpdatedAt: upd,
+		// 0.6.7 / ADR-0030：处置三列（非 unknown 恒空——resolution 必返回）
+		Resolution: apigen.MissionRunViewResolution(run.Resolution),
 	}
 	if run.StartedAt != "" {
 		v.StartedAt = &run.StartedAt
 	}
 	if run.FinishedAt != "" {
 		v.FinishedAt = &run.FinishedAt
+	}
+	if run.ResolutionNote != "" {
+		v.ResolutionNote = &run.ResolutionNote
+	}
+	if run.ResolvedAt != "" {
+		v.ResolvedAt = &run.ResolvedAt
 	}
 	return v
 }

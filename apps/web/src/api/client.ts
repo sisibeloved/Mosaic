@@ -599,7 +599,14 @@ export const api = {
       ...(reason ? { reason } : {}),
     });
   },
-  /** 0.6.6 暂停：ready|running → paused（阻止新调度 + 在途 Run 安全边界停止）。 */
+  /** 0.6.7 核验处置 unknown Run（ADR-0030）：状态保持 unknown，处置事实落 resolution；Mission waiting → ready|draft。 */
+  resolveMissionRun(runID: string, outcome: "verified_completed" | "verified_failed" | "discarded", note?: string): Promise<MissionRunView> {
+    return post(`/v1/mission-runs/${encodeURIComponent(runID)}/resolve`, {
+      outcome,
+      ...(note ? { note } : {}),
+    });
+  },
+  /** 0.6.6 暂停：ready|running|waiting → paused（阻止新调度 + 在途 Run 安全边界停止）。 */
   pauseMission(missionID: string, expectedVersion: number, reason?: string): Promise<MissionView> {
     return post(`/v1/missions/${encodeURIComponent(missionID)}/pause`, {
       expected_version: expectedVersion,
