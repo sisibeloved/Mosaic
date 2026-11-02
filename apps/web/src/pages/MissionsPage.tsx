@@ -360,26 +360,44 @@ function MissionDetail({
   // 审校 #6：ready 时加载当前契约版本可送验包（按选中包送验，不再固定最新）
   useEffect(() => {
     if (!detail || detail.status !== "ready") return;
+    // 三审 #1：契约版本切换/列表重载开始即清旧选择与列表——加载慢或失败窗口
+    // 内不得持旧包发送（stale_package 由服务端兜底，前端先收口）。
+    setSendablePkgs([]);
+    setReviewPkgID("");
     let cancelled = false;
     void api
       .listDeliveryPackages(missionID)
       .then(({ packages }) => {
         if (cancelled) return;
-        // 复审 R3：只在当前契约版本的包内保留/默认选择（修订后旧包被过滤即不再
-        // 作为默认；列表为空清空选择——不得发出已隐藏的旧包）
+        // 复审 R3：只在当前契约版本的包内保留/默认选择
         const cur0 = packages.filter((x) => x.contract_version === detail.contract_version);
         setSendablePkgs(cur0);
-        setReviewPkgID((cur) => (cur0.some((x) => x.package_id === cur) ? cur : cur0[0]?.package_id ?? ""));
+        setReviewPkgID(cur0[0]?.package_id ?? "");
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled) {
+          setSendablePkgs([]);
+          setReviewPkgID("");
+        }
+      });
     return () => {
       cancelled = true;
     };
   }, [missionID, detail?.status, detail?.updated_at, detail?.contract_version, pkgTick]);
   // 审校 #14：reviewing/accepted 时加载受审包详情（逐项证据可核对）
+  // 复审 R4 + 三审 #2：切换受审包先清旧证据与错误；按当前包 ID 记录加载/失败
+  // （成功且与本轮包一致才可裁定）；失败后可原地重试——不必退出任务详情。
+  const reloadReviewedPkg = () => {
+    const pid = detail?.review_package_id;
+    setReviewedPkg(null);
+    setReviewPkgErr(null);
+    if (!pid) return;
+    void api
+      .getDeliveryPackage(pid)
+      .then((pkg) => setReviewedPkg(pkg))
+      .catch((e) => setReviewPkgErr(e instanceof Error ? e.message : String(e)));
+  };
   useEffect(() => {
-    // 复审 R4：切换受审包先清旧证据与错误；按当前包 ID 记录加载/失败——加载成功
-    // 且与本轮包一致才允许裁定（catch 显式留错，不再静默）。
     setReviewedPkg(null);
     setReviewPkgErr(null);
     const pid = detail?.review_package_id;
@@ -582,7 +600,9 @@ function MissionDetail({
                 onClick={() =>
                   void act(async () => {
                     if (detail.mission_id !== missionID) throw new Error("详情未就绪，已阻止写入");
-                    if (!sendablePkgs.some((x) => x.package_id === reviewPkgID)) throw new Error("所选包不在当前契约版本列表——重新选择");
+                    const sel = sendablePkgs.find((x) => x.package_id === reviewPkgID);
+                    if (!sel) throw new Error("所选包不在当前契约版本列表——重新选择");
+                    if (sel.contract_version !== detail.contract_version) throw new Error("所选包对应旧契约版本——重新选择");
                     await api.requestMissionReview(missionID, detail.contract_version, reviewPkgID);
                   })
                 }
@@ -641,7 +661,14 @@ function MissionDetail({
 
       {detail.status === "reviewing" && reviewOpen && (
         <div className="flex flex-col gap-2 rounded-lg bg-surface-2 p-2">
-          {reviewPkgErr && <p className="text-danger">受审包加载失败：{reviewPkgErr}（裁定需本轮证据加载成功）</p>}
+          {reviewPkgErr && (
+            <p className="text-danger">
+              受审包加载失败：{reviewPkgErr}（裁定需本轮证据加载成功）
+              <button type="button" onClick={reloadReviewedPkg} className="ml-2 underline text-[11px]">
+                重试
+              </button>
+            </p>
+          )}
           {!reviewPkgErr && !reviewEvidenceReady && <p className="text-warn">正在加载本轮受审包证据……</p>}
           {reviewedPkg && (
             <div className="rounded border border-border bg-surface p-2">

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sisibeloved/Mosaic/internal/delivery"
 	"github.com/sisibeloved/Mosaic/internal/mission"
+	missionrun "github.com/sisibeloved/Mosaic/internal/run"
 )
 
 func reviewEv(missionID, payload, at string) mission.Event {
@@ -322,15 +323,21 @@ func TestTerminalWriteGuards_IT(t *testing.T) {
 	store, _ := openTempStore(t)
 	defer store.Close()
 	ctx := context.Background()
-	mkMission(t, store, "mi_term", mission.StatusAccepted)
-	store.CreateRun(ctx, seedRun("run_term", "mi_term", 0, "unknown")) // mission 行存在 → 直插可
+	// 三审 #5：先在 ready 下成功建 Run（否则 CreateRun 被终态守卫拒——Run 不存在
+	// 的"通过"不算数），再转 accepted，断言处置被 ErrMissionTerminal 拒。
+	mkMission(t, store, "mi_term", mission.StatusReady)
+	if _, err := store.CreateRun(ctx, seedRun("run_term", "mi_term", 0, "unknown")); err != nil {
+		t.Fatalf("预置 Run（ready 期）: %v", err)
+	}
+	store.db.Exec(`UPDATE missions SET status = 'accepted' WHERE mission_id = ?`, "mi_term")
 
-	// R7：处置拒绝（事务内终态）
-	if _, ok, err := store.ResolveRun(ctx, "run_term", "discarded", "", "t1"); err == nil && ok {
-		t.Fatal("终态任务处置须拒绝")
-	} else if err == nil {
-		// ok=false 也算拒——但须因终态而非状态不符；行本身 unknown 未处置。此处要求 err 非空
-		t.Fatal("终态任务处置须返回 ErrMissionTerminal（非静默 ok=false）")
+	// R7：处置拒绝（事务内终态——ErrMissionTerminal 而非 ErrRunNotFound）
+	if _, ok, err := store.ResolveRun(ctx, "run_term", "discarded", "", "t1"); !errors.Is(err, missionrun.ErrMissionTerminal) || ok {
+		t.Fatalf("终态任务处置须 ErrMissionTerminal: ok=%v err=%v", ok, err)
+	}
+	got, _, _ := store.RunByID(ctx, "run_term")
+	if got.Resolution != "" {
+		t.Fatalf("处置不得落: %+v", got)
 	}
 
 	// R5：装配拒绝（事务内终态）

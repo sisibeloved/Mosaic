@@ -96,6 +96,12 @@ func (s *Service) RequestReview(ctx context.Context, missionID string, expectedV
 	if m.ContractVersion != expectedVersion {
 		return mission.Mission{}, fmt.Errorf("%w: 期望 v%d，当前 v%d", mission.ErrVersionConflict, expectedVersion, m.ContractVersion)
 	}
+	// 三审 #4（幂等约定）：同版本同包的匹配重试（任务已在审该包）直接走
+	// mission 域幂等路径返回当前 reviewing——必需项检查只对**新一轮**送验生效
+	//（v22/v23 升级库的在审包可能含按现口径判空的证据，重试不得因此 409）。
+	if m.Status == mission.StatusReviewing && m.ReviewPackageID == packageID {
+		return s.missions.RequestReview(ctx, missionID, expectedVersion, packageID)
+	}
 	// 审校 #2：在途或未处置 unknown Run 存在时不得送验（结果未核验的执行不能
 	// 随任务被接受）——先核验/处置再送验。
 	if s.runs != nil {
