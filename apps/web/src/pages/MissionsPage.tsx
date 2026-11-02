@@ -24,6 +24,7 @@ const splitLines = (s: string): string[] =>
   s.split("\n").map((x) => x.trim()).filter(Boolean);
 
 function statusClass(status: string): string {
+  if (status === "accepted") return "text-ok font-semibold";
   if (status === "ready" || status === "running") return "text-ok";
   if (status === "canceled") return "text-danger line-through";
   // paused（阻止新调度）/ waiting（等待核验）/ canceling（停止进行中）与 draft 同暖色系
@@ -339,6 +340,9 @@ function MissionDetail({
   const [reviseOpen, setReviseOpen] = useState(false);
   const [form, setForm] = useState({ objective: "", scope: "", acceptance: "", deliverables: "", sources: "", owner: "" });
   const [cancelReason, setCancelReason] = useState("");
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewReason, setReviewReason] = useState("");
+  const [reviewReviewer, setReviewReviewer] = useState("");
   const seq = useRef(0);
 
   const load = () => {
@@ -426,6 +430,17 @@ function MissionDetail({
           {detail.waiting_reason ? "恢复后回到等待核验（有 unknown Run 待处置）。" : "点「恢复」回到 ready 自动调度。"}
         </p>
       )}
+      {detail.status === "reviewing" && (
+        <p className="text-warn">
+          等待验收——受审包 <span className="font-mono">{detail.review_package_id}</span>
+          {detail.reviewer ? `（验收人：${detail.reviewer}）` : "（请求人自验）"}。验收期间契约冻结（不可修订/暂停/再交付）。
+        </p>
+      )}
+      {detail.status === "accepted" && (
+        <p className="text-ok">
+          已验收（终态）——按交付包 <span className="font-mono">{detail.review_package_id}</span> 验收通过；不可修订、取消、再交付或再执行。
+        </p>
+      )}
       {detail.status === "waiting" && (
         <p className="text-warn">
           等待核验（{detail.waiting_reason || "reconciliation"}）——进程重启时有执行在途、结果未知（Run 记 unknown）。
@@ -468,6 +483,33 @@ function MissionDetail({
               暂停
             </button>
           )}
+          {detail.status === "ready" && (
+            <button
+              type="button"
+              disabled={busy || !owned}
+              onClick={() =>
+                void act(async () => {
+                  if (detail.mission_id !== missionID) throw new Error("详情未就绪，已阻止写入");
+                  const { packages } = await api.listDeliveryPackages(missionID);
+                  if (!packages.length) throw new Error("先提交交付包（执行区下方「交付」）");
+                  await api.requestMissionReview(missionID, detail.contract_version, packages[0].package_id);
+                })
+              }
+              className="rounded-lg bg-surface-3 px-2 py-1 disabled:opacity-40"
+              title="以最新交付包提请验收（必需项：成果引用非空 + 每条验收标准有证据——缺项 409 携清单）"
+            >
+              提请验收
+            </button>
+          )}
+          {detail.status === "reviewing" && (
+            <button
+              type="button"
+              onClick={() => setReviewOpen((o) => !o)}
+              className="rounded-lg bg-accent px-2 py-1 text-accent-contrast"
+            >
+              {reviewOpen ? "收起验收" : "验收"}
+            </button>
+          )}
           {detail.status === "paused" && (
             <button
               type="button"
@@ -505,7 +547,65 @@ function MissionDetail({
         </div>
       )}
 
-      {reviseOpen && detail.status !== "canceled" && (
+      {detail.status === "reviewing" && reviewOpen && (
+        <div className="flex flex-col gap-2 rounded-lg bg-surface-2 p-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={reviewReviewer}
+              onChange={(e) => setReviewReviewer(e.target.value)}
+              placeholder={`验收人${detail.reviewer ? `（契约指定：${detail.reviewer}）` : "（契约未指定 = 请求人自验）"}`}
+              className="min-w-0 flex-1 rounded border border-border bg-surface px-1.5 py-1 outline-none"
+            />
+          </div>
+          <textarea
+            value={reviewReason}
+            onChange={(e) => setReviewReason(e.target.value)}
+            placeholder="裁定备注 / 退回原因（退回必填，≤500 字）"
+            rows={2}
+            className="rounded border border-border bg-surface px-1.5 py-1 outline-none"
+          />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                void act(async () => {
+                  if (detail.mission_id !== missionID) throw new Error("详情未就绪，已阻止写入");
+                  await api.reviewMission(missionID, detail.contract_version, {
+                    decision: "accepted",
+                    ...(reviewReviewer.trim() ? { reviewer: reviewReviewer.trim() } : {}),
+                    ...(reviewReason.trim() ? { reason: reviewReason.trim() } : {}),
+                  });
+                })
+              }
+              className="rounded-lg bg-surface-3 px-2 py-1 text-ok disabled:opacity-40"
+            >
+              接受（终态）
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                void act(async () => {
+                  if (detail.mission_id !== missionID) throw new Error("详情未就绪，已阻止写入");
+                  if (!reviewReason.trim()) throw new Error("退回须填写原因");
+                  await api.reviewMission(missionID, detail.contract_version, {
+                    decision: "returned",
+                    reason: reviewReason.trim(),
+                    ...(reviewReviewer.trim() ? { reviewer: reviewReviewer.trim() } : {}),
+                  });
+                })
+              }
+              className="rounded-lg bg-surface-3 px-2 py-1 text-danger disabled:opacity-40"
+            >
+              退回（回 ready）
+            </button>
+            <span className="text-faint">接受 = 不可逆终态；退回后可补证再交付、再送验。</span>
+          </div>
+        </div>
+      )}
+
+      {reviseOpen && detail.status !== "canceled" && detail.status !== "reviewing" && detail.status !== "accepted" && (
         <div className="flex flex-col gap-2 rounded-lg bg-surface-2 p-2">
           <p className="text-faint">
             全量替换 + 版本 v{detail.contract_version + 1}；基于 v{detail.contract_version}（CAS——并发修订冲突 409 可见）。
@@ -682,6 +782,8 @@ function MissionDeliveryCard({ missionID, detail, onChanged }: { missionID: stri
   const deliverable = runs.filter((r) => r.state === "completed" || (r.state === "unknown" && r.resolution === "verified_completed"));
   const latest = packages && packages.length > 0 ? packages[0] : null;
   const canceled = detail.status === "canceled";
+  // 0.6.9：验收期间受审包固定、accepted 终态——提交入口关闭（摘要/历史照常）
+  const submitLocked = canceled || detail.status === "reviewing" || detail.status === "accepted";
 
   const submit = async () => {
     const run = deliverable.find((r) => r.run_id === runID);
@@ -743,13 +845,16 @@ function MissionDeliveryCard({ missionID, detail, onChanged }: { missionID: stri
         ) : (
           packages !== null && <p className="text-faint">尚未提交交付包——执行成功 ≠ 成果提交 ≠ 验收通过（三个独立事实）。</p>
         )}
-        {!canceled && (
+        {!submitLocked && (
           <button type="button" onClick={() => setFormOpen((o) => !o)} className="self-start rounded-lg bg-surface-3 px-2 py-1 disabled:opacity-40" disabled={deliverable.length === 0}>
             {formOpen ? "收起提交" : latest ? "补证 / 再提交" : "提交交付包"}
           </button>
         )}
-        {!canceled && deliverable.length === 0 && <span className="text-faint">无可交付 Run（需 completed 或 unknown 已核验达成）。</span>}
-        {formOpen && !canceled && (
+        {!submitLocked && deliverable.length === 0 && <span className="text-faint">无可交付 Run（需 completed 或 unknown 已核验达成）。</span>}
+        {submitLocked && detail.status !== "canceled" && (
+          <span className="text-faint">{detail.status === "reviewing" ? "验收中——受审包已固定，退回后再补证。" : "已验收（终态）——不再受理交付。"}</span>
+        )}
+        {formOpen && !submitLocked && (
           <div className="flex flex-col gap-1.5 rounded-lg bg-surface-2 p-2">
             <select value={runID} onChange={(e) => setRunID(e.target.value)} className="rounded border border-border bg-surface px-1.5 py-1">
               <option value="">选择来源 Run</option>

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sisibeloved/Mosaic/internal/delivery"
 	"github.com/sisibeloved/Mosaic/internal/mission"
+	"github.com/sisibeloved/Mosaic/internal/review"
 	missionrun "github.com/sisibeloved/Mosaic/internal/run"
 )
 
@@ -30,6 +31,22 @@ func (p epDeliveryMissions) MissionFacts(ctx context.Context, id string) (delive
 		return delivery.MissionFacts{}, ok, err
 	}
 	return delivery.MissionFacts{MissionID: m.MissionID, ContractVersion: m.ContractVersion, Status: m.Status}, true, nil
+}
+
+// epReviewPackages review.Packages 适配（真 delivery 服务只读）。
+type epReviewPackages struct{ svc *delivery.Service }
+
+func (p epReviewPackages) PackageFacts(ctx context.Context, id string) (review.PackageFacts, bool, error) {
+	pk, ok, err := p.svc.Get(ctx, id)
+	if err != nil || !ok {
+		return review.PackageFacts{}, ok, err
+	}
+	mapping := make([]review.MappingEntry, 0, len(pk.AcceptanceMapping))
+	for _, e := range pk.AcceptanceMapping {
+		mapping = append(mapping, review.MappingEntry{Criterion: e.Criterion, Evidence: e.Evidence})
+	}
+	return review.PackageFacts{PackageID: pk.PackageID, MissionID: pk.MissionID, ContractVersion: pk.ContractVersion,
+		ArtifactRefs: pk.ArtifactRefs, AcceptanceMapping: mapping}, true, nil
 }
 
 type epDeliveryRuns struct{ svc *missionrun.Service }

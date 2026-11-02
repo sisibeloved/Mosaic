@@ -31,6 +31,8 @@ const (
 	runStateUnknown             = "unknown"
 	resolutionVerifiedCompleted = "verified_completed"
 	missionStatusCanceled       = "canceled"
+	missionStatusReviewing      = "reviewing"
+	missionStatusAccepted       = "accepted"
 )
 
 // 领域错误。
@@ -53,6 +55,11 @@ var (
 	ErrRunNotDeliverable = errors.New("delivery: Run 不可交付")
 	// ErrMissionCanceled Mission 已取消（终态——不再受理交付；读面照常）。
 	ErrMissionCanceled = errors.New("delivery: Mission 已取消")
+	// ErrMissionReviewing Mission 验收中（0.6.9 / ADR-0032：受审包已固定——
+	// 退回后再补证提交）。
+	ErrMissionReviewing = errors.New("delivery: Mission 验收中")
+	// ErrMissionAccepted Mission 已验收（0.6.9：终态——第三个事实已完成）。
+	ErrMissionAccepted = errors.New("delivery: Mission 已验收")
 	// ErrPackageNotFound 交付包不存在。
 	ErrPackageNotFound = errors.New("delivery: 交付包不存在")
 )
@@ -222,6 +229,12 @@ func (s *Service) Submit(ctx context.Context, missionID string, sub Submission) 
 	}
 	if m.Status == missionStatusCanceled {
 		return Package{}, fmt.Errorf("%w: 不再受理交付", ErrMissionCanceled)
+	}
+	if m.Status == missionStatusReviewing {
+		return Package{}, fmt.Errorf("%w: 受审包已固定——退回后再补证", ErrMissionReviewing)
+	}
+	if m.Status == missionStatusAccepted {
+		return Package{}, fmt.Errorf("%w: 终态", ErrMissionAccepted)
 	}
 	if m.ContractVersion != sub.ExpectedVersion {
 		return Package{}, fmt.Errorf("%w: 期望 v%d，当前 v%d", ErrVersionConflict, sub.ExpectedVersion, m.ContractVersion)

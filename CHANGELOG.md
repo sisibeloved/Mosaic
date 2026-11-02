@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Mission 验收：`request_review` 与 `review_mission`**（0.6 领域第十件 / ADR-0032，RFC-0018 §3.2/§10.2/§11.2、AT-10）：三事实中的第三件——**验收通过**。Mission 首次拥有"完成"终态。
+  - **`reviewing` 验收门 + `accepted` 终态**（migration v22：missions 增 `review_package_id` 锚列）：`ready → reviewing → accepted | ready`（退回）。送验入口为 ready（RFC 表的 running 为 WorkItem 连续执行模型——本版执行投影在 Run 终态后回 ready，语义等价）；waiting/paused/draft/running 不可送验。
+  - **`POST /v1/missions/{id}/request-review`**（submit_result 的对面）：以 `package_id` 为锚——包存在/属该 Mission/对应**当前**契约版本（陈旧 409 stale_package——须补证新包）；**必需交付项检查**（AT-10）：成果引用非空 + 当前每条验收标准在包的 acceptance_mapping 中有对应条目且证据非空，缺项 409 missing_required_items **携缺项清单**（补证后重试——"先交付再补证"闭环）；CAS ready → reviewing + review_package_id。幂等同包 200；reviewing 中换包 409（先退回）。
+  - **`POST /v1/missions/{id}/review`**（裁定）：`decision ∈ accepted | returned`——accepted 为**终态**（修订/取消/暂停/送验/再交付/执行全拒绝，锚保留以追溯"按哪个包验收"）；returned → ready（锚清空——可再执行、补证再交付、再送验）。**验收权限 = 契约一致性校验**：契约 reviewer 非空时 body.reviewer 须相等（403 review_not_authorized；空 = 请求人自验）；returned 须携 reason；item_notes 逐项依据与退回原因留痕于 status_changed 事件（decision/reviewer/reason/package_id/item_notes）。
+  - **验收期间契约冻结**：reviewing 下 `revise`（验收基线不得变动）、`pause`、交付提交（409 mission_reviewing——受审包已固定）均拒绝；**取消两段照常**（非终态皆可取消，ADR-0029）。delivery 写包守卫（存储事务内）扩 reviewing / accepted 两拒绝码。
+  - **`review_package_id` 追踪锚**（AT-10"任务卡、产物、决定可互相追踪"）：Mission → 交付包 → 来源 Run → 事件流直达，无需翻事件流重建。
+  - **SPA**：ready + 有包 → 「提请验收」（缺项 409 回显清单）；reviewing → 受审包徽章 + 验收面板（接受/退回 + 原因 + 验收人预填）；accepted → 终态徽章、控制区与交付表单只读。
+  - 契约面：两端点 + MissionReviewRequest / MissionReviewDecision / ReviewItemNote；状态枚举 += reviewing, accepted；MissionView += review_package_id。
+
 ## [0.6.8] - 2026-11-02
 
 ### Added

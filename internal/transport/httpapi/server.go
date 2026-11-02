@@ -35,6 +35,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
+	"github.com/sisibeloved/Mosaic/internal/review"
 	"github.com/sisibeloved/Mosaic/internal/room"
 	missionrun "github.com/sisibeloved/Mosaic/internal/run"
 	mosaicruntime "github.com/sisibeloved/Mosaic/internal/runtime"
@@ -79,6 +80,10 @@ type Deps struct {
 	Runtimes *mosaicruntime.Service
 	// MissionRuns Mission 执行域（RFC-0018 §10.2 / ADR-0028，0.6.5；nil 时端点 503）。
 	MissionRuns *missionrun.Service
+	// Review 验收域（RFC-0018 §10.2 / ADR-0032，0.6.9；nil 时端点 503）：
+	// request_review（必需项检查 → reviewing）与 review_mission（accepted |
+	// returned）。
+	Review *review.Service
 	// Delivery 交付域（RFC-0018 §10.2 / ADR-0031，0.6.8；nil 时端点 503）：
 	// submit_result 不自动送验——提交对 Mission 零副作用。
 	Delivery *delivery.Service
@@ -2281,7 +2286,7 @@ func missionView(m mission.Mission) apigen.MissionView {
 	}
 	return apigen.MissionView{
 		MissionId: m.MissionID, ContractVersion: m.ContractVersion,
-		Status: apigen.MissionViewStatus(m.Status), WaitingReason: m.WaitingReason, OwnerAgentId: m.OwnerAgentID,
+		Status: apigen.MissionViewStatus(m.Status), WaitingReason: m.WaitingReason, ReviewPackageId: m.ReviewPackageID, OwnerAgentId: m.OwnerAgentID,
 		Requester: m.Requester, Reviewer: m.Reviewer, RoomSource: roomSource,
 		Objective: m.Objective, Scope: m.Scope,
 		Constraints: constraints, AcceptanceCriteria: acceptance,
@@ -3027,6 +3032,123 @@ func (s *server) ResolveMissionRun(w http.ResponseWriter, r *http.Request, runID
 	writeJSON(w, http.StatusOK, missionRunView(out))
 }
 
+// ---- 验收域端点（0.6.9 / ADR-0032）----
+
+func (s *server) reviewUnavailable(w http.ResponseWriter) bool {
+	if s.deps.Review == nil {
+		writeError(w, http.StatusServiceUnavailable, "review_unavailable", "验收域未装配")
+		return true
+	}
+	return false
+}
+
+// RequestMissionReview request_review：必需交付项检查（缺项 409 携清单）→
+// ready → reviewing + review_package_id。
+func (s *server) RequestMissionReview(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.reviewUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.MissionReviewRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	if req.ExpectedVersion < 1 {
+		writeError(w, http.StatusBadRequest, "invalid_review", "expected_version 须 ≥1")
+		return
+	}
+	if req.PackageId == "" {
+		writeError(w, http.StatusBadRequest, "invalid_review", "package_id 必填")
+		return
+	}
+	m, err := s.deps.Review.RequestReview(r.Context(), missionID, int(req.ExpectedVersion), req.PackageId)
+	if err != nil {
+		writeReviewError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, missionView(m))
+}
+
+// ReviewMission review_mission：accepted（终态）| returned（回 ready）。
+func (s *server) ReviewMission(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.reviewUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.MissionReviewDecision
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	if req.ExpectedVersion < 1 {
+		writeError(w, http.StatusBadRequest, "invalid_review", "expected_version 须 ≥1")
+		return
+	}
+	d := mission.ReviewDecision{
+		Decision: string(req.Decision), Reviewer: derefStr(req.Reviewer),
+		Reason: derefStr(req.Reason),
+	}
+	if req.ItemNotes != nil {
+		d.ItemNotes = make([]mission.ReviewItemNote, 0, len(*req.ItemNotes))
+		for _, n := range *req.ItemNotes {
+			d.ItemNotes = append(d.ItemNotes, mission.ReviewItemNote{Criterion: n.Criterion, Note: n.Note})
+		}
+	}
+	m, err := s.deps.Review.Review(r.Context(), missionID, int(req.ExpectedVersion), d)
+	if err != nil {
+		writeReviewError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, missionView(m))
+}
+
+// writeReviewError 验收域错误映射。
+func writeReviewError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, mission.ErrInvalidReview):
+		writeError(w, http.StatusBadRequest, "invalid_review", err.Error())
+	case errors.Is(err, mission.ErrMissionNotFound):
+		writeError(w, http.StatusNotFound, "mission_not_found", err.Error())
+	case errors.Is(err, review.ErrPackageNotFound):
+		writeError(w, http.StatusNotFound, "package_not_found", err.Error())
+	case errors.Is(err, review.ErrPackageMismatch):
+		writeError(w, http.StatusConflict, "package_mission_mismatch", err.Error())
+	case errors.Is(err, review.ErrStalePackage):
+		writeError(w, http.StatusConflict, "stale_package", err.Error())
+	case errors.Is(err, review.ErrMissingRequiredItems):
+		writeError(w, http.StatusConflict, "missing_required_items", err.Error())
+	case errors.Is(err, mission.ErrReviewNotAuthorized):
+		writeError(w, http.StatusForbidden, "review_not_authorized", err.Error())
+	case errors.Is(err, mission.ErrVersionConflict):
+		writeError(w, http.StatusConflict, "version_conflict", err.Error())
+	case errors.Is(err, mission.ErrInvalidTransition):
+		writeError(w, http.StatusConflict, "invalid_transition", err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "review_failed", err.Error())
+	}
+}
+
 // ---- 交付域端点（0.6.8 / ADR-0031）----
 
 func (s *server) deliveryUnavailable(w http.ResponseWriter) bool {
@@ -3167,6 +3289,10 @@ func writeDeliveryError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "run_not_deliverable", err.Error())
 	case errors.Is(err, delivery.ErrMissionCanceled):
 		writeError(w, http.StatusConflict, "mission_canceled", err.Error())
+	case errors.Is(err, delivery.ErrMissionReviewing):
+		writeError(w, http.StatusConflict, "mission_reviewing", err.Error())
+	case errors.Is(err, delivery.ErrMissionAccepted):
+		writeError(w, http.StatusConflict, "mission_accepted", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "delivery_failed", err.Error())
 	}

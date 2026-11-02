@@ -63,7 +63,9 @@ func (m *MemStore) ReviseMission(_ context.Context, missionID string, expectedVe
 		return Mission{}, false, ErrMissionNotFound
 	}
 	cur := m.missions[idx]
-	if cur.ContractVersion != expectedVersion || cur.Status == StatusCanceled {
+	// 0.6.9：accepted 同终态拒修订；reviewing 基线冻结。
+	if cur.ContractVersion != expectedVersion || cur.Status == StatusCanceled ||
+		cur.Status == StatusAccepted || cur.Status == StatusReviewing {
 		return Mission{}, false, nil
 	}
 	// 0.6.6 审校 P1：执行控制投影的事务内保持——next.Status 是服务层旧读
@@ -128,7 +130,8 @@ func (m *MemStore) MarkCanceling(_ context.Context, missionID string, expectedVe
 		return Mission{}, false, ErrMissionNotFound
 	}
 	cur := m.missions[idx]
-	if cur.ContractVersion != expectedVersion || cur.Status == StatusCanceled {
+	// 0.6.9：accepted 为终态不可取消。
+	if cur.ContractVersion != expectedVersion || cur.Status == StatusCanceled || cur.Status == StatusAccepted {
 		return Mission{}, false, nil
 	}
 	return m.flipStatusLocked(idx, cur.Status, StatusCanceling, reason, occurredAt), true, nil
@@ -262,6 +265,52 @@ func (m *MemStore) TransitionStatus(_ context.Context, missionID, from, to strin
 	event.Seq = m.seq
 	m.events[missionID] = append(m.events[missionID], event)
 	return true, nil
+}
+
+// RequestReview 条件送验（0.6.9 / ADR-0032）：ready → reviewing + 锚 + 事件。
+func (m *MemStore) RequestReview(_ context.Context, missionID string, expectedVersion int, packageID string, event Event) (Mission, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i, ok := m.indexOfLocked(missionID)
+	if !ok {
+		return Mission{}, false, ErrMissionNotFound
+	}
+	cur := m.missions[i]
+	if cur.ContractVersion != expectedVersion || cur.Status != StatusReady {
+		return Mission{}, false, nil
+	}
+	cur.Status = StatusReviewing
+	cur.ReviewPackageID = packageID
+	cur.UpdatedAt = event.OccurredAt
+	m.missions[i] = cur
+	m.seq++
+	event.Seq = m.seq
+	m.events[missionID] = append(m.events[missionID], event)
+	return cur, true, nil
+}
+
+// RecordReview 条件裁定（0.6.9）：reviewing → to（accepted 保留锚 / ready 清锚）。
+func (m *MemStore) RecordReview(_ context.Context, missionID string, expectedVersion int, to string, event Event) (Mission, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i, ok := m.indexOfLocked(missionID)
+	if !ok {
+		return Mission{}, false, ErrMissionNotFound
+	}
+	cur := m.missions[i]
+	if cur.ContractVersion != expectedVersion || cur.Status != StatusReviewing {
+		return Mission{}, false, nil
+	}
+	cur.Status = to
+	if to == StatusReady {
+		cur.ReviewPackageID = "" // 退回清锚（重新送验另指）
+	}
+	cur.UpdatedAt = event.OccurredAt
+	m.missions[i] = cur
+	m.seq++
+	event.Seq = m.seq
+	m.events[missionID] = append(m.events[missionID], event)
+	return cur, true, nil
 }
 
 // MarkWaiting 条件进 waiting + 等待原因（0.6.7 / ADR-0030）。

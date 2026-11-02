@@ -40,6 +40,14 @@ const (
 	// （停止意图持久化先行）→ 在途 Run 停止后 → canceled。可长期停留
 	// （执行器不响应取消时——"待停止"可见，可续驱，重启恢复兜底）。
 	StatusCanceling = "canceling"
+	// StatusReviewing 验收中（0.6.9 / ADR-0032；RFC §3.2 running → reviewing →
+	// accepted）：request_review 后的验收门——受审包固定（review_package_id）、
+	// 契约冻结（revise/pause/submit 拒绝）、不被调度；review_mission 接受
+	// （accepted 终态）或退回（ready——可再执行/再交付/再送验）。取消两段照常。
+	StatusReviewing = "reviewing"
+	// StatusAccepted 已验收（0.6.9）：Mission 首个"完成"终态——修订/取消/暂停/
+	// 送验/再交付/执行均拒绝；review_package_id 保留以追溯"按哪个包验收"。
+	StatusAccepted = "accepted"
 	// StatusWaiting 等待态（0.6.7 / ADR-0030；RFC §3.2 running ↔ waiting）：
 	// running → waiting(reason)——本版唯一原因 reconciliation（重启恢复判
 	// 为 unknown 的 Run 待核验处置）。出调度列直至处置（waiting → ready|
@@ -75,6 +83,12 @@ var (
 	ErrVersionConflict = errors.New("mission: 契约版本冲突")
 	// ErrInvalidTransition 终态拒修订/重复取消。
 	ErrInvalidTransition = errors.New("mission: 非法契约转移")
+	// ErrInvalidReview 裁定不合法（0.6.9：decision 枚举 / returned 缺 reason /
+	// reason 与逐项备注超限）。
+	ErrInvalidReview = errors.New("mission: 裁定不合法")
+	// ErrReviewNotAuthorized 验收权限不足（0.6.9：契约 reviewer 非空时裁定人
+	// 须与之相符——契约一致性校验，非独立身份认证；空 = 请求人自验）。
+	ErrReviewNotAuthorized = errors.New("mission: 验收权限不足")
 	// ErrSourceAlreadyMapped 房间来源已被交办（ADR-0024：(room_id, task_id)
 	// 全局唯一映射——同一任务卡至多交办一次，撞键回显已映射 mission_id）。
 	ErrSourceAlreadyMapped = errors.New("mission: 房间来源已被交办")
@@ -122,8 +136,9 @@ type Mission struct {
 	MissionID       string      `json:"mission_id"`
 	ContractVersion int         `json:"contract_version"`
 	Status          string      `json:"status"`
-	WaitingReason   string      `json:"waiting_reason"` // 等待原因（0.6.7；waiting 态一等事实，暂停期间保留；非 waiting 空）
-	OwnerAgentID    string      `json:"owner_agent_id"` // 空 = 显式 unassigned（§3.3）
+	WaitingReason   string      `json:"waiting_reason"`    // 等待原因（0.6.7；waiting 态一等事实，暂停期间保留；非 waiting 空）
+	ReviewPackageID string      `json:"review_package_id"` // 受审/已验收包（0.6.9：request_review 写入；accepted 保留、returned 清空）
+	OwnerAgentID    string      `json:"owner_agent_id"`    // 空 = 显式 unassigned（§3.3）
 	Requester       string      `json:"requester"`
 	RoomSource      *RoomSource `json:"room_source"` // 房间交办来源（非房间交办 null；创建事实）
 	Content
@@ -221,6 +236,14 @@ type Store interface {
 	// MarkWaiting 条件进 waiting（0.6.7 / ADR-0030）：当前状态 == from 才置
 	// waiting + waiting_reason=reason + 事件（单事务）；不符 = 无操作。
 	MarkWaiting(ctx context.Context, missionID, from, reason string, event Event) (changed bool, err error)
+	// RequestReview 条件送验（0.6.9 / ADR-0032）：contract_version 匹配且
+	// status == ready → reviewing + review_package_id=packageID + 事件，单事务；
+	// ok=false = 版本不匹配/非 ready（幂等同包由服务层先读实现）。
+	RequestReview(ctx context.Context, missionID string, expectedVersion int, packageID string, event Event) (Mission, bool, error)
+	// RecordReview 条件裁定（0.6.9）：contract_version 匹配且 status ==
+	// reviewing → to（accepted 保留锚 / ready 清锚）+ 事件，单事务；ok=false =
+	// 版本不匹配/非 reviewing。
+	RecordReview(ctx context.Context, missionID string, expectedVersion int, to string, event Event) (Mission, bool, error)
 }
 
 // Service 契约服务：校验单源 + 完备性判定单源 + CAS 编排。
@@ -350,8 +373,15 @@ func (s *Service) Revise(ctx context.Context, missionID string, expectedVersion 
 	if !ok {
 		return Mission{}, ErrMissionNotFound
 	}
-	if cur.Status == StatusCanceled {
+	// 0.6.9 / ADR-0032：accepted 与 canceled 同为终态不可修订；reviewing 验收
+	// 基线冻结（须先退回）。
+	switch cur.Status {
+	case StatusCanceled:
 		return Mission{}, fmt.Errorf("%w: canceled 不可修订", ErrInvalidTransition)
+	case StatusAccepted:
+		return Mission{}, fmt.Errorf("%w: accepted 不可修订", ErrInvalidTransition)
+	case StatusReviewing:
+		return Mission{}, fmt.Errorf("%w: 验收期间契约冻结（先退回）", ErrInvalidTransition)
 	}
 	next := cur
 	next.ContractVersion = cur.ContractVersion + 1
@@ -485,6 +515,9 @@ func (s *Service) MarkCanceling(ctx context.Context, missionID string, expectedV
 	if cur.Status == StatusCanceled {
 		return Mission{}, fmt.Errorf("%w: canceled 不可再取消", ErrInvalidTransition)
 	}
+	if cur.Status == StatusAccepted {
+		return Mission{}, fmt.Errorf("%w: accepted 不可取消", ErrInvalidTransition)
+	}
 	out, ok2, err := s.store.MarkCanceling(ctx, missionID, expectedVersion, reason, s.now())
 	if err != nil {
 		return Mission{}, err
@@ -531,6 +564,135 @@ func (s *Service) MarkRunning(ctx context.Context, missionID string) (bool, erro
 func (s *Service) MarkReadyFromRunning(ctx context.Context, missionID, reason string) error {
 	_, err := s.projectStatus(ctx, missionID, StatusRunning, StatusReady, reason)
 	return err
+}
+
+// ReviewAccepted / ReviewReturned 裁定结论（0.6.9 / ADR-0032）。
+const (
+	ReviewAccepted = "accepted"
+	ReviewReturned = "returned"
+)
+
+// ReviewItemNote 逐项依据（验收条文 + 裁定备注）。
+type ReviewItemNote struct {
+	Criterion string `json:"criterion"`
+	Note      string `json:"note"`
+}
+
+// ReviewDecision 裁定（= review_mission 载荷）：decision ∈ accepted | returned；
+// returned 须携 reason；ItemNotes 为逐项依据（可选）。
+type ReviewDecision struct {
+	Decision  string           `json:"decision"`
+	Reviewer  string           `json:"reviewer"`
+	Reason    string           `json:"reason"`
+	ItemNotes []ReviewItemNote `json:"item_notes"`
+}
+
+// RequestReview 提请验收（= request_review 的状态机面，0.6.9 / ADR-0032）：
+// ready → reviewing + review_package_id。必需交付项检查在编排层（internal/
+// review——包事实）；本方法只管状态机与 CAS。幂等：已 reviewing 且同包（版本
+// 匹配）返回当前；换包须先退回。
+func (s *Service) RequestReview(ctx context.Context, missionID string, expectedVersion int, packageID string) (Mission, error) {
+	if !strings.HasPrefix(packageID, "dlv_") {
+		return Mission{}, fmt.Errorf("%w: package_id 须为 dlv_ 前缀", ErrInvalidReview)
+	}
+	cur, ok, err := s.store.MissionByID(ctx, missionID)
+	if err != nil {
+		return Mission{}, err
+	}
+	if !ok {
+		return Mission{}, ErrMissionNotFound
+	}
+	switch cur.Status {
+	case StatusReviewing:
+		if cur.ContractVersion != expectedVersion {
+			return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
+		}
+		if cur.ReviewPackageID == packageID {
+			return cur, nil // 幂等：重试安全
+		}
+		return Mission{}, fmt.Errorf("%w: reviewing 中不可换包（先退回）", ErrInvalidTransition)
+	case StatusReady:
+		payload, err := json.Marshal(map[string]string{"from": StatusReady, "to": StatusReviewing, "package_id": packageID})
+		if err != nil {
+			return Mission{}, fmt.Errorf("mission: 送验事件构造失败：%w", err)
+		}
+		out, ok2, err := s.store.RequestReview(ctx, missionID, expectedVersion, packageID, Event{
+			MissionID: missionID, EventType: EventStatusChanged, Payload: payload, OccurredAt: s.now(),
+		})
+		if err != nil {
+			return Mission{}, err
+		}
+		if !ok2 {
+			return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
+		}
+		return out, nil
+	default:
+		// draft/running/waiting/paused/canceling/canceled/accepted
+		return Mission{}, fmt.Errorf("%w: %s 不可送验", ErrInvalidTransition, cur.Status)
+	}
+}
+
+// RecordReview 验收裁定（= review_mission，0.6.9 / ADR-0032）：reviewing →
+// accepted（终态，锚保留）| ready（退回，锚清空——可再执行/再交付/再送验）。
+// 验收权限：契约 reviewer 非空时 d.Reviewer 须相等（空 = 请求人自验）。
+func (s *Service) RecordReview(ctx context.Context, missionID string, expectedVersion int, d ReviewDecision) (Mission, error) {
+	if d.Decision != ReviewAccepted && d.Decision != ReviewReturned {
+		return Mission{}, fmt.Errorf("%w: decision 须为 accepted | returned", ErrInvalidReview)
+	}
+	if utf8.RuneCountInString(d.Reason) > 500 {
+		return Mission{}, fmt.Errorf("%w: reason ≤500 字", ErrInvalidReview)
+	}
+	if len(d.ItemNotes) > 16 {
+		return Mission{}, fmt.Errorf("%w: item_notes ≤16 项", ErrInvalidReview)
+	}
+	for i, n := range d.ItemNotes {
+		if l := utf8.RuneCountInString(strings.TrimSpace(n.Criterion)); l < 1 || l > 256 {
+			return Mission{}, fmt.Errorf("%w: item_notes[%d].criterion 须 1–256 字", ErrInvalidReview, i)
+		}
+		if utf8.RuneCountInString(n.Note) > 500 {
+			return Mission{}, fmt.Errorf("%w: item_notes[%d].note ≤500 字", ErrInvalidReview, i)
+		}
+	}
+	if d.Decision == ReviewReturned && strings.TrimSpace(d.Reason) == "" {
+		return Mission{}, fmt.Errorf("%w: 退回须携原因", ErrInvalidReview)
+	}
+	cur, ok, err := s.store.MissionByID(ctx, missionID)
+	if err != nil {
+		return Mission{}, err
+	}
+	if !ok {
+		return Mission{}, ErrMissionNotFound
+	}
+	if cur.Reviewer != "" && d.Reviewer != cur.Reviewer {
+		return Mission{}, fmt.Errorf("%w: 契约验收人为 %q", ErrReviewNotAuthorized, cur.Reviewer)
+	}
+	if cur.Status != StatusReviewing {
+		return Mission{}, fmt.Errorf("%w: %s 不可裁定", ErrInvalidTransition, cur.Status)
+	}
+	itemNotes := make([]ReviewItemNote, 0, len(d.ItemNotes))
+	itemNotes = append(itemNotes, d.ItemNotes...)
+	payload, err := json.Marshal(map[string]any{
+		"from": StatusReviewing, "to": d.Decision, "decision": d.Decision,
+		"reviewer": d.Reviewer, "reason": d.Reason, "package_id": cur.ReviewPackageID,
+		"item_notes": itemNotes,
+	})
+	if err != nil {
+		return Mission{}, fmt.Errorf("mission: 裁定事件构造失败：%w", err)
+	}
+	to := StatusAccepted
+	if d.Decision == ReviewReturned {
+		to = StatusReady
+	}
+	out, ok2, err := s.store.RecordReview(ctx, missionID, expectedVersion, to, Event{
+		MissionID: missionID, EventType: EventStatusChanged, Payload: payload, OccurredAt: s.now(),
+	})
+	if err != nil {
+		return Mission{}, err
+	}
+	if !ok2 {
+		return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
+	}
+	return out, nil
 }
 
 // MarkWaiting 等待投影（0.6.7 / ADR-0030）：running → waiting(reason)——恢复

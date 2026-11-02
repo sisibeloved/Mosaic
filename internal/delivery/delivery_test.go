@@ -52,8 +52,10 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	missions := fakeMissions{facts: map[string]MissionFacts{
-		"mi_a": {MissionID: "mi_a", ContractVersion: 2, Status: "ready"},
-		"mi_c": {MissionID: "mi_c", ContractVersion: 1, Status: "canceled"},
+		"mi_a":  {MissionID: "mi_a", ContractVersion: 2, Status: "ready"},
+		"mi_c":  {MissionID: "mi_c", ContractVersion: 1, Status: "canceled"},
+		"mi_rv": {MissionID: "mi_rv", ContractVersion: 1, Status: "reviewing"},
+		"mi_ac": {MissionID: "mi_ac", ContractVersion: 1, Status: "accepted"},
 	}}
 	runs := &fakeRuns{facts: map[string]RunFacts{
 		"run_ok":      {RunID: "run_ok", MissionID: "mi_a", Attempt: 1, Generation: 3, State: "completed"},
@@ -65,6 +67,8 @@ func newFixture(t *testing.T) *fixture {
 		"run_cancel":  {RunID: "run_cancel", MissionID: "mi_a", Attempt: 7, Generation: 9, State: "canceled"},
 		"run_running": {RunID: "run_running", MissionID: "mi_a", Attempt: 8, Generation: 10, State: "running"},
 		"run_other":   {RunID: "run_other", MissionID: "mi_z", Attempt: 1, Generation: 1, State: "completed"},
+		"run_rv":      {RunID: "run_rv", MissionID: "mi_rv", Attempt: 1, Generation: 1, State: "completed"},
+		"run_ac":      {RunID: "run_ac", MissionID: "mi_ac", Attempt: 1, Generation: 1, State: "completed"},
 	}}
 	var n int
 	tick := 0
@@ -181,6 +185,9 @@ func TestSubmitGuards(t *testing.T) {
 		"Mission 未知": {"mi_none", goodSubmission("run_ok", 3, 2), ErrMissionNotFound},
 		"Run 未知":     {"mi_a", goodSubmission("run_none", 1, 2), ErrRunNotFound},
 		"Mission 取消": {"mi_c", goodSubmission("run_ok", 3, 1), ErrMissionCanceled},
+		// 0.6.9 / ADR-0032：验收期间受审包固定、accepted 终态——提交拒绝
+		"Mission 验收中": {"mi_rv", goodSubmission("run_rv", 1, 1), ErrMissionReviewing},
+		"Mission 已验收": {"mi_ac", goodSubmission("run_ac", 1, 1), ErrMissionAccepted},
 	}
 	for name, tc := range cases {
 		if _, err := f.svc.Submit(ctx, tc.mission, tc.sub); !errors.Is(err, tc.want) {

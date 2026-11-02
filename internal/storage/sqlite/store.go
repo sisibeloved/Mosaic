@@ -578,6 +578,14 @@ CREATE INDEX IF NOT EXISTS idx_delivery_mission ON delivery_packages(mission_id,
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (21, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 `
 
+// migrationV22（RFC-0018 §10.2 / ADR-0032，0.6.9）：Mission 验收——missions 增
+// review_package_id（受审/已验收包锚，AT-10 任务卡→产物→Run 互追踪）。逐语句
+// 执行、重复加列容忍。
+var migrationV22 = []string{
+	"ALTER TABLE missions ADD COLUMN review_package_id TEXT NOT NULL DEFAULT ''",
+	"INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (22, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+}
+
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
 // modernc v1.57.0 / SQLite 3.53.3：unicode61 对中文整串成单 token 不可用，
 // trigram 对 CJK 子串 ≥3 字与英文均正确命中；<3 字查询由 SearchMessages
@@ -682,6 +690,14 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(migrationV21); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: migration v21: %w", err)
+	}
+	// v22 迁移（ADR-0032 / 0.6.9）：missions.review_package_id——逐语句执行，
+	// 重复加列容忍。
+	for _, stmt := range migrationV22 {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("sqlite: migration v22: %w", err)
+		}
 	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -2681,13 +2697,13 @@ SELECT agent_id, skills, tools, context, runtime_capabilities, workspace_access,
 // ---- Mission 契约域（RFC-0018 §3.1/§3.2/§6.1 / ADR-0023，0.6.0；v13 表，端口实现）----
 
 // missionCols missions 投影读取列。
-const missionCols = `mission_id, contract_version, status, owner_agent_id, requester, objective, content, created_at, updated_at, waiting_reason`
+const missionCols = `mission_id, contract_version, status, owner_agent_id, requester, objective, content, created_at, updated_at, waiting_reason, review_package_id`
 
 func scanMission(row interface{ Scan(...any) error }) (mission.Mission, error) {
 	var m mission.Mission
 	var content string
 	if err := row.Scan(&m.MissionID, &m.ContractVersion, &m.Status, &m.OwnerAgentID,
-		&m.Requester, &m.Objective, &content, &m.CreatedAt, &m.UpdatedAt, &m.WaitingReason); err != nil {
+		&m.Requester, &m.Objective, &content, &m.CreatedAt, &m.UpdatedAt, &m.WaitingReason, &m.ReviewPackageID); err != nil {
 		return mission.Mission{}, err
 	}
 	if err := json.Unmarshal([]byte(content), &m.Content); err != nil {
@@ -2739,7 +2755,9 @@ func (s *Store) ReviseMission(ctx context.Context, missionID string, expectedVer
 		if err != nil {
 			return fmt.Errorf("sqlite: revise probe: %w", err)
 		}
-		if version != expectedVersion || status == mission.StatusCanceled {
+		// 0.6.9：accepted 同终态拒修订；reviewing 基线冻结。
+		if version != expectedVersion || status == mission.StatusCanceled ||
+			status == mission.StatusAccepted || status == mission.StatusReviewing {
 			return nil // ok=false：败因由服务层重读分辨
 		}
 		// 0.6.6 审校 P1：执行控制投影的事务内保持——next.Status 是服务层旧读
@@ -2849,11 +2867,11 @@ func (s *Store) ResumeMission(ctx context.Context, missionID string, expectedVer
 		})
 }
 
-// MarkCanceling CAS 停止意图（非终态 → canceling）。
+// MarkCanceling CAS 停止意图（非终态 → canceling；0.6.9：accepted 为终态拒）。
 func (s *Store) MarkCanceling(ctx context.Context, missionID string, expectedVersion int, reason, occurredAt string) (mission.Mission, bool, error) {
 	return s.transitionMissionIf(ctx, missionID, expectedVersion, mission.StatusCanceling, reason, occurredAt,
 		func(version int, status string) bool {
-			return version == expectedVersion && status != mission.StatusCanceled
+			return version == expectedVersion && status != mission.StatusCanceled && status != mission.StatusAccepted
 		})
 }
 
@@ -2891,9 +2909,9 @@ func (s *Store) CreateMission(ctx context.Context, m mission.Mission, src *missi
 			}
 		}
 		if _, err := q.ExecContext(ctx, `
-INSERT INTO missions (`+missionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO missions (`+missionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			m.MissionID, m.ContractVersion, m.Status, m.OwnerAgentID, m.Requester,
-			m.Objective, string(raw), m.CreatedAt, m.UpdatedAt, m.WaitingReason); err != nil {
+			m.Objective, string(raw), m.CreatedAt, m.UpdatedAt, m.WaitingReason, m.ReviewPackageID); err != nil {
 			return fmt.Errorf("sqlite: create mission: %w", err)
 		}
 		if err := insertMissionVersion(ctx, q, m, string(raw)); err != nil {
@@ -3197,6 +3215,12 @@ func (s *Store) CreatePackage(ctx context.Context, p delivery.Package, receipt d
 		if status == mission.StatusCanceled {
 			return fmt.Errorf("%w: 不再受理交付", delivery.ErrMissionCanceled)
 		}
+		if status == mission.StatusReviewing {
+			return fmt.Errorf("%w: 受审包已固定——退回后再补证", delivery.ErrMissionReviewing)
+		}
+		if status == mission.StatusAccepted {
+			return fmt.Errorf("%w: 终态", delivery.ErrMissionAccepted)
+		}
 		if version != p.ContractVersion {
 			return fmt.Errorf("%w: 期望 v%d，当前 v%d", delivery.ErrVersionConflict, p.ContractVersion, version)
 		}
@@ -3254,6 +3278,77 @@ func (s *Store) PackageByID(ctx context.Context, packageID string) (delivery.Pac
 		return delivery.Package{}, false, fmt.Errorf("sqlite: package by id: %w", err)
 	}
 	return p, true, nil
+}
+
+// RequestReview 条件送验（0.6.9 / ADR-0032）：版本匹配且 ready → reviewing +
+// review_package_id + 事件，单事务；ok=false = 版本不匹配/非 ready。
+func (s *Store) RequestReview(ctx context.Context, missionID string, expectedVersion int, packageID string, event mission.Event) (mission.Mission, bool, error) {
+	return s.reviewTransitionIf(ctx, missionID, expectedVersion, mission.StatusReviewing, true, event,
+		func(version int, status string) bool {
+			return version == expectedVersion && status == mission.StatusReady
+		}, packageID)
+}
+
+// RecordReview 条件裁定（0.6.9）：版本匹配且 reviewing → to（ready 清锚 /
+// accepted 保留锚）+ 事件，单事务；ok=false = 版本不匹配/非 reviewing。
+func (s *Store) RecordReview(ctx context.Context, missionID string, expectedVersion int, to string, event mission.Event) (mission.Mission, bool, error) {
+	clear := to == mission.StatusReady
+	return s.reviewTransitionIf(ctx, missionID, expectedVersion, to, clear, event,
+		func(version int, status string) bool {
+			return version == expectedVersion && status == mission.StatusReviewing
+		}, "")
+}
+
+// reviewTransitionIf 送验/裁定通用条件转移（0.6.9）：guard 可进才更新（锚按
+// setPackage 写入 / clearPackage 清空）+ status_changed 事件。
+func (s *Store) reviewTransitionIf(ctx context.Context, missionID string, expectedVersion int,
+	to string, clearAnchor bool, event mission.Event, guard func(version int, status string) bool, packageID string) (mission.Mission, bool, error) {
+	ok := false
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		var version int
+		var status string
+		err := q.QueryRowContext(ctx,
+			`SELECT contract_version, status FROM missions WHERE mission_id = ?`, missionID).Scan(&version, &status)
+		if errors.Is(err, sql.ErrNoRows) {
+			return mission.ErrMissionNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("sqlite: review probe: %w", err)
+		}
+		if !guard(version, status) {
+			return nil
+		}
+		if packageID != "" {
+			if _, err := q.ExecContext(ctx,
+				`UPDATE missions SET status = ?, review_package_id = ?, updated_at = ? WHERE mission_id = ?`,
+				to, packageID, event.OccurredAt, missionID); err != nil {
+				return fmt.Errorf("sqlite: review update: %w", err)
+			}
+		} else if clearAnchor {
+			if _, err := q.ExecContext(ctx,
+				`UPDATE missions SET status = ?, review_package_id = '', updated_at = ? WHERE mission_id = ?`,
+				to, event.OccurredAt, missionID); err != nil {
+				return fmt.Errorf("sqlite: review update: %w", err)
+			}
+		} else {
+			if _, err := q.ExecContext(ctx,
+				`UPDATE missions SET status = ?, updated_at = ? WHERE mission_id = ?`,
+				to, event.OccurredAt, missionID); err != nil {
+				return fmt.Errorf("sqlite: review update: %w", err)
+			}
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+			missionID, event.EventType, string(event.Payload), event.OccurredAt); err != nil {
+			return fmt.Errorf("sqlite: review event: %w", err)
+		}
+		ok = true
+		return nil
+	})
+	if err != nil || !ok {
+		return mission.Mission{}, ok, err
+	}
+	return s.MissionByID(ctx, missionID)
 }
 
 // ---- 网关首切片域（RFC-0018 §11.2/§11.2.1 / ADR-0024，0.6.1；v14 表）----

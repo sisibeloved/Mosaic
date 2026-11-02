@@ -2397,6 +2397,120 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /v1/missions/{mission_id}/request-review:
+    post:
+      operationId: requestMissionReview
+      summary: 提请验收（request_review——必需交付项检查 + ready → reviewing）
+      description: |
+        0.6.9 / ADR-0032：以交付包 package_id 为锚提请验收。校验：包存在且属该
+        Mission；包 contract_version == Mission 当前版本（否则 409 stale_package
+        ——契约已修订，须补证新包）；**必需交付项**（AT-10）：artifact_refs 非空
+        且 Mission 当前每条 acceptance_criteria 在包 acceptance_mapping 中有对应
+        条目且 evidence 非空——缺项 409 missing_required_items 携缺项清单（补证
+        后重试）。通过则 CAS ready → reviewing + review_package_id（状态不允许
+        409 invalid_transition——waiting/paused/draft/running 须先处置/恢复/补齐/
+        等执行终态；版本不符 409 version_conflict）。幂等：已 reviewing 且同包
+        → 200 当前；换包须先退回。验收期间契约冻结（revise/pause/submit 拒绝）。
+        通知验收人随 0.6.10。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: mission_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MissionReviewRequest" }
+      responses:
+        "200":
+          description: 已进入 reviewing（review_package_id 指向受审包）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MissionView" }
+        "400":
+          description: 请求形状不合法（invalid_review）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Mission 或交付包不存在（mission_not_found / package_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 状态不允许（invalid_transition）/ 版本冲突（version_conflict）/ 包陈旧（stale_package）/ 包不属该 Mission（package_mission_mismatch）/ 必需交付项缺失（missing_required_items——detail 携缺项）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: 验收域未装配（review_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/missions/{mission_id}/review:
+    post:
+      operationId: reviewMission
+      summary: 验收裁定（review_mission——接受 / 退回）
+      description: |
+        0.6.9 / ADR-0032：契约指定验收人对 reviewing 中的 Mission 作裁定。
+        accepted → **accepted 终态**（修订/取消/暂停/送验/再交付/执行均拒绝；
+        review_package_id 保留以追溯）；returned → ready（review_package_id 清空；
+        可再执行、补证再交付、再送验）。验收权限：契约 reviewer 非空时 body.reviewer
+        须相等（403 review_not_authorized）；为空 = 请求人自验。returned 须携
+        reason（≤500 字）；item_notes 为逐项依据（可选，≤16 项）。裁定事实落
+        status_changed 事件（decision / reviewer / reason / item_notes / package_id）
+        ——"执行回执、提请验收与验收裁定各自留痕"。非 reviewing 409
+        invalid_transition；版本不符 409 version_conflict。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: mission_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MissionReviewDecision" }
+      responses:
+        "200":
+          description: 已裁定（accepted 终态或退回 ready）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MissionView" }
+        "400":
+          description: 请求形状不合法（invalid_review——如 returned 缺 reason）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: 验收权限不足（review_not_authorized——reviewer 与契约不符）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Mission 不存在（mission_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 非 reviewing（invalid_transition）或版本冲突（version_conflict）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: 验收域未装配（review_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/missions/{mission_id}/versions:
     get:
       operationId: listMissionVersions
@@ -3289,7 +3403,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "409":
-          description: 版本冲突（version_conflict）/ 代次陈旧（stale_generation）/ Run 不属该 Mission（run_mission_mismatch）/ Run 不可交付（run_not_deliverable）/ Mission 已取消（mission_canceled）
+          description: 版本冲突（version_conflict）/ 代次陈旧（stale_generation）/ Run 不属该 Mission（run_mission_mismatch）/ Run 不可交付（run_not_deliverable）/ Mission 已取消（mission_canceled）/ 验收中（mission_reviewing——受审包已固定，退回后再补证）/ 已验收（mission_accepted——终态）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -5835,6 +5949,33 @@ components:
       properties:
         expected_version: { type: integer, minimum: 1 }
         reason: { type: string, maxLength: 200, description: 可选原因（记入 status_changed 事件 payload） }
+    MissionReviewRequest:
+      type: object
+      required: [expected_version, package_id]
+      additionalProperties: false
+      description: 提请验收请求体（0.6.9 / ADR-0032：以交付包为锚；必需交付项检查在服务端）。
+      properties:
+        expected_version: { type: integer, minimum: 1, description: 调用方所见 contract_version；不匹配 409 version_conflict }
+        package_id: { type: string, pattern: "^dlv_[0-9A-Za-z_-]+$", description: 受审交付包（须属该 Mission 且对应当前契约版本） }
+    ReviewItemNote:
+      type: object
+      required: [criterion, note]
+      additionalProperties: false
+      description: 逐项依据（验收条文 + 裁定备注）。
+      properties:
+        criterion: { type: string, minLength: 1, maxLength: 256 }
+        note: { type: string, maxLength: 500 }
+    MissionReviewDecision:
+      type: object
+      required: [expected_version, decision]
+      additionalProperties: false
+      description: 验收裁定请求体（0.6.9 / ADR-0032）。returned 须携 reason。
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        reviewer: { type: string, maxLength: 64, description: 裁定人（契约 reviewer 非空时须相等——契约一致性校验，非独立身份认证） }
+        decision: { type: string, enum: [accepted, returned] }
+        reason: { type: string, maxLength: 500, description: 退回原因（returned 必填；accepted 可作备注） }
+        item_notes: { type: array, maxItems: 16, items: { $ref: "#/components/schemas/ReviewItemNote" } }
     MissionPause:
       type: object
       required: [expected_version]
@@ -5852,7 +5993,7 @@ components:
         expected_version: { type: integer, minimum: 1, description: 调用方所见 contract_version；不匹配 409 version_conflict }
     MissionView:
       type: object
-      required: [mission_id, contract_version, status, waiting_reason, owner_agent_id, requester, reviewer, objective, scope, constraints, acceptance_criteria, deliverable_specs, source_refs, return_targets, budget, delegation, created_at, updated_at]
+      required: [mission_id, contract_version, status, waiting_reason, review_package_id, owner_agent_id, requester, reviewer, objective, scope, constraints, acceptance_criteria, deliverable_specs, source_refs, return_targets, budget, delegation, created_at, updated_at]
       description: |
         Mission 契约（ADR-0023 / 0.6.0 + ADR-0024 房间来源 / 0.6.1）。
         status：draft（契约不完备——验收/来源/交付物缺失或 unassigned）/
@@ -5866,8 +6007,9 @@ components:
           allOf: [{ $ref: "#/components/schemas/RoomSource" }]
           description: 房间交办来源（非房间交办为 null）
         contract_version: { type: integer, minimum: 1, description: 当前契约版本（修订 +1） }
-        status: { type: string, enum: [draft, ready, running, waiting, paused, canceling, canceled] }
+        status: { type: string, enum: [draft, ready, running, waiting, reviewing, paused, canceling, canceled, accepted] }
         waiting_reason: { type: string, description: "等待原因（0.6.7 / ADR-0030：waiting 态的一等事实；本版取值 reconciliation = 有 unknown Run 待核验处置；非 waiting 为空串；暂停期间保留——恢复据此回 waiting）" }
+        review_package_id: { type: string, description: "受审/已验收交付包（0.6.9 / ADR-0032：request_review 写入，accepted 保留以追溯，returned 清空；非 reviewing/accepted 为空串）" }
         owner_agent_id: { type: string, description: 负责人（空 = 显式 unassigned，§3.3 不变量） }
         requester: { type: string, description: 请求人（0.6.0 恒 owner——本地单用户） }
         reviewer: { type: string, description: 验收人（空 = 请求人自验） }
@@ -5889,7 +6031,7 @@ components:
       properties:
         mission_id: { type: string }
         contract_version: { type: integer }
-        status: { type: string, enum: [draft, ready, running, waiting, paused, canceling, canceled] }
+        status: { type: string, enum: [draft, ready, running, waiting, reviewing, paused, canceling, canceled, accepted] }
         owner_agent_id: { type: string }
         objective: { type: string }
         created_at: { type: string, format: date-time }

@@ -1489,6 +1489,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/missions/{mission_id}/request-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 提请验收（request_review——必需交付项检查 + ready → reviewing）
+         * @description 0.6.9 / ADR-0032：以交付包 package_id 为锚提请验收。校验：包存在且属该
+         *     Mission；包 contract_version == Mission 当前版本（否则 409 stale_package
+         *     ——契约已修订，须补证新包）；**必需交付项**（AT-10）：artifact_refs 非空
+         *     且 Mission 当前每条 acceptance_criteria 在包 acceptance_mapping 中有对应
+         *     条目且 evidence 非空——缺项 409 missing_required_items 携缺项清单（补证
+         *     后重试）。通过则 CAS ready → reviewing + review_package_id（状态不允许
+         *     409 invalid_transition——waiting/paused/draft/running 须先处置/恢复/补齐/
+         *     等执行终态；版本不符 409 version_conflict）。幂等：已 reviewing 且同包
+         *     → 200 当前；换包须先退回。验收期间契约冻结（revise/pause/submit 拒绝）。
+         *     通知验收人随 0.6.10。
+         */
+        post: operations["requestMissionReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/missions/{mission_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 验收裁定（review_mission——接受 / 退回）
+         * @description 0.6.9 / ADR-0032：契约指定验收人对 reviewing 中的 Mission 作裁定。
+         *     accepted → **accepted 终态**（修订/取消/暂停/送验/再交付/执行均拒绝；
+         *     review_package_id 保留以追溯）；returned → ready（review_package_id 清空；
+         *     可再执行、补证再交付、再送验）。验收权限：契约 reviewer 非空时 body.reviewer
+         *     须相等（403 review_not_authorized）；为空 = 请求人自验。returned 须携
+         *     reason（≤500 字）；item_notes 为逐项依据（可选，≤16 项）。裁定事实落
+         *     status_changed 事件（decision / reviewer / reason / item_notes / package_id）
+         *     ——"执行回执、提请验收与验收裁定各自留痕"。非 reviewing 409
+         *     invalid_transition；版本不符 409 version_conflict。
+         */
+        post: operations["reviewMission"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/missions/{mission_id}/versions": {
         parameters: {
             query?: never;
@@ -4029,6 +4086,29 @@ export interface components {
             /** @description 可选原因（记入 status_changed 事件 payload） */
             reason?: string;
         };
+        /** @description 提请验收请求体（0.6.9 / ADR-0032：以交付包为锚；必需交付项检查在服务端）。 */
+        MissionReviewRequest: {
+            /** @description 调用方所见 contract_version；不匹配 409 version_conflict */
+            expected_version: number;
+            /** @description 受审交付包（须属该 Mission 且对应当前契约版本） */
+            package_id: string;
+        };
+        /** @description 逐项依据（验收条文 + 裁定备注）。 */
+        ReviewItemNote: {
+            criterion: string;
+            note: string;
+        };
+        /** @description 验收裁定请求体（0.6.9 / ADR-0032）。returned 须携 reason。 */
+        MissionReviewDecision: {
+            expected_version: number;
+            /** @description 裁定人（契约 reviewer 非空时须相等——契约一致性校验，非独立身份认证） */
+            reviewer?: string;
+            /** @enum {string} */
+            decision: "accepted" | "returned";
+            /** @description 退回原因（returned 必填；accepted 可作备注） */
+            reason?: string;
+            item_notes?: components["schemas"]["ReviewItemNote"][];
+        };
         /** @description 暂停请求体（0.6.6 / ADR-0029：ready | running → paused；阻止新调度 + 在途 Run 安全边界停止）。 */
         MissionPause: {
             /** @description 调用方所见 contract_version；不匹配 409 version_conflict */
@@ -4056,9 +4136,11 @@ export interface components {
             /** @description 当前契约版本（修订 +1） */
             contract_version: number;
             /** @enum {string} */
-            status: "draft" | "ready" | "running" | "waiting" | "paused" | "canceling" | "canceled";
+            status: "draft" | "ready" | "running" | "waiting" | "reviewing" | "paused" | "canceling" | "canceled" | "accepted";
             /** @description 等待原因（0.6.7 / ADR-0030：waiting 态的一等事实；本版取值 reconciliation = 有 unknown Run 待核验处置；非 waiting 为空串；暂停期间保留——恢复据此回 waiting） */
             waiting_reason: string;
+            /** @description 受审/已验收交付包（0.6.9 / ADR-0032：request_review 写入，accepted 保留以追溯，returned 清空；非 reviewing/accepted 为空串） */
+            review_package_id: string;
             /** @description 负责人（空 = 显式 unassigned，§3.3 不变量） */
             owner_agent_id: string;
             /** @description 请求人（0.6.0 恒 owner——本地单用户） */
@@ -4087,7 +4169,7 @@ export interface components {
             mission_id: string;
             contract_version: number;
             /** @enum {string} */
-            status: "draft" | "ready" | "running" | "waiting" | "paused" | "canceling" | "canceled";
+            status: "draft" | "ready" | "running" | "waiting" | "reviewing" | "paused" | "canceling" | "canceled" | "accepted";
             owner_agent_id: string;
             objective: string;
             /** Format: date-time */
@@ -7609,6 +7691,145 @@ export interface operations {
             };
         };
     };
+    requestMissionReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MissionReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description 已进入 reviewing（review_package_id 指向受审包） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionView"];
+                };
+            };
+            /** @description 请求形状不合法（invalid_review） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Mission 或交付包不存在（mission_not_found / package_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 状态不允许（invalid_transition）/ 版本冲突（version_conflict）/ 包陈旧（stale_package）/ 包不属该 Mission（package_mission_mismatch）/ 必需交付项缺失（missing_required_items——detail 携缺项） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 验收域未装配（review_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    reviewMission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MissionReviewDecision"];
+            };
+        };
+        responses: {
+            /** @description 已裁定（accepted 终态或退回 ready） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionView"];
+                };
+            };
+            /** @description 请求形状不合法（invalid_review——如 returned 缺 reason） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 验收权限不足（review_not_authorized——reviewer 与契约不符） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 非 reviewing（invalid_transition）或版本冲突（version_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 验收域未装配（review_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     listMissionVersions: {
         parameters: {
             query?: never;
@@ -8851,7 +9072,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description 版本冲突（version_conflict）/ 代次陈旧（stale_generation）/ Run 不属该 Mission（run_mission_mismatch）/ Run 不可交付（run_not_deliverable）/ Mission 已取消（mission_canceled） */
+            /** @description 版本冲突（version_conflict）/ 代次陈旧（stale_generation）/ Run 不属该 Mission（run_mission_mismatch）/ Run 不可交付（run_not_deliverable）/ Mission 已取消（mission_canceled）/ 验收中（mission_reviewing——受审包已固定，退回后再补证）/ 已验收（mission_accepted——终态） */
             409: {
                 headers: {
                     [name: string]: unknown;

@@ -47,6 +47,12 @@ func (m *MemStore) CreatePackage(ctx context.Context, p Package, receipt Receipt
 		if status == missionStatusCanceled {
 			return fmt.Errorf("%w: 不再受理交付", ErrMissionCanceled)
 		}
+		if status == missionStatusReviewing {
+			return fmt.Errorf("%w: 受审包已固定——退回后再补证", ErrMissionReviewing)
+		}
+		if status == missionStatusAccepted {
+			return fmt.Errorf("%w: 终态", ErrMissionAccepted)
+		}
 		if version != p.ContractVersion {
 			return fmt.Errorf("%w: 期望 v%d，当前 v%d", ErrVersionConflict, p.ContractVersion, version)
 		}

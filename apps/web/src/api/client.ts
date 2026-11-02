@@ -617,6 +617,27 @@ export const api = {
       ...(reason ? { reason } : {}),
     });
   },
+  /** 0.6.9 提请验收（request_review：必需项检查 → reviewing + review_package_id；缺项 409 携清单）。 */
+  requestMissionReview(missionID: string, expectedVersion: number, packageID: string): Promise<MissionView> {
+    return post(`/v1/missions/${encodeURIComponent(missionID)}/request-review`, {
+      expected_version: expectedVersion,
+      package_id: packageID,
+    });
+  },
+  /** 0.6.9 验收裁定（review_mission：accepted 终态 | returned 回 ready）。 */
+  reviewMission(
+    missionID: string,
+    expectedVersion: number,
+    req: { decision: "accepted" | "returned"; reviewer?: string; reason?: string; item_notes?: { criterion: string; note: string }[] },
+  ): Promise<MissionView> {
+    return post(`/v1/missions/${encodeURIComponent(missionID)}/review`, {
+      expected_version: expectedVersion,
+      decision: req.decision,
+      ...(req.reviewer ? { reviewer: req.reviewer } : {}),
+      ...(req.reason ? { reason: req.reason } : {}),
+      ...(req.item_notes ? { item_notes: req.item_notes } : {}),
+    });
+  },
   /** 0.6.6 恢复：paused → ready（调度器自动拾取）。 */
   resumeMission(missionID: string, expectedVersion: number): Promise<MissionView> {
     return post(`/v1/missions/${encodeURIComponent(missionID)}/resume`, {

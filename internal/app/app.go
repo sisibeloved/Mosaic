@@ -48,6 +48,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
+	"github.com/sisibeloved/Mosaic/internal/review"
 	"github.com/sisibeloved/Mosaic/internal/room"
 	missionrun "github.com/sisibeloved/Mosaic/internal/run"
 	mosaicruntime "github.com/sisibeloved/Mosaic/internal/runtime"
@@ -433,6 +434,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		MissionRuns:      runSvc,
 		MissionControl:   missioncontrol.New(missionSvc, runSvc),
 		Delivery:         deliverySvc,
+		Review:           review.New(missionSvc, deliveryPackagesAdapter{deliverySvc}),
 		Logger:           logger,
 		Dev:              opts.Dev,
 		Budget:           budgetLimits,
@@ -1134,6 +1136,23 @@ func (a deliveryMissionsAdapter) MissionFacts(ctx context.Context, missionID str
 		return delivery.MissionFacts{}, ok, err
 	}
 	return delivery.MissionFacts{MissionID: m.MissionID, ContractVersion: m.ContractVersion, Status: m.Status}, true, nil
+}
+
+// deliveryPackagesAdapter review.Packages 适配（真 delivery 服务只读——送验
+// 必需项检查的包事实源）。
+type deliveryPackagesAdapter struct{ svc *delivery.Service }
+
+func (a deliveryPackagesAdapter) PackageFacts(ctx context.Context, id string) (review.PackageFacts, bool, error) {
+	p, ok, err := a.svc.Get(ctx, id)
+	if err != nil || !ok {
+		return review.PackageFacts{}, ok, err
+	}
+	mapping := make([]review.MappingEntry, 0, len(p.AcceptanceMapping))
+	for _, e := range p.AcceptanceMapping {
+		mapping = append(mapping, review.MappingEntry{Criterion: e.Criterion, Evidence: e.Evidence})
+	}
+	return review.PackageFacts{PackageID: p.PackageID, MissionID: p.MissionID, ContractVersion: p.ContractVersion,
+		ArtifactRefs: p.ArtifactRefs, AcceptanceMapping: mapping}, true, nil
 }
 
 // deliveryRunsAdapter delivery.Runs 只读适配（回执由 SQLite 存储随包同事务落
