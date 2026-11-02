@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.47 |
+| 版本 | v2.48 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -26,7 +26,7 @@
 
 ## 0.2 当前 Roadmap
 
-当前产品版本为 **v0.6.7**（0.6 领域已交付 0.6.0–0.6.7：MissionContract、房间交办/网关首切片、执行上下文清单、本地 Environment/Runtime、RuntimeLease、单 Agent Mission 执行、Mission 暂停/恢复/取消与 Run 崩溃恢复；0.6.8 DeliveryPackage 成果提交已实施待定版）；0.5 领域线已收官；0.6 的 RFC 已于 2026-10-30 增补内嵌轻量级智能体网关设计（§0.6 说明，尚未实现）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
+当前产品版本为 **v0.6.8**（0.6 领域已交付 0.6.0–0.6.8：MissionContract、房间交办/网关首切片、执行上下文清单、本地 Environment/Runtime、RuntimeLease、单 Agent Mission 执行、Mission 暂停/恢复/取消、Run 崩溃恢复与 DeliveryPackage 成果提交；下一件 0.6.9 Mission 验收未开工）；0.5 领域线已收官；0.6 的 RFC 已于 2026-10-30 增补内嵌轻量级智能体网关设计（§0.6 说明，尚未实现）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
 
 | 版本线 | 领域 / 产品目标 | 设计来源 / RFC-0018 阶段映射 |
 |---|---|---|
@@ -179,6 +179,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.48 | 2026-11-02 | Mosaic 项目组 / ZCode | **定版 v0.6.8（负责人指令："发布"）——0.6 领域线第九件**。CHANGELOG [Unreleased]（Added DeliveryPackage 成果提交 + Fixed 审校 1 P1 / 3 P2）定版 **[0.6.8] - 2026-11-02**，保留空 [Unreleased]；README 当前版本推进 v0.6.8、路线图 0.6 系列标注 0.6.0–0.6.8 已交付与 0.6.9 指向；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.6.8 + GitHub Release 发布说明与 Windows 产物（wails 按新版本字样重建）；CI 三平台绿基线（70825d6 已验，定版提交复验） |
 | v2.47 | 2026-11-02 | Mosaic 项目组 / ZCode | **0.6.8 审校修复（独立审校报告：1 P1 + 3 P2 全确认，"目前不建议合入，先修复交付提交的一致性问题"）——ADR-0031 v0.2 修订**。**(1) P1 并发修订或取消后仍能提交**：服务层预读与写包两步非原子；改为存储层 CreatePackage 单事务内重读 missions 行（版本/取消/存在三守卫）——整体不落；域 UT 以"事务时真值 ≠ 端口读值"直接复现版本漂移与取消漂移，SQLite IT 以真实库复现三守卫。**(2) P2 回执永久缺失**：回执随包同事务落 Run 流（存储层组合），Runs 端口退回只读；UT 注入回执汇故障证明包不落、恢复后重试恰一包一回执。**(3) P2 时间字符串排序**：两存储改按解析后真实时间倒序（LaterThan 共用助手，同刻插入序）；UT/IT 以 .1Z/.011Z/.11Z 三种小数位回归。**(4) P2 交付卡资格列表不刷新**：10s 轮询 + detail.updated_at/status 变化即刻重载，只刷新 packages/runs、表单草稿独立。全量 vet/-race + it/st 串行 + SPA 绿；真机冒烟扩至 22 项 ALL-PASS（新增：修订契约后旧版本提交 409 version_conflict、新版本 201） |
 | v2.46 | 2026-11-02 | Mosaic 项目组 / ZCode | **0.6.8 开发（负责人指令："开始0.6.8"）——DeliveryPackage 成果提交：`submit_result` 不自动送验（ADR-0031，0.6 领域第九件）**。**(1) 设计先行**：ADR-0031（三事实分离——执行成功 ≠ 成果提交 ≠ 验收通过；append-only 交付包行溯源 Run/代次/契约版本 + RFC §10.2 最小结构 JSON 列；可交付判定 completed | unknown+verified_completed；代次核对 stale_generation / 契约版本 CAS / 归属守卫；提交对 Mission 零副作用——端口无变更方法结构性保证；完备性不在提交面——先交付再补证，缺项归 0.6.9 request_review）+ OpenAPI 契约冻结（三端点 + 三 schema + 事件枚举 delivery_submitted）。**(2) 实现**：internal/delivery 新域（Service.Submit/List/Get + Validate 单源 + MemStore）；migration v21 delivery_packages（JSON 列往返、倒序索引）；run.AppendReceipt（外域回执追加不改行）；httpapi 三端点 + 视图 + 错误映射（400/404/409 五码/503）；app 只读适配器（mission/run 事实 + 回执）；SPA 交付区（当前包摘要/历史/提交表单——逐条验收证据可空）。**(3) 验证**：delivery UT（零副作用/可交付判定八形态/守卫六族/形状上限十七例/补证 append-only）/IT（v21 登记/JSON 往返含空切片/倒序/撞键/v0.6.7 旧库升级）/端点（真三域装配：201 溯源 + Mission 零变更 + Run 流回执 + mission_events 不混入 + 补证倒序 + 单包/404 + 409 四码 + 400 + failed 不可交付 + canceled 拒绝读面照常 + 503）先红后绿；vet/-race + it/st 串行 + SPA 绿；真机冒烟 20 项 ALL-PASS（echo 执行完成 → 提交 201 → 状态/版本/updated_at/mission_events 全不变 → 回执/列表/单包/404 → stale/version 409 + 400 → 补证两包倒序旧包不改 → 恢复后调度器照常再执行 → 暂停态可提交 → 重启持久 → 取消 409 读面照常）。CHANGELOG [Unreleased] 登记；定版与发布另行指令 |
 | v2.45 | 2026-11-02 | Mosaic 项目组 / ZCode | **定版 v0.6.7（负责人指令："按这个走"→"发布"）——0.6 领域线第八件**。并行撞车裁定：本地与远端各一套 0.6.7 实现，负责人裁定**以远端版（6107d83，waiting 态 + attest 式处置三结论 + late_result 审计）为准**——本地 0.6.7 两提交弃用（wip-local-067 留档）、harness 两修 cherry-pick 保留、四项缺口补齐后发布。CHANGELOG [Unreleased] 定版 **[0.6.7] - 2026-11-02**；README 当前版本推进 v0.6.7、路线图标注 0.6.0–0.6.7 已交付与 0.6.8 指向；版本字样同步；发布链：定版 docs 提交 + tag v0.6.7 + GitHub Release（Windows 产物交叉编译 -H windowsgui）；CI 三平台绿基线复验 |
