@@ -3084,6 +3084,8 @@ func writeRunError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "manifest_blocked", err.Error())
 	case errors.Is(err, missionrun.ErrRunExists):
 		writeError(w, http.StatusConflict, "run_exists", err.Error())
+	case errors.Is(err, missionrun.ErrResidueUnresolved):
+		writeError(w, http.StatusConflict, "residue_unresolved", err.Error())
 	case errors.Is(err, missionrun.ErrInvalidResolution):
 		writeError(w, http.StatusBadRequest, "invalid_resolution", err.Error())
 	case errors.Is(err, missionrun.ErrRunNotUnknown):

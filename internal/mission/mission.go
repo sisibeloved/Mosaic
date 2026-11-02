@@ -535,7 +535,8 @@ func (s *Service) MarkReadyFromRunning(ctx context.Context, missionID, reason st
 
 // MarkWaiting 等待投影（0.6.7 / ADR-0030）：running → waiting(reason)——恢复
 // 分派结果不可判定时由 run 域调用；出调度列直至 ClearWaiting。幂等条件转移
-// （非 running 无操作 changed=false）。
+// （非 running 无操作 changed=false）。ready 形态的残留不走 waiting（RFC
+// §3.2 waiting 挂 running）——run 域执行面围栏挡（ErrResidueUnresolved）。
 func (s *Service) MarkWaiting(ctx context.Context, missionID, reason string) (bool, error) {
 	payload, err := json.Marshal(map[string]string{"from": StatusRunning, "to": StatusWaiting, "reason": reason})
 	if err != nil {

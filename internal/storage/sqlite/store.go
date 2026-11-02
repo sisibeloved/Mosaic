@@ -4453,6 +4453,26 @@ INSERT INTO run_events (run_id, event_type, payload, occurred_at) VALUES (?, ?, 
 	})
 }
 
+// ListLegacyResidues 旧版（0.6.5/0.6.6）崩溃残留终态行（failed + error_text
+// 前缀——升级收敛用，0.6.7 发布前补齐）。
+func (s *Store) ListLegacyResidues(ctx context.Context, failedPrefix string) ([]missionrun.Run, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+runScanColumns+`
+  FROM runs WHERE state = ? AND error_text LIKE ?`, missionrun.StateFailed, failedPrefix+"%")
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list legacy residues: %w", err)
+	}
+	defer rows.Close()
+	out := []missionrun.Run{}
+	for rows.Next() {
+		r, err := scanRunRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // RunByID 单查。
 func (s *Store) RunByID(ctx context.Context, runID string) (missionrun.Run, bool, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+runScanColumns+`

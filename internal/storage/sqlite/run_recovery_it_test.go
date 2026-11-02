@@ -205,3 +205,44 @@ VALUES ('run_old', 'mi_old', 1, 'l', 'm', 'r', 'b', 'a', 'failed', 'f', 1, 't', 
 	}
 	again.Close()
 }
+
+// TestLegacyResidueConvergedIT 0.6.7 发布前补齐：旧库（0.6.5/0.6.6）崩溃残留
+// 终态行（failed+结果未知）经真实 SQLite 枚举收敛——ListLegacyResidues 前缀
+// 精确命中（停止路径 canceled"结果未知"文案不混淆）。
+func TestLegacyResidueConvergedIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	if _, err := store.CreateMission(ctx, missionRow(mission.StatusRunning, "ag_it"), nil); err != nil {
+		t.Fatalf("建契约: %v", err)
+	}
+	const mi = "mi_it_1"
+	// 旧库残留行 + 停止路径 canceled 行（不同文案，不得命中）
+	legacy, err := store.CreateRun(ctx, seedRun("run_lg", mi, 0, missionrun.StateRunning))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.State = missionrun.StateFailed
+	legacy.ErrorText = "进程重启时在执行——结果未知；请确认后手动再执行（不会自动重跑）"
+	legacy.FinishedAt = "t1"
+	if err := store.UpdateRun(ctx, legacy, nil); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := store.CreateRun(ctx, seedRun("run_st", "mi_it_2", 0, missionrun.StateRunning))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped.State = missionrun.StateCanceled
+	stopped.ErrorText = "停止请求在途时进程重启——结果未知"
+	stopped.FinishedAt = "t1"
+	if err := store.UpdateRun(ctx, stopped, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.ListLegacyResidues(ctx, "进程重启时在执行——结果未知")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].RunID != "run_lg" {
+		t.Fatalf("前缀须恰命中旧残留行: %+v", got)
+	}
+}

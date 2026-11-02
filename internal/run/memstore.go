@@ -4,6 +4,7 @@ package run
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -47,6 +48,19 @@ func (m *MemStore) UpdateRun(_ context.Context, r Run, events []Event) error {
 		m.appendLocked(e)
 	}
 	return nil
+}
+
+// ListLegacyResidues 旧版（0.6.5/0.6.6）崩溃残留终态行（failed + 前缀）。
+func (m *MemStore) ListLegacyResidues(_ context.Context, failedPrefix string) ([]Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []Run{}
+	for _, r := range m.runs {
+		if r.State == StateFailed && strings.HasPrefix(r.ErrorText, failedPrefix) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 // RunByID 单查。

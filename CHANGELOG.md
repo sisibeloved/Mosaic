@@ -4,8 +4,11 @@
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-11-02
+
 ### Fixed
 
+- 0.6.7 发布前审校补齐（对 6107d83 基线四项缺口，语义在其 ADR-0030 之内）：**(1) 停止超窗租约（0.6.6 审校遗留 P1）**——finalizeStopped 宽限超窗后仍无条件释放租约，执行器未退出时新执行可同写工作区；改持有租约 + 后台等执行器退出（先补迟到审计再释放；跨进程由租约 TTL 兜底——独占性优先）。**(2) 处置投影吞错**——ResolveRun 的 ClearWaiting 失败被吞：Mission 卡 waiting 无感知，且同结论幂等重试短路不再补投影（双死角）；改上抛（事实说明）+ 幂等分支重试投影。**(3) 字节截断**——truncateS 按字节切中文产出无效 UTF-8 且提前丢内容（8000 字节 ≈ 2666 字）；改按 rune 计（ASCII 快路径不变）。**(4) 旧库升级残留**——v0.6.5/0.6.6 的"failed+结果未知"终态行升级后无人认领（Mission 卡 running 无出口；ready 形态更被调度器自动重跑——禁盲目重跑洞）；恢复面新增升级收敛：行转 unknown（`unknown{upgrade}` 事件，历史不抹）+ Mission running 形态进 waiting、ready 形态由**执行面围栏**（`residue_unresolved` 409）挡——处置后照常放行。定向先红后绿 + SQLite IT + 真机升级冒烟（双形态收敛/围栏/处置放行，事件链 `attempt_requested → unknown → resolved` 精确）。
 - mcode 更新修复（负责人反馈实证 2026-11-01）：mcode 0.6.1 的 `update` 子命令需交互确认——Mosaic 无终端环境下它打印 npm 指引即退出 0，任务呈"已更新"而版本未动（静默假象）。minimax 家族由 self-update 改归 **registry npm 直装**，安装参数按 mcode 自荐命令钉死（`--include=optional` 平台二进制 + `--ignore-scripts=false --allow-scripts=@minimax-ai/code,better-sqlite3` 构建脚本——缺参即静默残缺安装，codex 同类 optional 缺失先例）；真机实证 0.6.1 → 0.7.4。并加**无变化防线**：更新退出 0 但版本回探与更新前相同时，过程日志如实提示"版本未变化——已是最新或更新未生效"（kimi 幂等无操作同面，文案中性）。
 - zcode 检测与更新面修复（负责人反馈"没有更新按钮"，三处）：**(1)** 检测基线改取 **App bundle 版本**（Info.plist CFBundleShortVersionString，darwin）——登记的内核号 0.16.9 与 feed/tag 的应用版本方案（3.x）跨系不可比，恒"不可比不判更新"；基线改 App 版本后对照有意义（真机：3.17.1 vs 源码 tag 3.17.1 → 已是最新）。**(2)** UI 无自动通道的家族此前整行隐藏更新按钮——改为呈现**禁用态按钮 + 指引**（官方桌面版应用内自更新；自建打包可放置 `~/.mosaic/update/zcode.sh` 接入 Mosaic 驱动），note 随更新徽标同显。**(3)** `desktopFeedURL` 只按 Windows 安装根布局（exe 同级）找 `resources/app-update.yml`——macOS .app 内在 `Contents/` 下（上溯两级），mac 上恒落空回退源码 tag；双布局候选修正（真机实证 feed 已定位 http://localhost:8081，不可达如实回退并注明）。
 

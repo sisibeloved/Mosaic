@@ -58,6 +58,11 @@ const (
 // WaitingReconciliation Mission 等待原因：有未处置 unknown Run。
 const WaitingReconciliation = "reconciliation"
 
+// legacyResiduePrefix 0.6.5/0.6.6 恢复面写给崩溃残留的 error_text 前缀
+// （failed 形态——升级收敛认领口径；与停止路径 canceled 的"结果未知"文案
+// 不同串，不混淆）。
+const legacyResiduePrefix = "进程重启时在执行——结果未知"
+
 // 事件类型（run_events 流）。
 const (
 	EventAttemptRequested = "attempt_requested"
@@ -104,6 +109,10 @@ var (
 	ErrRunAlreadyResolved = errors.New("run: Run 已处置")
 	// ErrInvalidResolution 处置结论/备注不合法。
 	ErrInvalidResolution = errors.New("run: 处置不合法")
+	// ErrResidueUnresolved 存在未处置 unknown 残留——再执行只发生在显式处置
+	// 后（ADR-0030 兑现的执行面围栏：waiting 挡调度列之外的兜底——旧库
+	// ready+残留收敛形态，0.6.7 发布前补齐）。
+	ErrResidueUnresolved = errors.New("run: 存在未处置的 unknown 残留——先处置（resolve）")
 )
 
 // Run 一次执行尝试（run_ 前缀；attempt 同 Mission 递增）。
@@ -257,6 +266,10 @@ type Store interface {
 	ListRunsByMission(ctx context.Context, missionID string) ([]Run, error)
 	ListUnfinished(ctx context.Context) ([]Run, error)
 	RunEvents(ctx context.Context, runID string) ([]Event, error)
+	// ListLegacyResidues 枚举旧版（0.6.5/0.6.6）崩溃残留终态行（failed 且
+	// error_text 前缀匹配——升级收敛用；0.6.7 发布前补齐：此类行升级后无人
+	// 认领，Mission 卡 running 无出口、ready 形态更被调度器自动重跑）。
+	ListLegacyResidues(ctx context.Context, failedPrefix string) ([]Run, error)
 	NextAttempt(ctx context.Context, missionID string) (int, error)
 	// ResolveRun 条件处置（0.6.7）：state='unknown' AND resolution='' 才落三列
 	// + 事件（单事务）；ok=false = 非 unknown/已处置（服务方重读分辨幂等）；
@@ -460,6 +473,20 @@ func (s *Service) ScanOnce(ctx context.Context) {
 //   - #5：清理面用独立 context（请求断开后终态/释放/投影不遗留）
 //   - #7：SetRunning 返回 changed——canceled 后拒启动（Run 置 failed）
 func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, error) {
+	// 执行面围栏（0.6.7 发布前补齐）：ready 形态下存在未处置 unknown 残留
+	// （resolution 空）即拒启动——"再执行只发生在显式处置后"的兜底。waiting
+	// 形态由调度列/条件投影自然拒（不在此拦，保持"手动触发 → Run failed 留
+	// 档"的既有语义）；旧库 ready+残留收敛形态是唯一入口洞。
+	if runs, err := s.store.ListRunsByMission(ctx, ref.MissionID); err == nil {
+		for _, r := range runs {
+			if r.State == StateUnknown && r.Resolution == "" {
+				if st, _, serr := s.missions.StatusOf(ctx, ref.MissionID); serr == nil && st == "ready" {
+					return Run{}, fmt.Errorf("%w（mission %s，run %s）", ErrResidueUnresolved, ref.MissionID, r.RunID)
+				}
+				break
+			}
+		}
+	}
 	binding, ok, err := s.bindings.ActiveOf(ctx, ref.OwnerAgentID)
 	if err != nil {
 		return Run{}, fmt.Errorf("run: 解析执行者失败：%w", err)
@@ -793,18 +820,23 @@ func (s *Service) finalizeStopped(ctx context.Context, r *Run, lease Lease, caus
 	if err := s.store.UpdateRun(ctx, *r, events); err != nil {
 		return fmt.Errorf("停止终态写入失败：%w", err)
 	}
-	// 租约释放后于执行器退出：真实面 ctx 取消即杀进程组（毫秒级退出）；超窗
-	// 仍释放——租约滞留到 TTL（工作区死锁）比短残余窗口更糟。
-	// 0.6.7 / ADR-0030 决策 4（AT-12"旧结果只审计"）：执行器结果在宽限内到达
-	// → 即刻审计 late_result；宽限后 → 后台等待审计。Run 行不变、结果不落、
-	// 不发布（此前经缓冲通道静默丢弃）。
+	// 租约释放后于执行器退出（0.6.6 审校 P1；0.6.7 发布前补齐修正）：真实面
+	// ctx 取消即杀进程组（毫秒级退出）；超窗时**不得释放**——执行器可能仍在
+	// 收尾写工作区，释放即允许新执行同写。持有租约 + 后台等执行器退出（先补
+	// 迟到审计再释放——0.6.7 / ADR-0030 决策 4 AT-12"旧结果只审计"）；进程先
+	// 退出由租约 TTL 兜底——独占性优先，可用性损失由 TTL 界。
 	select {
 	case res := <-executorDone:
 		s.auditLateResult(ctx, r.RunID, r.Generation, res, "after_stop")
+		_ = s.leases.Release(ctx, lease.LeaseID)
 	case <-time.After(s.stopGrace):
-		go s.awaitLateResult(r.RunID, r.Generation, executorDone)
+		go func() {
+			s.awaitLateResult(r.RunID, r.Generation, executorDone)
+			rctx, rcancel := s.cleanupContext()
+			defer rcancel()
+			_ = s.leases.Release(rctx, lease.LeaseID)
+		}()
 	}
-	_ = s.leases.Release(ctx, lease.LeaseID)
 	_ = s.missions.SetReadyFromRunning(ctx, r.MissionID, "run_canceled")
 	return nil
 }
@@ -865,12 +897,21 @@ func (s *Service) ResolveRun(ctx context.Context, runID, outcome, note string) (
 			return Run{}, fmt.Errorf("%w（当前 %s）", ErrRunNotUnknown, cur.State)
 		}
 		if cur.Resolution == outcome {
-			return cur, nil // 幂等：重试安全，不重复记事件
+			// 幂等：处置事实已落，不重复记事件——但投影须补（首趟 ClearWaiting
+			// 失败时 Mission 卡 waiting，幂等重试不得短路投影；0.6.7 发布前补齐）
+			if err := s.missions.ClearWaiting(ctx, cur.MissionID); err != nil {
+				return cur, fmt.Errorf("run: 处置已落库（%s）但 Mission 投影失败：%w（幂等重试已再试投影）", outcome, err)
+			}
+			return cur, nil
 		}
 		return Run{}, fmt.Errorf("%w（已 %s）", ErrRunAlreadyResolved, cur.Resolution)
 	}
-	// Mission 回调度列（waiting → ready|draft）——用户显式处置后方可再执行
-	_ = s.missions.ClearWaiting(ctx, out.MissionID)
+	// Mission 回调度列（waiting → ready|draft）——用户显式处置后方可再执行。
+	// 投影失败上抛（0.6.7 发布前补齐）：处置已落库而 Mission 卡 waiting 无
+	// 感知——调用方须见错误；同结论幂等重试会补投影。
+	if err := s.missions.ClearWaiting(ctx, out.MissionID); err != nil {
+		return out, fmt.Errorf("run: 处置已落库（%s）但 Mission 投影失败：%w（重试同结论将补投影）", outcome, err)
+	}
 	return out, nil
 }
 
@@ -944,6 +985,34 @@ func (s *Service) RecoverUnfinished(ctx context.Context) (int, error) {
 			n++
 		}
 	}
+
+	// 0.6.7 发布前补齐：旧库（0.6.5/0.6.6）崩溃残留终态行收敛——failed+
+	// "结果未知"文案行升级后无人认领（Mission 卡 running 无出口；ready 形态
+	// 被调度器自动重跑——禁盲目重跑洞）。行转 unknown（与崩溃新语义一致，
+	// 处置面即可认领；事件追加不抹历史），Mission running|ready → waiting
+	// （ready 增列与 0.6.6"ready 可暂停"同理）；paused/canceling/canceled
+	// 不动（处置后 ClearWaiting 条件跳过）。幂等：前缀只匹配旧文案，新语义
+	// 行已是 unknown 不再命中。
+	legacy, err := s.store.ListLegacyResidues(ctx, legacyResiduePrefix)
+	if err != nil {
+		return n, fmt.Errorf("run: 旧库残留枚举失败：%w", err)
+	}
+	for _, r := range legacy {
+		now := s.now()
+		r.State = StateUnknown
+		r.ErrorText = "进程重启时在执行——结果未知（0.6.6 前形态，升级收敛）；须核验工作区副作用后处置，不会自动重跑"
+		r.UpdatedAt = now
+		if err := s.store.UpdateRun(ctx, r, []Event{{
+			RunID: r.RunID, EventType: EventUnknown, OccurredAt: now,
+			Payload: map[string]any{"recovery": true, "upgrade": true},
+		}}); err != nil {
+			continue
+		}
+		// running 形态进 waiting（出调度列）；ready 形态不动（RFC：waiting 挂
+		// running）——执行面围栏挡自动重跑，处置后照常放行。
+		_ = s.missions.SetWaiting(ctx, r.MissionID, WaitingReconciliation)
+		n++
+	}
 	return n, nil
 }
 
@@ -966,11 +1035,17 @@ func (s *Service) RunEventsByRun(ctx context.Context, runID string) ([]Event, bo
 	return evs, true, err
 }
 
+// truncateS 上限按 rune 计（0.6.7 发布前补齐：按字节截中文既提前丢内容
+// （8000 字节 ≈ 2666 字）又产出无效 UTF-8；ASCII 快路径字节即 rune 不变）。
 func truncateS(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n]
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
 
 // manifestInline #1：存档清单层内容 → 执行 Inline（契约/验收/近期消息/
