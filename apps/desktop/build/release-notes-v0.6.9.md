@@ -28,7 +28,7 @@
 ## 修复（MiniMax 附件投递——随本版一并发布）
 
 - **MiniMax 原生 `<deliver-assets><media …/></deliver-assets>` 被当作消息正文或附件解析错误展示**（RFC-0013 §2.6）：适配器先分离正文与最多 4 个工作区产物，正文照常过发布门（畸形块拒绝发布，不原样展示内部标签）；发布围栏通过后房间引擎按发言 Profile 把文件安全导入既有受管附件库——Native 与 WSL 均只读取当前 Agent 工作区内的普通文件（拒绝路径穿越、符号链接逃逸、目录与其他文件类型；WSL 走原始二进制流），复用 8 MiB / 房间配额 / MIME 探测 / SHA-256 校验与房间删除级联；消息显示可下载附件及可选 `caption`（≤ 500 字，过秘密剔除），不再泄漏内部 XML。单件读取或导入失败保留正文与其他可用附件，并在正文明确标记该附件不可用——不伪装导入成功。
-- 契约面：附件描述子新增可选 `caption`（OpenAPI `AttachmentView` / room-protocol `message.posted`）；旧事件无该字段投影为零值，人工上传链路不变。
+- 契约面：附件描述子新增可选 `caption`（OpenAPI `AttachmentDescriptor` / room-protocol `message.posted`）；旧事件无该字段投影为零值，人工上传链路不变。
 
 ## 升级说明
 
