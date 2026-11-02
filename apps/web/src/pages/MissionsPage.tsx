@@ -16,6 +16,7 @@ import {
   type MissionRunView,
   type MissionSummary,
   type MissionView,
+  type ReturnNoticeView,
   type SlotInstanceView,
 } from "../api/client";
 import { absoluteTime } from "../lib/ui";
@@ -35,6 +36,26 @@ function statusClass(status: string): string {
   // paused（阻止新调度）/ waiting（等待核验）/ canceling（停止进行中）与 draft 同暖色系
   if (status === "canceling") return "text-danger";
   return "text-warn";
+}
+
+// 0.6.10 回房通知（ADR-0033）：kind/状态徽标文案与配色。
+function returnKindLabel(k: string): string {
+  return { reviewing: "已提请验收", accepted: "验收通过", returned: "验收退回", canceled: "已取消" }[k] ?? k;
+}
+function returnKindCls(k: string): string {
+  if (k === "accepted") return "text-ok font-semibold";
+  if (k === "returned") return "text-warn";
+  if (k === "canceled") return "text-faint";
+  return "text-dim";
+}
+function returnStatusLabel(s: string): string {
+  return { pending: "待投", held: "保留（房间暂停）", delivered: "已回房", canceled: "已取消（房间删除）", failed: "投递失败" }[s] ?? s;
+}
+function returnStatusCls(s: string): string {
+  if (s === "delivered") return "text-ok";
+  if (s === "held" || s === "pending") return "text-warn";
+  if (s === "failed") return "text-danger";
+  return "text-faint";
 }
 
 export function MissionsPage() {
@@ -72,6 +93,12 @@ export function MissionsPage() {
         setListErr(e instanceof Error ? e.message : String(e));
       });
   }, [rev]);
+
+  // 0.6.10 回房卡片跳转（?id= 选中任务）：房间引用卡片直达任务详情。
+  useEffect(() => {
+    const id = searchParams.get("id");
+    if (id) setSelected(id);
+  }, [searchParams]);
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -347,6 +374,9 @@ function MissionDetail({
   const [cancelReason, setCancelReason] = useState("");
   const [sendablePkgs, setSendablePkgs] = useState<DeliveryPackageView[]>([]);
   const [pkgTick, setPkgTick] = useState(0); // 复审 R3：交付卡提交后刷新送验列表
+  // 0.6.10 回房通知台账（ADR-0033）：详情打开期间 5s 轮询（投递是异步面——
+  // pending/held 会随后台 worker 变化）
+  const [returnNotices, setReturnNotices] = useState<ReturnNoticeView[] | null>(null);
   const [reviewedPkg, setReviewedPkg] = useState<DeliveryPackageView | null>(null);
   const [reviewPkgErr, setReviewPkgErr] = useState<string | null>(null);
   // 审校 #4：裁定草稿按轮次隔离——新一轮从契约重新初始化（验收人预填 #7、逐项备注、清原因）
@@ -444,6 +474,27 @@ function MissionDetail({
 
   useEffect(load, [missionID]); // 父层按 missionID key 重挂载；onChanged 后手动 load
 
+  // 0.6.10 回房台账：挂载即取 + 5s 轮询（worker 投递异步推进——pending/held 可见变化）
+  useEffect(() => {
+    let alive = true;
+    const loadRN = () => {
+      void api
+        .listMissionReturnNotices(missionID)
+        .then((r) => {
+          if (alive) setReturnNotices(r.notices);
+        })
+        .catch(() => {
+          if (alive) setReturnNotices(null);
+        });
+    };
+    loadRN();
+    const timer = setInterval(loadRN, 5000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [missionID]);
+
   // 写入归属守卫（审校 P1#1）：详情加载完成且归属当前任务才允许修订/取消——
   // 迟到响应或异常状态下绝不把写请求发给错误目标
   const owned = detail !== null && detail.mission_id === missionID;
@@ -485,8 +536,16 @@ function MissionDetail({
         <span className="text-faint">
           负责人：{detail.owner_agent_id || "unassigned"} · 验收人：{detail.reviewer || "请求人自验"}
           {detail.room_source && (
-            <span className="ml-1 rounded bg-surface-3 px-1.5 py-px font-mono text-[10px]" title="房间交办来源（创建事实，不可修订）">
+            <span
+              className="ml-1 rounded bg-surface-3 px-1.5 py-px font-mono text-[10px]"
+              title={
+                detail.room_source.deleted_at
+                  ? "来源房间已删除（返回目标取消，结果保留——ADR-0033）"
+                  : "房间交办来源（创建事实，不可修订）"
+              }
+            >
               {detail.room_source.room_id}/{detail.room_source.task_id}
+              {detail.room_source.deleted_at ? "（房间已删除）" : ""}
             </span>
           )}
         </span>
@@ -755,6 +814,34 @@ function MissionDetail({
             </button>
             <span className="text-faint">接受 = 不可逆终态；退回后可补证再交付、再送验。</span>
           </div>
+        </div>
+      )}
+
+      {(detail.room_source || (returnNotices ?? []).length > 0) && (
+        <div className="flex flex-col gap-1 rounded-lg bg-surface-2 p-2">
+          <p className="text-faint">回房（执行结果 → 来源房间 · ADR-0033）</p>
+          {detail.room_source?.deleted_at && (
+            <p className="text-warn">来源房间已删除——返回目标已取消；任务结果与来源映射保留（不重跑任务）。</p>
+          )}
+          {(returnNotices ?? []).length === 0 ? (
+            <p className="text-faint">暂无回房通知（尚未送验/裁定）。</p>
+          ) : (
+            <ul className="flex flex-col gap-1">
+              {(returnNotices ?? []).map((n) => (
+                <li key={n.notice_id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
+                  <span className={returnKindCls(n.kind)}>{returnKindLabel(n.kind)}</span>
+                  <span className={returnStatusCls(n.status)}>{returnStatusLabel(n.status)}</span>
+                  <span className="font-mono text-faint">第 {n.review_round || "-"} 轮</span>
+                  {n.room_event_id ? <span className="font-mono text-faint">{n.room_event_id}</span> : null}
+                  {n.status === "held" && <span className="text-warn">房间暂停——恢复后投递</span>}
+                  {n.status === "failed" && <span className="text-danger">重试耗尽：{n.last_error ?? ""}</span>}
+                  {n.status === "canceled" && !detail.room_source?.deleted_at && (
+                    <span className="text-faint">房间已删除</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 

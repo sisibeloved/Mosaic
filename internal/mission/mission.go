@@ -185,10 +185,13 @@ type SourceLookup interface {
 }
 
 // RoomSource 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一
-// 映射——映射为创建事实，修订不可改（换来源 = 新交办）。
+// 映射——映射为创建事实，修订不可改（换来源 = 新交办）。DeletedAt（ADR-0033 /
+// 0.6.10）为来源墓碑：房间删除时刻，空串 = 房间仍在——返回目标失效不重跑
+// 任务（AT-20），结果与映射保留。
 type RoomSource struct {
-	RoomID string `json:"room_id"`
-	TaskID string `json:"task_id"`
+	RoomID    string `json:"room_id"`
+	TaskID    string `json:"task_id"`
+	DeletedAt string `json:"deleted_at,omitempty"`
 }
 
 // Store 持久化端口（SQLite 实现：internal/storage/sqlite；测试件：memstore）。

@@ -362,6 +362,20 @@ type ExternalRef struct {
 	DocType string `json:"doc_type,omitempty"` // provider 侧推断（sheet/docx/wiki…；空 = 未知）
 }
 
+// MissionRef 执行结果回房引用卡片（RFC-0018 §10.2 / ADR-0033，0.6.10）：
+// message.posted 载荷的可选封闭对象——系统 actor（par_system）投递的 Mission
+// 事实引用。命令面 post_message 不接受此字段（DisallowUnknownFields），人类
+// 不能伪造。source_seq = 来源 mission_events.seq，同一事实恰一张卡（去重键）。
+type MissionRef struct {
+	MissionID       string `json:"mission_id"`
+	Kind            string `json:"kind"`                   // reviewing | accepted | returned | canceled
+	ContractVersion int    `json:"contract_version"`       // 事实对应的契约版本
+	ReviewRound     int    `json:"review_round,omitempty"` // 送验轮次（canceled 为 0）
+	PackageID       string `json:"package_id,omitempty"`   // 受审交付包
+	TaskID          string `json:"task_id"`                // 来源任务卡（ADR-0024 映射）
+	SourceSeq       int64  `json:"source_seq"`             // 来源 mission_events.seq——去重键
+}
+
 // DecodeDocPayload 按事件类型把 DocEnvelope.Payload 解码为对应边界结构。
 func (e *DocEnvelope) DecodeDocPayload() any {
 	switch e.Type {

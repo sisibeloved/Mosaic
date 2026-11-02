@@ -17,6 +17,18 @@ export type ScorecardItem = Snapshot["scorecard"][number];
 export type ThreadItem = Snapshot["threads"][number];
 export type GraphEdge = Snapshot["graph"][number];
 
+/** 执行结果回房引用卡片（ADR-0033 / 0.6.10）：message.posted.mission_ref——
+ * 系统 actor（par_system）专用，命令面不接受；source_seq = 去重键。 */
+export interface MissionRef {
+  mission_id: string;
+  kind: "reviewing" | "accepted" | "returned" | "canceled";
+  contract_version: number;
+  review_round?: number;
+  package_id?: string;
+  task_id: string;
+  source_seq: number;
+}
+
 export interface TimelineEntry {
   key: string;
   kind: "message" | "system";
@@ -33,6 +45,8 @@ export interface TimelineEntry {
   refs?: DocRef[];
   /** 外部文档引用（RFC-0016 §2.3；快照/SSE 两路同形——ExtDocCard 渲染面）。 */
   externalRefs?: ExternalRef[];
+  /** 执行结果回房引用（ADR-0033 / 0.6.10；系统 actor 消息携带——MissionRefCard 渲染面）。 */
+  missionRef?: MissionRef;
   detail?: string;
 }
 
@@ -347,7 +361,7 @@ export function useRoom(roomID: string | null): RoomHandle {
         switch (type) {
           case "message.posted": {
             const payload = view.payload as
-              | { body?: string; addressed_to?: string[] | null; reply_to?: string | null; attachments?: { attachment_id: string; name: string; mime?: string; size_bytes: number }[] | null; refs?: DocRef[] | null; external_refs?: ExternalRef[] | null }
+              | { body?: string; addressed_to?: string[] | null; reply_to?: string | null; attachments?: { attachment_id: string; name: string; mime?: string; size_bytes: number }[] | null; refs?: DocRef[] | null; external_refs?: ExternalRef[] | null; mission_ref?: MissionRef | null }
               | null;
             append({
               key: view.event_id,
@@ -361,6 +375,7 @@ export function useRoom(roomID: string | null): RoomHandle {
               attachments: payload?.attachments ?? undefined,
               refs: payload?.refs ?? undefined,
               externalRefs: payload?.external_refs ?? undefined,
+              missionRef: payload?.mission_ref ?? undefined,
             });
             if (view.actor.kind === "agent") {
               delete next.typing[view.actor.participant_id];

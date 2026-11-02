@@ -83,6 +83,33 @@ export interface MessagePostedPayload {
     | [ExternalRef, ExternalRef]
     | [ExternalRef, ExternalRef, ExternalRef]
     | [ExternalRef, ExternalRef, ExternalRef, ExternalRef];
+  /**
+   * 执行结果回房引用卡片（RFC-0018 §10.2 / ADR-0033，0.6.10）：系统 actor（par_system）投递的 Mission 事实引用——命令面 post_message 不接受此字段（人类不能伪造）。缺省 = 普通消息。
+   */
+  mission_ref?: {
+    mission_id: string;
+    /**
+     * 来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消
+     */
+    kind: "reviewing" | "accepted" | "returned" | "canceled";
+    contract_version: number;
+    /**
+     * 送验轮次（reviewing / accepted / returned 携带；canceled 为 0）
+     */
+    review_round?: number;
+    /**
+     * 受审交付包（reviewing / accepted / returned 携带）
+     */
+    package_id?: string;
+    /**
+     * 来源任务卡（ADR-0024 映射）
+     */
+    task_id: string;
+    /**
+     * 来源 mission_events.seq——去重键（同一事实恰一张卡）
+     */
+    source_seq: number;
+  };
 }
 export interface TypedRelation {
   target_event_id: string;

@@ -5,8 +5,8 @@
 // RFC-0014 §2.5：消息 payload.refs 渲染为 DocRefCard（标题/摘录/版本/更新者，
 // doc:{id} SSE 驱动原地刷新 + "有更新"徽标；已删文档降级灰卡）。
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import type { TimelineEntry } from "../../api/room";
+import { Link, useNavigate } from "react-router-dom";
+import type { MissionRef, TimelineEntry } from "../../api/room";
 import type { DocRef, ExternalRef, ParticipantView } from "../../api/client";
 import { adapterLabel, channelLabel, kindLabel } from "../../lib/copy";
 import { absoluteTime, displayNameOf, participantOf, relativeTime, truncate } from "../../lib/ui";
@@ -486,6 +486,10 @@ export function MessageList({
         {entries.map((e) =>
           e.kind === "system" ? (
             <SystemBar key={e.key} text={e.detail ?? ""} time={absoluteTime(e.occurredAt)} />
+          ) : e.actorKind === "system" ? (
+            <div key={e.key} data-event-id={e.key} className="group rounded-xl">
+              <SystemMessageCard entry={e} />
+            </div>
           ) : e.actorKind === "human" ? (
             <div
               key={e.key}
@@ -538,6 +542,44 @@ function SystemBar({ text, time }: { text: string; time: string }) {
         {text}
       </span>
       <span className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
+/** 0.6.10 执行结果回房（ADR-0033 / RFC-0018 §10.2）：message.posted.mission_ref
+ * 渲染为引用卡片——kind 徽标 + 任务卡 + 轮次，点击直达任务中心（?id= 选中）。 */
+const MISSION_REF_META: Record<string, { label: string; cls: string }> = {
+  reviewing: { label: "已提请验收", cls: "text-dim" },
+  accepted: { label: "验收通过", cls: "text-ok" },
+  returned: { label: "验收退回", cls: "text-warn" },
+  canceled: { label: "已取消", cls: "text-faint" },
+};
+
+function MissionRefCard({ mref }: { mref?: MissionRef }) {
+  if (!mref) return null;
+  const meta = MISSION_REF_META[mref.kind];
+  return (
+    <Link
+      to={`/missions?id=${encodeURIComponent(mref.mission_id)}`}
+      className="mt-1.5 flex items-center gap-2 rounded-lg border border-border bg-surface-3 px-2 py-1.5 text-[12px] transition-opacity hover:opacity-80"
+      title={`任务卡 ${mref.task_id} · 来源事件 #${mref.source_seq}（同一事实恰一张卡）`}
+    >
+      <span className={`font-semibold ${meta?.cls ?? "text-dim"}`}>任务结果 · {meta?.label ?? mref.kind}</span>
+      <span className="truncate font-mono text-[10px] text-faint">{mref.task_id}</span>
+      {mref.review_round ? <span className="shrink-0 text-faint">第 {mref.review_round} 轮</span> : null}
+      <span className="ml-auto shrink-0 text-accent">查看任务 →</span>
+    </Link>
+  );
+}
+
+/** 系统 actor（par_system）的 message.posted：无头像系统卡（ADR-0033）——
+ * 引擎刺激过滤器只认 human，系统卡不触发讨论波（不为回传自动恢复讨论）。 */
+function SystemMessageCard({ entry }: { entry: TimelineEntry }) {
+  return (
+    <div className="flex max-w-[80%] flex-col gap-1 rounded-2xl rounded-bl-md border border-border bg-surface-2 px-3.5 py-2 text-sm">
+      <span className="text-[11px] text-faint">系统 · Mosaic</span>
+      <MarkdownBody text={entry.body ?? ""} mentionNames={new Map()} />
+      <MissionRefCard mref={entry.missionRef} />
     </div>
   );
 }

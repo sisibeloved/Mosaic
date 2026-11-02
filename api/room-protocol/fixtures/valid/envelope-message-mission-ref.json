@@ -1,0 +1,36 @@
+{
+  "event_id": "evt_01H8TESTMISSIONREF000000000",
+  "tenant_id": "ten_local",
+  "room_id": "room_01H8TESTROOM00000000000000",
+  "thread_id": null,
+  "discussion_epoch_id": null,
+  "seq": 152,
+  "type": "message.posted",
+  "schema_version": 1,
+  "occurred_at": "2026-11-02T10:00:00.123Z",
+  "actor": {
+    "participant_id": "par_system",
+    "kind": "system"
+  },
+  "causation_id": null,
+  "correlation_id": null,
+  "visibility": {
+    "kind": "public"
+  },
+  "payload": {
+    "body": "✅ 任务「整理会议纪要并给出行动项」验收通过（第 2 轮 · 契约 v1）",
+    "reply_to": null,
+    "addressed_to": [],
+    "relations": [],
+    "mission_ref": {
+      "mission_id": "mi_01H8TESTMISSION00000000000",
+      "kind": "accepted",
+      "contract_version": 1,
+      "review_round": 2,
+      "package_id": "dlv_01H8TESTPKG000000000000000",
+      "task_id": "tsk_01H8TESTTASK0000000000000",
+      "source_seq": 4321
+    }
+  },
+  "metadata": {}
+}

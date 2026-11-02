@@ -2000,6 +2000,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/missions/{mission_id}/return-notices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 回房通知台账（执行结果回房——持久、去重、Room 删除后的保留）
+         * @description 0.6.10 / ADR-0033：Mission 四类事实（reviewing / accepted / returned /
+         *     canceled）向来源房间投递引用卡片（message.posted + mission_ref，系统 actor）
+         *     的持久台账——每条来源事件（mission_events.seq）恰一行：pending 待投 |
+         *     held 房间暂停（恢复后投递，不借回传恢复讨论）| delivered 已落房间事件
+         *     room_event_id | canceled 房间已删除（返回目标取消，结果与来源墓碑保留，
+         *     不重跑任务）| failed 有界重试耗尽（last_error 留痕）。按 source_seq 升序。
+         *     非房间交办的 Mission 恒为空列表。
+         */
+        get: operations["listMissionReturnNotices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/missions/{mission_id}/delivery-packages": {
         parameters: {
             query?: never;
@@ -3215,6 +3241,8 @@ export interface components {
             refs?: components["schemas"]["DocRef"][];
             /** @description 外部文档引用（RFC-0016 §2.3；缺省 = 无；快照/SSE 两路同形——同 refs 纪律）。发送时刻的描述子快照，不随外部服务刷新。 */
             external_refs?: components["schemas"]["ExternalRef"][];
+            /** @description 执行结果回房引用卡片（ADR-0033 / 0.6.10）：系统 actor（par_system）投递的 Mission 事实引用；普通消息缺省 / null。快照/SSE 两路同形。 */
+            mission_ref?: components["schemas"]["MissionRef"] | null;
             thread_id?: null | string;
             /** Format: date-time */
             occurred_at: string;
@@ -3528,10 +3556,65 @@ export interface components {
             /** @enum {string} */
             effective_workspace_access: "none" | "read" | "read_write";
         };
-        /** @description 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一映射——同一任务卡至多交办一次（撞键 409 source_already_mapped）；映射为创建事实，修订不可改（换来源 = 新交办）。 */
+        /** @description 执行结果回房引用（ADR-0033 / 0.6.10）——message.posted 载荷 mission_ref 的 HTTP 投影；系统 actor 专用，post_message 命令面不接受（人类不能伪造）。 */
+        MissionRef: {
+            mission_id: string;
+            /**
+             * @description 来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消
+             * @enum {string}
+             */
+            kind: "reviewing" | "accepted" | "returned" | "canceled";
+            contract_version: number;
+            /** @description 送验轮次（canceled 为 0） */
+            review_round?: number;
+            /** @description 受审交付包（reviewing / accepted / returned 携带） */
+            package_id?: string;
+            task_id: string;
+            /** @description 来源 mission_events.seq——去重键 */
+            source_seq: number;
+        };
+        /** @description 回房通知台账行（ADR-0033 / 0.6.10）：每条来源事件恰一行——持久与去重对用户可审计。 */
+        ReturnNoticeView: {
+            notice_id: string;
+            mission_id: string;
+            room_id: string;
+            task_id: string;
+            /** @enum {string} */
+            kind: "reviewing" | "accepted" | "returned" | "canceled";
+            source_seq: number;
+            contract_version: number;
+            review_round: number;
+            package_id?: string | null;
+            /**
+             * @description pending 待投 / held 房间暂停（恢复后投递）/ delivered 已落房间事件 / canceled 房间已删除（返回目标取消，结果保留）/ failed 有界重试耗尽
+             * @enum {string}
+             */
+            status: "pending" | "held" | "delivered" | "canceled" | "failed";
+            /** @description 投递尝试次数（held 不计） */
+            attempts: number;
+            /** Format: date-time */
+            next_attempt_at?: string | null;
+            /** @description delivered 时的房间事件 ID（message.posted） */
+            room_event_id?: string | null;
+            last_error?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        ReturnNoticeList: {
+            /** @description 按 source_seq 升序 */
+            notices: components["schemas"]["ReturnNoticeView"][];
+        };
+        /** @description 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一映射——同一任务卡至多交办一次（撞键 409 source_already_mapped）；映射为创建事实，修订不可改（换来源 = 新交办）。deleted_at（ADR-0033 / 0.6.10）为来源墓碑：房间删除时刻，null = 房间仍在——返回目标失效不重跑任务（AT-20），结果与映射保留。 */
         RoomSource: {
             room_id: string;
             task_id: string;
+            /**
+             * Format: date-time
+             * @description 来源房间墓碑（null = 房间仍在）
+             */
+            deleted_at?: string | null;
         };
         /**
          * @description 网关解析请求（RFC-0018 §11.2.1 RouteRequest 的 0.6.1 确定性子集 /
@@ -8984,6 +9067,37 @@ export interface operations {
             415: components["responses"]["UnsupportedMediaType"];
             /** @description Run 域未装配（run_unavailable） */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listMissionReturnNotices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 通知台账 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReturnNoticeList"];
+                };
+            };
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

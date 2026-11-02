@@ -45,6 +45,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/missioncontrol"
+	"github.com/sisibeloved/Mosaic/internal/missionreturn"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
@@ -418,6 +419,17 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 
 	// M4-0 备份面（数据目录内 backups/；VACUUM INTO 一致快照）与自诊断 bundle。
 	backupMgr := &backup.Manager{DB: store, Dir: opts.DataDir}
+
+	// 回房通知（RFC-0018 §10.2 / ADR-0033，0.6.10）：四类事实（reviewing /
+	// accepted / returned / canceled）从 mission_events 游标投影为持久通知行，
+	// 周期原子投递回来源房间（房间暂停保留待恢复、删除取消 + 来源墓碑、其余
+	// 有界重试）；与 server 同生命周期，未投出的行留待下次启动重放。
+	returnStore := sqlite.ReturnStore{Store: store}
+	returnWorker := missionreturn.New(returnStore,
+		missionreturn.WithNewID(newID),
+		missionreturn.WithLogger(logger))
+	go returnWorker.Run(ctx)
+
 	deps := httpapi.Deps{
 		SVC:              svc,
 		Reader:           store,
@@ -435,6 +447,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		MissionControl:   missioncontrol.New(missionSvc, runSvc),
 		Delivery:         deliverySvc,
 		Review:           review.New(missionSvc, deliveryPackagesAdapter{deliverySvc}, reviewRunsAdapter{runSvc}),
+		ReturnNotices:    returnStore,
 		Logger:           logger,
 		Dev:              opts.Dev,
 		Budget:           budgetLimits,

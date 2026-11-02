@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **执行结果回房：返回通知**（0.6 领域第十一件 / ADR-0033，RFC-0018 §10.1/§10.2、AT-09/AT-20）：Mission 结果先持久化、再通知来源房间——讨论里交办的事在讨论里看到结果。
+  - **通知源（ADR 表 1）**：四类 `status_changed` 事实——`reviewing`（已提请验收）/ `accepted`（验收通过）/ `ready`+`returned`（验收退回）/ `canceled`（终局取消）；Run 级失败与 waiting 不回房（任务中心可见）；非房间交办的任务零通知（RFC §11.3）。
+  - **投影（migration v25）**：`mission_events` 全局游标派生持久通知行（`mission_return_notices`——`source_seq` UNIQUE 即去重键；卡片所需字段在事实落地那一刻快照定格，AT-09 不变状态不反复通知）；崩溃重启从游标重放，不漏不重。
+  - **原子投递**：同一 SQLite 事务内"墓碑/暂停核对 + 追加 `message.posted`（actor `par_system` + `mission_ref` 封闭对象）+ 标记 delivered"——卡与标记同落，**去重由构造保证**；复用房间 outbox/FTS 同事务路径，SSE 与引擎照常消费（系统卡不触发讨论波——引擎刺激只认 human，"不为回传自动恢复讨论"）。
+  - **暂停保留 / 删除取消 / 有界重试**：房间暂停 → `held`（不计次、+5s 复查，恢复后发布；同房按 `source_seq` 保序——reviewing 不会落在 accepted 之后）；房间删除 → `DeleteRoom` 级联取消待投 + `mission_sources.deleted_at` **来源墓碑**（结果与映射保留、不重跑任务——AT-20；投递侧再核墓碑兜底旧库与竞态）；其余错误指数退避（≤60s）12 次封顶 → `failed`（last_error 留痕，交付/验收事实不受影响）。
+  - **读面与契约**：`GET /v1/missions/{id}/return-notices`（每条来源事件恰一行——持久与去重可审计）；`MissionView.room_source` += `deleted_at`；`message.posted` 载荷 += `mission_ref`（系统 actor 专用，`post_message` 命令面拒收——人类不能伪造结果卡）。
+  - **SPA**：房间时间线把系统消息渲染为**引用卡片**（kind 徽标 + 任务卡 + 轮次，点击直达 `/missions?id=` 选中该任务）；任务中心详情「回房」区（状态徽章 / 房间事件 ID / 失败原因，5s 轮询）与来源房间已删除提示。
+
 ## [0.6.9] - 2026-11-02
 
 ### Added

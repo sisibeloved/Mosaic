@@ -31,6 +31,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/delivery"
 	"github.com/sisibeloved/Mosaic/internal/harness"
 	"github.com/sisibeloved/Mosaic/internal/mission"
+	"github.com/sisibeloved/Mosaic/internal/missionreturn"
 	"github.com/sisibeloved/Mosaic/internal/monitor"
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
@@ -44,6 +45,12 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/transport/httpapi/apigen"
 	"github.com/sisibeloved/Mosaic/internal/transport/sse"
 )
+
+// ReturnNotices 回房通知读端口（0.6.10 / ADR-0033）：执行结果回房的持久通知
+// 台账——sqlite.ReturnStore 实现（app 装配注入）。
+type ReturnNotices interface {
+	ListReturnNotices(ctx context.Context, missionID string) ([]missionreturn.Notice, error)
+}
 
 // Deps 传输层依赖。
 // MissionControl 任务控制编排端口（0.6.6 / ADR-0029）：暂停/恢复/取消
@@ -91,7 +98,10 @@ type Deps struct {
 	// mission 状态机 CAS + run 停止面组合（app 注入 missioncontrol 服务；
 	// nil 时 pause/resume/cancel 端点 503）。
 	MissionControl MissionControl
-	Logger         *slog.Logger
+	// ReturnNotices 回房通知读面（RFC-0018 §10.2 / ADR-0033，0.6.10；nil 时
+	// return-notices 端点 503）：执行结果回房的持久通知台账。
+	ReturnNotices ReturnNotices
+	Logger        *slog.Logger
 	// 开发者模式（M1 v1.8）：Dev 开启才注册 /v1/debug 只读端点与 UI 调试面板。
 	Dev    bool
 	Budget contextx.Limits         // 预算上限（状态端点的水位/梯度计算基准）
@@ -2291,6 +2301,12 @@ func missionView(m mission.Mission) apigen.MissionView {
 	var roomSource *apigen.RoomSource
 	if m.RoomSource != nil {
 		roomSource = &apigen.RoomSource{RoomId: m.RoomSource.RoomID, TaskId: m.RoomSource.TaskID}
+		if m.RoomSource.DeletedAt != "" {
+			// 来源墓碑（ADR-0033 / 0.6.10）：房间删除时刻——返回目标失效，结果保留
+			if ts, err := time.Parse(time.RFC3339, m.RoomSource.DeletedAt); err == nil {
+				roomSource.DeletedAt = &ts
+			}
+		}
 	}
 	return apigen.MissionView{
 		MissionId: m.MissionID, ContractVersion: m.ContractVersion,
@@ -3237,6 +3253,64 @@ func (s *server) ListDeliveryPackages(w http.ResponseWriter, r *http.Request, mi
 		out = append(out, deliveryPackageView(p))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"packages": out})
+}
+
+// ListMissionReturnNotices 回房通知台账（ADR-0033 / 0.6.10）：每条来源事件恰一
+// 行——持久、去重、Room 删除后的保留对用户可审计（status/attempts/room_event_id）。
+func (s *server) ListMissionReturnNotices(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.deps.ReturnNotices == nil {
+		writeError(w, http.StatusServiceUnavailable, "return_notices_unavailable", "回房通知面未装配")
+		return
+	}
+	if s.deps.Missions == nil {
+		writeError(w, http.StatusServiceUnavailable, "missions_unavailable", "任务域未装配")
+		return
+	}
+	if _, ok, err := s.deps.Missions.Get(r.Context(), missionID); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	} else if !ok {
+		writeError(w, http.StatusNotFound, "mission_not_found", "Mission 不存在")
+		return
+	}
+	list, err := s.deps.ReturnNotices.ListReturnNotices(r.Context(), missionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	out := make([]apigen.ReturnNoticeView, 0, len(list))
+	for _, n := range list {
+		out = append(out, returnNoticeView(n))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"notices": out})
+}
+
+func returnNoticeView(n missionreturn.Notice) apigen.ReturnNoticeView {
+	v := apigen.ReturnNoticeView{
+		NoticeId: n.NoticeID, MissionId: n.MissionID, RoomId: n.RoomID, TaskId: n.TaskID,
+		Kind: apigen.ReturnNoticeViewKind(n.Kind), SourceSeq: int(n.SourceSeq),
+		ContractVersion: n.ContractVersion, ReviewRound: n.ReviewRound,
+		Status: apigen.ReturnNoticeViewStatus(n.Status), Attempts: n.Attempts,
+	}
+	if n.PackageID != "" {
+		v.PackageId = &n.PackageID
+	}
+	if n.RoomEventID != "" {
+		v.RoomEventId = &n.RoomEventID
+	}
+	if n.LastError != "" {
+		v.LastError = &n.LastError
+	}
+	if ts, err := time.Parse(time.RFC3339, n.NextAttemptAt); err == nil && n.NextAttemptAt != "" {
+		v.NextAttemptAt = &ts
+	}
+	if ts, err := time.Parse(time.RFC3339, n.CreatedAt); err == nil {
+		v.CreatedAt = ts
+	}
+	if ts, err := time.Parse(time.RFC3339, n.UpdatedAt); err == nil {
+		v.UpdatedAt = ts
+	}
+	return v
 }
 
 // GetDeliveryPackage 单包。

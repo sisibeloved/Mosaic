@@ -783,6 +783,30 @@ func (e MissionEventEventType) Valid() bool {
 	}
 }
 
+// Defines values for MissionRefKind.
+const (
+	MissionRefKindAccepted  MissionRefKind = "accepted"
+	MissionRefKindCanceled  MissionRefKind = "canceled"
+	MissionRefKindReturned  MissionRefKind = "returned"
+	MissionRefKindReviewing MissionRefKind = "reviewing"
+)
+
+// Valid indicates whether the value is a known member of the MissionRefKind enum.
+func (e MissionRefKind) Valid() bool {
+	switch e {
+	case MissionRefKindAccepted:
+		return true
+	case MissionRefKindCanceled:
+		return true
+	case MissionRefKindReturned:
+		return true
+	case MissionRefKindReviewing:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for MissionReviewDecisionDecision.
 const (
 	MissionReviewDecisionDecisionAccepted MissionReviewDecisionDecision = "accepted"
@@ -1050,6 +1074,57 @@ func (e ReadinessReportViewEffectiveWorkspaceAccess) Valid() bool {
 	case ReadinessReportViewEffectiveWorkspaceAccessRead:
 		return true
 	case ReadinessReportViewEffectiveWorkspaceAccessReadWrite:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReturnNoticeViewKind.
+const (
+	ReturnNoticeViewKindAccepted  ReturnNoticeViewKind = "accepted"
+	ReturnNoticeViewKindCanceled  ReturnNoticeViewKind = "canceled"
+	ReturnNoticeViewKindReturned  ReturnNoticeViewKind = "returned"
+	ReturnNoticeViewKindReviewing ReturnNoticeViewKind = "reviewing"
+)
+
+// Valid indicates whether the value is a known member of the ReturnNoticeViewKind enum.
+func (e ReturnNoticeViewKind) Valid() bool {
+	switch e {
+	case ReturnNoticeViewKindAccepted:
+		return true
+	case ReturnNoticeViewKindCanceled:
+		return true
+	case ReturnNoticeViewKindReturned:
+		return true
+	case ReturnNoticeViewKindReviewing:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReturnNoticeViewStatus.
+const (
+	ReturnNoticeViewStatusCanceled  ReturnNoticeViewStatus = "canceled"
+	ReturnNoticeViewStatusDelivered ReturnNoticeViewStatus = "delivered"
+	ReturnNoticeViewStatusFailed    ReturnNoticeViewStatus = "failed"
+	ReturnNoticeViewStatusHeld      ReturnNoticeViewStatus = "held"
+	ReturnNoticeViewStatusPending   ReturnNoticeViewStatus = "pending"
+)
+
+// Valid indicates whether the value is a known member of the ReturnNoticeViewStatus enum.
+func (e ReturnNoticeViewStatus) Valid() bool {
+	switch e {
+	case ReturnNoticeViewStatusCanceled:
+		return true
+	case ReturnNoticeViewStatusDelivered:
+		return true
+	case ReturnNoticeViewStatusFailed:
+		return true
+	case ReturnNoticeViewStatusHeld:
+		return true
+	case ReturnNoticeViewStatusPending:
 		return true
 	default:
 		return false
@@ -2537,7 +2612,7 @@ type DispatchResolveRequest struct {
 	ReturnTargets    *[]string                  `json:"return_targets,omitempty"`
 	Reviewer         *string                    `json:"reviewer,omitempty"`
 
-	// RoomSource 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一映射——同一任务卡至多交办一次（撞键 409 source_already_mapped）；映射为创建事实，修订不可改（换来源 = 新交办）。
+	// RoomSource 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一映射——同一任务卡至多交办一次（撞键 409 source_already_mapped）；映射为创建事实，修订不可改（换来源 = 新交办）。deleted_at（ADR-0033 / 0.6.10）为来源墓碑：房间删除时刻，null = 房间仍在——返回目标失效不重跑任务（AT-20），结果与映射保留。
 	RoomSource RoomSource `json:"room_source"`
 	Scope      string     `json:"scope"`
 	SourceRefs []string   `json:"source_refs"`
@@ -3197,7 +3272,7 @@ type MissionCreate struct {
 	ReturnTargets *[]string `json:"return_targets,omitempty"`
 	Reviewer      *string   `json:"reviewer,omitempty"`
 
-	// RoomSource 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一映射——同一任务卡至多交办一次（撞键 409 source_already_mapped）；映射为创建事实，修订不可改（换来源 = 新交办）。
+	// RoomSource 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一映射——同一任务卡至多交办一次（撞键 409 source_already_mapped）；映射为创建事实，修订不可改（换来源 = 新交办）。deleted_at（ADR-0033 / 0.6.10）为来源墓碑：房间删除时刻，null = 房间仍在——返回目标失效不重跑任务（AT-20），结果与映射保留。
 	RoomSource *RoomSource `json:"room_source,omitempty"`
 	Scope      string      `json:"scope"`
 	SourceRefs []string    `json:"source_refs"`
@@ -3227,6 +3302,28 @@ type MissionPause struct {
 	// Reason 可选原因（记入 status_changed 事件 payload）
 	Reason *string `json:"reason,omitempty"`
 }
+
+// MissionRef 执行结果回房引用（ADR-0033 / 0.6.10）——message.posted 载荷 mission_ref 的 HTTP 投影；系统 actor 专用，post_message 命令面不接受（人类不能伪造）。
+type MissionRef struct {
+	ContractVersion int `json:"contract_version"`
+
+	// Kind 来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消
+	Kind      MissionRefKind `json:"kind"`
+	MissionId string         `json:"mission_id"`
+
+	// PackageId 受审交付包（reviewing / accepted / returned 携带）
+	PackageId *string `json:"package_id,omitempty"`
+
+	// ReviewRound 送验轮次（canceled 为 0）
+	ReviewRound *int `json:"review_round,omitempty"`
+
+	// SourceSeq 来源 mission_events.seq——去重键
+	SourceSeq int    `json:"source_seq"`
+	TaskId    string `json:"task_id"`
+}
+
+// MissionRefKind 来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消
+type MissionRefKind string
 
 // MissionResume 恢复请求体（0.6.6 / ADR-0029：paused → ready——调度器自动拾取）。
 type MissionResume struct {
@@ -3561,6 +3658,43 @@ type ReceiptListView struct {
 	RoomId string `json:"room_id"`
 }
 
+// ReturnNoticeList defines model for ReturnNoticeList.
+type ReturnNoticeList struct {
+	// Notices 按 source_seq 升序
+	Notices []ReturnNoticeView `json:"notices"`
+}
+
+// ReturnNoticeView 回房通知台账行（ADR-0033 / 0.6.10）：每条来源事件恰一行——持久与去重对用户可审计。
+type ReturnNoticeView struct {
+	// Attempts 投递尝试次数（held 不计）
+	Attempts        int                  `json:"attempts"`
+	ContractVersion int                  `json:"contract_version"`
+	CreatedAt       time.Time            `json:"created_at"`
+	Kind            ReturnNoticeViewKind `json:"kind"`
+	LastError       *string              `json:"last_error,omitempty"`
+	MissionId       string               `json:"mission_id"`
+	NextAttemptAt   *time.Time           `json:"next_attempt_at,omitempty"`
+	NoticeId        string               `json:"notice_id"`
+	PackageId       *string              `json:"package_id,omitempty"`
+	ReviewRound     int                  `json:"review_round"`
+
+	// RoomEventId delivered 时的房间事件 ID（message.posted）
+	RoomEventId *string `json:"room_event_id,omitempty"`
+	RoomId      string  `json:"room_id"`
+	SourceSeq   int     `json:"source_seq"`
+
+	// Status pending 待投 / held 房间暂停（恢复后投递）/ delivered 已落房间事件 / canceled 房间已删除（返回目标取消，结果保留）/ failed 有界重试耗尽
+	Status    ReturnNoticeViewStatus `json:"status"`
+	TaskId    string                 `json:"task_id"`
+	UpdatedAt time.Time              `json:"updated_at"`
+}
+
+// ReturnNoticeViewKind defines model for ReturnNoticeView.Kind.
+type ReturnNoticeViewKind string
+
+// ReturnNoticeViewStatus pending 待投 / held 房间暂停（恢复后投递）/ delivered 已落房间事件 / canceled 房间已删除（返回目标取消，结果保留）/ failed 有界重试耗尽
+type ReturnNoticeViewStatus string
+
 // ReviewItemNote 逐项依据（验收条文 + 裁定备注）。
 type ReviewItemNote struct {
 	Criterion string `json:"criterion"`
@@ -3596,10 +3730,12 @@ type RoomList struct {
 	Rooms []RoomSummary `json:"rooms"`
 }
 
-// RoomSource 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一映射——同一任务卡至多交办一次（撞键 409 source_already_mapped）；映射为创建事实，修订不可改（换来源 = 新交办）。
+// RoomSource 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一映射——同一任务卡至多交办一次（撞键 409 source_already_mapped）；映射为创建事实，修订不可改（换来源 = 新交办）。deleted_at（ADR-0033 / 0.6.10）为来源墓碑：房间删除时刻，null = 房间仍在——返回目标失效不重跑任务（AT-20），结果与映射保留。
 type RoomSource struct {
-	RoomId string `json:"room_id"`
-	TaskId string `json:"task_id"`
+	// DeletedAt 来源房间墓碑（null = 房间仍在）
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	RoomId    string     `json:"room_id"`
+	TaskId    string     `json:"task_id"`
 }
 
 // RoomSummary defines model for RoomSummary.
@@ -4491,8 +4627,11 @@ type TimelineItem struct {
 
 	// ExternalRefs 外部文档引用（RFC-0016 §2.3；缺省 = 无；快照/SSE 两路同形——同 refs 纪律）。发送时刻的描述子快照，不随外部服务刷新。
 	ExternalRefs *[]ExternalRef `json:"external_refs,omitempty"`
-	OccurredAt   time.Time      `json:"occurred_at"`
-	Position     string         `json:"position"`
+
+	// MissionRef 执行结果回房引用卡片（ADR-0033 / 0.6.10）：系统 actor（par_system）投递的 Mission 事实引用；普通消息缺省 / null。快照/SSE 两路同形。
+	MissionRef *MissionRef `json:"mission_ref,omitempty"`
+	OccurredAt time.Time   `json:"occurred_at"`
+	Position   string      `json:"position"`
 
 	// Refs 文档引用（RFC-0014 §2.4；缺省 = 无引用；快照/SSE 两路同形——同 attachments 纪律）。
 	Refs *[]DocRef `json:"refs,omitempty"`
@@ -5028,6 +5167,9 @@ type ServerInterface interface {
 	// ResumeMission 恢复 Mission（CAS；paused → ready）
 	// (POST /v1/missions/{mission_id}/resume)
 	ResumeMission(w http.ResponseWriter, r *http.Request, missionId string)
+	// ListMissionReturnNotices 回房通知台账（执行结果回房——持久、去重、Room 删除后的保留）
+	// (GET /v1/missions/{mission_id}/return-notices)
+	ListMissionReturnNotices(w http.ResponseWriter, r *http.Request, missionId string)
 	// ReviewMission 验收裁定（review_mission——接受 / 退回）
 	// (POST /v1/missions/{mission_id}/review)
 	ReviewMission(w http.ResponseWriter, r *http.Request, missionId string)
@@ -6844,6 +6986,32 @@ func (siw *ServerInterfaceWrapper) ResumeMission(w http.ResponseWriter, r *http.
 	handler.ServeHTTP(w, r)
 }
 
+// ListMissionReturnNotices operation middleware
+func (siw *ServerInterfaceWrapper) ListMissionReturnNotices(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMissionReturnNotices(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ReviewMission operation middleware
 func (siw *ServerInterfaceWrapper) ReviewMission(w http.ResponseWriter, r *http.Request) {
 
@@ -8533,6 +8701,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/runtime-leases/{lease_id}/check-fence", wrapper.CheckRuntimeLeaseFence)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/runs", wrapper.ListMissionRuns)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/runs", wrapper.CreateMissionRun)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/return-notices", wrapper.ListMissionReturnNotices)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/delivery-packages", wrapper.ListDeliveryPackages)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/delivery-packages", wrapper.SubmitDeliveryPackage)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/delivery-packages/{package_id}", wrapper.GetDeliveryPackage)

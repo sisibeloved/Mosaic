@@ -56,6 +56,21 @@
       "items": { "$ref": "#/$defs/externalRef" },
       "maxItems": 4,
       "description": "外部文档引用（RFC-0016 §2.3，人类路径）：白名单 host 链接经 resolve 定稿为描述子快照；agent 路径（ROP/run 发布面）不产生。卡片展示发送时刻的链接事实，不随外部服务刷新。缺省 = 无外部引用。"
+    },
+    "mission_ref": {
+      "type": "object",
+      "description": "执行结果回房引用卡片（RFC-0018 §10.2 / ADR-0033，0.6.10）：系统 actor（par_system）投递的 Mission 事实引用——命令面 post_message 不接受此字段（人类不能伪造）。缺省 = 普通消息。",
+      "required": ["mission_id", "kind", "contract_version", "task_id", "source_seq"],
+      "additionalProperties": false,
+      "properties": {
+        "mission_id": { "type": "string", "pattern": "^mi_[0-9A-Za-z_-]+$" },
+        "kind": { "type": "string", "enum": ["reviewing", "accepted", "returned", "canceled"], "description": "来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消" },
+        "contract_version": { "type": "integer", "minimum": 1 },
+        "review_round": { "type": "integer", "minimum": 0, "description": "送验轮次（reviewing / accepted / returned 携带；canceled 为 0）" },
+        "package_id": { "type": "string", "pattern": "^dlv_[0-9A-Za-z_-]+$", "description": "受审交付包（reviewing / accepted / returned 携带）" },
+        "task_id": { "type": "string", "pattern": "^tsk_[0-9A-Za-z_-]+$", "description": "来源任务卡（ADR-0024 映射）" },
+        "source_seq": { "type": "integer", "minimum": 1, "description": "来源 mission_events.seq——去重键（同一事实恰一张卡）" }
+      }
     }
   },
   "additionalProperties": false,

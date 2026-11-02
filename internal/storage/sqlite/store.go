@@ -731,6 +731,13 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: migration v24: %w", err)
 	}
+	// v25 迁移（ADR-0033 / 0.6.10）：回房通知——逐语句执行，重复加列容忍
+	for _, stmt := range migrationV25 {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("sqlite: migration v25: %w", err)
+		}
+	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
 		db.Close()
@@ -855,47 +862,17 @@ func (s *Store) appendTx(ctx context.Context, envelopes []protocol.Envelope, rec
 		env := envelopes[i]
 		maxSeq++
 		env.Seq = maxSeq
-		raw, err := json.Marshal(env)
-		if err != nil {
-			return nil, fmt.Errorf("sqlite: marshal envelope %s: %w", env.EventID, err)
-		}
-		res, err := conn.ExecContext(ctx, `
-			INSERT INTO room_events (event_id, tenant_id, room_id, seq, type, schema_version, occurred_at, envelope)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			env.EventID, env.TenantID, env.RoomID, env.Seq, env.Type, env.SchemaVersion, env.OccurredAt, string(raw),
-		)
-		if err != nil {
+		// ADR-0033：信封落库（room_events + outbox + FTS）抽为共享路径，
+		// 回房通知的原子投递（ReturnStore.Deliver）与本路径同一事务语义。
+		if _, err := insertEnvelopeOnConn(ctx, conn, env); err != nil {
 			if isUniqueViolation(err) {
 				if receipt != nil {
 					// 回执式追加中事件撞车 = 并发同命令竞态后到者
 					return nil, fmt.Errorf("%w: %s", room.ErrDuplicateReceipt, env.EventID)
 				}
-				return nil, fmt.Errorf("%w: %s", ErrDuplicateEvent, env.EventID)
+				return nil, err // 已是 ErrDuplicateEvent 包装
 			}
-			return nil, fmt.Errorf("sqlite: insert event: %w", err)
-		}
-		pos, err := res.LastInsertId()
-		if err != nil {
-			return nil, fmt.Errorf("sqlite: last insert id: %w", err)
-		}
-		if _, err := conn.ExecContext(ctx, `
-			INSERT INTO outbox (room_id, global_pos, event_id, envelope) VALUES (?, ?, ?, ?)`,
-			env.RoomID, pos, env.EventID, string(raw),
-		); err != nil {
-			return nil, fmt.Errorf("sqlite: insert outbox: %w", err)
-		}
-		// M3-3 按需平面：message.posted 正文同事务入 FTS5 索引（与事件账本一致——
-		// 索引缺行由 SearchMessages 的自愈校验兜底重建）。
-		if env.Type == protocol.EventMessagePosted {
-			if body, actor, actorKind, threadID, ok := ftsFieldsOf(env); ok {
-				if _, err := conn.ExecContext(ctx, `
-					INSERT INTO room_fts (room_id, event_id, actor, actor_kind, thread_id, occurred_at, seq, global_pos, body)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-					env.RoomID, env.EventID, actor, actorKind, threadID, env.OccurredAt, env.Seq, pos, body,
-				); err != nil {
-					return nil, fmt.Errorf("sqlite: insert fts: %w", err)
-				}
-			}
+			return nil, err
 		}
 		appended[i] = env
 	}
@@ -1259,6 +1236,21 @@ func (s *Store) DeleteRoom(ctx context.Context, roomID string) error {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE room_id=?", roomID); err != nil {
 			return err
 		}
+	}
+	// ADR-0033 / 0.6.10 回房通知级联（同事务）：来源墓碑（mission_sources 保留映射，
+	// deleted_at 即墓碑——结果与映射不删）；该房待投/持有通知取消（返回目标失效，
+	// 已 delivered 的卡随房间事件一并清除——房间账本已物理删除）。
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE mission_sources SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		WHERE room_id = ? AND deleted_at IS NULL`, roomID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE mission_return_notices
+		SET status = 'canceled', last_error = 'room_deleted',
+		    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		WHERE room_id = ? AND status IN ('pending', 'held')`, roomID); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -2978,15 +2970,20 @@ func (s *Store) MissionIDBySource(ctx context.Context, roomID, taskID string) (s
 	return id, true, nil
 }
 
-// sourceOf 来源回填（详情与版本行共用）。
+// sourceOf 来源回填（详情与版本行共用）；deleted_at 为来源墓碑（ADR-0033 / 0.6.10）。
 func (s *Store) sourceOf(ctx context.Context, missionID string) *mission.RoomSource {
 	var roomID, taskID string
+	var deletedAt sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		`SELECT room_id, task_id FROM mission_sources WHERE mission_id = ?`, missionID).Scan(&roomID, &taskID)
+		`SELECT room_id, task_id, deleted_at FROM mission_sources WHERE mission_id = ?`, missionID).Scan(&roomID, &taskID, &deletedAt)
 	if err != nil {
 		return nil
 	}
-	return &mission.RoomSource{RoomID: roomID, TaskID: taskID}
+	src := &mission.RoomSource{RoomID: roomID, TaskID: taskID}
+	if deletedAt.Valid {
+		src.DeletedAt = deletedAt.String
+	}
+	return src
 }
 
 // MissionByID 单查契约；未知 ok=false。

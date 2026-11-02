@@ -54,6 +54,7 @@ export type MissionRunEvent = Schemas["MissionRunEvent"];
 export type SchedulerStatus = Schemas["SchedulerStatus"];
 /** 0.6.8 交付包（ADR-0031）：submit_result 不自动送验。 */
 export type DeliveryPackageView = Schemas["DeliveryPackageView"];
+export type ReturnNoticeView = Schemas["ReturnNoticeView"];
 export type DeliveryPackageSubmit = Schemas["DeliveryPackageSubmit"];
 export type AcceptanceMappingEntry = Schemas["AcceptanceMappingEntry"];
 /** 0.5.5 职责准入（ADR-0022）：授权档案与 readiness report。 */
@@ -676,6 +677,10 @@ export const api = {
   },
   getDeliveryPackage(packageID: string): Promise<DeliveryPackageView> {
     return request(`/v1/delivery-packages/${encodeURIComponent(packageID)}`);
+  },
+  /** 0.6.10 回房通知台账（ADR-0033）——每条来源事件恰一行（持久、去重、可审计）。 */
+  listMissionReturnNotices(missionID: string): Promise<{ notices: ReturnNoticeView[] }> {
+    return request(`/v1/missions/${encodeURIComponent(missionID)}/return-notices`);
   },
   /** 0.6.2 执行上下文清单历史（摘要，创建序倒序——各时点"会交付什么"）。 */
   listContextManifests(missionID: string): Promise<{ manifests: ContextManifestSummary[] }> {

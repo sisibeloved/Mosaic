@@ -3359,6 +3359,34 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /v1/missions/{mission_id}/return-notices:
+    get:
+      operationId: listMissionReturnNotices
+      summary: 回房通知台账（执行结果回房——持久、去重、Room 删除后的保留）
+      description: |
+        0.6.10 / ADR-0033：Mission 四类事实（reviewing / accepted / returned /
+        canceled）向来源房间投递引用卡片（message.posted + mission_ref，系统 actor）
+        的持久台账——每条来源事件（mission_events.seq）恰一行：pending 待投 |
+        held 房间暂停（恢复后投递，不借回传恢复讨论）| delivered 已落房间事件
+        room_event_id | canceled 房间已删除（返回目标取消，结果与来源墓碑保留，
+        不重跑任务）| failed 有界重试耗尽（last_error 留痕）。按 source_seq 升序。
+        非房间交办的 Mission 恒为空列表。
+      parameters:
+        - name: mission_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 通知台账
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReturnNoticeList" }
+        "404":
+          description: Mission 不存在（mission_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/missions/{mission_id}/delivery-packages:
     post:
       operationId: submitDeliveryPackage
@@ -5033,6 +5061,10 @@ components:
           type: array
           description: 外部文档引用（RFC-0016 §2.3；缺省 = 无；快照/SSE 两路同形——同 refs 纪律）。发送时刻的描述子快照，不随外部服务刷新。
           items: { $ref: "#/components/schemas/ExternalRef" }
+        mission_ref:
+          nullable: true
+          allOf: [{ $ref: "#/components/schemas/MissionRef" }]
+          description: 执行结果回房引用卡片（ADR-0033 / 0.6.10）：系统 actor（par_system）投递的 Mission 事实引用；普通消息缺省 / null。快照/SSE 两路同形。
         thread_id:
           oneOf:
             - type: "null"
@@ -5399,14 +5431,59 @@ components:
           items: { type: string }
           description: 选配降级项（不阻塞）
         effective_workspace_access: { type: string, enum: [none, read, read_write] }
+    MissionRef:
+      type: object
+      required: [mission_id, kind, contract_version, task_id, source_seq]
+      additionalProperties: false
+      description: 执行结果回房引用（ADR-0033 / 0.6.10）——message.posted 载荷 mission_ref 的 HTTP 投影；系统 actor 专用，post_message 命令面不接受（人类不能伪造）。
+      properties:
+        mission_id: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+        kind: { type: string, enum: [reviewing, accepted, returned, canceled], description: 来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消 }
+        contract_version: { type: integer, minimum: 1 }
+        review_round: { type: integer, minimum: 0, description: 送验轮次（canceled 为 0） }
+        package_id: { type: string, pattern: "^dlv_[0-9A-Za-z_-]+$", description: 受审交付包（reviewing / accepted / returned 携带） }
+        task_id: { type: string, pattern: "^tsk_[0-9A-Za-z_-]+$" }
+        source_seq: { type: integer, minimum: 1, description: 来源 mission_events.seq——去重键 }
+    ReturnNoticeView:
+      type: object
+      required: [notice_id, mission_id, room_id, task_id, kind, source_seq, contract_version, review_round, status, attempts, created_at, updated_at]
+      additionalProperties: false
+      description: 回房通知台账行（ADR-0033 / 0.6.10）：每条来源事件恰一行——持久与去重对用户可审计。
+      properties:
+        notice_id: { type: string }
+        mission_id: { type: string }
+        room_id: { type: string }
+        task_id: { type: string }
+        kind: { type: string, enum: [reviewing, accepted, returned, canceled] }
+        source_seq: { type: integer, minimum: 1 }
+        contract_version: { type: integer, minimum: 1 }
+        review_round: { type: integer, minimum: 0 }
+        package_id: { type: string, nullable: true }
+        status: { type: string, enum: [pending, held, delivered, canceled, failed], description: pending 待投 / held 房间暂停（恢复后投递）/ delivered 已落房间事件 / canceled 房间已删除（返回目标取消，结果保留）/ failed 有界重试耗尽 }
+        attempts: { type: integer, minimum: 0, description: 投递尝试次数（held 不计） }
+        next_attempt_at: { type: string, format: date-time, nullable: true }
+        room_event_id: { type: string, nullable: true, description: delivered 时的房间事件 ID（message.posted） }
+        last_error: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ReturnNoticeList:
+      type: object
+      required: [notices]
+      additionalProperties: false
+      properties:
+        notices:
+          type: array
+          description: 按 source_seq 升序
+          items: { $ref: "#/components/schemas/ReturnNoticeView" }
     RoomSource:
       type: object
       required: [room_id, task_id]
       additionalProperties: false
-      description: 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一映射——同一任务卡至多交办一次（撞键 409 source_already_mapped）；映射为创建事实，修订不可改（换来源 = 新交办）。
+      description: 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一映射——同一任务卡至多交办一次（撞键 409 source_already_mapped）；映射为创建事实，修订不可改（换来源 = 新交办）。deleted_at（ADR-0033 / 0.6.10）为来源墓碑：房间删除时刻，null = 房间仍在——返回目标失效不重跑任务（AT-20），结果与映射保留。
       properties:
         room_id: { type: string, minLength: 1, maxLength: 64 }
         task_id: { type: string, pattern: "^tsk_[0-9A-Za-z_-]+$" }
+        deleted_at: { type: string, format: date-time, nullable: true, description: 来源房间墓碑（null = 房间仍在） }
     DispatchResolveRequest:
       type: object
       required: [kind, room_source, objective, scope, acceptance_criteria, deliverable_specs, source_refs]
