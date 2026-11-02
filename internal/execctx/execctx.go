@@ -103,6 +103,9 @@ var (
 	ErrBindingNotFound = errors.New("execctx: 任职不存在")
 	// ErrMissionCanceled Mission 已取消（终态无执行语义）。
 	ErrMissionCanceled = errors.New("execctx: Mission 已取消")
+	// ErrMissionAccepted Mission 已验收（0.6.9 审校 #15：终态同样无执行语义——
+	// 拒新装配；历史清单/层/回执读取照常）。
+	ErrMissionAccepted = errors.New("execctx: Mission 已验收")
 	// ErrManifestExists 同 (mission_id, digest) 清单已存（确定性重建命中）。
 	ErrManifestExists = errors.New("execctx: 清单已存在")
 )
@@ -347,6 +350,9 @@ func (s *Service) Build(ctx context.Context, missionID, bindingID string) (Build
 	}
 	if m.Status == mission.StatusCanceled {
 		return BuildResult{}, ErrMissionCanceled
+	}
+	if m.Status == mission.StatusAccepted {
+		return BuildResult{}, ErrMissionAccepted
 	}
 	facts, ok, err := s.ports.Bindings.Facts(ctx, bindingID)
 	if err != nil {

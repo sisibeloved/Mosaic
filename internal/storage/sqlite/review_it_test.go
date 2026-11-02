@@ -43,8 +43,22 @@ func TestMissionReviewStoreIT(t *testing.T) {
 	if _, ok, _ := store.RequestReview(ctx, m.MissionID, 9, "dlv_1", reviewEv(m.MissionID, `{}`, "t1")); ok {
 		t.Fatal("版本不符送验应 ok=false")
 	}
+	// 审校 #2：未决 Run（在途/未处置 unknown）事务内拦送验
+	if _, err := store.CreateRun(ctx, seedRun("run_inflight", m.MissionID, 0, "running")); err != nil {
+		t.Fatalf("播种在途 Run: %v", err)
+	}
+	if _, ok, err := store.RequestReview(ctx, m.MissionID, 1, "dlv_1", reviewEv(m.MissionID, `{}`, "t0")); err == nil || !errors.Is(err, mission.ErrUnsettledRuns) || ok {
+		t.Fatalf("未决 Run 须拦送验: ok=%v err=%v", ok, err)
+	}
+	// 清在途（终态化）→ 放行
+	seedRunRow, _, _ := store.RunByID(ctx, "run_inflight")
+	seedRunRow.State = "completed"
+	seedRunRow.FinishedAt = "t0b"
+	if err := store.UpdateRun(ctx, seedRunRow, nil); err != nil {
+		t.Fatalf("终态化: %v", err)
+	}
 	rv, ok, err := store.RequestReview(ctx, m.MissionID, 1, "dlv_1", reviewEv(m.MissionID, `{"to":"reviewing","package_id":"dlv_1"}`, "t1"))
-	if err != nil || !ok || rv.Status != mission.StatusReviewing || rv.ReviewPackageID != "dlv_1" {
+	if err != nil || !ok || rv.Status != mission.StatusReviewing || rv.ReviewPackageID != "dlv_1" || rv.ReviewRound != 1 {
 		t.Fatalf("送验: ok=%v err=%v %+v", ok, err, rv)
 	}
 	// reviewing 上再送验 ok=false（服务层幂等先读）
@@ -64,18 +78,25 @@ func TestMissionReviewStoreIT(t *testing.T) {
 	}
 
 	// RecordReview returned → ready + 锚清空
-	rt, ok, err := store.RecordReview(ctx, m.MissionID, 1, mission.StatusReady, reviewEv(m.MissionID, `{"decision":"returned"}`, "t3"))
-	if err != nil || !ok || rt.Status != mission.StatusReady || rt.ReviewPackageID != "" {
+	// 轮次不符（旧轮次）ok=false
+	if _, ok, _ := store.RecordReview(ctx, m.MissionID, 1, 0, mission.StatusReady, reviewEv(m.MissionID, `{}`, "t2b")); ok {
+		t.Fatal("旧轮次裁定应 ok=false")
+	}
+	rt, ok, err := store.RecordReview(ctx, m.MissionID, 1, 1, mission.StatusReady, reviewEv(m.MissionID, `{"decision":"returned"}`, "t3"))
+	if err != nil || !ok || rt.Status != mission.StatusReady || rt.ReviewPackageID != "" || rt.ReviewRound != 1 {
 		t.Fatalf("退回: ok=%v err=%v %+v", ok, err, rt)
 	}
 	// 非 reviewing 裁定 ok=false
-	if _, ok, _ := store.RecordReview(ctx, m.MissionID, 1, mission.StatusAccepted, reviewEv(m.MissionID, `{}`, "t3b")); ok {
+	if _, ok, _ := store.RecordReview(ctx, m.MissionID, 1, 2, mission.StatusAccepted, reviewEv(m.MissionID, `{}`, "t3b")); ok {
 		t.Fatal("非 reviewing 裁定应 ok=false")
 	}
-	// 再送验 → accepted（锚保留）
-	store.RequestReview(ctx, m.MissionID, 1, "dlv_2", reviewEv(m.MissionID, `{"to":"reviewing","package_id":"dlv_2"}`, "t4"))
-	acc, ok, err := store.RecordReview(ctx, m.MissionID, 1, mission.StatusAccepted, reviewEv(m.MissionID, `{"decision":"accepted"}`, "t5"))
-	if err != nil || !ok || acc.Status != mission.StatusAccepted || acc.ReviewPackageID != "dlv_2" {
+	// 再送验 → accepted（锚保留；轮次递增为 2——同包重审也递增）
+	rv2, okR, errR := store.RequestReview(ctx, m.MissionID, 1, "dlv_2", reviewEv(m.MissionID, `{"to":"reviewing","package_id":"dlv_2"}`, "t4"))
+	if errR != nil || !okR || rv2.ReviewRound != 2 {
+		t.Fatalf("次轮送验: ok=%v err=%v round=%d", okR, errR, rv2.ReviewRound)
+	}
+	acc, ok, err := store.RecordReview(ctx, m.MissionID, 1, 2, mission.StatusAccepted, reviewEv(m.MissionID, `{"decision":"accepted"}`, "t5"))
+	if err != nil || !ok || acc.Status != mission.StatusAccepted || acc.ReviewPackageID != "dlv_2" || acc.ReviewRound != 2 {
 		t.Fatalf("接受: ok=%v err=%v %+v", ok, err, acc)
 	}
 	// accepted 终态守卫：取消/修订/暂停/送验 ok=false；投影不翻转
@@ -122,7 +143,7 @@ func TestDeliveryGuardReviewingAcceptedIT(t *testing.T) {
 	if err := store.CreatePackage(ctx, p, receiptOf(p)); !errors.Is(err, delivery.ErrMissionReviewing) {
 		t.Fatalf("reviewing 拒绝提交: %v", err)
 	}
-	store.RecordReview(ctx, "mi_rv", 1, mission.StatusAccepted, reviewEv("mi_rv", `{}`, "t2"))
+	store.RecordReview(ctx, "mi_rv", 1, 1, mission.StatusAccepted, reviewEv("mi_rv", `{}`, "t2"))
 	p2 := seedPackage("dlv_after_accept", "mi_rv", "run_rv", 1, "2026-11-02T10:01:00Z")
 	if err := store.CreatePackage(ctx, p2, receiptOf(p2)); !errors.Is(err, delivery.ErrMissionAccepted) {
 		t.Fatalf("accepted 拒绝提交: %v", err)

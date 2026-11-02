@@ -186,11 +186,18 @@ func runTestServer(t *testing.T, opts ...func(*runTestCfg)) (*httptest.Server, *
 		delivery.WithNow(func() string { seq++; return "2026-11-01T12:00:" + pad2(seq%60) + ".000Z" }),
 		delivery.WithNewPackageID(func() string { seq++; return "dlv_r" + itoa(seq) }))
 	// 0.6.9：验收域（mission 状态机 + delivery 包事实）
-	reviewSvc := review.New(mSvc, epReviewPackages{deliverySvc})
+	reviewSvc := review.New(mSvc, epReviewPackages{deliverySvc}, epReviewRuns{runSvc})
 	ts := httptest.NewServer(New(Deps{Missions: mSvc, MissionRuns: runSvc, Identity: ident,
 		MissionControl: missioncontrol.New(mSvc, runSvc, ctlOpts...), Delivery: deliverySvc, Review: reviewSvc}))
 	t.Cleanup(ts.Close)
 	return ts, mSvc, leases
+}
+
+// epReviewRuns review.Runs 适配（真 run 服务只读——送验未决复核）。
+type epReviewRuns struct{ svc *missionrun.Service }
+
+func (p epReviewRuns) Unsettled(ctx context.Context, missionID string) (int, int, error) {
+	return p.svc.Unsettled(ctx, missionID)
 }
 
 // pad2 两位秒（交付包 submitted_at 单调递增——列表倒序断言用）。

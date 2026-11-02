@@ -15,6 +15,10 @@
   - **SPA**：ready + 有包 → 「提请验收」（缺项 409 回显清单）；reviewing → 受审包徽章 + 验收面板（接受/退回 + 原因 + 验收人预填）；accepted → 终态徽章、控制区与交付表单只读。
   - 契约面：两端点 + MissionReviewRequest / MissionReviewDecision / ReviewItemNote；状态枚举 += reviewing, accepted；MissionView += review_package_id。
 
+### Fixed
+
+- 修复 0.6.9 审校发现（独立审校报告"3 项 P1、12 项 P2"，ADR-0032 v0.2）：**(1) P1 旧裁定落到下一轮**——裁定请求未携送验轮次，读过 A 的接受请求可在 A 退回、B 送审后提交（任务锚为 B、事件指向 A）；无并发的重放也能用 A 的理由退回 B。新增 migration v23 `missions.review_round`（每次送验**单调递增**——同包重审也递增），裁定请求必填 `review_round`，SQLite/MemStore 裁定事务内核对**轮次 + 包 + 契约版本 + 状态**，旧轮次一律 409。**(2) P1 纯空白证据可通过 AT-10**——送验按 `TrimSpace` 判证据非空（空格/制表同罪），缺项 409 携标准清单。**(3) P1 未核验 Run 随任务被接受**——Run 落库与 running 投影间隙崩溃会残留 ready + 未处置 unknown；送验前置 + **送验事务内**复核在途/未处置 Run（409 runs_unsettled），ready 残留恢复同样进 waiting，accepted/canceled 终态封处置入口（409 mission_terminal）。**(4)–(16) P2**：并发送验同包幂等（不再误报 409）；expected_version 预读校验（与修订交错时旧包不能按新契约通过）；退回事件 to 为真实状态 ready；两段取消清受审包锚；验收人 >64 字拒绝；accepted 后修订/取消按钮隐藏、新装配与租约拒领（409 mission_accepted，历史读取照常）；SPA 送验改为选包（较早完整包可选）、裁定预填契约验收人并可填逐项备注、裁定草稿按轮次隔离（退回原因不再串入新一轮）、受审包逐项证据在裁定旁可核对（accepted 后保留入口）。
+
 ## [0.6.8] - 2026-11-02
 
 ### Added

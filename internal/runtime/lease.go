@@ -50,6 +50,8 @@ var (
 	ErrMissionNotFound = fmt.Errorf("runtime: 占用主体不存在")
 	// ErrMissionCanceled 占用主体已取消。
 	ErrMissionCanceled = fmt.Errorf("runtime: 占用主体已取消")
+	// ErrMissionAccepted 占用主体已验收（0.6.9 审校 #16：终态不占排他资源）。
+	ErrMissionAccepted = fmt.Errorf("runtime: 占用主体已验收")
 	// ErrRuntimeNotReady 运行时未就绪（非 ready 或未绑环境）。
 	ErrRuntimeNotReady = fmt.Errorf("runtime: 运行时未就绪")
 	// ErrLeaseConflictRuntime 单运行时容量占用。
@@ -154,6 +156,9 @@ func (s *Service) Acquire(ctx context.Context, runtimeID, missionID string, ttlS
 		}
 		if state == "canceled" {
 			return Lease{}, ErrMissionCanceled
+		}
+		if state == "accepted" {
+			return Lease{}, ErrMissionAccepted
 		}
 	}
 

@@ -4098,9 +4098,11 @@ export interface components {
             criterion: string;
             note: string;
         };
-        /** @description 验收裁定请求体（0.6.9 / ADR-0032）。returned 须携 reason。 */
+        /** @description 验收裁定请求体（0.6.9 / ADR-0032；v0.2：须携裁定所见的送验轮次 review_round——旧标签页/迟到/重放的旧轮次裁定一律 409）。returned 须携 reason。 */
         MissionReviewDecision: {
             expected_version: number;
+            /** @description 裁定所见的送验轮次（MissionView.review_round）——与当前不符 409 invalid_transition */
+            review_round: number;
             /** @description 裁定人（契约 reviewer 非空时须相等——契约一致性校验，非独立身份认证） */
             reviewer?: string;
             /** @enum {string} */
@@ -4141,6 +4143,8 @@ export interface components {
             waiting_reason: string;
             /** @description 受审/已验收交付包（0.6.9 / ADR-0032：request_review 写入，accepted 保留以追溯，returned 清空；非 reviewing/accepted 为空串） */
             review_package_id: string;
+            /** @description 送验轮次（0.6.9 审校 #3：每次 request_review 单调递增——裁定须核对轮次，防旧裁定落到下一轮；非 reviewing/accepted 为 0） */
+            review_round: number;
             /** @description 负责人（空 = 显式 unassigned，§3.3 不变量） */
             owner_agent_id: string;
             /** @description 请求人（0.6.0 恒 owner——本地单用户） */
@@ -7734,7 +7738,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description 状态不允许（invalid_transition）/ 版本冲突（version_conflict）/ 包陈旧（stale_package）/ 包不属该 Mission（package_mission_mismatch）/ 必需交付项缺失（missing_required_items——detail 携缺项） */
+            /** @description 状态不允许（invalid_transition）/ 版本冲突（version_conflict）/ 包陈旧（stale_package）/ 包不属该 Mission（package_mission_mismatch）/ 必需交付项缺失（missing_required_items——detail 携缺项）/ 存在未决 Run（runs_unsettled——在途或未处置 unknown，核验后再送验） */
             409: {
                 headers: {
                     [name: string]: unknown;

@@ -86,7 +86,8 @@ func (f *fakeMissions) FinishCanceling(_ context.Context, id, _ string) error {
 func (f *fakeMissions) SetWaiting(_ context.Context, id, reason string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.status[id] != "running" {
+	// 对齐 mission 域（0.6.9 审校 #2）：running | ready 皆可进 waiting
+	if f.status[id] != "running" && f.status[id] != "ready" {
 		return nil
 	}
 	f.status[id] = "waiting"

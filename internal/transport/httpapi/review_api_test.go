@@ -48,6 +48,7 @@ func submitPkg(t *testing.T, base, mi, runID string, gen, ver int, evidence2 str
 type missionDoc struct {
 	Status          string `json:"status"`
 	ReviewPackageID string `json:"review_package_id"`
+	ReviewRound     int    `json:"review_round"`
 	ContractVersion int    `json:"contract_version"`
 }
 
@@ -130,11 +131,11 @@ func TestReviewEndpointsFlow(t *testing.T) {
 	}
 
 	// 4) 退回：缺 reason 400；带 reason → ready + 锚清空
-	r = postSlot(t, ts.URL+"/v1/missions/"+mi+"/review", `{"expected_version":1,"decision":"returned"}`)
+	r = postSlot(t, ts.URL+"/v1/missions/"+mi+"/review", `{"expected_version":1,"review_round":1,"decision":"returned"}`)
 	if r.StatusCode != http.StatusBadRequest || errCodeOf(t, r) != "invalid_review" {
 		t.Fatalf("退回缺原因: %d", r.StatusCode)
 	}
-	r = postSlot(t, ts.URL+"/v1/missions/"+mi+"/review", `{"expected_version":1,"decision":"returned","reason":"第二条证据不足","item_notes":[{"criterion":"CAS 冲突可见","note":"补并发日志"}]}`)
+	r = postSlot(t, ts.URL+"/v1/missions/"+mi+"/review", `{"expected_version":1,"review_round":1,"decision":"returned","reason":"第二条证据不足","item_notes":[{"criterion":"CAS 冲突可见","note":"补并发日志"}]}`)
 	d = decodeMission(t, r)
 	if r.StatusCode != http.StatusOK || d.Status != "ready" || d.ReviewPackageID != "" {
 		t.Fatalf("退回: %d %+v", r.StatusCode, d)
@@ -143,9 +144,14 @@ func TestReviewEndpointsFlow(t *testing.T) {
 	full2 := submitPkg(t, ts.URL, mi, rd.RunID, rd.Generation, 1, "并发日志 v2")
 	r = postSlot(t, ts.URL+"/v1/missions/"+mi+"/request-review", `{"expected_version":1,"package_id":"`+full2+`"}`)
 	r.Body.Close()
-	r = postSlot(t, ts.URL+"/v1/missions/"+mi+"/review", `{"expected_version":1,"decision":"accepted","reason":"全部达成"}`)
+	// 审校 #3：旧轮次（1）裁定落到第二轮 → 409 invalid_transition（旧标签页/重放）
+	r = postSlot(t, ts.URL+"/v1/missions/"+mi+"/review", `{"expected_version":1,"review_round":1,"decision":"accepted"}`)
+	if r.StatusCode != http.StatusConflict || errCodeOf(t, r) != "invalid_transition" {
+		t.Fatalf("旧轮次裁定须 409: %d", r.StatusCode)
+	}
+	r = postSlot(t, ts.URL+"/v1/missions/"+mi+"/review", `{"expected_version":1,"review_round":2,"decision":"accepted","reason":"全部达成"}`)
 	d = decodeMission(t, r)
-	if r.StatusCode != http.StatusOK || d.Status != "accepted" || d.ReviewPackageID != full2 {
+	if r.StatusCode != http.StatusOK || d.Status != "accepted" || d.ReviewPackageID != full2 || d.ReviewRound != 2 {
 		t.Fatalf("接受: %d %+v", r.StatusCode, d)
 	}
 
@@ -155,7 +161,7 @@ func TestReviewEndpointsFlow(t *testing.T) {
 		"取消":  {"/cancel", `{"expected_version":1}`, "invalid_transition"},
 		"暂停":  {"/pause", `{"expected_version":1}`, "invalid_transition"},
 		"再送验": {"/request-review", `{"expected_version":1,"package_id":"` + full2 + `"}`, "invalid_transition"},
-		"再裁定": {"/review", `{"expected_version":1,"decision":"returned","reason":"x"}`, "invalid_transition"},
+		"再裁定": {"/review", `{"expected_version":1,"review_round":2,"decision":"returned","reason":"x"}`, "invalid_transition"},
 		"再提交": {"/delivery-packages", `{"run_id":"` + rd.RunID + `","generation":` + itoa(int64(rd.Generation)) + `,"expected_version":1,"artifact_refs":["x"],"acceptance_mapping":[]}`, "mission_accepted"},
 	} {
 		rr := postSlot(t, ts.URL+"/v1/missions/"+mi+tc.path, tc.body)
@@ -194,11 +200,11 @@ func TestReviewAuthorization(t *testing.T) {
 	rd := executeOnce(t, ts.URL, m.MissionID)
 	full := submitPkg(t, ts.URL, m.MissionID, rd.RunID, rd.Generation, 1, "ok")
 	postSlot(t, ts.URL+"/v1/missions/"+m.MissionID+"/request-review", `{"expected_version":1,"package_id":"`+full+`"}`).Body.Close()
-	r := postSlot(t, ts.URL+"/v1/missions/"+m.MissionID+"/review", `{"expected_version":1,"decision":"accepted","reviewer":"someone"}`)
+	r := postSlot(t, ts.URL+"/v1/missions/"+m.MissionID+"/review", `{"expected_version":1,"review_round":1,"decision":"accepted","reviewer":"someone"}`)
 	if r.StatusCode != http.StatusForbidden || errCodeOf(t, r) != "review_not_authorized" {
 		t.Fatalf("验收人不符应 403: %d", r.StatusCode)
 	}
-	r = postSlot(t, ts.URL+"/v1/missions/"+m.MissionID+"/review", `{"expected_version":1,"decision":"accepted","reviewer":"qa@team"}`)
+	r = postSlot(t, ts.URL+"/v1/missions/"+m.MissionID+"/review", `{"expected_version":1,"review_round":1,"decision":"accepted","reviewer":"qa@team"}`)
 	if d := decodeMission(t, r); r.StatusCode != http.StatusOK || d.Status != "accepted" {
 		t.Fatalf("验收人匹配: %d %+v", r.StatusCode, d)
 	}
@@ -209,7 +215,7 @@ func TestReviewUnavailable(t *testing.T) {
 	bare := httptest.NewServer(New(Deps{}))
 	t.Cleanup(bare.Close)
 	for _, path := range []string{"/request-review", "/review"} {
-		r := postSlot(t, bare.URL+"/v1/missions/mi_x"+path, `{"expected_version":1,"package_id":"dlv_x","decision":"accepted"}`)
+		r := postSlot(t, bare.URL+"/v1/missions/mi_x"+path, `{"expected_version":1,"review_round":1,"package_id":"dlv_x","decision":"accepted"}`)
 		if r.StatusCode != http.StatusServiceUnavailable || errCodeOf(t, r) != "review_unavailable" {
 			t.Fatalf("%s 未装配应 503: %d", path, r.StatusCode)
 		}

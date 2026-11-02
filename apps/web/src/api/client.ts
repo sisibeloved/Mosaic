@@ -628,10 +628,11 @@ export const api = {
   reviewMission(
     missionID: string,
     expectedVersion: number,
-    req: { decision: "accepted" | "returned"; reviewer?: string; reason?: string; item_notes?: { criterion: string; note: string }[] },
+    req: { decision: "accepted" | "returned"; reviewRound: number; reviewer?: string; reason?: string; item_notes?: { criterion: string; note: string }[] },
   ): Promise<MissionView> {
     return post(`/v1/missions/${encodeURIComponent(missionID)}/review`, {
       expected_version: expectedVersion,
+      review_round: req.reviewRound,
       decision: req.decision,
       ...(req.reviewer ? { reviewer: req.reviewer } : {}),
       ...(req.reason ? { reason: req.reason } : {}),

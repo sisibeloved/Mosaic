@@ -571,6 +571,13 @@ func TestBuildValidation(t *testing.T) {
 	if _, err := f.svc.Build(context.Background(), "mi_1", "bd_1"); !errors.Is(err, ErrMissionCanceled) {
 		t.Fatalf("canceled 期望 ErrMissionCanceled，得到 %v", err)
 	}
+	// 0.6.9 审校 #15：accepted 终态同样无执行语义——拒装配（历史读取照常）
+	ma := testMission()
+	ma.Status = mission.StatusAccepted
+	f.svc.ports.Missions = fakeMissions{m: ma, ok: true}
+	if _, err := f.svc.Build(context.Background(), "mi_1", "bd_1"); !errors.Is(err, ErrMissionAccepted) {
+		t.Fatalf("accepted 期望 ErrMissionAccepted，得到 %v", err)
+	}
 	f.svc.ports.Missions = fakeMissions{m: testMission(), ok: true}
 	if _, err := f.svc.Build(context.Background(), "mi_1", "bd_x"); !errors.Is(err, ErrBindingNotFound) {
 		t.Fatalf("未知任职期望 ErrBindingNotFound，得到 %v", err)

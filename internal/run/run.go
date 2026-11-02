@@ -113,6 +113,9 @@ var (
 	// 后（ADR-0030 兑现的执行面围栏：waiting 挡调度列之外的兜底——旧库
 	// ready+残留收敛形态，0.6.7 发布前补齐）。
 	ErrResidueUnresolved = errors.New("run: 存在未处置的 unknown 残留——先处置（resolve）")
+	// ErrMissionTerminal Mission 已终态（accepted / canceled）——处置入口封闭
+	//（0.6.9 审校 #2：验收完成后不得改写处置事实）。
+	ErrMissionTerminal = errors.New("run: Mission 已终态，不可处置")
 )
 
 // Run 一次执行尝试（run_ 前缀；attempt 同 Mission 递增）。
@@ -679,6 +682,25 @@ func (s *Service) SignalStopByMission(ctx context.Context, missionID, cause stri
 	return n, nil
 }
 
+// Unsettled Mission 的在途（pending/running）与未处置 unknown Run 计数
+// （0.6.9 审校 #2：送验前置拦截——review.Runs 端口）。
+func (s *Service) Unsettled(ctx context.Context, missionID string) (int, int, error) {
+	runs, err := s.store.ListRunsByMission(ctx, missionID)
+	if err != nil {
+		return 0, 0, err
+	}
+	inflight, unresolved := 0, 0
+	for _, r := range runs {
+		switch {
+		case r.State == StatePending || r.State == StateRunning:
+			inflight++
+		case r.State == StateUnknown && r.Resolution == "":
+			unresolved++
+		}
+	}
+	return inflight, unresolved, nil
+}
+
 // HasUnfinished Mission 是否仍有未终态 Run（控制面有界等待用）。
 func (s *Service) HasUnfinished(ctx context.Context, missionID string) (bool, error) {
 	runs, err := s.store.ListRunsByMission(ctx, missionID)
@@ -880,6 +902,17 @@ func (s *Service) ResolveRun(ctx context.Context, runID, outcome, note string) (
 	}
 	if utf8.RuneCountInString(note) > 500 {
 		return Run{}, fmt.Errorf("%w: note ≤500 字", ErrInvalidResolution)
+	}
+	// 审校 #2：终态 Mission 封处置入口（先取 Run 归属再查 Mission 状态——未知
+	// Run 仍按 ErrRunNotFound 报）
+	if cur, found, err := s.store.RunByID(ctx, runID); err != nil {
+		return Run{}, err
+	} else if found {
+		if st, ok, err := s.missions.StatusOf(ctx, cur.MissionID); err != nil {
+			return Run{}, err
+		} else if ok && (st == "accepted" || st == "canceled") {
+			return Run{}, fmt.Errorf("%w（Mission %s）", ErrMissionTerminal, st)
+		}
 	}
 	out, ok, err := s.store.ResolveRun(ctx, runID, outcome, note, s.now())
 	if err != nil {

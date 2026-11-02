@@ -89,6 +89,9 @@ var (
 	// ErrReviewNotAuthorized 验收权限不足（0.6.9：契约 reviewer 非空时裁定人
 	// 须与之相符——契约一致性校验，非独立身份认证；空 = 请求人自验）。
 	ErrReviewNotAuthorized = errors.New("mission: 验收权限不足")
+	// ErrUnsettledRuns 存在在途或未处置 unknown 的 Run（0.6.9 审校 #2：送验
+	// 事务内复核——待核验完成再放行）。
+	ErrUnsettledRuns = errors.New("mission: 存在未决 Run")
 	// ErrSourceAlreadyMapped 房间来源已被交办（ADR-0024：(room_id, task_id)
 	// 全局唯一映射——同一任务卡至多交办一次，撞键回显已映射 mission_id）。
 	ErrSourceAlreadyMapped = errors.New("mission: 房间来源已被交办")
@@ -138,6 +141,7 @@ type Mission struct {
 	Status          string      `json:"status"`
 	WaitingReason   string      `json:"waiting_reason"`    // 等待原因（0.6.7；waiting 态一等事实，暂停期间保留；非 waiting 空）
 	ReviewPackageID string      `json:"review_package_id"` // 受审/已验收包（0.6.9：request_review 写入；accepted 保留、returned 清空）
+	ReviewRound     int         `json:"review_round"`      // 送验轮次（0.6.9 审校 #3：每次 request_review 递增——裁定须核对轮次，防旧裁定落到下一轮；非 reviewing/accepted 为 0）
 	OwnerAgentID    string      `json:"owner_agent_id"`    // 空 = 显式 unassigned（§3.3）
 	Requester       string      `json:"requester"`
 	RoomSource      *RoomSource `json:"room_source"` // 房间交办来源（非房间交办 null；创建事实）
@@ -236,14 +240,16 @@ type Store interface {
 	// MarkWaiting 条件进 waiting（0.6.7 / ADR-0030）：当前状态 == from 才置
 	// waiting + waiting_reason=reason + 事件（单事务）；不符 = 无操作。
 	MarkWaiting(ctx context.Context, missionID, from, reason string, event Event) (changed bool, err error)
-	// RequestReview 条件送验（0.6.9 / ADR-0032）：contract_version 匹配且
-	// status == ready → reviewing + review_package_id=packageID + 事件，单事务；
-	// ok=false = 版本不匹配/非 ready（幂等同包由服务层先读实现）。
+	// RequestReview 条件送验（0.6.9 / ADR-0032；v0.2 #3：轮次递增）：contract_version
+	// 匹配且 status == ready → reviewing + review_package_id + review_round+1 +
+	// 事件，单事务；ok=false = 版本不匹配/非 ready。**送验事务内**复核无在途/
+	// 未处置 Run（ErrUnsettledRuns——审校 #2）。
 	RequestReview(ctx context.Context, missionID string, expectedVersion int, packageID string, event Event) (Mission, bool, error)
-	// RecordReview 条件裁定（0.6.9）：contract_version 匹配且 status ==
-	// reviewing → to（accepted 保留锚 / ready 清锚）+ 事件，单事务；ok=false =
-	// 版本不匹配/非 reviewing。
-	RecordReview(ctx context.Context, missionID string, expectedVersion int, to string, event Event) (Mission, bool, error)
+	// RecordReview 条件裁定（0.6.9；v0.2 #3：轮次守卫）：contract_version 匹配、
+	// status == reviewing **且 review_round == expectedRound** → to（accepted 保留
+	// 锚 / ready 清锚）+ 事件，单事务；ok=false = 版本不匹配/非 reviewing/轮次
+	// 不符（旧标签页、迟到或重放的旧轮次裁定一律拒绝）。
+	RecordReview(ctx context.Context, missionID string, expectedVersion, expectedRound int, to string, event Event) (Mission, bool, error)
 }
 
 // Service 契约服务：校验单源 + 完备性判定单源 + CAS 编排。
@@ -623,6 +629,13 @@ func (s *Service) RequestReview(ctx context.Context, missionID string, expectedV
 			return Mission{}, err
 		}
 		if !ok2 {
+			// 审校 #8：并发同版本同包送验——CAS 未胜者重读，若已是 reviewing 且
+			// 同包同版本则幂等返回当前（单条送验事件）；其余维持冲突语义。
+			again, found, rerr := s.store.MissionByID(ctx, missionID)
+			if rerr == nil && found && again.Status == StatusReviewing &&
+				again.ContractVersion == expectedVersion && again.ReviewPackageID == packageID {
+				return again, nil
+			}
 			return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
 		}
 		return out, nil
@@ -635,9 +648,16 @@ func (s *Service) RequestReview(ctx context.Context, missionID string, expectedV
 // RecordReview 验收裁定（= review_mission，0.6.9 / ADR-0032）：reviewing →
 // accepted（终态，锚保留）| ready（退回，锚清空——可再执行/再交付/再送验）。
 // 验收权限：契约 reviewer 非空时 d.Reviewer 须相等（空 = 请求人自验）。
-func (s *Service) RecordReview(ctx context.Context, missionID string, expectedVersion int, d ReviewDecision) (Mission, error) {
+func (s *Service) RecordReview(ctx context.Context, missionID string, expectedVersion, reviewRound int, d ReviewDecision) (Mission, error) {
 	if d.Decision != ReviewAccepted && d.Decision != ReviewReturned {
 		return Mission{}, fmt.Errorf("%w: decision 须为 accepted | returned", ErrInvalidReview)
+	}
+	if reviewRound < 1 {
+		return Mission{}, fmt.Errorf("%w: review_round 必填（裁定所见的送验轮次）", ErrInvalidReview)
+	}
+	// 审校 #9：验收人按 Unicode 字符计数 ≤64（不入事件）
+	if utf8.RuneCountInString(d.Reviewer) > 64 {
+		return Mission{}, fmt.Errorf("%w: reviewer ≤64 字", ErrInvalidReview)
 	}
 	if utf8.RuneCountInString(d.Reason) > 500 {
 		return Mission{}, fmt.Errorf("%w: reason ≤500 字", ErrInvalidReview)
@@ -671,19 +691,19 @@ func (s *Service) RecordReview(ctx context.Context, missionID string, expectedVe
 	}
 	itemNotes := make([]ReviewItemNote, 0, len(d.ItemNotes))
 	itemNotes = append(itemNotes, d.ItemNotes...)
+	to := StatusAccepted
+	if d.Decision == ReviewReturned {
+		to = StatusReady // 审校 #10：事件 to 为真实目标状态（decision 仍记 returned）
+	}
 	payload, err := json.Marshal(map[string]any{
-		"from": StatusReviewing, "to": d.Decision, "decision": d.Decision,
+		"from": StatusReviewing, "to": to, "decision": d.Decision,
 		"reviewer": d.Reviewer, "reason": d.Reason, "package_id": cur.ReviewPackageID,
-		"item_notes": itemNotes,
+		"review_round": reviewRound, "item_notes": itemNotes,
 	})
 	if err != nil {
 		return Mission{}, fmt.Errorf("mission: 裁定事件构造失败：%w", err)
 	}
-	to := StatusAccepted
-	if d.Decision == ReviewReturned {
-		to = StatusReady
-	}
-	out, ok2, err := s.store.RecordReview(ctx, missionID, expectedVersion, to, Event{
+	out, ok2, err := s.store.RecordReview(ctx, missionID, expectedVersion, reviewRound, to, Event{
 		MissionID: missionID, EventType: EventStatusChanged, Payload: payload, OccurredAt: s.now(),
 	})
 	if err != nil {
@@ -695,21 +715,30 @@ func (s *Service) RecordReview(ctx context.Context, missionID string, expectedVe
 	return out, nil
 }
 
-// MarkWaiting 等待投影（0.6.7 / ADR-0030）：running → waiting(reason)——恢复
+// MarkWaiting 等待投影（0.6.7 / ADR-0030；0.6.9 审校 #2 扩 ready）：running | ready → waiting(reason)——恢复
 // 分派结果不可判定时由 run 域调用；出调度列直至 ClearWaiting。幂等条件转移
 // （非 running 无操作 changed=false）。ready 形态的残留不走 waiting（RFC
 // §3.2 waiting 挂 running）——run 域执行面围栏挡（ErrResidueUnresolved）。
 func (s *Service) MarkWaiting(ctx context.Context, missionID, reason string) (bool, error) {
-	payload, err := json.Marshal(map[string]string{"from": StatusRunning, "to": StatusWaiting, "reason": reason})
+	// 0.6.9 审校 #2：ready | running 皆可进等待——Run 落库与 running 投影两步
+	// 间隙崩溃会残留 ready + 未终态 Run，恢复分派同样须进 waiting。
+	changed, err := s.store.MarkWaiting(ctx, missionID, StatusRunning, reason, s.waitingEvent(StatusRunning, reason))
 	if err != nil {
-		return false, fmt.Errorf("mission: 投影事件构造失败：%w", err)
+		return false, fmt.Errorf("mission: 等待投影失败：%w", err)
 	}
-	ev := Event{MissionID: missionID, EventType: EventStatusChanged, Payload: payload, OccurredAt: s.now()}
-	changed, err := s.store.MarkWaiting(ctx, missionID, StatusRunning, reason, ev)
+	if changed {
+		return true, nil
+	}
+	changed, err = s.store.MarkWaiting(ctx, missionID, StatusReady, reason, s.waitingEvent(StatusReady, reason))
 	if err != nil {
 		return false, fmt.Errorf("mission: 等待投影失败：%w", err)
 	}
 	return changed, nil
+}
+
+func (s *Service) waitingEvent(from, reason string) Event {
+	payload, _ := json.Marshal(map[string]string{"from": from, "to": StatusWaiting, "reason": reason})
+	return Event{EventType: EventStatusChanged, Payload: payload, OccurredAt: s.now()}
 }
 
 // ClearWaiting 出等待（处置后）：waiting → ready | draft（完备性重判——等待

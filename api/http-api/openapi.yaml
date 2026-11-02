@@ -2441,7 +2441,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "409":
-          description: 状态不允许（invalid_transition）/ 版本冲突（version_conflict）/ 包陈旧（stale_package）/ 包不属该 Mission（package_mission_mismatch）/ 必需交付项缺失（missing_required_items——detail 携缺项）
+          description: 状态不允许（invalid_transition）/ 版本冲突（version_conflict）/ 包陈旧（stale_package）/ 包不属该 Mission（package_mission_mismatch）/ 必需交付项缺失（missing_required_items——detail 携缺项）/ 存在未决 Run（runs_unsettled——在途或未处置 unknown，核验后再送验）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -5967,11 +5967,12 @@ components:
         note: { type: string, maxLength: 500 }
     MissionReviewDecision:
       type: object
-      required: [expected_version, decision]
+      required: [expected_version, review_round, decision]
       additionalProperties: false
-      description: 验收裁定请求体（0.6.9 / ADR-0032）。returned 须携 reason。
+      description: 验收裁定请求体（0.6.9 / ADR-0032；v0.2：须携裁定所见的送验轮次 review_round——旧标签页/迟到/重放的旧轮次裁定一律 409）。returned 须携 reason。
       properties:
         expected_version: { type: integer, minimum: 1 }
+        review_round: { type: integer, minimum: 1, description: 裁定所见的送验轮次（MissionView.review_round）——与当前不符 409 invalid_transition }
         reviewer: { type: string, maxLength: 64, description: 裁定人（契约 reviewer 非空时须相等——契约一致性校验，非独立身份认证） }
         decision: { type: string, enum: [accepted, returned] }
         reason: { type: string, maxLength: 500, description: 退回原因（returned 必填；accepted 可作备注） }
@@ -5993,7 +5994,7 @@ components:
         expected_version: { type: integer, minimum: 1, description: 调用方所见 contract_version；不匹配 409 version_conflict }
     MissionView:
       type: object
-      required: [mission_id, contract_version, status, waiting_reason, review_package_id, owner_agent_id, requester, reviewer, objective, scope, constraints, acceptance_criteria, deliverable_specs, source_refs, return_targets, budget, delegation, created_at, updated_at]
+      required: [mission_id, contract_version, status, waiting_reason, review_package_id, review_round, owner_agent_id, requester, reviewer, objective, scope, constraints, acceptance_criteria, deliverable_specs, source_refs, return_targets, budget, delegation, created_at, updated_at]
       description: |
         Mission 契约（ADR-0023 / 0.6.0 + ADR-0024 房间来源 / 0.6.1）。
         status：draft（契约不完备——验收/来源/交付物缺失或 unassigned）/
@@ -6010,6 +6011,7 @@ components:
         status: { type: string, enum: [draft, ready, running, waiting, reviewing, paused, canceling, canceled, accepted] }
         waiting_reason: { type: string, description: "等待原因（0.6.7 / ADR-0030：waiting 态的一等事实；本版取值 reconciliation = 有 unknown Run 待核验处置；非 waiting 为空串；暂停期间保留——恢复据此回 waiting）" }
         review_package_id: { type: string, description: "受审/已验收交付包（0.6.9 / ADR-0032：request_review 写入，accepted 保留以追溯，returned 清空；非 reviewing/accepted 为空串）" }
+        review_round: { type: integer, description: "送验轮次（0.6.9 审校 #3：每次 request_review 单调递增——裁定须核对轮次，防旧裁定落到下一轮；非 reviewing/accepted 为 0）" }
         owner_agent_id: { type: string, description: 负责人（空 = 显式 unassigned，§3.3 不变量） }
         requester: { type: string, description: 请求人（0.6.0 恒 owner——本地单用户） }
         reviewer: { type: string, description: 验收人（空 = 请求人自验） }

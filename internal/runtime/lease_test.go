@@ -46,6 +46,7 @@ func newLeaseFixture(t *testing.T) leaseFixture {
 			"mi_ok":  mission.StatusReady,
 			"mi_ok2": mission.StatusReady,
 			"mi_cx":  mission.StatusCanceled,
+			"mi_ac":  mission.StatusAccepted,
 		}}))
 	return f
 }
@@ -196,6 +197,10 @@ func TestLeaseAcquirePreconditions(t *testing.T) {
 	}
 	if _, err := f.svc.Acquire(ctx, rt.RuntimeID, "mi_cx", 0, nil); !errors.Is(err, ErrMissionCanceled) {
 		t.Fatalf("canceled 主体: %v", err)
+	}
+	// 0.6.9 审校 #16：accepted 终态同样拒租约——不占排他资源
+	if _, err := f.svc.Acquire(ctx, rt.RuntimeID, "mi_ac", 0, nil); !errors.Is(err, ErrMissionAccepted) {
+		t.Fatalf("accepted 主体: %v", err)
 	}
 	if _, err := f.svc.Acquire(ctx, rt.RuntimeID, "mi_ok", 30, nil); !errors.Is(err, ErrInvalidLease) {
 		t.Fatalf("TTL 下界: %v", err)

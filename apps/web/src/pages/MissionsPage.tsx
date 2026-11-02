@@ -340,9 +340,55 @@ function MissionDetail({
   const [reviseOpen, setReviseOpen] = useState(false);
   const [form, setForm] = useState({ objective: "", scope: "", acceptance: "", deliverables: "", sources: "", owner: "" });
   const [cancelReason, setCancelReason] = useState("");
+  // 审校 #4：裁定草稿按轮次隔离——新一轮从契约重新初始化（验收人预填 #7、逐项备注、清原因）
+  useEffect(() => {
+    if (!detail) return;
+    setReviewReason("");
+    setItemNotes(detail.acceptance_criteria.map(() => ""));
+    setReviewReviewer(detail.reviewer || "");
+    setReviewOpen(false);
+  }, [detail?.review_round, detail?.status, detail?.reviewer, detail?.acceptance_criteria.length]);
+  // 审校 #6：ready 时加载当前契约版本可送验包（按选中包送验，不再固定最新）
+  useEffect(() => {
+    if (!detail || detail.status !== "ready") return;
+    let cancelled = false;
+    void api
+      .listDeliveryPackages(missionID)
+      .then(({ packages }) => {
+        if (cancelled) return;
+        setSendablePkgs(packages.filter((x) => x.contract_version === detail.contract_version));
+        setReviewPkgID((cur) => (packages.some((x) => x.package_id === cur) ? cur : packages[0]?.package_id ?? ""));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [missionID, detail?.status, detail?.updated_at, detail?.contract_version]);
+  // 审校 #14：reviewing/accepted 时加载受审包详情（逐项证据可核对）
+  useEffect(() => {
+    if (!detail || !detail.review_package_id) {
+      setReviewedPkg(null);
+      return;
+    }
+    let cancelled = false;
+    void api
+      .getDeliveryPackage(detail.review_package_id)
+      .then((pkg) => {
+        if (!cancelled) setReviewedPkg(pkg);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [detail?.review_package_id]);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewReason, setReviewReason] = useState("");
   const [reviewReviewer, setReviewReviewer] = useState("");
+  // 审校 #4/#6/#7/#14：按送验轮次隔离的裁定草稿 + 送验选包 + 受审包详情
+  const [itemNotes, setItemNotes] = useState<string[]>([]);
+  const [reviewPkgID, setReviewPkgID] = useState("");
+  const [sendablePkgs, setSendablePkgs] = useState<DeliveryPackageView[]>([]);
+  const [reviewedPkg, setReviewedPkg] = useState<DeliveryPackageView | null>(null);
   const seq = useRef(0);
 
   const load = () => {
@@ -437,9 +483,21 @@ function MissionDetail({
         </p>
       )}
       {detail.status === "accepted" && (
-        <p className="text-ok">
-          已验收（终态）——按交付包 <span className="font-mono">{detail.review_package_id}</span> 验收通过；不可修订、取消、再交付或再执行。
-        </p>
+        <div className="text-ok">
+          <p>已验收（终态）——按交付包 <span className="font-mono">{detail.review_package_id}</span> 验收通过；不可修订、取消、再交付或再执行。</p>
+          {reviewedPkg && (
+            <details className="mt-0.5">
+              <summary className="cursor-pointer select-none text-faint text-[11px]">验收所依据的交付包（Run #{reviewedPkg.attempt}）</summary>
+              <ul className="mt-0.5 flex flex-col gap-0.5">
+                {reviewedPkg.acceptance_mapping.map((m, i) => (
+                  <li key={i} className="text-[11px]">
+                    <span className="text-dim">{m.criterion}</span> — <span className="text-faint">{m.evidence.trim() || "（无证据）"}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
       )}
       {detail.status === "waiting" && (
         <p className="text-warn">
@@ -448,8 +506,9 @@ function MissionDetail({
         </p>
       )}
 
-      {detail.status !== "canceled" && (
+      {detail.status !== "canceled" && detail.status !== "accepted" && (
         <div className="flex flex-wrap items-center gap-2">
+          {detail.status !== "reviewing" && (
           <button
             type="button"
             disabled={busy || !owned}
@@ -468,6 +527,7 @@ function MissionDetail({
           >
             {reviseOpen ? "收起修订" : "修订契约"}
           </button>
+          )}
           {(detail.status === "ready" || detail.status === "running" || detail.status === "waiting") && (
             <button
               type="button"
@@ -484,22 +544,36 @@ function MissionDetail({
             </button>
           )}
           {detail.status === "ready" && (
-            <button
-              type="button"
-              disabled={busy || !owned}
-              onClick={() =>
-                void act(async () => {
-                  if (detail.mission_id !== missionID) throw new Error("详情未就绪，已阻止写入");
-                  const { packages } = await api.listDeliveryPackages(missionID);
-                  if (!packages.length) throw new Error("先提交交付包（执行区下方「交付」）");
-                  await api.requestMissionReview(missionID, detail.contract_version, packages[0].package_id);
-                })
-              }
-              className="rounded-lg bg-surface-3 px-2 py-1 disabled:opacity-40"
-              title="以最新交付包提请验收（必需项：成果引用非空 + 每条验收标准有证据——缺项 409 携清单）"
-            >
-              提请验收
-            </button>
+            <div className="flex items-center gap-1">
+              <select
+                value={reviewPkgID}
+                onChange={(e) => setReviewPkgID(e.target.value)}
+                disabled={sendablePkgs.length === 0}
+                className="max-w-56 rounded border border-border bg-surface px-1.5 py-1 text-xs"
+                title="选择送验的交付包（当前契约版本）"
+              >
+                {sendablePkgs.length === 0 && <option value="">（无当前版本交付包）</option>}
+                {sendablePkgs.map((x) => (
+                  <option key={x.package_id} value={x.package_id}>
+                    {x.package_id.slice(0, 12)}… · Run #{x.attempt} · 证据 {x.acceptance_mapping.filter((m) => m.evidence.trim()).length}/{detail.acceptance_criteria.length}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={busy || !owned || !reviewPkgID}
+                onClick={() =>
+                  void act(async () => {
+                    if (detail.mission_id !== missionID) throw new Error("详情未就绪，已阻止写入");
+                    await api.requestMissionReview(missionID, detail.contract_version, reviewPkgID);
+                  })
+                }
+                className="rounded-lg bg-surface-3 px-2 py-1 disabled:opacity-40"
+                title="按选中交付包提请验收（必需项：成果引用非空 + 每条验收标准有证据——缺项 409 携清单）"
+              >
+                提请验收
+              </button>
+            </div>
           )}
           {detail.status === "reviewing" && (
             <button
@@ -549,6 +623,21 @@ function MissionDetail({
 
       {detail.status === "reviewing" && reviewOpen && (
         <div className="flex flex-col gap-2 rounded-lg bg-surface-2 p-2">
+          {reviewedPkg && (
+            <div className="rounded border border-border bg-surface p-2">
+              <p className="text-faint">受审包 <span className="font-mono">{reviewedPkg.package_id}</span>（第 {detail.review_round} 轮 · Run #{reviewedPkg.attempt} · gen {reviewedPkg.generation}）</p>
+              <p className="font-mono text-[10px] text-faint">{reviewedPkg.artifact_refs.join("；") || "（无成果引用）"}</p>
+              <ul className="mt-1 flex flex-col gap-0.5">
+                {reviewedPkg.acceptance_mapping.map((m, i) => (
+                  <li key={i} className="text-[11px]">
+                    <span className="text-dim">{m.criterion}</span>
+                    <span className={m.evidence.trim() ? "text-ok" : "text-warn"}> — {m.evidence.trim() || "（无证据）"}</span>
+                  </li>
+                ))}
+              </ul>
+              {reviewedPkg.open_items.length > 0 && <p className="text-warn text-[11px]">未解决：{reviewedPkg.open_items.join("；")}</p>}
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-2">
             <input
               value={reviewReviewer}
@@ -556,6 +645,15 @@ function MissionDetail({
               placeholder={`验收人${detail.reviewer ? `（契约指定：${detail.reviewer}）` : "（契约未指定 = 请求人自验）"}`}
               className="min-w-0 flex-1 rounded border border-border bg-surface px-1.5 py-1 outline-none"
             />
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-faint">逐项依据（可选，随裁定留痕）：</span>
+            {detail.acceptance_criteria.map((c, i) => (
+              <div key={i} className="flex items-center gap-1.5">
+                <span className="w-1/3 truncate text-dim" title={c}>{c}</span>
+                <input value={itemNotes[i] ?? ""} onChange={(e) => setItemNotes(itemNotes.map((v, j) => (j === i ? e.target.value : v)))} placeholder="备注（≤500 字）" className="min-w-0 flex-1 rounded border border-border bg-surface px-1.5 py-0.5 outline-none" />
+              </div>
+            ))}
           </div>
           <textarea
             value={reviewReason}
@@ -573,8 +671,12 @@ function MissionDetail({
                   if (detail.mission_id !== missionID) throw new Error("详情未就绪，已阻止写入");
                   await api.reviewMission(missionID, detail.contract_version, {
                     decision: "accepted",
+                    reviewRound: detail.review_round,
                     ...(reviewReviewer.trim() ? { reviewer: reviewReviewer.trim() } : {}),
                     ...(reviewReason.trim() ? { reason: reviewReason.trim() } : {}),
+                    item_notes: detail.acceptance_criteria
+                      .map((c, i) => ({ criterion: c, note: (itemNotes[i] ?? "").trim() }))
+                      .filter((x) => x.note),
                   });
                 })
               }
@@ -591,8 +693,12 @@ function MissionDetail({
                   if (!reviewReason.trim()) throw new Error("退回须填写原因");
                   await api.reviewMission(missionID, detail.contract_version, {
                     decision: "returned",
+                    reviewRound: detail.review_round,
                     reason: reviewReason.trim(),
                     ...(reviewReviewer.trim() ? { reviewer: reviewReviewer.trim() } : {}),
+                    item_notes: detail.acceptance_criteria
+                      .map((c, i) => ({ criterion: c, note: (itemNotes[i] ?? "").trim() }))
+                      .filter((x) => x.note),
                   });
                 })
               }

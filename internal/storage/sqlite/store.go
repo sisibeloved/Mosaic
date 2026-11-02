@@ -586,6 +586,14 @@ var migrationV22 = []string{
 	"INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (22, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
 }
 
+// migrationV23（0.6.9 审校 #3 / ADR-0032 v0.2）：missions 增 review_round（送验
+// 轮次——每次 request_review 单调递增，裁定须核对轮次，防旧裁定落到下一轮）。
+// 逐语句执行、重复加列容忍。
+var migrationV23 = []string{
+	"ALTER TABLE missions ADD COLUMN review_round INTEGER NOT NULL DEFAULT 0",
+	"INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (23, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+}
+
 // roomFTSDDL v3（M3-3 按需平面）：FTS5 trigram 全文索引（v1.46 spike 实证
 // modernc v1.57.0 / SQLite 3.53.3：unicode61 对中文整串成单 token 不可用，
 // trigram 对 CJK 子串 ≥3 字与英文均正确命中；<3 字查询由 SearchMessages
@@ -697,6 +705,13 @@ func Open(path string) (*Store, error) {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
 			return nil, fmt.Errorf("sqlite: migration v22: %w", err)
+		}
+	}
+	// v23 迁移（0.6.9 审校 #3）：missions.review_round
+	for _, stmt := range migrationV23 {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("sqlite: migration v23: %w", err)
 		}
 	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
@@ -2697,13 +2712,13 @@ SELECT agent_id, skills, tools, context, runtime_capabilities, workspace_access,
 // ---- Mission 契约域（RFC-0018 §3.1/§3.2/§6.1 / ADR-0023，0.6.0；v13 表，端口实现）----
 
 // missionCols missions 投影读取列。
-const missionCols = `mission_id, contract_version, status, owner_agent_id, requester, objective, content, created_at, updated_at, waiting_reason, review_package_id`
+const missionCols = `mission_id, contract_version, status, owner_agent_id, requester, objective, content, created_at, updated_at, waiting_reason, review_package_id, review_round`
 
 func scanMission(row interface{ Scan(...any) error }) (mission.Mission, error) {
 	var m mission.Mission
 	var content string
 	if err := row.Scan(&m.MissionID, &m.ContractVersion, &m.Status, &m.OwnerAgentID,
-		&m.Requester, &m.Objective, &content, &m.CreatedAt, &m.UpdatedAt, &m.WaitingReason, &m.ReviewPackageID); err != nil {
+		&m.Requester, &m.Objective, &content, &m.CreatedAt, &m.UpdatedAt, &m.WaitingReason, &m.ReviewPackageID, &m.ReviewRound); err != nil {
 		return mission.Mission{}, err
 	}
 	if err := json.Unmarshal([]byte(content), &m.Content); err != nil {
@@ -2822,8 +2837,9 @@ func (s *Store) transitionMissionIf(ctx context.Context, missionID string, expec
 			return nil
 		}
 		// 0.6.7：等待原因——paused 保留（恢复据此回 waiting）、回 waiting 保留；
-		// 其余目标（ready/draft/canceling/canceled）清空。
-		setSQL := `UPDATE missions SET status = ?, updated_at = ?, waiting_reason = '' WHERE mission_id = ?`
+		// 0.6.9 审校 #13：受审包锚——canceling/canceled 清空（accepted 经
+		// RecordReview 保留；退回已在 RecordReview 清）。
+		setSQL := `UPDATE missions SET status = ?, updated_at = ?, waiting_reason = '', review_package_id = '' WHERE mission_id = ?`
 		if to == mission.StatusPaused || to == mission.StatusWaiting {
 			setSQL = `UPDATE missions SET status = ?, updated_at = ? WHERE mission_id = ?`
 		}
@@ -2909,9 +2925,9 @@ func (s *Store) CreateMission(ctx context.Context, m mission.Mission, src *missi
 			}
 		}
 		if _, err := q.ExecContext(ctx, `
-INSERT INTO missions (`+missionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO missions (`+missionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			m.MissionID, m.ContractVersion, m.Status, m.OwnerAgentID, m.Requester,
-			m.Objective, string(raw), m.CreatedAt, m.UpdatedAt, m.WaitingReason, m.ReviewPackageID); err != nil {
+			m.Objective, string(raw), m.CreatedAt, m.UpdatedAt, m.WaitingReason, m.ReviewPackageID, m.ReviewRound); err != nil {
 			return fmt.Errorf("sqlite: create mission: %w", err)
 		}
 		if err := insertMissionVersion(ctx, q, m, string(raw)); err != nil {
@@ -3280,29 +3296,10 @@ func (s *Store) PackageByID(ctx context.Context, packageID string) (delivery.Pac
 	return p, true, nil
 }
 
-// RequestReview 条件送验（0.6.9 / ADR-0032）：版本匹配且 ready → reviewing +
-// review_package_id + 事件，单事务；ok=false = 版本不匹配/非 ready。
+// RequestReview 条件送验（0.6.9 / ADR-0032；v0.2 #2/#3）：单事务——版本 + ready
+// 守卫 → **事务内复核无在途/未处置 Run**（ErrUnsettledRuns）→ reviewing +
+// review_package_id + review_round 单调递增 + 事件。
 func (s *Store) RequestReview(ctx context.Context, missionID string, expectedVersion int, packageID string, event mission.Event) (mission.Mission, bool, error) {
-	return s.reviewTransitionIf(ctx, missionID, expectedVersion, mission.StatusReviewing, true, event,
-		func(version int, status string) bool {
-			return version == expectedVersion && status == mission.StatusReady
-		}, packageID)
-}
-
-// RecordReview 条件裁定（0.6.9）：版本匹配且 reviewing → to（ready 清锚 /
-// accepted 保留锚）+ 事件，单事务；ok=false = 版本不匹配/非 reviewing。
-func (s *Store) RecordReview(ctx context.Context, missionID string, expectedVersion int, to string, event mission.Event) (mission.Mission, bool, error) {
-	clear := to == mission.StatusReady
-	return s.reviewTransitionIf(ctx, missionID, expectedVersion, to, clear, event,
-		func(version int, status string) bool {
-			return version == expectedVersion && status == mission.StatusReviewing
-		}, "")
-}
-
-// reviewTransitionIf 送验/裁定通用条件转移（0.6.9）：guard 可进才更新（锚按
-// setPackage 写入 / clearPackage 清空）+ status_changed 事件。
-func (s *Store) reviewTransitionIf(ctx context.Context, missionID string, expectedVersion int,
-	to string, clearAnchor bool, event mission.Event, guard func(version int, status string) bool, packageID string) (mission.Mission, bool, error) {
 	ok := false
 	err := s.identityWriteTx(ctx, func(q identityExec) error {
 		var version int
@@ -3315,32 +3312,76 @@ func (s *Store) reviewTransitionIf(ctx context.Context, missionID string, expect
 		if err != nil {
 			return fmt.Errorf("sqlite: review probe: %w", err)
 		}
-		if !guard(version, status) {
+		if version != expectedVersion || status != mission.StatusReady {
 			return nil
 		}
-		if packageID != "" {
-			if _, err := q.ExecContext(ctx,
-				`UPDATE missions SET status = ?, review_package_id = ?, updated_at = ? WHERE mission_id = ?`,
-				to, packageID, event.OccurredAt, missionID); err != nil {
-				return fmt.Errorf("sqlite: review update: %w", err)
-			}
-		} else if clearAnchor {
-			if _, err := q.ExecContext(ctx,
-				`UPDATE missions SET status = ?, review_package_id = '', updated_at = ? WHERE mission_id = ?`,
-				to, event.OccurredAt, missionID); err != nil {
-				return fmt.Errorf("sqlite: review update: %w", err)
-			}
-		} else {
-			if _, err := q.ExecContext(ctx,
-				`UPDATE missions SET status = ?, updated_at = ? WHERE mission_id = ?`,
-				to, event.OccurredAt, missionID); err != nil {
-				return fmt.Errorf("sqlite: review update: %w", err)
-			}
+		// 审校 #2：送验事务内复核未决 Run（在途 / 未处置 unknown）
+		var unsettled int
+		if err := q.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM runs WHERE mission_id = ? AND
+  (state IN ('pending','running') OR (state = 'unknown' AND resolution = ''))`,
+			missionID).Scan(&unsettled); err != nil {
+			return fmt.Errorf("sqlite: review unsettled probe: %w", err)
+		}
+		if unsettled > 0 {
+			return fmt.Errorf("%w：%d 条未决", mission.ErrUnsettledRuns, unsettled)
+		}
+		if _, err := q.ExecContext(ctx, `
+UPDATE missions SET status = ?, review_package_id = ?, review_round = review_round + 1, updated_at = ?
+ WHERE mission_id = ?`,
+			mission.StatusReviewing, packageID, event.OccurredAt, missionID); err != nil {
+			return fmt.Errorf("sqlite: review update: %w", err)
 		}
 		if _, err := q.ExecContext(ctx, `
 INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
 			missionID, event.EventType, string(event.Payload), event.OccurredAt); err != nil {
 			return fmt.Errorf("sqlite: review event: %w", err)
+		}
+		ok = true
+		return nil
+	})
+	if err != nil || !ok {
+		return mission.Mission{}, ok, err
+	}
+	return s.MissionByID(ctx, missionID)
+}
+
+// RecordReview 条件裁定（0.6.9；v0.2 #3 轮次守卫）：单事务——版本 + reviewing +
+// **轮次相符**三守卫 → to（ready 清锚 / accepted 保留锚；轮次单调不复位）+ 事件。
+func (s *Store) RecordReview(ctx context.Context, missionID string, expectedVersion, expectedRound int, to string, event mission.Event) (mission.Mission, bool, error) {
+	ok := false
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		var version, round int
+		var status, anchor string
+		err := q.QueryRowContext(ctx,
+			`SELECT contract_version, status, review_round, review_package_id FROM missions WHERE mission_id = ?`,
+			missionID).Scan(&version, &status, &round, &anchor)
+		if errors.Is(err, sql.ErrNoRows) {
+			return mission.ErrMissionNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("sqlite: record review probe: %w", err)
+		}
+		if version != expectedVersion || status != mission.StatusReviewing || round != expectedRound {
+			return nil
+		}
+		if to == mission.StatusReady {
+			if _, err := q.ExecContext(ctx, `
+UPDATE missions SET status = ?, review_package_id = '', updated_at = ? WHERE mission_id = ?`,
+				to, event.OccurredAt, missionID); err != nil {
+				return fmt.Errorf("sqlite: record review update: %w", err)
+			}
+		} else {
+			if _, err := q.ExecContext(ctx, `
+UPDATE missions SET status = ?, updated_at = ? WHERE mission_id = ?`,
+				to, event.OccurredAt, missionID); err != nil {
+				return fmt.Errorf("sqlite: record review update: %w", err)
+			}
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+			missionID, event.EventType, string(event.Payload), event.OccurredAt); err != nil {
+			return fmt.Errorf("sqlite: record review event: %w", err)
 		}
 		ok = true
 		return nil

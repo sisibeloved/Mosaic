@@ -158,9 +158,14 @@ func (m *MemStore) flipStatusLocked(idx int, from, to, reason, occurredAt string
 	cur := m.missions[idx]
 	cur.Status = to
 	// 0.6.7：等待原因——paused 保留（恢复据此回 waiting）、回 waiting 保留；
-	// 其余目标（ready/draft/canceling/canceled）清空。
+	// 0.6.9 审校 #13：受审包锚——accepted 保留，canceling/canceled 清空（退回
+	// 已在 RecordReview 清）。
 	if to != StatusPaused && to != StatusWaiting {
 		cur.WaitingReason = ""
+	}
+	if to != StatusAccepted {
+		cur.ReviewPackageID = ""
+		// ReviewRound 单调保留（审计锚——不随退回/取消复位）
 	}
 	cur.UpdatedAt = occurredAt
 	m.missions[idx] = cur
@@ -281,6 +286,7 @@ func (m *MemStore) RequestReview(_ context.Context, missionID string, expectedVe
 	}
 	cur.Status = StatusReviewing
 	cur.ReviewPackageID = packageID
+	cur.ReviewRound++ // 审校 #3：同包重审轮次也递增——单比包 ID 不足以防串轮
 	cur.UpdatedAt = event.OccurredAt
 	m.missions[i] = cur
 	m.seq++
@@ -289,8 +295,9 @@ func (m *MemStore) RequestReview(_ context.Context, missionID string, expectedVe
 	return cur, true, nil
 }
 
-// RecordReview 条件裁定（0.6.9）：reviewing → to（accepted 保留锚 / ready 清锚）。
-func (m *MemStore) RecordReview(_ context.Context, missionID string, expectedVersion int, to string, event Event) (Mission, bool, error) {
+// RecordReview 条件裁定（0.6.9；v0.2 #3 轮次守卫）：reviewing 且轮次相符 → to
+// （accepted 保留锚 / ready 清锚——轮次回 0）。
+func (m *MemStore) RecordReview(_ context.Context, missionID string, expectedVersion, expectedRound int, to string, event Event) (Mission, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	i, ok := m.indexOfLocked(missionID)
@@ -298,12 +305,13 @@ func (m *MemStore) RecordReview(_ context.Context, missionID string, expectedVer
 		return Mission{}, false, ErrMissionNotFound
 	}
 	cur := m.missions[i]
-	if cur.ContractVersion != expectedVersion || cur.Status != StatusReviewing {
+	if cur.ContractVersion != expectedVersion || cur.Status != StatusReviewing || cur.ReviewRound != expectedRound {
 		return Mission{}, false, nil
 	}
 	cur.Status = to
 	if to == StatusReady {
 		cur.ReviewPackageID = "" // 退回清锚（重新送验另指）
+		// ReviewRound 保持单调（不复位）——A 轮 1 与 B 轮 1 必须可区分（审校 #3）
 	}
 	cur.UpdatedAt = event.OccurredAt
 	m.missions[i] = cur

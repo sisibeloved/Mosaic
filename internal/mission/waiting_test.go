@@ -74,16 +74,22 @@ func TestMarkWaitingAndClear(t *testing.T) {
 	}
 }
 
-// TestMarkWaitingOnlyFromRunning 仅 running 可进 waiting（ready/paused 等无操作）。
-func TestMarkWaitingOnlyFromRunning(t *testing.T) {
+// TestMarkWaitingFromRunningOrReadyOnly 仅 running | ready 可进 waiting（0.6.9
+// 审校 #2：ready 残留未核验 Run 亦须进等待）；paused/draft/canceled 等无操作。
+func TestMarkWaitingFromRunningOrReadyOnly(t *testing.T) {
 	svc, _ := newSvc(t, fakeAgents{ids: map[string]bool{"ag_a": true}})
 	ctx := context.Background()
-	m, _ := svc.Create(ctx, "ag_a", fullContent(), nil) // ready
-	if changed, err := svc.MarkWaiting(ctx, m.MissionID, "reconciliation"); err != nil || changed {
-		t.Fatalf("ready 不可直接进 waiting: %v %v", changed, err)
+	draft, _ := svc.Create(ctx, "", fullContent(), nil) // draft
+	if changed, err := svc.MarkWaiting(ctx, draft.MissionID, "reconciliation"); err != nil || changed {
+		t.Fatalf("draft 不可进 waiting: %v %v", changed, err)
 	}
-	got, _, _ := svc.Get(ctx, m.MissionID)
-	if got.Status != StatusReady || got.WaitingReason != "" {
+	paused, _ := svc.Create(ctx, "ag_a", fullContent(), nil)
+	svc.Pause(ctx, paused.MissionID, 1, "")
+	if changed, err := svc.MarkWaiting(ctx, paused.MissionID, "reconciliation"); err != nil || changed {
+		t.Fatalf("paused 不可进 waiting: %v %v", changed, err)
+	}
+	got, _, _ := svc.Get(ctx, paused.MissionID)
+	if got.Status != StatusPaused || got.WaitingReason != "" {
 		t.Fatalf("状态不得改: %+v", got)
 	}
 }

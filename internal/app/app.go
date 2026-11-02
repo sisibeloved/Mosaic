@@ -434,7 +434,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		MissionRuns:      runSvc,
 		MissionControl:   missioncontrol.New(missionSvc, runSvc),
 		Delivery:         deliverySvc,
-		Review:           review.New(missionSvc, deliveryPackagesAdapter{deliverySvc}),
+		Review:           review.New(missionSvc, deliveryPackagesAdapter{deliverySvc}, reviewRunsAdapter{runSvc}),
 		Logger:           logger,
 		Dev:              opts.Dev,
 		Budget:           budgetLimits,
@@ -1136,6 +1136,13 @@ func (a deliveryMissionsAdapter) MissionFacts(ctx context.Context, missionID str
 		return delivery.MissionFacts{}, ok, err
 	}
 	return delivery.MissionFacts{MissionID: m.MissionID, ContractVersion: m.ContractVersion, Status: m.Status}, true, nil
+}
+
+// reviewRunsAdapter review.Runs 适配（送验前置未决复核——0.6.9 审校 #2）。
+type reviewRunsAdapter struct{ svc *missionrun.Service }
+
+func (a reviewRunsAdapter) Unsettled(ctx context.Context, missionID string) (int, int, error) {
+	return a.svc.Unsettled(ctx, missionID)
 }
 
 // deliveryPackagesAdapter review.Packages 适配（真 delivery 服务只读——送验

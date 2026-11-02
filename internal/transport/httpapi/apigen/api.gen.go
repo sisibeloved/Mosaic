@@ -3231,7 +3231,7 @@ type MissionResume struct {
 	ExpectedVersion int `json:"expected_version"`
 }
 
-// MissionReviewDecision 验收裁定请求体（0.6.9 / ADR-0032）。returned 须携 reason。
+// MissionReviewDecision 验收裁定请求体（0.6.9 / ADR-0032；v0.2：须携裁定所见的送验轮次 review_round——旧标签页/迟到/重放的旧轮次裁定一律 409）。returned 须携 reason。
 type MissionReviewDecision struct {
 	Decision        MissionReviewDecisionDecision `json:"decision"`
 	ExpectedVersion int                           `json:"expected_version"`
@@ -3239,6 +3239,9 @@ type MissionReviewDecision struct {
 
 	// Reason 退回原因（returned 必填；accepted 可作备注）
 	Reason *string `json:"reason,omitempty"`
+
+	// ReviewRound 裁定所见的送验轮次（MissionView.review_round）——与当前不符 409 invalid_transition
+	ReviewRound int `json:"review_round"`
 
 	// Reviewer 裁定人（契约 reviewer 非空时须相等——契约一致性校验，非独立身份认证）
 	Reviewer *string `json:"reviewer,omitempty"`
@@ -3398,6 +3401,9 @@ type MissionView struct {
 
 	// ReviewPackageId 受审/已验收交付包（0.6.9 / ADR-0032：request_review 写入，accepted 保留以追溯，returned 清空；非 reviewing/accepted 为空串）
 	ReviewPackageId string `json:"review_package_id"`
+
+	// ReviewRound 送验轮次（0.6.9 审校 #3：每次 request_review 单调递增——裁定须核对轮次，防旧裁定落到下一轮；非 reviewing/accepted 为 0）
+	ReviewRound int `json:"review_round"`
 
 	// Reviewer 验收人（空 = 请求人自验）
 	Reviewer string `json:"reviewer"`

@@ -153,3 +153,15 @@ reviewer 预填契约验收人）；accepted → 终态徽章，控制区与交�
 ## 修订记录
 
 - v0.1（2026-11-02）：首版（随 0.6.9 实施）。
+- v0.2（2026-11-02）：审校修复（独立审校 3 P1 + 12 P2）——#1 P1 送验轮次守卫
+  （migration v23 missions.review_round 单调递增；裁定请求携 review_round，
+  SQLite/MemStore 裁定事务内核对轮次+包+契约版本+状态——旧标签页/迟到/重放的
+  旧轮次裁定 409；同包重审轮次也递增，单比包 ID 不足以防串轮）；#2 P1 纯空白
+  证据按 TrimSpace 判非空（缺项 409 携标准清单）；#3 P1 未决 Run 拦送验（在途/
+  未处置 unknown——送验前置 + SQLite 事务内权威复核 ErrUnsettledRuns；ready 残留
+  崩溃形态同样进 waiting；accepted/canceled 终态封处置入口 ErrMissionTerminal）；
+  P2：#4 裁定草稿按轮次隔离（SPA）、#5 accepted/reviewing 按钮门控、#6 送验选包
+  （不再固定最新）、#7 验收人预填 + 逐项备注、#8 并发送验同包幂等（CAS 未胜重读）、
+  #9 验收人 ≤64 字、#10 退回事件 to 为真实状态 ready、#12 expected_version 预读
+  校验（防与修订交错跳标准）、#13 两段取消清受审包锚、#14 受审包详情可核对、
+  #15 accepted 拒新装配（execctx）、#16 accepted 拒租约（runtime）。

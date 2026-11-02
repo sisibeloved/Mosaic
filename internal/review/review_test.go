@@ -28,7 +28,7 @@ func newSvc(t *testing.T) (*Service, *mission.Service, *fakePackages) {
 		mission.WithNewMissionID(func() string { return "mi_r" }),
 		mission.WithAgentLookup(stubAgents{}))
 	pk := &fakePackages{facts: map[string]PackageFacts{}}
-	return New(mSvc, pk), mSvc, pk
+	return New(mSvc, pk, nil), mSvc, pk
 }
 
 func readyMission(t *testing.T, mSvc *mission.Service, reviewer string) mission.Mission {
@@ -126,15 +126,15 @@ func TestReviewDelegates(t *testing.T) {
 	if _, err := svc.RequestReview(ctx, m.MissionID, 1, "dlv_ok"); err != nil {
 		t.Fatalf("送验: %v", err)
 	}
-	if _, err := svc.Review(ctx, m.MissionID, 1, mission.ReviewDecision{Decision: mission.ReviewAccepted, Reviewer: "nope"}); !errors.Is(err, mission.ErrReviewNotAuthorized) {
+	if _, err := svc.Review(ctx, m.MissionID, 1, 1, mission.ReviewDecision{Decision: mission.ReviewAccepted, Reviewer: "nope"}); !errors.Is(err, mission.ErrReviewNotAuthorized) {
 		t.Fatalf("验收人不符: %v", err)
 	}
-	out, err := svc.Review(ctx, m.MissionID, 1, mission.ReviewDecision{Decision: mission.ReviewReturned, Reviewer: "qa", Reason: "补证"})
+	out, err := svc.Review(ctx, m.MissionID, 1, 1, mission.ReviewDecision{Decision: mission.ReviewReturned, Reviewer: "qa", Reason: "补证"})
 	if err != nil || out.Status != mission.StatusReady || out.ReviewPackageID != "" {
 		t.Fatalf("退回: %+v %v", out, err)
 	}
-	svc.RequestReview(ctx, m.MissionID, 1, "dlv_ok")
-	out, err = svc.Review(ctx, m.MissionID, 1, mission.ReviewDecision{Decision: mission.ReviewAccepted, Reviewer: "qa"})
+	svc.RequestReview(ctx, m.MissionID, 1, "dlv_ok") // 第二轮（round 2）
+	out, err = svc.Review(ctx, m.MissionID, 1, 2, mission.ReviewDecision{Decision: mission.ReviewAccepted, Reviewer: "qa"})
 	if err != nil || out.Status != mission.StatusAccepted || out.ReviewPackageID != "dlv_ok" {
 		t.Fatalf("接受: %+v %v", out, err)
 	}

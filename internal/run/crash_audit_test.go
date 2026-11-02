@@ -162,12 +162,15 @@ func TestLegacyResidueConverged(t *testing.T) {
 				t.Fatalf("[running] Mission 须进 waiting（得到 %s）——出调度列等处置", f.missions.status["mi_a"])
 			}
 		} else {
-			// ready 形态：不动状态（waiting 挂 running），执行面围栏挡自动重跑
-			if f.missions.status["mi_a"] != "ready" {
-				t.Fatalf("[ready] Mission 状态不动（得到 %s）", f.missions.status["mi_a"])
+			// 0.6.9 审校 #2：ready 残留形态同样进 waiting（与 running 形态一致——
+			// 送验面前置拦截 + 单一形态；执行面围栏 residue_unresolved 仍留作兜底）
+			if f.missions.status["mi_a"] != "waiting" {
+				t.Fatalf("[ready] Mission 须进 waiting（得到 %s）", f.missions.status["mi_a"])
 			}
-			if _, err := f.svc.ExecuteMission(ctx, MissionRef{MissionID: "mi_a", OwnerAgentID: "ag_x"}); !errors.Is(err, ErrResidueUnresolved) {
-				t.Fatalf("[ready] 未处置残留上执行必须被拒（得到 %v）", err)
+			// waiting 形态：执行被拒（SetRunning 条件不符——Run 置 failed 不启动）
+			r, err := f.svc.ExecuteMission(ctx, MissionRef{MissionID: "mi_a", OwnerAgentID: "ag_x"})
+			if err != nil || r.State != StateFailed || f.exec.calls != 0 {
+				t.Fatalf("[ready] 未处置残留上执行必须被拒（err=%v state=%s calls=%d）", err, r.State, f.exec.calls)
 			}
 		}
 		// 处置出口打通：unknown → verified_completed → 调度放行

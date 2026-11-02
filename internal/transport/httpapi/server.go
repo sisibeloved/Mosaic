@@ -2286,7 +2286,7 @@ func missionView(m mission.Mission) apigen.MissionView {
 	}
 	return apigen.MissionView{
 		MissionId: m.MissionID, ContractVersion: m.ContractVersion,
-		Status: apigen.MissionViewStatus(m.Status), WaitingReason: m.WaitingReason, ReviewPackageId: m.ReviewPackageID, OwnerAgentId: m.OwnerAgentID,
+		Status: apigen.MissionViewStatus(m.Status), WaitingReason: m.WaitingReason, ReviewPackageId: m.ReviewPackageID, ReviewRound: m.ReviewRound, OwnerAgentId: m.OwnerAgentID,
 		Requester: m.Requester, Reviewer: m.Reviewer, RoomSource: roomSource,
 		Objective: m.Objective, Scope: m.Scope,
 		Constraints: constraints, AcceptanceCriteria: acceptance,
@@ -2876,6 +2876,8 @@ func writeLeaseError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "mission_not_found", err.Error())
 	case errors.Is(err, mosaicruntime.ErrMissionCanceled):
 		writeError(w, http.StatusConflict, "mission_canceled", err.Error())
+	case errors.Is(err, mosaicruntime.ErrMissionAccepted):
+		writeError(w, http.StatusConflict, "mission_accepted", err.Error())
 	case errors.Is(err, mosaicruntime.ErrRuntimeNotReady):
 		writeError(w, http.StatusConflict, "runtime_not_ready", err.Error())
 	case errors.Is(err, mosaicruntime.ErrLeaseConflictRuntime):
@@ -3105,6 +3107,10 @@ func (s *server) ReviewMission(w http.ResponseWriter, r *http.Request, missionID
 		writeError(w, http.StatusBadRequest, "invalid_review", "expected_version 须 ≥1")
 		return
 	}
+	if req.ReviewRound < 1 {
+		writeError(w, http.StatusBadRequest, "invalid_review", "review_round 必填（裁定所见的送验轮次）")
+		return
+	}
 	d := mission.ReviewDecision{
 		Decision: string(req.Decision), Reviewer: derefStr(req.Reviewer),
 		Reason: derefStr(req.Reason),
@@ -3115,7 +3121,7 @@ func (s *server) ReviewMission(w http.ResponseWriter, r *http.Request, missionID
 			d.ItemNotes = append(d.ItemNotes, mission.ReviewItemNote{Criterion: n.Criterion, Note: n.Note})
 		}
 	}
-	m, err := s.deps.Review.Review(r.Context(), missionID, int(req.ExpectedVersion), d)
+	m, err := s.deps.Review.Review(r.Context(), missionID, int(req.ExpectedVersion), int(req.ReviewRound), d)
 	if err != nil {
 		writeReviewError(w, err)
 		return
@@ -3138,6 +3144,8 @@ func writeReviewError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "stale_package", err.Error())
 	case errors.Is(err, review.ErrMissingRequiredItems):
 		writeError(w, http.StatusConflict, "missing_required_items", err.Error())
+	case errors.Is(err, review.ErrRunsUnsettled), errors.Is(err, mission.ErrUnsettledRuns):
+		writeError(w, http.StatusConflict, "runs_unsettled", err.Error())
 	case errors.Is(err, mission.ErrReviewNotAuthorized):
 		writeError(w, http.StatusForbidden, "review_not_authorized", err.Error())
 	case errors.Is(err, mission.ErrVersionConflict):
@@ -3367,6 +3375,8 @@ func writeRunError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "run_not_unknown", err.Error())
 	case errors.Is(err, missionrun.ErrRunAlreadyResolved):
 		writeError(w, http.StatusConflict, "run_already_resolved", err.Error())
+	case errors.Is(err, missionrun.ErrMissionTerminal):
+		writeError(w, http.StatusConflict, "mission_terminal", err.Error())
 	case errors.Is(err, mosaicruntime.ErrLeaseConflictRuntime), errors.Is(err, mosaicruntime.ErrLeaseConflictWorkspace):
 		writeError(w, http.StatusConflict, "scheduler_busy", "资源被占（"+err.Error()+"）——下轮再试")
 	default:
@@ -3511,6 +3521,8 @@ func writeExecctxError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "binding_not_found", err.Error())
 	case errors.Is(err, execctx.ErrMissionCanceled):
 		writeError(w, http.StatusConflict, "mission_canceled", err.Error())
+	case errors.Is(err, execctx.ErrMissionAccepted):
+		writeError(w, http.StatusConflict, "mission_accepted", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "execctx_failed", err.Error())
 	}

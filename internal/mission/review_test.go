@@ -100,7 +100,7 @@ func TestRecordReviewAcceptedTerminal(t *testing.T) {
 	m := readyWithReviewer(t, svc, "")
 	svc.RequestReview(ctx, m.MissionID, 1, "dlv_1")
 
-	out, err := svc.RecordReview(ctx, m.MissionID, 1, ReviewDecision{
+	out, err := svc.RecordReview(ctx, m.MissionID, 1, 1, ReviewDecision{
 		Decision: ReviewAccepted, Reviewer: "owner", Reason: "全部达成",
 		ItemNotes: []ReviewItemNote{{Criterion: "七端点全绿", Note: "CI 绿"}},
 	})
@@ -125,7 +125,7 @@ func TestRecordReviewAcceptedTerminal(t *testing.T) {
 	if _, err := svc.RequestReview(ctx, m.MissionID, 1, "dlv_2"); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("accepted 再送验: %v", err)
 	}
-	if _, err := svc.RecordReview(ctx, m.MissionID, 1, ReviewDecision{Decision: ReviewReturned, Reason: "x"}); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := svc.RecordReview(ctx, m.MissionID, 1, 1, ReviewDecision{Decision: ReviewReturned, Reason: "x"}); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("accepted 再裁定: %v", err)
 	}
 	if changed, _ := svc.MarkRunning(ctx, m.MissionID); changed {
@@ -147,10 +147,10 @@ func TestRecordReviewReturned(t *testing.T) {
 	svc.RequestReview(ctx, m.MissionID, 1, "dlv_1")
 
 	// returned 缺 reason → 不合法
-	if _, err := svc.RecordReview(ctx, m.MissionID, 1, ReviewDecision{Decision: ReviewReturned}); !errors.Is(err, ErrInvalidReview) {
+	if _, err := svc.RecordReview(ctx, m.MissionID, 1, 1, ReviewDecision{Decision: ReviewReturned}); !errors.Is(err, ErrInvalidReview) {
 		t.Fatalf("退回须携原因: %v", err)
 	}
-	out, err := svc.RecordReview(ctx, m.MissionID, 1, ReviewDecision{Decision: ReviewReturned, Reason: "第二条缺证据"})
+	out, err := svc.RecordReview(ctx, m.MissionID, 1, 1, ReviewDecision{Decision: ReviewReturned, Reason: "第二条缺证据"})
 	if err != nil || out.Status != StatusReady || out.ReviewPackageID != "" {
 		t.Fatalf("退回: %+v %v", out, err)
 	}
@@ -175,10 +175,10 @@ func TestRecordReviewAuthorizationAndValidation(t *testing.T) {
 	m := readyWithReviewer(t, svc, "qa@team")
 	svc.RequestReview(ctx, m.MissionID, 1, "dlv_1")
 
-	if _, err := svc.RecordReview(ctx, m.MissionID, 1, ReviewDecision{Decision: ReviewAccepted, Reviewer: "someone"}); !errors.Is(err, ErrReviewNotAuthorized) {
+	if _, err := svc.RecordReview(ctx, m.MissionID, 1, 1, ReviewDecision{Decision: ReviewAccepted, Reviewer: "someone"}); !errors.Is(err, ErrReviewNotAuthorized) {
 		t.Fatalf("验收人不符须拒绝: %v", err)
 	}
-	if _, err := svc.RecordReview(ctx, m.MissionID, 1, ReviewDecision{Decision: ReviewAccepted}); !errors.Is(err, ErrReviewNotAuthorized) {
+	if _, err := svc.RecordReview(ctx, m.MissionID, 1, 1, ReviewDecision{Decision: ReviewAccepted}); !errors.Is(err, ErrReviewNotAuthorized) {
 		t.Fatalf("契约指定验收人时缺 reviewer 须拒绝: %v", err)
 	}
 	// 形状：decision 枚举 / reason 超长 / item_notes 超项
@@ -188,21 +188,21 @@ func TestRecordReviewAuthorizationAndValidation(t *testing.T) {
 		"逐项超项": {Decision: ReviewAccepted, Reviewer: "qa@team", ItemNotes: make([]ReviewItemNote, 17)},
 		"条文空":  {Decision: ReviewAccepted, Reviewer: "qa@team", ItemNotes: []ReviewItemNote{{Criterion: "", Note: "x"}}},
 	} {
-		if _, err := svc.RecordReview(ctx, m.MissionID, 1, d); !errors.Is(err, ErrInvalidReview) {
+		if _, err := svc.RecordReview(ctx, m.MissionID, 1, 1, d); !errors.Is(err, ErrInvalidReview) {
 			t.Errorf("%s 应 ErrInvalidReview: %v", name, err)
 		}
 	}
 	// 版本冲突
-	if _, err := svc.RecordReview(ctx, m.MissionID, 9, ReviewDecision{Decision: ReviewAccepted, Reviewer: "qa@team"}); !errors.Is(err, ErrVersionConflict) {
+	if _, err := svc.RecordReview(ctx, m.MissionID, 9, 1, ReviewDecision{Decision: ReviewAccepted, Reviewer: "qa@team"}); !errors.Is(err, ErrVersionConflict) {
 		t.Fatalf("版本冲突: %v", err)
 	}
 	// 正确验收人通过
-	if out, err := svc.RecordReview(ctx, m.MissionID, 1, ReviewDecision{Decision: ReviewAccepted, Reviewer: "qa@team"}); err != nil || out.Status != StatusAccepted {
+	if out, err := svc.RecordReview(ctx, m.MissionID, 1, 1, ReviewDecision{Decision: ReviewAccepted, Reviewer: "qa@team"}); err != nil || out.Status != StatusAccepted {
 		t.Fatalf("验收人匹配: %+v %v", out, err)
 	}
 	// 非 reviewing 裁定拒绝
 	other := readyWithReviewer(t, svc, "")
-	if _, err := svc.RecordReview(ctx, other.MissionID, 1, ReviewDecision{Decision: ReviewAccepted}); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := svc.RecordReview(ctx, other.MissionID, 1, 1, ReviewDecision{Decision: ReviewAccepted}); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("非 reviewing 裁定: %v", err)
 	}
 }
