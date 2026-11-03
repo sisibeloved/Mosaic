@@ -83,7 +83,7 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 文档
 
-- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.6.10）
+- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.6.11）
 - [架构设计说明书](docs/design/2026-08-13-mosaic-architecture-design.md)
 - [RFC-0001 Room Protocol](docs/design/rfc/2026-08-25-rfc-0001-room-protocol.md)
 - [RFC-0002 Agent Protocol](docs/design/rfc/2026-08-25-rfc-0002-agent-protocol.md)
@@ -95,12 +95,12 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 当前状态与路线图
 
-当前版本 **v0.6.10**（2026-11-02，0.6 Mission 与本地执行领域第十一件——执行结果回房：返回通知（RFC-0018 §10.1/§10.2、AT-09/AT-20 / ADR-0033）：Mission 结果先持久化、再通知来源房间——四类事实（reviewing/accepted/returned/canceled）自 mission_events 全局游标投影为持久通知行（migration v25，source_seq 去重键），同一 SQLite 事务内核对墓碑/暂停 + 追加 message.posted（par_system + mission_ref）+ 标记 delivered——去重由构造保证；房间暂停 held 保留恢复后有序发布（每房每轮队首），删除取消 + 来源墓碑（结果保留不重跑），有界重试 12 次封顶；回房通知台账 + 房间引用卡片（房间↔任务中心互通）；migration v26/v27 历史数据补正（升级库墓碑回填 + 老式退回事件补卡），见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收；0.6 已交付 0.6.0–0.6.10（下一件 0.6.11 决策重开请求）。
+当前版本 **v0.6.11**（2026-11-03，0.6 Mission 与本地执行领域第十二件——决策重开请求：`reopen_request`（RFC-0018 §10.2/§11.2 / ADR-0034）：触及决策的 falsifier 出现时，负责人标出受影响决定（decision_ref）+ 证据 + 需停工作项——CAS 版本（任意状态不翻转终态）+ reopen_requested 事件（append-only 不改写旧回执），逐项暂停受影响任务（paused/already_paused/terminal/not_pausable/not_found/failed 如实报告），交回 Room 复用回房通知栈（kind=reopen——暂停保留/删房待决/重启重放全继承）；不自动重开 Room、写门三件套 + 严格解码 + 请求限流；SPA 重开表单 + 历史 + 房间 reopen 徽标，见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收；0.6 已交付 0.6.0–0.6.11（下一件 0.6.12 Mission 责任交接）。
 
 后续版本采用 `大版本.领域中版本.特性小版本`（`X.Y.Z`）：**第三段每次只交付一个特性，第二段按领域聚合成系统能力**。领域中版本是版本线，不另发只用于汇总的版本；各小版本及验收口径见[交付与进度规划](docs/plan/2026-08-25-delivery-plan.md#02-当前-roadmap)。
 
 - **0.5 长期 Agent 与职责领域**（`0.5.0–0.5.5`，**0.5.0–0.5.5 已全部交付（领域收官）**）：独立 Agent 身份与生命周期、SlotSpec / SlotInstance、Binding 与职责准入。
-- **0.6 Mission 与本地执行领域**（`0.6.0–0.6.12`，**0.6.0–0.6.10 已交付**）：独立 Mission、房间交办、本地 Runtime / Lease、单 Agent 执行、交付验收与责任交接。
+- **0.6 Mission 与本地执行领域**（`0.6.0–0.6.12`，**0.6.0–0.6.11 已交付**）：独立 Mission、房间交办、本地 Runtime / Lease、单 Agent 执行、交付验收与责任交接。
 - **0.7 记忆与可移植恢复领域**（`0.7.0–0.7.9`）：分域记忆、Checkpoint、跨 Harness 续办、Portable Agent Bundle 与删除传播。
 - **0.8 有界 Swarm 协作领域**（`0.8.0–0.8.8`）：WorkItem DAG、长期 Agent 委派、临时 Worker、配额、取消隔离与结果汇总。
 - **0.9 持续事务与环境维护领域**（`0.9.0–0.9.8`）：Goal、持久唤醒、离线恢复、Runtime 排空升级与环境管理员。
