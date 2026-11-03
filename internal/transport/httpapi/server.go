@@ -3296,6 +3296,11 @@ func (s *server) SubmitReopenRequest(w http.ResponseWriter, r *http.Request, mis
 		writeError(w, http.StatusServiceUnavailable, "reopen_unavailable", "重开域未装配")
 		return
 	}
+	// 审校 P1：写门三件套（Origin / Content-Type 含 boundary / X-Owner-Token）+
+	// 请求大小限制——重开可暂停任意任务，不可绕过生产写门。
+	if !s.guardWrite(w, r, true) {
+		return
+	}
 	var body struct {
 		ExpectedVersion    int      `json:"expected_version"`
 		DecisionRef        string   `json:"decision_ref"`

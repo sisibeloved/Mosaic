@@ -1528,7 +1528,26 @@ function ReopenSection({ missionID, contractVersion, onChanged }: {
   const [history, setHistory] = useState<ReopenRequestView[] | null>(null);
 
   useEffect(() => {
-    void api.listReopenRequests(missionID).then((r) => setHistory(r.requests)).catch(() => setHistory([]));
+    let alive = true;
+    let seq = 0;
+    let applied = 0;
+    const load = () => {
+      const cur = ++seq;
+      void api
+        .listReopenRequests(missionID)
+        .then((r) => {
+          if (!alive || cur < applied) return; // 审校 #5：只丢比已显示更旧的响应
+          applied = cur;
+          setHistory(r.requests);
+        })
+        .catch(() => {
+          /* 审校 #5：失败保留末次成功结果（不静默清空） */
+        });
+    };
+    load();
+    return () => {
+      alive = false;
+    };
   }, [missionID, msg]);
 
   const submit = async () => {
@@ -1541,7 +1560,7 @@ function ReopenSection({ missionID, contractVersion, onChanged }: {
         ...(affected.trim() ? { affected_mission_ids: affected.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean) } : {}),
         ...(reason.trim() ? { reason: reason.trim() } : {}),
       });
-      const parts = (out.affected ?? []).map((a) => `${a.mission_id}: ${a.result}`).join("；");
+      const parts = (out.affected ?? []).map((a) => `${a.mission_id}: ${a.result}${a.detail ? `（${a.detail}）` : ""}`).join("；");
       setMsg(`已记录 ${out.request_id}${parts ? `（${parts}）` : ""}`);
       setDecisionRef(""); setEvidence(""); setAffected(""); setReason(""); setOpen(false);
       onChanged();

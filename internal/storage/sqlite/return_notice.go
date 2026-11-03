@@ -64,6 +64,7 @@ INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (25, strftime('%Y-
 var migrationV28 = []string{
 	"ALTER TABLE mission_return_notices ADD COLUMN decision_ref TEXT NOT NULL DEFAULT ''",
 	"ALTER TABLE mission_return_notices ADD COLUMN affected_count INTEGER NOT NULL DEFAULT 0",
+	"INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (28, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
 }
 
 // migrationV27（0.6.10 四审·既有补正）：老式 `to=returned` 退回事件（0.6.9

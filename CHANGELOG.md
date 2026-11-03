@@ -11,6 +11,10 @@
   - **migration v28**：`mission_return_notices` += `decision_ref` / `affected_count` 快照列；投影器扩扫 `reopen_requested` 事件——卡片正文 `🔁 决策重开请求：「{决定引用}」——发起任务「{目标}」：{原因}（受影响 n 项）`，`mission_ref` += `kind: reopen` 与 `decision_ref`。
   - **SPA**：任务详情「决策重开」区（提交表单——决定引用 / 证据 / 受影响项 / 原因 + 历史列表）；房间时间线 reopen 徽标 + 决定引用。
 
+### Fixed
+
+- 修复 0.6.11 审校发现（独立审校报告"1 项 P1、5 项 P2、1 项 P3"，ADR-0034 v0.2）：**(P1) 重开接口绕过写权限检查**——SubmitReopenRequest 补 guardWrite（Origin / Content-Type / X-Owner-Token 三件套 + 请求大小限制）。**(#2) 断线后暂停步骤丢失**——事实落地后暂停改用独立上下文（请求断线不丢暂停）。**(#3) 已暂停目标重试不重发停止信号**——already_paused 仍过控制面（幂等重发 SignalStopByMission）。**(#4) 非终态被报为 terminal**——draft/reviewing/canceling 明确报 `not_pausable`（terminal 保留给 accepted/canceled）。**(#5/#6) SPA**——重开历史乱序守卫 + 失败保留旧值 + 暂停失败原因 detail 展示。**(#7) v28 迁移登记遗漏**——补 INSERT OR IGNORE。
+
 ## [0.6.10] - 2026-11-02
 
 ### Added

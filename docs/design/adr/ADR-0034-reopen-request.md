@@ -114,4 +114,13 @@ contract_version / occurred_at）。逐项暂停结果不在此视图（见 §2�
 
 ## 修订记录
 
+- v0.2（2026-11-03）：审校修复（"1 项 P1、5 项 P2、1 项 P3"）——P1 写门：
+  SubmitReopenRequest 补 guardWrite（Origin / Content-Type 含 boundary /
+  X-Owner-Token 三件套 + 请求大小限制——重开可暂停任意任务，不可绕过生产写门）；
+  #2 断线续驱：事实落地后暂停步骤改用独立上下文（请求断线不丢暂停）；
+  #3 already_paused 仍过控制面（幂等重发停止信号——首次暂停后停止信号可能未
+  送达，重试须重发）；#4 非终态明确报告：draft/reviewing/canceling →
+  `not_pausable`（非笼统 terminal；terminal 保留给 accepted/canceled）；
+  #5/#6 SPA：重开历史乱序守卫（只丢比已显示更旧）+ 失败保留末次成功 + 暂停
+  失败原因 detail 展示；#7 v28 补 INSERT OR IGNORE migrations 登记。
 - v0.1（2026-11-03）：首版（随 0.6.11 实施）。

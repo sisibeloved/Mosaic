@@ -145,8 +145,11 @@ func (s *Service) Submit(ctx context.Context, missionID string, req SubmitReques
 		AffectedMissionIDs: req.AffectedMissionIDs, Reason: req.Reason,
 		ContractVersion: req.ExpectedVersion, OccurredAt: s.now(),
 	}
+	// 审校 #2：事实已落地——暂停步骤用**独立上下文**（请求断线不丢暂停；
+	// 与 0.6.6 取消两段的独立上下文同型）。
+	pauseCtx := context.Background()
 	for _, id := range req.AffectedMissionIDs {
-		view.Affected = append(view.Affected, s.pauseAffected(ctx, id, requestID))
+		view.Affected = append(view.Affected, s.pauseAffected(pauseCtx, id, requestID))
 	}
 	return view, nil
 }
@@ -162,6 +165,12 @@ func (s *Service) pauseAffected(ctx context.Context, id, requestID string) Affec
 	}
 	switch cur.Status {
 	case mission.StatusPaused:
+		// 审校 #3：已 paused 仍过控制面（幂等）——首次暂停后停止信号可能未送达
+		//（执行器仍在跑），重试须重发停止信号（missioncontrol.PauseMission 幂等：
+		// 已 paused 时跳过 CAS 但仍调 SignalStopByMission）。
+		if _, err := s.pauser.PauseMission(ctx, id, cur.ContractVersion, "reopen:"+requestID); err != nil && !isVersionConflict(err) {
+			return AffectedResult{MissionID: id, Result: "failed", Detail: "停止信号补发失败：" + err.Error()}
+		}
 		return AffectedResult{MissionID: id, Result: "already_paused"}
 	case mission.StatusReady, mission.StatusRunning, mission.StatusWaiting:
 		reason := "reopen:" + requestID
@@ -183,9 +192,12 @@ func (s *Service) pauseAffected(ctx context.Context, id, requestID string) Affec
 			cur = again
 		}
 		return AffectedResult{MissionID: id, Result: "failed", Detail: "版本冲突重试耗尽"}
-	default:
-		// accepted / canceled / canceling / draft / reviewing——无执行可停，不翻转
+	case mission.StatusAccepted, mission.StatusCanceled:
 		return AffectedResult{MissionID: id, Result: "terminal", Detail: string(cur.Status)}
+	default:
+		// 审校 #4：draft（从未调度）/ reviewing（冻结中）/ canceling（停止进行中）
+		//——非终态但不可暂停，如实报告状态而非笼统 terminal。
+		return AffectedResult{MissionID: id, Result: "not_pausable", Detail: string(cur.Status)}
 	}
 }
 

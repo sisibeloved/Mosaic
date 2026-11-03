@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.60 |
+| 版本 | v2.61 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -179,6 +179,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.61 | 2026-11-03 | Mosaic 项目组 / ZCode | **0.6.11 审校修复（独立审校报告：1 项 P1、5 项 P2、1 项 P3——ADR-0034 v0.2 修订）**。P1 写门：SubmitReopenRequest 补 guardWrite（Origin/Content-Type/Owner-Token 三件套+请求大小——重开可暂停任意任务不可绕过生产写门）；#2 断线续驱：暂停步骤用独立上下文；#3 already_paused 仍过控制面幂等重发停止信号；#4 draft/reviewing/canceling → not_pausable（非笼统 terminal）；#5/#6 SPA 重开历史乱序守卫/失败保留旧值/暂停失败原因 detail 展示；#7 v28 补 INSERT OR IGNORE migrations 登记。全量 vet/-race + it/st + SPA 绿 + 冒烟 16 项复跑 ALL-PASS |
 | v2.60 | 2026-11-03 | Mosaic 项目组 / ZCode | **0.6.11 决策重开请求（RFC-0018 §10.2/§11.2 / ADR-0034）——0.6 领域线第十二件**。reopen_request：负责人标出受影响决定（decision_ref）+ 证据 + 需停工作项 → CAS 版本（任意状态，不翻转终态）+ reopen_requested 事件（append-only 不改写旧回执）→ 逐项暂停（paused/already/terminal/not_found/failed 如实报告，失败不回滚）→ 交回 Room 复用回房通知栈（kind=reopen——migration v28 decision_ref/affected_count 快照列 + 投影器扩扫；暂停保留/删除待决/重启重放/去重全继承）；GET reopen-requests 读面；SPA 重开表单 + 历史 + 房间 reopen 徽标。不自动重开 Room、不翻收束、不自动匹配受影响任务（负责人显式标出）。各层测试先行：UT 域服务 6 例（形状/CAS/逐项暂停五型/List/判空）+ mission UT（事件载荷事实/终态可发起/形状族）+ IT reopen 通知（投影→decision_ref/affected_count 快照→原子投递→mission_ref.kind=reopen/decision_ref/轮次 0）；全量 vet/-race + it/st 串行 + SPA 绿 + 真机冒烟 16 项复跑 ALL-PASS（回归） |
 | v2.59 | 2026-11-02 | Mosaic 项目组 / ZCode | **定版 v0.6.10（负责人指令："发布"）——0.6 领域线第十一件**。CHANGELOG [Unreleased]（Added 执行结果回房：返回通知 + Fixed 四轮审校 9 + 1 + 7 + 5 项与 CI 揪出的 run 停止基线竞态）定版 **[0.6.10] - 2026-11-02**，保留空 [Unreleased]；README 当前版本推进 v0.6.10、路线图 0.6 系列标注 0.6.0–0.6.10 已交付与 0.6.11 指向；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.6.10 + GitHub Release 发布说明与 Windows 产物（于 tag 的干净 worktree 重建）；CI 三平台绿基线（04cf966 已验，定版提交复验） |
 | v2.58 | 2026-11-02 | Mosaic 项目组 / ZCode | **0.6.10 四审收口（独立复审报告：3 P2 产品 + 1 P2 测试缺口——ADR-0033 v0.4 修订）+ 两项既有补正**。#1/#5 SPA 来源成功单设已应用序号（旧成功不抹删房标记）、台账失败忽略早于最新成功的响应；#2 送验缺轮次按本次送验区间显式裁定校准（v22→v24 混合历史配对一致——纯计数/纯显式场景不变）；#3 取消恒 0（三面一致）；#4 run 回归改确定性同步屏障（先登记停止-cause 非空 cancel 为 no-op-再放行结果：旧实现 30/30 失败、新 30/30 通过）；既有：classify 认老式 to=returned（v22 实测 3 条漏卡）+ migration v27 游标首次重置幂等补投（登记守卫不每启动重扫）。新增 IT 三例（混合历史 1/1、2/2、1/1 配对 / 取消恒 0 三面 / v27 补投幂等与游标守卫）；全量 vet/-race + it/st 串行 + SPA 绿 + 真机冒烟 16 项复跑 ALL-PASS |

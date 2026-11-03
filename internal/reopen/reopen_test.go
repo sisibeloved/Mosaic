@@ -129,8 +129,8 @@ func TestSubmitResults(t *testing.T) {
 	}
 	want := map[string]string{
 		"mi_run": "paused", "mi_p": "already_paused", "mi_term": "terminal",
-		"mi_none": "not_found", "mi_cz": "terminal", "mi_drft": "terminal",
-		"mi_rv": "terminal", "mi_wait": "paused",
+		"mi_none": "not_found", "mi_cz": "not_pausable", "mi_drft": "not_pausable",
+		"mi_rv": "not_pausable", "mi_wait": "paused",
 	}
 	if len(out.Affected) != len(want) {
 		t.Fatalf("逐项结果数: %+v", out.Affected)
@@ -140,8 +140,8 @@ func TestSubmitResults(t *testing.T) {
 			t.Fatalf("%s = %s（want %s）", a.MissionID, a.Result, want[a.MissionID])
 		}
 	}
-	// 暂停 reason 回链 + 恰两次调用（run/wait；paused/terminal/not_found 不调）
-	if len(p.calls) != 2 || p.calls[0] != "mi_run|reopen:rop_t1" || p.calls[1] != "mi_wait|reopen:rop_t1" {
+	// 暂停 reason 回链——审校 #3 后 already_paused 也过控制面（重发停止信号）
+	if len(p.calls) != 3 || p.calls[0] != "mi_run|reopen:rop_t1" || p.calls[1] != "mi_p|reopen:rop_t1" || p.calls[2] != "mi_wait|reopen:rop_t1" {
 		t.Fatalf("暂停调用: %+v", p.calls)
 	}
 	// 请求不改发起 Mission 状态

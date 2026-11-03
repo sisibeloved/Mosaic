@@ -234,7 +234,7 @@ func TestAgentIdentityLegacyUpgradeIT(t *testing.T) {
 			t.Fatalf("迁移 version=%d 登记数 %d（要 1）；全量 %v", v, got[v], got)
 		}
 	}
-	if len(got) != 26 {
+	if len(got) != 27 {
 		t.Fatalf("迁移登记集合异常: %v", got)
 	}
 	store.Close()
