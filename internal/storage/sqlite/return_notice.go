@@ -59,6 +59,18 @@ INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (25, strftime('%Y-
 	"ALTER TABLE mission_sources ADD COLUMN deleted_at TEXT",
 }
 
+// migrationV27（0.6.10 四审·既有补正）：老式 `to=returned` 退回事件（0.6.9
+// 初版形态——#10 审校前 to 即 returned，v0.2 起才为 to=ready+decision=returned）
+// 此前不被 classify 识别，且游标已越过——重置投影游标使下一轮全量重扫：
+// INSERT OR IGNORE 按 source_seq 幂等（已投行含状态不动，漏行补出；notice_id
+// 同式派生）。迁移语句每次 Open 都会执行（项目惯例）——以登记守卫使重置只在**首次**发生，
+// 避免每次启动全量重扫；崩溃窗口（UPDATE 后登记前）最多多重置一次，幂等无害。
+const migrationV27 = `
+UPDATE mission_return_state SET last_seq = 0
+ WHERE id = 1 AND NOT EXISTS (SELECT 1 FROM migrations WHERE version = 27);
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (27, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+`
+
 // migrationV26（0.6.10 审校 #8）：升级前已删房的来源墓碑回填——按
 // room_tombstones 原删除时间补 mission_sources.deleted_at（幂等 UPDATE，v24
 // 数据补正先例；覆盖 v25 加列之前的历史删除：v0.6.9 删房不触碰 mission_sources）。
@@ -167,6 +179,35 @@ func objectiveAtVersion(ctx context.Context, conn *sql.Conn, missionID string, v
 	return truncateRunes(c.Objective, 80), true
 }
 
+// roundCalibratingDecision 送验缺轮次的区间校准（0.6.10 四审 #2）：同包、
+// 本次送验之后、下一次送验之前最近一条**显式轮次**的裁定——v22→v24 升级库的
+// 裁定带迁移后的显式值（如 1），而送验事件仍无轮次（按全历史计数会得 3/4，
+// 与其裁定错位）。同包重复送验（区间内无裁定）返回 0——回退计数。
+func roundCalibratingDecision(ctx context.Context, conn *sql.Conn, missionID string, seq int64, packageID string) int {
+	args := []any{missionID, seq, packageID}
+	nextBoundary := ""
+	if packageID == "" {
+		nextBoundary = ` AND NOT EXISTS (SELECT 1 FROM mission_events nx WHERE nx.mission_id = e.mission_id AND nx.seq > ? AND nx.seq < e.seq AND nx.event_type = 'status_changed' AND json_extract(nx.payload, '$.to') = 'reviewing')`
+		args = append(args, seq)
+	} else {
+		nextBoundary = ` AND NOT EXISTS (SELECT 1 FROM mission_events nx WHERE nx.mission_id = e.mission_id AND nx.seq > ? AND nx.seq < e.seq AND nx.event_type = 'status_changed' AND json_extract(nx.payload, '$.to') = 'reviewing' AND COALESCE(json_extract(nx.payload, '$.package_id'), '') = ?)`
+		args = append(args, seq, packageID)
+	}
+	var round int
+	err := conn.QueryRowContext(ctx, `
+		SELECT COALESCE(json_extract(e.payload, '$.review_round'), 0) FROM mission_events e
+		WHERE e.mission_id = ? AND e.seq > ? AND e.event_type = 'status_changed'
+		  AND COALESCE(json_extract(e.payload, '$.package_id'), '') = COALESCE(?, '')
+		  AND (json_extract(e.payload, '$.to') IN ('accepted', 'returned')
+		       OR (json_extract(e.payload, '$.to') = 'ready' AND json_extract(e.payload, '$.decision') = 'returned'))
+		  AND COALESCE(json_extract(e.payload, '$.review_round'), 0) > 0`+nextBoundary+`
+		ORDER BY e.seq DESC LIMIT 1`, args...).Scan(&round)
+	if err != nil {
+		return 0
+	}
+	return round
+}
+
 // roundOfPrecedingRequest 裁定（returned/accepted）轮次还原（0.6.10 复审 #5）：
 // 取同包（payload 缺包 ID 则最近一次）先行送验的轮次——其载荷轮次优先，旧式
 // 无轮次按该送验的计数重建。同包送验/裁定同轮：v22 两送验退回升级到 v24 再
@@ -210,6 +251,10 @@ func classify(p statusChangedPayload) missionreturn.Kind {
 	case p.To == "accepted":
 		return missionreturn.KindAccepted
 	case p.To == "ready" && p.Decision == "returned":
+		return missionreturn.KindReturned
+	case p.To == "returned":
+		// 老式形态（0.6.9 初版 / v22 时代事件）：to 即 returned——四审实测
+		// 真实 v22 历史两组共 3 条因此漏卡；新式 to=ready 上面已认。
 		return missionreturn.KindReturned
 	case p.To == "canceled":
 		return missionreturn.KindCanceled
@@ -310,11 +355,22 @@ func (a ReturnStore) Project(ctx context.Context) (int, error) {
 		}
 		reviewRound := f.payload.ReviewRound
 		if reviewRound <= 0 {
-			if kind == missionreturn.KindReviewing {
-				reviewRound = roundAtEvent(ctx, conn, f.missionID, f.seq)
-			} else {
+			switch kind {
+			case missionreturn.KindReviewing:
+				// 四审 #2：先按本次送验区间的显式裁定校准（v22→v24 混合历史——
+				// 送验无轮次而裁定带迁移显式值），无则按全历史送验计数。
+				if r := roundCalibratingDecision(ctx, conn, f.missionID, f.seq, f.payload.PackageID); r > 0 {
+					reviewRound = r
+				} else {
+					reviewRound = roundAtEvent(ctx, conn, f.missionID, f.seq)
+				}
+			case missionreturn.KindReturned, missionreturn.KindAccepted:
 				// 复审 #5：裁定按同包（缺省最近）先行送验还原轮次。
 				reviewRound = roundOfPrecedingRequest(ctx, conn, f.missionID, f.seq, f.payload.PackageID)
+			case missionreturn.KindCanceled:
+				// 四审 #3：公开契约取消恒 0（mission_ref/卡片/台账三面一致）——
+				// 不回查上一次送验（v1 退回后 v2 未送验即取消不得显示第 1 轮）。
+				reviewRound = 0
 			}
 		}
 		res, err := conn.ExecContext(ctx, `

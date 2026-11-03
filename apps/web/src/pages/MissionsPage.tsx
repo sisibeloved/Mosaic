@@ -478,7 +478,9 @@ function MissionDetail({
 
   useEffect(load, [missionID]); // 父层按 missionID key 重挂载；onChanged 后手动 load
 
+  const appliedSrcRef = useRef(0); // 四审 #1：来源响应已应用序号（乱序丢弃；详情重载重置为权威值）
   useEffect(() => {
+    appliedSrcRef.current = 0;
     setRoomSourceNow(detail?.room_source ?? null);
   }, [detail?.room_source]);
 
@@ -501,12 +503,19 @@ function MissionDetail({
           setReturnNotices(r.notices);
         })
         .catch(() => {
-          if (alive) setReturnErr("回房台账暂不可用（显示上次结果）"); // 末次成功结果不动
+          // 四审 #5：忽略早于最新已显示成功的失败（旧失败不得在 delivered 之上
+          // 再提示"暂不可用"）；失败保留末次成功结果。
+          if (!alive || seq < appliedRN) return;
+          setReturnErr("回房台账暂不可用（显示上次结果）");
         });
       void api
         .getMission(missionID)
         .then((m) => {
-          if (alive) setRoomSourceNow(m.room_source ?? null);
+          // 四审 #1：来源成功单设已应用序号——较早的成功响应晚到不得抹掉
+          // 已显示的删房标记。
+          if (!alive || seq <= appliedSrcRef.current) return;
+          appliedSrcRef.current = seq;
+          setRoomSourceNow(m.room_source ?? null);
         })
         .catch(() => {
           /* 来源元数据刷新失败：保留现有值（下轮再试） */

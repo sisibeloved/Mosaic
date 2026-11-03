@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/sisibeloved/Mosaic/internal/mission"
@@ -348,5 +349,150 @@ func TestReturnNoticeBOMObjectiveIT(t *testing.T) {
 	}
 	if rows[1].Objective != "v2 目标" || rows[1].ContractVersion != 2 {
 		t.Fatalf("v2 事实归属 v2 目标: %+v", rows[1])
+	}
+}
+
+// TestReturnNoticeMixedHistoryIT 四审 #2：v22 两轮旧式（送验/退回均无轮次，
+// 退回为老式 to=returned）→ v24 升级后再送验（无轮次）+ 退回（显式轮次 1）——
+// 送验按区间显式裁定校准，每对送验/退回同轮（1/1、2/2、1/1），不再 3/1。
+func TestReturnNoticeMixedHistoryIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	ctx := context.Background()
+	rs := ReturnStore{store}
+	returnMission(t, store, "mi_mx", "room_mx", "tsk_mx", "混合历史")
+	seedRoomLifecycle(t, store, "room_mx", "room.started", 1)
+	// v22 时代两轮：送验无轮次；退回为老式 to=returned（无 decision、无轮次）。
+	seedMissionStatus(t, store, "mi_mx", `{"from":"ready","to":"reviewing","package_id":"dlv_m"}`)
+	seedMissionStatus(t, store, "mi_mx", `{"from":"reviewing","to":"returned","package_id":"dlv_m"}`)
+	seedMissionStatus(t, store, "mi_mx", `{"from":"returned","to":"ready"}`)
+	seedMissionStatus(t, store, "mi_mx", `{"from":"ready","to":"reviewing","package_id":"dlv_m"}`)
+	seedMissionStatus(t, store, "mi_mx", `{"from":"reviewing","to":"returned","package_id":"dlv_m"}`)
+	seedMissionStatus(t, store, "mi_mx", `{"from":"returned","to":"ready"}`)
+	// v24 升级后（库内轮次补 1）：再送验（v0.6.9 初版事件无轮次）+ 退回（带显式轮次 1）。
+	seedMissionStatus(t, store, "mi_mx", `{"from":"ready","to":"reviewing","package_id":"dlv_m"}`)
+	seedMissionStatus(t, store, "mi_mx", `{"from":"reviewing","to":"ready","decision":"returned","reason":"r","package_id":"dlv_m","review_round":1}`)
+	if _, err := rs.Project(ctx); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	rows, _ := rs.ListReturnNotices(ctx, "mi_mx")
+	if len(rows) != 6 {
+		t.Fatalf("应 6 行（老式 to=returned 须识别）: %+v", rows)
+	}
+	for i := 0; i < 3; i++ {
+		req, ret := rows[2*i], rows[2*i+1]
+		if req.Kind != missionreturn.KindReviewing || ret.Kind != missionreturn.KindReturned {
+			t.Fatalf("序 %d 类型: %+v %+v", i, req, ret)
+		}
+		if req.ReviewRound != ret.ReviewRound {
+			t.Fatalf("序 %d 同包配对应同轮: 送验=%d 退回=%d", i, req.ReviewRound, ret.ReviewRound)
+		}
+	}
+	// 第三对（v24 后）：送验按区间显式裁定校准为 1（非全历史计数 3）。
+	if rows[4].ReviewRound != 1 || rows[5].ReviewRound != 1 {
+		t.Fatalf("v24 后配对应为显式 1/1: %d/%d", rows[4].ReviewRound, rows[5].ReviewRound)
+	}
+	// 前两对（v22 纯旧式）按计数 1/1、2/2。
+	if rows[0].ReviewRound != 1 || rows[2].ReviewRound != 2 {
+		t.Fatalf("v22 旧式按计数: %d %d", rows[0].ReviewRound, rows[2].ReviewRound)
+	}
+}
+
+// TestReturnNoticeCancelRoundZeroIT 四审 #3：v1 送验退回后修订 v2、未送验即
+// 取消——取消恒第 0 轮（台账 / 卡片 mission_ref / 卡片正文三面一致）。
+func TestReturnNoticeCancelRoundZeroIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	ctx := context.Background()
+	rs := ReturnStore{store}
+	returnMission(t, store, "mi_cz", "room_cz", "tsk_cz", "取消轮次")
+	seedRoomLifecycle(t, store, "room_cz", "room.started", 1)
+	seedMissionStatus(t, store, "mi_cz", `{"from":"ready","to":"reviewing","package_id":"dlv_c"}`)
+	seedMissionStatus(t, store, "mi_cz", `{"from":"reviewing","to":"ready","decision":"returned","reason":"补证","package_id":"dlv_c","review_round":1}`)
+	seedMissionStatus(t, store, "mi_cz", `{"from":"ready","to":"canceled"}`)
+	if _, err := rs.Project(ctx); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	rows, _ := rs.ListReturnNotices(ctx, "mi_cz")
+	if len(rows) != 3 {
+		t.Fatalf("应 3 行: %+v", rows)
+	}
+	cancel := rows[2]
+	if cancel.Kind != missionreturn.KindCanceled || cancel.ReviewRound != 0 {
+		t.Fatalf("取消恒 0（不回查 v1 送验的轮 1）: %+v", cancel)
+	}
+	if err := rs.Deliver(ctx, cancel, missionreturn.EnvelopeInput{EventID: "evt_cz", OccurredAt: "t", Body: "b"}); err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
+	var envelope string
+	if err := store.db.QueryRow(`SELECT envelope FROM room_events WHERE event_id = 'evt_cz'`).Scan(&envelope); err != nil {
+		t.Fatalf("卡未落: %v", err)
+	}
+	var card struct {
+		Payload struct {
+			Body       string `json:"body"`
+			MissionRef *struct {
+				Kind        string `json:"kind"`
+				ReviewRound int    `json:"review_round"`
+			} `json:"mission_ref"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(envelope), &card); err != nil {
+		t.Fatalf("解析: %v", err)
+	}
+	if card.Payload.MissionRef == nil || card.Payload.MissionRef.Kind != "canceled" || card.Payload.MissionRef.ReviewRound != 0 {
+		t.Fatalf("卡 mission_ref 取消须第 0 轮: %+v", card.Payload.MissionRef)
+	}
+	if strings.Contains(card.Payload.Body, "第") || strings.Contains(card.Payload.Body, "轮") {
+		t.Fatalf("取消卡正文不得显示轮次: %q", card.Payload.Body)
+	}
+}
+
+// TestReturnNoticeLegacyReturnBackfillIT 既有补正（四审记录）：老式 to=returned
+// 此前不识别且游标已越过——migration v27 重置游标后重扫幂等补投（已投行与
+// 状态不动，漏行补出；每来源序号恰一行）。
+func TestReturnNoticeLegacyReturnBackfillIT(t *testing.T) {
+	store, path := openTempStore(t)
+	ctx := context.Background()
+	rs := ReturnStore{store}
+	returnMission(t, store, "mi_bf", "room_bf", "tsk_bf", "补投")
+	seedRoomLifecycle(t, store, "room_bf", "room.started", 1)
+	seedMissionStatus(t, store, "mi_bf", `{"from":"ready","to":"reviewing","package_id":"dlv_f"}`)
+	seedMissionStatus(t, store, "mi_bf", `{"from":"reviewing","to":"returned","package_id":"dlv_f"}`) // 老式
+	if _, err := rs.Project(ctx); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	rows, _ := rs.ListReturnNotices(ctx, "mi_bf")
+	if len(rows) != 2 {
+		t.Fatalf("修复后首次投影即应识别老式退回: %+v", rows)
+	}
+	// 模拟"游标已越过、老行已投"的旧库形态：投出两行后手工撤销 v27 效果 +
+	// 重放（重置游标）→ 已投行不动（delivered 保留）、无重复。
+	if err := rs.Deliver(ctx, rows[0], missionreturn.EnvelopeInput{EventID: "evt_bf", OccurredAt: "t", Body: "b"}); err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE mission_return_state SET last_seq = 0 WHERE id = 1`); err != nil {
+		t.Fatalf("重置游标: %v", err)
+	}
+	if n, err := rs.Project(ctx); err != nil || n != 0 {
+		t.Fatalf("重扫幂等（已存在行不重产）: n=%d err=%v", n, err)
+	}
+	rows2, _ := rs.ListReturnNotices(ctx, "mi_bf")
+	if len(rows2) != 2 || rows2[0].Status != missionreturn.StatusDelivered || rows2[1].Status != missionreturn.StatusPending {
+		t.Fatalf("重扫不得改写既有行状态: %+v", rows2)
+	}
+	var v27 int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM migrations WHERE version = 27`).Scan(&v27); err != nil || v27 != 1 {
+		t.Fatalf("v27 未登记: %d err=%v", v27, err)
+	}
+	// 重开幂等（v27 再跑一次安全）。
+	store.Close()
+	store2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { store2.Close() })
+	var lastSeq int
+	store2.db.QueryRow(`SELECT last_seq FROM mission_return_state WHERE id = 1`).Scan(&lastSeq)
+	if lastSeq == 0 {
+		t.Fatalf("重开后游标不得再次重置（v27 登记守卫——避免每次启动全量重扫）: %d", lastSeq)
 	}
 }

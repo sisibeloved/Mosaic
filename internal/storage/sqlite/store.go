@@ -744,6 +744,12 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: migration v26: %w", err)
 	}
+	// v27 迁移（0.6.10 四审·既有补正）：回房投影游标重置——老式 to=returned
+	// 退回事件此前不识别且游标已越过；重扫 INSERT OR IGNORE 幂等补投
+	if _, err := db.Exec(migrationV27); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("sqlite: migration v27: %w", err)
+	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
 		db.Close()
