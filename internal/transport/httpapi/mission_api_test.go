@@ -157,6 +157,12 @@ func TestMissionEndpoints(t *testing.T) {
 	if miss.StatusCode != http.StatusBadRequest || errCodeOf(t, miss) != "bad_request" {
 		t.Fatalf("缺归属锚键须 400 bad_request: %d %s", miss.StatusCode, errCodeOf(t, miss))
 	}
+	// 三审 P3：null 同拒——JSON null 解码亦得零值，显式 "" 才表达预期 unassigned
+	nullAnchor := postSlot(t, ts.URL+"/v1/missions/"+draft.MissionID+"/revise",
+		`{"expected_version":1,"expected_owner_agent_id":null,"objective":"x","scope":"y","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"]}`)
+	if nullAnchor.StatusCode != http.StatusBadRequest || errCodeOf(t, nullAnchor) != "bad_request" {
+		t.Fatalf("归属锚 null 须 400 bad_request: %d %s", nullAnchor.StatusCode, errCodeOf(t, nullAnchor))
+	}
 	bad := postSlot(t, ts.URL+"/v1/missions/"+draft.MissionID+"/revise",
 		`{"expected_version":1,"expected_owner_agent_id":"`+agDoc.AgentID+`","objective":"x","scope":"y","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"]}`)
 	if bad.StatusCode != http.StatusConflict || errCodeOf(t, bad) != "version_conflict" {

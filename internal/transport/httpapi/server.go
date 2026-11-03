@@ -1979,8 +1979,10 @@ func (s *server) ReviseMission(w http.ResponseWriter, r *http.Request, missionID
 	}
 	// 复审 #5：必填键在场检查——Go 零值 "" 与显式空串（预期 unassigned）不可分，
 	// 缺席 400 bad_request（presence 记原始键集；budget 在场校验同例）。
-	if _, present := presence["expected_owner_agent_id"]; !present {
-		writeError(w, http.StatusBadRequest, "bad_request", "expected_owner_agent_id 必填（空串 = 预期 unassigned——归属锚，0.6.12）")
+	// 三审 P3：null 同拒——JSON null 解码亦得零值 ""，显式 "" 才表达预期
+	// unassigned（TrimSpace 判 null 同 missionBudgetPresentStrict）。
+	if raw, present := presence["expected_owner_agent_id"]; !present || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		writeError(w, http.StatusBadRequest, "bad_request", "expected_owner_agent_id 必填（空串 = 预期 unassigned——归属锚，0.6.12；null 不接受）")
 		return
 	}
 	m, err := s.deps.Missions.Revise(r.Context(), missionID, int(req.ExpectedVersion), req.ExpectedOwnerAgentId, derefStr(req.OwnerAgentId),

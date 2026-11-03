@@ -471,11 +471,15 @@ function MissionDetail({
     setLoadErr(null);
     void Promise.all([api.getMission(missionID), api.listMissionVersions(missionID), api.listMissionEvents(missionID)])
       .then(([d, v, e]) => {
-        if (seq.current !== cur) return;
+        if (seq.current !== cur) return; // 只被更新的 load 作废（轮询不动 seq）
+        // 三审 P2：detail 应用代次在**响应时**取——载入的详情/版本/事件原子落地，
+        // 且必覆盖此前已应用的轮询快照（载入是用户触发的权威读取）。
+        const gen = ++detailGenRef.current;
+        if (gen < appliedSrcRef.current) return;
+        appliedSrcRef.current = gen;
         setDetail(d);
         setVersions(v.versions);
         setEvents(e.events);
-        appliedSrcRef.current = cur; // 复审 #3：记代次（与轮询同一计数——旧轮询响应天然过期）
       })
       .catch((e) => {
         if (seq.current !== cur) return;
@@ -485,10 +489,11 @@ function MissionDetail({
 
   useEffect(load, [missionID]); // 父层按 missionID key 重挂载；onChanged 后手动 load
 
-  // 复审 #3：getMission 响应已应用代次——手动 load 与轮询从**同一 seq 计数**取号，
-  // 应用只认最新已应用之后的更大号；不再有清零路径（清零会让在途旧响应重新可应用，
-  // 已显示的新归属/待承接被旧快照盖回）。
+  // 三审 P2：detail 应用代次——load 与轮询共用单调计数（detailGenRef 取号 /
+  // appliedSrcRef 记已应用），**取号源各自独立**（load 守卫只看 seq——轮询取号
+  // 不再作废在途载入；复审 #3 的"迟到旧轮询盖回新详情"由应用层代次拦截）。
   const appliedSrcRef = useRef(0);
+  const detailGenRef = useRef(0);
   useEffect(() => {
     setRoomSourceNow(detail?.room_source ?? null);
   }, [detail?.room_source]);
@@ -517,11 +522,11 @@ function MissionDetail({
           if (!alive || rn < appliedRN) return;
           setReturnErr("回房台账暂不可用（显示上次结果）");
         });
-      // 复审 #3：从共享 seq 计数取号——手动 load 与轮询同一代次空间；应用条件
-      // ticket >= 已应用代次（迟到旧响应丢弃）。0.6.12 审校 #6：同步刷新交接元数据
-      // （owner / pending / 状态 / 版本）——他处发起/承接/婉拒/撤回后本页可见待承接
-      // 入口；表单草稿独立 state 不受影响（裁定草稿按轮次隔离既有守卫）。
-      const ticket = ++seq.current;
+      // 三审 P2：轮询取号自 detailGenRef（不动 seq——在途载入不被作废）；应用条件
+      // ticket >= 已应用代次。0.6.12 审校 #6：同步刷新交接元数据（owner / pending /
+      // 状态 / 版本）——他处发起/承接/婉拒/撤回后本页可见待承接入口；表单草稿独立
+      // state 不受影响（裁定草稿按轮次隔离既有守卫）。
+      const ticket = ++detailGenRef.current;
       void api
         .getMission(missionID)
         .then((m) => {
@@ -1675,6 +1680,9 @@ function HandoverSection({ missionID, detail, agents, onChanged }: {
   const [history, setHistory] = useState<HandoverEventView[] | null>(null);
   const [histErr, setHistErr] = useState(false);
   const [histTick, setHistTick] = useState(0); // 审校 #5：重试按钮独立刷新计数
+  // 三审 P3-1：历史资料对应 offerID——刷新中/失败窗口不显示旧 offer 说明，明确
+  // 标识当前资料状态（同人所换 offer 的慢请求不冒充新资料）。
+  const [histFor, setHistFor] = useState<string | null>(null);
   const pending = detail.pending_owner_agent_id;
   const offerID = detail.pending_offer_id ?? "";
   const version = detail.contract_version;
@@ -1697,6 +1705,7 @@ function HandoverSection({ missionID, detail, agents, onChanged }: {
           applied = cur;
           setHistErr(false);
           setHistory(r.events);
+          setHistFor(offerID); // 三审 P3-1：资料就绪代次——与当前在途发起对齐才显示
         })
         .catch(() => {
           if (!alive || cur < applied) return;
@@ -1743,6 +1752,11 @@ function HandoverSection({ missionID, detail, agents, onChanged }: {
           <p className="text-[11px] text-warn">
             待承接 → {nameOf(pending)}（{pending}）· 发起人 {detail.owner_agent_id || "unassigned"} 仍为负责人；修订/送验/取消已冻结，先了结交接。
           </p>
+          {histFor !== offerID && (
+            <p className="text-[11px] text-dim">
+              {histErr ? "交接资料加载失败——下方说明可能过期，重试后再操作。" : "交接资料刷新中——下方说明可能过期，操作已绑定当前发起（" + offerID + "）。"}
+            </p>
+          )}
           <input value={text} onChange={(e) => setText(e.target.value)} maxLength={280}
             placeholder="承接备注 / 婉拒或撤回原因（≤280 字，可空）"
             className="rounded border border-border bg-surface px-1.5 py-1 text-xs outline-none" />
@@ -1787,7 +1801,10 @@ function HandoverSection({ missionID, detail, agents, onChanged }: {
           交接历史加载失败——点击重试
         </button>
       )}
-      {(history?.length ?? 0) > 0 && (
+      {histFor !== offerID && !histErr && (history?.length ?? 0) > 0 && (
+        <p className="text-[11px] text-faint">交接历史刷新中（当前资料对应新发起）…</p>
+      )}
+      {histFor === offerID && (history?.length ?? 0) > 0 && (
         <details>
           <summary className="cursor-pointer select-none text-faint text-[11px]">交接历史</summary>
           <ul className="mt-0.5 flex flex-col gap-0.5">

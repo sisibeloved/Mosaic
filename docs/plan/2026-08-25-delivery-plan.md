@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.66 |
+| 版本 | v2.67 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -179,6 +179,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.67 | 2026-11-03 | Mosaic 项目组 / ZCode | **0.6.12 三审修复（独立三审报告：1 P2 + 2 P3——ADR-0035 v0.4 修订）**。P2 首轮轮询作废初次加载（v0.3 统一代次回归）：取号源各自独立（load 守卫只看自身 seq）+ detail 应用层共用单调代次（载入响应时取号——三结果原子落地并覆盖先前轮询快照）；P3 交接历史资料记对应发起（histFor——刷新中/失败窗口不显示旧 offer 说明，明确标识资料状态）；P3 归属锚 presence 同拒 null（显式空串 = 预期 unassigned 不变）。API 增 null 400 用例；全量 vet/-race + it/st + SPA 绿 + 生成物一致；真机冒烟 31 项 ALL-PASS（新增 null 400 定向） |
 | v2.66 | 2026-11-03 | Mosaic 项目组 / ZCode | **0.6.12 复审修复（独立复审报告：1 P1 + 3 P2 + 1 P3——ADR-0035 v0.3 修订）**。#1 修订草稿基准 reviseBase（打开时固定 owner+版本，提交锚取基准——轮询只保鲜显示）；#2 事实全部事务内：offer from_owner 注入（InjectHandoverFacts）+ accept draft 重判按现行 content（HandoverDraftTarget 单源，Store 签名删 targetStatus）；#3 手动加载与轮询统一请求代次（删清零路径）；#4 交接历史/备注按 offer_id 刷新隔离；#5 revise 归属锚键 presence 在场检查（缺席 400）。新增 UT（store 级事实注入 + 交错重判）/ IT（SQL 直写模拟并发：owner 翻转后 offer 事件记现值、draft 交错重判 ready）/ API（缺锚键 400）；全量 vet/-race + it/st + SPA 绿 + 生成物一致；真机冒烟 30 项 ALL-PASS（新增缺锚键 400 定向） |
 | v2.65 | 2026-11-03 | Mosaic 项目组 / ZCode | **0.6.12 审校修复（独立审校报告：3 P1 + 3 P2 + 1 P3——ADR-0035 v0.2 修订）**。#1 offer_id 锚（承接/婉拒/撤回必填——撤回改派后旧请求 409，服务层+事务内双锚）；#2 修订归属锚 expected_owner_agent_id（必填，409 owner_mismatch——契约收紧随 0.6.12 发布）；#3 承接×退役双向竞态（accept 事务内查身份 + retiring→retired 统一过承诺事务门，门拦零写入停留 retiring）；#4 回执 status_at_accept 事务内核对注入；#5 交接+重开历史重试 tick（0.6.11 遗留同病一并修）；#6 详情轮询刷 detail（表单草稿不受影响）；#7 MaxBytesError→413 body_too_large（交接+重开）。v29 扩列 pending_offer_id（未发布迁移修订）。全量 vet/-race + it/st + SPA 绿 + 冒烟 30 项 ALL-PASS（含 R1/R2/R7 三项定向） |
 | v2.64 | 2026-11-03 | Mosaic 项目组 / ZCode | **0.6.12 Mission 责任交接实施（负责人指令："开始0.6.12"）——0.6 领域线第十三件·收官，设计先行 ADR-0035 + 测试先行红→绿**。两段式交接（offer → accept | decline | revoke）+ 承接回执（handover_accepted 事件）+ 在途交接冻结窗（Revise/RequestReview/MarkCanceling 拒，存储事务内同守卫）+ 完备性重判（unassigned draft 承接入 ready）+ 承接人 active 两点复核；**退役承诺门实装**（0.5.1 预留 CommitmentChecker 首次接生产——非终态 owned Mission 为未处置承诺，含在途交接；AT-03 兑现）。契约：五端点 + MissionView.pending_owner_agent_id + MissionEvent 枚举补登（含 0.6.11 漏登的 reopen_requested）→ apigen/TS 再生成（幂等核验）；migration v29；SPA 交接区 + 详情头徽标。验证：UT（交接状态机 9 例 + 承诺门适配器）/ API（全链 + 退役门端到端）/ IT（v29 新库与旧库升级、事务原子性与 pending 锚、冻结窗）；全量 vet/-race + it/st 串行 + SPA 绿；真机冒烟 26 项 ALL-PASS（两次连续）。冒烟中纠正一处自身断言：写门对无 Origin 的本机客户端按设计可达（跨源 403 / 缺 token 401 实测） |
