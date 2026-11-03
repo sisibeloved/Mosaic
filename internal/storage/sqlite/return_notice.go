@@ -148,21 +148,45 @@ func versionAtEvent(ctx context.Context, conn *sql.Conn, missionID string, seq i
 }
 
 // objectiveAtVersion 版本行目标快照（mission_contract_versions 不可变 content）。
-func objectiveAtVersion(ctx context.Context, conn *sql.Conn, missionID string, version int) string {
+// found = 版本行存在——快照定格：即使摘要为空（如 v1 目标仅 BOM，判空口径下为空）
+// 也不回退 missions 当前行（0.6.10 复审 #6：历史卡不得写成修订后的目标）。
+func objectiveAtVersion(ctx context.Context, conn *sql.Conn, missionID string, version int) (string, bool) {
 	if version <= 0 {
-		return ""
+		return "", false
 	}
 	var content string
 	if err := conn.QueryRowContext(ctx,
 		`SELECT content FROM mission_contract_versions WHERE mission_id = ? AND version = ?`,
 		missionID, version).Scan(&content); err != nil {
-		return ""
+		return "", false
 	}
 	var c struct {
 		Objective string `json:"objective"`
 	}
 	_ = json.Unmarshal([]byte(content), &c)
-	return truncateRunes(c.Objective, 80)
+	return truncateRunes(c.Objective, 80), true
+}
+
+// roundOfPrecedingRequest 裁定（returned/accepted）轮次还原（0.6.10 复审 #5）：
+// 取同包（payload 缺包 ID 则最近一次）先行送验的轮次——其载荷轮次优先，旧式
+// 无轮次按该送验的计数重建。同包送验/裁定同轮：v22 两送验退回升级到 v24 再
+// 送验时，库内补正计数与事件计数不串轮。
+func roundOfPrecedingRequest(ctx context.Context, conn *sql.Conn, missionID string, seq int64, packageID string) int {
+	var pseq int64
+	var pround int
+	err := conn.QueryRowContext(ctx, `
+		SELECT seq, COALESCE(json_extract(payload, '$.review_round'), 0) FROM mission_events
+		WHERE mission_id = ? AND seq < ? AND event_type = 'status_changed'
+		  AND json_extract(payload, '$.to') = 'reviewing'
+		  AND (? = '' OR COALESCE(json_extract(payload, '$.package_id'), '') = ?)
+		ORDER BY seq DESC LIMIT 1`, missionID, seq, packageID, packageID).Scan(&pseq, &pround)
+	if err != nil {
+		return 0
+	}
+	if pround > 0 {
+		return pround
+	}
+	return roundAtEvent(ctx, conn, missionID, pseq)
 }
 
 // roundAtEvent 旧 reviewing 事件轮次重建（0.6.10 审校 #5）：同一 Mission 截至该
@@ -276,8 +300,8 @@ func (a ReturnStore) Project(ctx context.Context) (int, error) {
 		if contractVersion <= 0 {
 			contractVersion = versionAtEvent(ctx, conn, f.missionID, f.seq)
 		}
-		objective := objectiveAtVersion(ctx, conn, f.missionID, contractVersion)
-		if objective == "" {
+		objective, versionFound := objectiveAtVersion(ctx, conn, f.missionID, contractVersion)
+		if !versionFound {
 			var cur string
 			if err := conn.QueryRowContext(ctx,
 				"SELECT objective FROM missions WHERE mission_id = ?", f.missionID).Scan(&cur); err == nil {
@@ -285,8 +309,13 @@ func (a ReturnStore) Project(ctx context.Context) (int, error) {
 			}
 		}
 		reviewRound := f.payload.ReviewRound
-		if reviewRound <= 0 && kind == missionreturn.KindReviewing {
-			reviewRound = roundAtEvent(ctx, conn, f.missionID, f.seq)
+		if reviewRound <= 0 {
+			if kind == missionreturn.KindReviewing {
+				reviewRound = roundAtEvent(ctx, conn, f.missionID, f.seq)
+			} else {
+				// 复审 #5：裁定按同包（缺省最近）先行送验还原轮次。
+				reviewRound = roundOfPrecedingRequest(ctx, conn, f.missionID, f.seq, f.payload.PackageID)
+			}
 		}
 		res, err := conn.ExecContext(ctx, `
 			INSERT OR IGNORE INTO mission_return_notices
@@ -438,9 +467,13 @@ func (a ReturnStore) Deliver(ctx context.Context, n missionreturn.Notice, env mi
 		// DeleteRoom 级联与 migration v26 之外的补口）；结果与映射保留。
 		// 该 UPDATE 是本分支的既定副作用——显式提交后再返回错误（早退的 defer
 		// ROLLBACK 会把回填一并回滚）。
+		// 复审 #7：优先取房间**实际**删除时间（墓碑）——预检后、来源写入前删房
+		// 的场景不得记成投递时才发现的时间；无墓碑（极端缺失账本）才用当下。
 		if _, err := conn.ExecContext(ctx, `
 			UPDATE mission_sources
-			SET deleted_at = COALESCE(deleted_at, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+			SET deleted_at = COALESCE(deleted_at,
+			    COALESCE((SELECT t.deleted_at FROM room_tombstones t WHERE t.room_id = mission_sources.room_id),
+			             strftime('%Y-%m-%dT%H:%M:%fZ','now')))
 			WHERE room_id = ?`, n.RoomID); err != nil {
 			return fmt.Errorf("sqlite: backfill source tombstone: %w", err)
 		}

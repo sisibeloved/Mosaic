@@ -179,6 +179,10 @@ func TestReturnNoticeDeletedPendingIT(t *testing.T) {
 		t.Fatalf("delete room: %v", err)
 	}
 	// 删房后才出现的待投行 + 抹掉级联回填（模拟旧库/滞后投影形态）
+	var tombAt string
+	if err := store.db.QueryRow(`SELECT deleted_at FROM room_tombstones WHERE room_id='room_dp'`).Scan(&tombAt); err != nil || tombAt == "" {
+		t.Fatalf("墓碑时间: %q err=%v", tombAt, err)
+	}
 	insertNoticeRow(t, store, "rn_dp", "room_dp", "mi_dp", 77, "reviewing", "pending", "")
 	if _, err := store.db.Exec(`UPDATE mission_sources SET deleted_at = NULL WHERE room_id = 'room_dp'`); err != nil {
 		t.Fatalf("抹墓碑: %v", err)
@@ -207,6 +211,10 @@ func TestReturnNoticeDeletedPendingIT(t *testing.T) {
 	var deletedAt string
 	if err := store.db.QueryRow(`SELECT COALESCE(deleted_at,'') FROM mission_sources WHERE room_id='room_dp'`).Scan(&deletedAt); err != nil || deletedAt == "" {
 		t.Fatalf("投递侧应兜底回填来源墓碑: %q err=%v", deletedAt, err)
+	}
+	// 复审 #7：回填取房间**实际**删除时间（墓碑），不是投递时才发现的时间。
+	if deletedAt != tombAt {
+		t.Fatalf("回填应为墓碑原删除时间: %q != %q", deletedAt, tombAt)
 	}
 }
 
@@ -258,5 +266,87 @@ func TestReturnNoticeTombstoneUpgradeIT(t *testing.T) {
 	}
 	if src := store2.sourceOf(ctx, "mi_tb"); src == nil || src.DeletedAt != tombAt {
 		t.Fatalf("sourceOf 应回填墓碑: %+v", src)
+	}
+}
+
+// TestReturnNoticeRoundPairingIT 复审 #5：裁定轮次按同包送验还原——v22 形态
+// （送验/退回事件均无轮次）三轮同流程后，每对送验/退回轮次一致（1/1、2/2、3/3），
+// 不出现"送验第 3 轮、退回第 1 轮"的错位。
+func TestReturnNoticeRoundPairingIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	ctx := context.Background()
+	rs := ReturnStore{store}
+	returnMission(t, store, "mi_rp", "room_rp", "tsk_rp", "轮次配对")
+	seedRoomLifecycle(t, store, "room_rp", "room.started", 1)
+	// 三轮送验→退回，全部旧式载荷（无 contract_version / review_round）。
+	for i := 0; i < 3; i++ {
+		seedMissionStatus(t, store, "mi_rp", `{"from":"ready","to":"reviewing","package_id":"dlv_p"}`)
+		seedMissionStatus(t, store, "mi_rp", `{"from":"reviewing","to":"ready","decision":"returned","reason":"再补证","package_id":"dlv_p"}`)
+	}
+	if _, err := rs.Project(ctx); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	rows, _ := rs.ListReturnNotices(ctx, "mi_rp")
+	if len(rows) != 6 {
+		t.Fatalf("应 6 行: %+v", rows)
+	}
+	for i := 0; i < 3; i++ {
+		req, ret := rows[2*i], rows[2*i+1]
+		want := i + 1
+		if req.Kind != missionreturn.KindReviewing || ret.Kind != missionreturn.KindReturned {
+			t.Fatalf("序 %d 类型: %+v %+v", i, req, ret)
+		}
+		if req.ReviewRound != want || ret.ReviewRound != want {
+			t.Fatalf("同包配对应同轮（第 %d 轮）: 送验=%d 退回=%d", want, req.ReviewRound, ret.ReviewRound)
+		}
+	}
+	// 载荷轮次优先（新式裁定事件带轮次不重建）。
+	seedMissionStatus(t, store, "mi_rp", `{"from":"ready","to":"reviewing","package_id":"dlv_q"}`)
+	seedMissionStatus(t, store, "mi_rp", `{"from":"reviewing","to":"ready","decision":"returned","reason":"r","package_id":"dlv_q","review_round":9}`)
+	if _, err := rs.Project(ctx); err != nil {
+		t.Fatalf("project 2: %v", err)
+	}
+	rows2, _ := rs.ListReturnNotices(ctx, "mi_rp")
+	if n := len(rows2); n != 8 {
+		t.Fatalf("应 8 行: %d", n)
+	}
+	if got := rows2[7].ReviewRound; got != 9 {
+		t.Fatalf("载荷轮次优先: %d", got)
+	}
+}
+
+// TestReturnNoticeBOMObjectiveIT 复审 #6：v1 目标仅一个 U+FEFF（创建口径合法），
+// 修订 v2 后投影 v1 历史事实——快照保留**空**摘要，不回退 v2 目标。
+func TestReturnNoticeBOMObjectiveIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	ctx := context.Background()
+	rs := ReturnStore{store}
+	returnMission(t, store, "mi_bm", "room_bm", "tsk_bm", "\ufeff")
+	seedRoomLifecycle(t, store, "room_bm", "room.started", 1)
+	seedMissionStatus(t, store, "mi_bm", `{"from":"ready","to":"reviewing","package_id":"dlv_b1"}`)
+	// 修订 v2（目标不同）+ 事件与版本行。
+	raw, _ := json.Marshal(mission.Content{Objective: "v2 目标", Scope: "s", AcceptanceCriteria: []string{"a"}, DeliverableSpecs: []string{"d"}})
+	if _, err := store.db.Exec(`INSERT INTO mission_contract_versions
+		(mission_id, version, status, owner_agent_id, requester, content, created_at)
+		VALUES ('mi_bm', 2, 'ready', 'ag_rn', 'owner', ?, '2026-11-02T10:00:05Z')`, string(raw)); err != nil {
+		t.Fatalf("版本行 v2: %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE missions SET contract_version = 2, objective = 'v2 目标' WHERE mission_id = 'mi_bm'`); err != nil {
+		t.Fatalf("推进投影行: %v", err)
+	}
+	seedMissionEventTyped(t, store, "mi_bm", "contract_revised", `{"from_version":1,"to_version":2}`)
+	seedMissionStatus(t, store, "mi_bm", `{"from":"ready","to":"reviewing","package_id":"dlv_b2"}`)
+	if _, err := rs.Project(ctx); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	rows, _ := rs.ListReturnNotices(ctx, "mi_bm")
+	if len(rows) != 2 {
+		t.Fatalf("应 2 行: %+v", rows)
+	}
+	if rows[0].Objective != "" || rows[0].ContractVersion != 1 {
+		t.Fatalf("v1 历史快照应保留空摘要（BOM 目标）不回退 v2: %+v", rows[0])
+	}
+	if rows[1].Objective != "v2 目标" || rows[1].ContractVersion != 2 {
+		t.Fatalf("v2 事实归属 v2 目标: %+v", rows[1])
 	}
 }

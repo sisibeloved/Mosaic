@@ -611,19 +611,21 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 		// 清理面上下文自此刻起算（0.6.6 审校 P1——窗口不再覆盖执行时长）。
 		cleanupCtx, cleanupCancel := s.cleanupContext()
 		defer cleanupCancel()
-		if res.err != nil {
-			// 停止与执行器错误同时就绪的 select 竞态（CI macOS 实证）：停止意图
-			// 先于取消登记（stopRegistry.signal 互斥内 cause→cancel），执行器随后
-			// 返回的 context.Canceled 是停止的表现——按停止终理化，不记 failed。
-			// 无停止意图的取消/错误才是执行错误。
-			// ok 仅表示已注册（register 的 cause 为空串）——signal 过（非空
-			// cause）才是已停止意图；纯执行错误不得误判为停止。
-			if cause, ok := s.stops.cause(r.RunID); ok && cause != "" {
-				if err := s.finalizeStopped(cleanupCtx, &r, lease, cause, done); err != nil {
-					return r, fmt.Errorf("%w：%v", ErrTerminalWrite, err)
-				}
-				return r, nil
+		// 停止与执行结果同时就绪的 select 竞态（0.6.10 复审 #1/#2）：停止意图
+		// 在场时无论成功正文还是取消错误一律按停止终理化——迟到正文只审计
+		// 不发布（AT-12"旧结果只审计"）；ok 仅表示已注册（register 的 cause
+		// 为空串）——signal 过（非空 cause）才是已停止意图，纯执行结果/错误
+		// 不误判。已取出的结果放回缓冲通道（恰容量 1，必不阻塞）交
+		// finalizeStopped 等待并审计、释放恰一次——不留空通道让收尾白等
+		// stopGrace（租约滞留到 TTL）。
+		if cause, ok := s.stops.cause(r.RunID); ok && cause != "" {
+			done <- res
+			if err := s.finalizeStopped(cleanupCtx, &r, lease, cause, done); err != nil {
+				return r, fmt.Errorf("%w：%v", ErrTerminalWrite, err)
 			}
+			return r, nil
+		}
+		if res.err != nil {
 			err := s.finalizeRun(cleanupCtx, &r, lease, StateFailed, truncateS(res.err.Error(), 1000), "", "")
 			if err != nil {
 				return r, fmt.Errorf("%w：%v（执行错误：%v）", ErrTerminalWrite, err, res.err)

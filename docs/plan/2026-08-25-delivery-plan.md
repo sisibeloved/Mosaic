@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.56 |
+| 版本 | v2.57 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -179,6 +179,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.57 | 2026-11-02 | Mosaic 项目组 / ZCode | **0.6.10 复审修复（独立复审报告：2 项 P1、3 项 P2、2 项 P3——ADR-0033 v0.3 修订）**。#1 P1（基线即有）停止在场时执行器成功返回不得发布：done 分支统一先查停止意图（不分成败），迟到正文只进 late_result 审计（AT-12）；#2 P1（上轮竞态修复引入的回归）已取结果放回缓冲通道交 finalizeStopped——审计/释放恰一次、不空等 stopGrace（租约不滞留到 TTL）；#5 裁定轮次按同包先行送验还原（同包送验/裁定同轮——v22 升级计数不串轮）；#6 版本行查到即保留空摘要（BOM 目标不回退）；#7 投递侧墓碑回填优先取房间实际删除时间；#3/#4 SPA 台账与来源独立更新 + 只丢弃比已显示更旧的响应。新增回归：run 强制停止与结果同就绪（终态/正文不发布/late_result 审计/租约恰一次/不空等）+ IT 同包轮次配对与 BOM 空摘要 + 墓碑原时间断言；全量 vet/-race + it/st 串行 + SPA 绿 + 真机冒烟 16 项复跑 ALL-PASS |
 | v2.56 | 2026-11-02 | Mosaic 项目组 / ZCode | **0.6.10 审校修复（独立审校报告：2 项 P1、6 项 P2、1 项 P3——ADR-0033 v0.2 修订）**。#1 P1 事实归属当时契约：送验/裁定事务内写入实际 contract_version/review_round（InjectReviewFacts），旧事件投影按事件流回溯（created/contract_revised）+ 版本行 objective 快照 + 送验计数重建；#2 P1+#6 Due 房首调度：先取各房队首未完成行再判到期（同房不越序、暂停房积压不饿死他房——每房每轮一条）；#5 轮次随事实留痕；#8 migration v26 幂等回填升级前已删房来源墓碑（按原删除时间）+ 投递侧兜底回填（显式提交后返回）；#3 快照/实时两路同形保留 mission_ref（room.TimelineItem + SPA）；#7 反应锚点跳过 system；#4/#9 SPA 台账轮询序号守卫/失败保留末次成功/来源元数据随轮询刷新。新增回归：UT（事件事实/锚点跳过/快照同形）+ IT 四例（房首调度含 205 积压、v1→v2 事实归属、删房后待投零新增+兜底回填、v26 回填升级）+ 审校单列测试缺口补正；全量 vet/-race + it/st 串行 + SPA 绿 + 真机冒烟扩展 ALL-PASS（暂停双事实恢复后有序落卡/卡片携真实轮次版本/快照保留 mission_ref） |
 | v2.55 | 2026-11-02 | Mosaic 项目组 / ZCode | **0.6.10 执行结果回房（RFC-0018 §10.1/§10.2、AT-09/AT-20 / ADR-0033）——0.6 领域线第十一件**。四类事实（reviewing/accepted/returned/canceled）自 mission_events 全局游标投影为持久通知行（migration v25：mission_return_notices + source_seq UNIQUE 去重键 + mission_sources.deleted_at 来源墓碑列）；投递 = 同一 SQLite 事务内墓碑/暂停核对 + 追加 message.posted（par_system + mission_ref 封闭对象，复用 outbox/FTS 同事务路径）+ 标记 delivered——去重由构造保证；房间暂停 held 保留恢复后发布（系统卡不触发讨论波——引擎刺激只认 human）、房间删除级联取消 + 来源墓碑（结果保留不重跑任务）、有界重试 12 次封顶退避 60s；GET /v1/missions/{id}/return-notices 台账 + MissionView.room_source.deleted_at + message.posted += mission_ref（命令面拒收，人类不能伪造）；SPA 房间引用卡片（直达 /missions?id= 选中）+ 任务中心回房区与来源删除提示。各层测试先行（UT worker 6 例红→绿 / IT 三例：v25+旧库升级、投影恰一次、原子投递+级联 / API 4 例 / room 命令面门禁）+ 全量 vet/-race + it/st 串行 + SPA 绿 + 真机冒烟 12 项 ALL-PASS（接受双卡/暂停持有→恢复投递/删房取消+墓碑/重启零重复+台账持久） |
 | v2.54 | 2026-11-02 | Mosaic 项目组 / ZCode | **v0.6.9 重切——并入 MiniMax 原生 deliver-assets 附件投递修复（负责人裁定：属 bugfix，随当前版本发布）**。v2.53 行所述"不入本版"作废：CHANGELOG 条目自 [Unreleased] 移入 [0.6.9] Fixed（置顶），发布说明增补"修复（MiniMax 附件投递）"段。修复内容：适配器分离正文与 ≤4 件工作区产物（畸形块拒发布、不泄漏内部 XML）；发布围栏通过后按发言 Profile 导入既有受管附件库（Native/WSL 均限定当前 Agent 工作区内普通文件——拒路径穿越/符号链接逃逸/目录与其他类型，WSL 原始二进制流），复用 8 MiB/房间配额/MIME/SHA-256 与房间删除级联；单件失败保留正文并标注附件不可用，不伪装成功；附件描述子 += 可选 caption（≤500 字、过秘密剔除；OpenAPI + message.posted schema/fixture + 两端生成物）、RFC-0013 §2.6、SPA 卡片显示 caption。验证：生成物一致性 + gofmt + vet + UT + race + it/st 串行 + SPA 绿 + 真机冒烟 35 项复跑 ALL-PASS。发布链：修复提交 + CI 三平台绿 → Release v0.6.9 删除重建、tag v0.6.9 自 84ea128 重打至修复提交、产物于新 tag 干净 worktree 重建替换 |

@@ -486,21 +486,30 @@ function MissionDetail({
   useEffect(() => {
     let alive = true;
     let seqRN = 0;
+    let appliedRN = 0;
     const loadRN = () => {
       const seq = ++seqRN;
-      void Promise.all([
-        api.listMissionReturnNotices(missionID),
-        api.getMission(missionID).catch(() => null),
-      ])
-        .then(([r, m]) => {
-          if (!alive || seq !== seqRN) return; // 过期响应丢弃（乱序不回退）
+      // 复审 #3：两请求各自独立更新——台账不被来源挂起挡住、删房标记不被台账
+      // 失败挡住；#4：只丢弃**比已显示更旧**的响应——轮询间隔短于单轮耗时的
+      // 连续慢响应不再被发起序号全部丢弃（每轮到达的最新结果总会显示）。
+      void api
+        .listMissionReturnNotices(missionID)
+        .then((r) => {
+          if (!alive || seq < appliedRN) return;
+          appliedRN = seq;
           setReturnErr(null);
           setReturnNotices(r.notices);
-          if (m) setRoomSourceNow(m.room_source ?? null);
         })
         .catch(() => {
-          if (!alive || seq !== seqRN) return;
-          setReturnErr("回房台账暂不可用（显示上次结果）"); // 末次成功结果不动
+          if (alive) setReturnErr("回房台账暂不可用（显示上次结果）"); // 末次成功结果不动
+        });
+      void api
+        .getMission(missionID)
+        .then((m) => {
+          if (alive) setRoomSourceNow(m.room_source ?? null);
+        })
+        .catch(() => {
+          /* 来源元数据刷新失败：保留现有值（下轮再试） */
         });
     };
     loadRN();
