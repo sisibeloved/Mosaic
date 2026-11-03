@@ -16,10 +16,25 @@ import (
 
 func fixedNow() string { return "2026-10-30T12:00:00.000Z" }
 
-type fakeAgents struct{ ids map[string]bool }
+type fakeAgents struct {
+	ids map[string]bool
+	// statuses 可选覆盖（0.6.12 交接测试）：未给出的 id 按 active；map 引用
+	// 可在测试中途改写（offer 后转 suspended 复核用例）。
+	statuses map[string]string
+}
 
 func (f fakeAgents) AgentExists(_ context.Context, agentID string) (bool, error) {
 	return f.ids[agentID], nil
+}
+
+func (f fakeAgents) AgentStatus(_ context.Context, agentID string) (string, bool, error) {
+	if st, ok := f.statuses[agentID]; ok {
+		return st, true, nil
+	}
+	if !f.ids[agentID] {
+		return "", false, nil
+	}
+	return AgentStatusActive, true, nil
 }
 
 func fullContent() Content {

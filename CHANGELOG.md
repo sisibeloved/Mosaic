@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Mission 责任交接：`handover` 与退役承诺处置**（0.6 领域第十三件·收官 / ADR-0035，RFC-0018 §3.3/§4.5/§8.1/§11.2，AT-03）：Mission 换负责人的受控通道——两段式 **发起 → 承接 | 婉拒 | 撤回**：发起只置 `pending_owner_agent_id`（owner 不变——责任不因单方意愿转移；同一时刻至多一条在途交接）；承接单事务翻转 owner + **承接回执**（`handover_accepted` 事件：from / to / contract_version / status_at_accept / note）；婉拒 / 撤回了结在途交接并留痕（"显式无人承接"可审计）。四命令均不递增 `contract_version`（归属是控制面事实），事件 append-only（交接史不可改写）。承接人须存在且 **active**（suspended / retiring / retired 不接新承诺——offer 与 accept 两点复核）。**在途交接冻结窗**：pending 期间 Revise / RequestReview / MarkCanceling 拒绝（先了结交接——防修订通道整包换 owner 与交接通道竞态；存储事务内同守卫），Pause / Resume / ReopenRequest / 成果提交照常。**完备性重判**：unassigned draft 承接后契约齐备 → ready 入调度列（交接同时是存量任务的指派通道）；running / waiting / paused 执行控制投影保持（结果事实与 owner 无关）。**退役承诺门实装**（0.5.1 预留的 `personalagent.CommitmentChecker` 首次接生产装配）：非终态 owned Mission = 未处置承诺（含在途交接——回执未落责任未转移）；retire 停留 retiring + 返回清单，逐一交接承接或取消后清空 → retired（AT-03"未处置时退役不能完成"兑现）。
+  - **`POST /v1/missions/{id}/handover`**（发起）/ **`handover/accept`**（承接）/ **`handover/decline`**（婉拒）/ **`handover/revoke`**（撤回）：写门三件套 + MaxBytesReader（1 MiB）+ DisallowUnknownFields；**`GET /v1/missions/{id}/handovers`** 交接史读面（含承接回执）。`MissionView` += `pending_owner_agent_id`；`MissionEvent.event_type` 枚举补登 `reopen_requested` 与四类 `handover_*`。
+  - **migration v29**：`missions` += `pending_owner_agent_id`（幂等加列 + 登记）；Store 三方法（`HandoverOffer` / `HandoverAccept`——pending 锚防撤回改派后的旧 accept / `HandoverWithdraw`）事务内核对；`mission.AgentLookup` += `AgentStatus`（身份域适配）。
+  - **SPA**：任务详情「责任交接」区（发起表单——承接人选择 + 交接说明 ≤2000 字；待承接徽标 + 承接 / 婉拒 / 撤回；交接历史含回执）；详情头 `⇄ 待承接 → B` 徽标；设置页退役未处置承诺清单（既有面承接新数据源）。
+  - 非目标（明确不做）：Portable Agent Bundle / 跨实例导出导入（0.7+ / RFC-0019）；WorkItem offer / accept / decline；Binding 换 Agent 交接包；自动暂停在途 Run；自动撮合承接人；交接回房卡片；多人 per-agent 身份校验（个人版 owner 代行，事件记 from / to 事实）。
+
 ## [0.6.11] - 2026-11-03
 
 ### Added

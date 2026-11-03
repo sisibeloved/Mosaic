@@ -26,6 +26,13 @@ func (f fakeAgents) AgentExists(_ context.Context, agentID string) (bool, error)
 	return f.ids[agentID], nil
 }
 
+func (f fakeAgents) AgentStatus(_ context.Context, agentID string) (string, bool, error) {
+	if !f.ids[agentID] {
+		return "", false, nil
+	}
+	return mission.AgentStatusActive, true, nil
+}
+
 func contract() mission.Content {
 	return mission.Content{
 		Objective:          "房间任务交办",

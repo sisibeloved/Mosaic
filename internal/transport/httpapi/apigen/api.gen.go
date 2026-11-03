@@ -678,6 +678,30 @@ func (e GrantRuntimeWorkspaceAccess) Valid() bool {
 	}
 }
 
+// Defines values for HandoverEventViewKind.
+const (
+	HandoverEventViewKindAccepted HandoverEventViewKind = "accepted"
+	HandoverEventViewKindDeclined HandoverEventViewKind = "declined"
+	HandoverEventViewKindOffered  HandoverEventViewKind = "offered"
+	HandoverEventViewKindRevoked  HandoverEventViewKind = "revoked"
+)
+
+// Valid indicates whether the value is a known member of the HandoverEventViewKind enum.
+func (e HandoverEventViewKind) Valid() bool {
+	switch e {
+	case HandoverEventViewKindAccepted:
+		return true
+	case HandoverEventViewKindDeclined:
+		return true
+	case HandoverEventViewKindOffered:
+		return true
+	case HandoverEventViewKindRevoked:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for HarnessUpdateCheckChannel.
 const (
 	Mosaic     HarnessUpdateCheckChannel = "mosaic"
@@ -764,9 +788,14 @@ func (e MemoryViewCapsulesClosureType) Valid() bool {
 
 // Defines values for MissionEventEventType.
 const (
-	MissionEventEventTypeContractRevised MissionEventEventType = "contract_revised"
-	MissionEventEventTypeCreated         MissionEventEventType = "created"
-	MissionEventEventTypeStatusChanged   MissionEventEventType = "status_changed"
+	MissionEventEventTypeContractRevised  MissionEventEventType = "contract_revised"
+	MissionEventEventTypeCreated          MissionEventEventType = "created"
+	MissionEventEventTypeHandoverAccepted MissionEventEventType = "handover_accepted"
+	MissionEventEventTypeHandoverDeclined MissionEventEventType = "handover_declined"
+	MissionEventEventTypeHandoverOffered  MissionEventEventType = "handover_offered"
+	MissionEventEventTypeHandoverRevoked  MissionEventEventType = "handover_revoked"
+	MissionEventEventTypeReopenRequested  MissionEventEventType = "reopen_requested"
+	MissionEventEventTypeStatusChanged    MissionEventEventType = "status_changed"
 )
 
 // Valid indicates whether the value is a known member of the MissionEventEventType enum.
@@ -775,6 +804,16 @@ func (e MissionEventEventType) Valid() bool {
 	case MissionEventEventTypeContractRevised:
 		return true
 	case MissionEventEventTypeCreated:
+		return true
+	case MissionEventEventTypeHandoverAccepted:
+		return true
+	case MissionEventEventTypeHandoverDeclined:
+		return true
+	case MissionEventEventTypeHandoverOffered:
+		return true
+	case MissionEventEventTypeHandoverRevoked:
+		return true
+	case MissionEventEventTypeReopenRequested:
 		return true
 	case MissionEventEventTypeStatusChanged:
 		return true
@@ -3082,6 +3121,73 @@ type HandoffRequirements struct {
 	Required []string `json:"required"`
 }
 
+// HandoverAccept 承接交接（承接回执随 handover_accepted 事件留痕）。
+type HandoverAccept struct {
+	// ExpectedVersion CAS——与当前 contract_version 不符 409
+	ExpectedVersion int `json:"expected_version"`
+
+	// Note 承接备注（进回执事件）
+	Note *string `json:"note,omitempty"`
+}
+
+// HandoverEventList defines model for HandoverEventList.
+type HandoverEventList struct {
+	// Events 按 seq 升序
+	Events []HandoverEventView `json:"events"`
+}
+
+// HandoverEventView 交接事实（mission_events.handover_* 组装；append-only——kind=accepted 为承接回执）。
+type HandoverEventView struct {
+	// ContractVersion 事实时点的契约版本（CAS 后实际值随事件留痕）
+	ContractVersion int `json:"contract_version"`
+
+	// FromOwnerAgentId 发起时负责人（空 = unassigned 指派）
+	FromOwnerAgentId string `json:"from_owner_agent_id"`
+
+	// Kind offered 发起 / accepted 承接回执 / declined 婉拒 / revoked 撤回
+	Kind HandoverEventViewKind `json:"kind"`
+
+	// Note 承接备注（accepted 携带）
+	Note *string `json:"note,omitempty"`
+
+	// Notes 交接说明（offered 携带）
+	Notes      *string   `json:"notes,omitempty"`
+	OccurredAt time.Time `json:"occurred_at"`
+
+	// Reason 婉拒/撤回原因（declined/revoked 携带）
+	Reason *string `json:"reason,omitempty"`
+
+	// StatusAtAccept 承接时的任务状态（accepted 携带——B 接手的是什么）
+	StatusAtAccept *string `json:"status_at_accept,omitempty"`
+
+	// ToOwnerAgentId 承接人
+	ToOwnerAgentId string `json:"to_owner_agent_id"`
+}
+
+// HandoverEventViewKind offered 发起 / accepted 承接回执 / declined 婉拒 / revoked 撤回
+type HandoverEventViewKind string
+
+// HandoverResolve 婉拒/撤回交接（了结在途交接，事件留痕）。
+type HandoverResolve struct {
+	// ExpectedVersion CAS——与当前 contract_version 不符 409
+	ExpectedVersion int `json:"expected_version"`
+
+	// Reason 婉拒/撤回原因（进事件）
+	Reason *string `json:"reason,omitempty"`
+}
+
+// HandoverSubmit 发起责任交接（RFC-0018 §11.2 交接命令面 / ADR-0035，0.6.12）。
+type HandoverSubmit struct {
+	// ExpectedVersion CAS——与当前 contract_version 不符 409
+	ExpectedVersion int `json:"expected_version"`
+
+	// NewOwnerAgentId 承接人（≠当前 owner；须存在且 active）
+	NewOwnerAgentId string `json:"new_owner_agent_id"`
+
+	// Notes 交接说明——在途事项/未决动作/证据指引（§8.1 轻量承载体；完整交接包随 0.7+）
+	Notes *string `json:"notes,omitempty"`
+}
+
 // HarnessUpdateCheck Agent CLI 版本检测（0.4.1）：注册表探测版本对照上游最新版（按 ADR-0016 三通道分派检测面——registry/self-update 经仓库客户端（npm view）；mosaic 对齐自建 releases 信号（产品更新源 feed 优先、源码 tag 回退）；均缓存 30 分钟）。
 type HarnessUpdateCheck struct {
 	Adapter string `json:"adapter"`
@@ -3320,7 +3426,7 @@ type MissionEvent struct {
 	MissionId  string                `json:"mission_id"`
 	OccurredAt time.Time             `json:"occurred_at"`
 
-	// Payload 事件体——created: {contract_version, status}；contract_revised: {from_version, to_version}；status_changed: {from, to, reason}
+	// Payload 事件体——created: {contract_version, status}；contract_revised: {from_version, to_version}；status_changed: {from, to, reason}；reopen_requested: {request_id, decision_ref, evidence_refs, affected_mission_ids, reason, contract_version}；handover_offered: {from_owner, to_owner, notes, contract_version}；handover_accepted: {from_owner, to_owner, contract_version, status_at_accept, note}（承接回执）；handover_declined/handover_revoked: {from_owner, to_owner, reason, contract_version}
 	Payload map[string]interface{} `json:"payload"`
 
 	// Seq 全表单调流序
@@ -3533,6 +3639,9 @@ type MissionView struct {
 
 	// OwnerAgentId 负责人（空 = 显式 unassigned，§3.3 不变量）
 	OwnerAgentId string `json:"owner_agent_id"`
+
+	// PendingOwnerAgentId 在途交接承接人（0.6.12 / ADR-0035：handover 发起置位、承接/婉拒/撤回清空；空 = 无在途交接。在途期间 owner 不变、Revise/RequestReview/MarkCanceling 冻结）
+	PendingOwnerAgentId string `json:"pending_owner_agent_id"`
 
 	// Requester 请求人（0.6.0 恒 owner——本地单用户）
 	Requester     string   `json:"requester"`
@@ -4996,6 +5105,18 @@ type BuildContextManifestJSONRequestBody = ContextManifestBuildRequest
 // SubmitDeliveryPackageJSONRequestBody defines body for SubmitDeliveryPackage for application/json ContentType.
 type SubmitDeliveryPackageJSONRequestBody = DeliveryPackageSubmit
 
+// OfferMissionHandoverJSONRequestBody defines body for OfferMissionHandover for application/json ContentType.
+type OfferMissionHandoverJSONRequestBody = HandoverSubmit
+
+// AcceptMissionHandoverJSONRequestBody defines body for AcceptMissionHandover for application/json ContentType.
+type AcceptMissionHandoverJSONRequestBody = HandoverAccept
+
+// DeclineMissionHandoverJSONRequestBody defines body for DeclineMissionHandover for application/json ContentType.
+type DeclineMissionHandoverJSONRequestBody = HandoverResolve
+
+// RevokeMissionHandoverJSONRequestBody defines body for RevokeMissionHandover for application/json ContentType.
+type RevokeMissionHandoverJSONRequestBody = HandoverResolve
+
 // PauseMissionJSONRequestBody defines body for PauseMission for application/json ContentType.
 type PauseMissionJSONRequestBody = MissionPause
 
@@ -5253,6 +5374,21 @@ type ServerInterface interface {
 	// ListMissionEvents Mission 事件流（只读审计面）
 	// (GET /v1/missions/{mission_id}/events)
 	ListMissionEvents(w http.ResponseWriter, r *http.Request, missionId string)
+	// OfferMissionHandover 发起责任交接（handover——记录在途交接，owner 不变直至承接）
+	// (POST /v1/missions/{mission_id}/handover)
+	OfferMissionHandover(w http.ResponseWriter, r *http.Request, missionId string)
+	// AcceptMissionHandover 承接交接（owner 翻转 + 承接回执 handover_accepted）
+	// (POST /v1/missions/{mission_id}/handover/accept)
+	AcceptMissionHandover(w http.ResponseWriter, r *http.Request, missionId string)
+	// DeclineMissionHandover 婉拒交接（pending 清空 + handover_declined 事件留痕）
+	// (POST /v1/missions/{mission_id}/handover/decline)
+	DeclineMissionHandover(w http.ResponseWriter, r *http.Request, missionId string)
+	// RevokeMissionHandover 撤回交接（发起人了结在途交接，pending 清空 + handover_revoked 事件）
+	// (POST /v1/missions/{mission_id}/handover/revoke)
+	RevokeMissionHandover(w http.ResponseWriter, r *http.Request, missionId string)
+	// ListMissionHandovers 交接史（事件流组装，seq 升序——含承接回执）
+	// (GET /v1/missions/{mission_id}/handovers)
+	ListMissionHandovers(w http.ResponseWriter, r *http.Request, missionId string)
 	// PauseMission 暂停 Mission（CAS；阻止新调度 + 在途 Run 安全边界停止）
 	// (POST /v1/missions/{mission_id}/pause)
 	PauseMission(w http.ResponseWriter, r *http.Request, missionId string)
@@ -7000,6 +7136,136 @@ func (siw *ServerInterfaceWrapper) ListMissionEvents(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListMissionEvents(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// OfferMissionHandover operation middleware
+func (siw *ServerInterfaceWrapper) OfferMissionHandover(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.OfferMissionHandover(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AcceptMissionHandover operation middleware
+func (siw *ServerInterfaceWrapper) AcceptMissionHandover(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AcceptMissionHandover(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeclineMissionHandover operation middleware
+func (siw *ServerInterfaceWrapper) DeclineMissionHandover(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeclineMissionHandover(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokeMissionHandover operation middleware
+func (siw *ServerInterfaceWrapper) RevokeMissionHandover(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokeMissionHandover(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMissionHandovers operation middleware
+func (siw *ServerInterfaceWrapper) ListMissionHandovers(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMissionHandovers(w, r, missionId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8856,6 +9122,11 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/runs", wrapper.CreateMissionRun)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/reopen-request", wrapper.SubmitReopenRequest)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/reopen-requests", wrapper.ListReopenRequests)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/handover", wrapper.OfferMissionHandover)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/handover/accept", wrapper.AcceptMissionHandover)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/handover/decline", wrapper.DeclineMissionHandover)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/handover/revoke", wrapper.RevokeMissionHandover)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/handovers", wrapper.ListMissionHandovers)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/return-notices", wrapper.ListMissionReturnNotices)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/delivery-packages", wrapper.ListDeliveryPackages)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/delivery-packages", wrapper.SubmitDeliveryPackage)

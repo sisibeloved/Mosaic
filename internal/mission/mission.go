@@ -69,7 +69,19 @@ const (
 	// EventReopenRequested 决策重开请求（0.6.11 / ADR-0034）：CAS 版本、任意状态
 	// 可追加——不改 Mission 状态、不翻转终态；事实随事件留痕（append-only）。
 	EventReopenRequested = "reopen_requested"
+	// 责任交接四事实（0.6.12 / ADR-0035）：offered 发起（pending 置位、owner 不变）
+	// / accepted 承接回执（owner 翻转）/ declined 婉拒 / revoked 撤回——均不递增
+	// contract_version（归属是控制面事实），append-only（交接史不可改写）。
+	EventHandoverOffered  = "handover_offered"
+	EventHandoverAccepted = "handover_accepted"
+	EventHandoverDeclined = "handover_declined"
+	EventHandoverRevoked  = "handover_revoked"
 )
+
+// AgentStatusActive 承接人须处的身份生命周期状态（身份域同名值——域间不互相
+// import；suspended / retiring / retired 不接新承诺，RFC §3.2"retiring 停止接新
+// 任务"）。
+const AgentStatusActive = "active"
 
 // RequesterOwner 本地单用户请求方（多入口请求方随网关/委派扩展）。
 const RequesterOwner = "owner"
@@ -99,6 +111,9 @@ var (
 	// ErrSourceAlreadyMapped 房间来源已被交办（ADR-0024：(room_id, task_id)
 	// 全局唯一映射——同一任务卡至多交办一次，撞键回显已映射 mission_id）。
 	ErrSourceAlreadyMapped = errors.New("mission: 房间来源已被交办")
+	// ErrAgentStatusUnavailable 身份状态查询端口未装配（0.6.12 / ADR-0035：交接
+	// 是责任转移的受控通道，承接人须 active——宁拒不放行）。
+	ErrAgentStatusUnavailable = errors.New("mission: 未装配身份状态查询（承接人校验不可用）")
 )
 
 // Budget 预算（§6.1：并发、总 Run 数、墙钟、重试与委派深度）——0.6.0 为
@@ -140,15 +155,19 @@ type Content struct {
 
 // Mission 契约投影行（schema: MissionView——内容字段经嵌入平铺）。
 type Mission struct {
-	MissionID       string      `json:"mission_id"`
-	ContractVersion int         `json:"contract_version"`
-	Status          string      `json:"status"`
-	WaitingReason   string      `json:"waiting_reason"`    // 等待原因（0.6.7；waiting 态一等事实，暂停期间保留；非 waiting 空）
-	ReviewPackageID string      `json:"review_package_id"` // 受审/已验收包（0.6.9：request_review 写入；accepted 保留、returned 清空）
-	ReviewRound     int         `json:"review_round"`      // 送验轮次（0.6.9 审校 #3：每次 request_review 递增——裁定须核对轮次，防旧裁定落到下一轮；非 reviewing/accepted 为 0）
-	OwnerAgentID    string      `json:"owner_agent_id"`    // 空 = 显式 unassigned（§3.3）
-	Requester       string      `json:"requester"`
-	RoomSource      *RoomSource `json:"room_source"` // 房间交办来源（非房间交办 null；创建事实）
+	MissionID       string `json:"mission_id"`
+	ContractVersion int    `json:"contract_version"`
+	Status          string `json:"status"`
+	WaitingReason   string `json:"waiting_reason"`    // 等待原因（0.6.7；waiting 态一等事实，暂停期间保留；非 waiting 空）
+	ReviewPackageID string `json:"review_package_id"` // 受审/已验收包（0.6.9：request_review 写入；accepted 保留、returned 清空）
+	ReviewRound     int    `json:"review_round"`      // 送验轮次（0.6.9 审校 #3：每次 request_review 递增——裁定须核对轮次，防旧裁定落到下一轮；非 reviewing/accepted 为 0）
+	OwnerAgentID    string `json:"owner_agent_id"`    // 空 = 显式 unassigned（§3.3）
+	// PendingOwnerAgentID 在途交接承接人（0.6.12 / ADR-0035）：handover 发起置位、
+	// 承接/婉拒/撤回清空；空 = 无在途交接。在途期间 owner 不变（责任不因单方意愿
+	// 转移）；Revise / RequestReview / MarkCanceling 冻结（先了结交接）。
+	PendingOwnerAgentID string      `json:"pending_owner_agent_id"`
+	Requester           string      `json:"requester"`
+	RoomSource          *RoomSource `json:"room_source"` // 房间交办来源（非房间交办 null；创建事实）
 	Content
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
@@ -175,10 +194,13 @@ type Event struct {
 }
 
 // AgentLookup 身份域查询端口（owner 是责任归属事实——任意生命周期可指派，
-// 行为能力由执行/交接时点校验；只需存在性）。
+// 行为能力由执行/交接时点校验；创建/修订只需存在性）。
 type AgentLookup interface {
 	// AgentExists Agent 是否存在。
 	AgentExists(ctx context.Context, agentID string) (bool, error)
+	// AgentStatus Agent 当前生命周期状态（0.6.12 / ADR-0035：交接受控通道的承接
+	// 人须 active——offer 与 accept 两点复核）；未知 ok=false。
+	AgentStatus(ctx context.Context, agentID string) (status string, ok bool, err error)
 }
 
 // SourceLookup 房间域查询端口（ADR-0024 / 0.6.1）：房间任务卡存在性——
@@ -261,6 +283,21 @@ type Store interface {
 	// ready 清锚）+ 事件（按核对后的实际锚——预填未来轮次与换包交错时锚已换
 	// → 拒绝，事件不可能记作旧包）；accepted 前事务内复查未决 Run（复审 R1）。
 	RecordReview(ctx context.Context, missionID string, expectedVersion, expectedRound int, to string, event Event, expectedPackage string) (Mission, bool, error)
+	// HandoverOffer 发起交接（0.6.12 / ADR-0035）：contract_version 匹配、状态 ∈
+	// draft/ready/running/waiting/paused、无在途交接 → pending_owner = newOwner +
+	// handover_offered 事件，单事务；ok=false = 版本不符/状态族外/已有在途（服务
+	// 方重读分辨）。owner 与版本不变。
+	HandoverOffer(ctx context.Context, missionID string, expectedVersion int, newOwner string, event Event) (Mission, bool, error)
+	// HandoverAccept 承接（承接回执）：contract_version 匹配、pending ==
+	// expectPending（锚——防撤回改派后的旧 accept）且非空、状态族同上 → owner =
+	// pending、pending 清空、draft 按 targetStatus（服务层完备性重判）投影、其余
+	// 状态保持（执行控制投影事务内以现行为准）+ handover_accepted 事件（+ 状态
+	// 变化时 status_changed reason=handover），单事务；ok=false 同上。
+	HandoverAccept(ctx context.Context, missionID string, expectedVersion int, expectPending, targetStatus string, event Event) (Mission, bool, error)
+	// HandoverWithdraw 婉拒/撤回共用：contract_version 匹配、pending == expectPending
+	// 且非空 → pending 清空 + 事件（declined | revoked 由 event 携带），单事务；
+	// 任何状态可了结在途交接（不应存在卡死路径）。
+	HandoverWithdraw(ctx context.Context, missionID string, expectedVersion int, expectPending string, event Event) (Mission, bool, error)
 }
 
 // Service 契约服务：校验单源 + 完备性判定单源 + CAS 编排。
@@ -449,6 +486,253 @@ func (s *Service) ReopenRequest(ctx context.Context, missionID string, expectedV
 	return out, nil
 }
 
+// ---- 责任交接（0.6.12 / ADR-0035；RFC-0018 §3.3/§4.5/§8.1，AT-03）----
+
+// HandoverFact 交接事实读面（事件流组装；Kind=accepted 即承接回执）。
+type HandoverFact struct {
+	Kind             string `json:"kind"` // offered | accepted | declined | revoked
+	FromOwnerAgentID string `json:"from_owner_agent_id"`
+	ToOwnerAgentID   string `json:"to_owner_agent_id"`
+	Notes            string `json:"notes,omitempty"`            // offered
+	Note             string `json:"note,omitempty"`             // accepted
+	Reason           string `json:"reason,omitempty"`           // declined / revoked
+	StatusAtAccept   string `json:"status_at_accept,omitempty"` // accepted：B 接手时的任务状态
+	ContractVersion  int    `json:"contract_version"`
+	OccurredAt       string `json:"occurred_at"`
+}
+
+// HandoverOfferable 可发起/承接交接的状态族：draft / ready / running / waiting /
+// paused。拒绝：accepted / canceled（终态——责任已随裁定/取消了结）、reviewing
+// （验收基线冻结，ADR-0032 先例）、canceling（停止瞬态——先收尾）。导出供存储
+// 事务内核对共用同一单源。
+func HandoverOfferable(status string) bool {
+	switch status {
+	case StatusDraft, StatusReady, StatusRunning, StatusWaiting, StatusPaused:
+		return true
+	}
+	return false
+}
+
+// checkHandoverTarget 承接人校验：存在（ErrAgentNotFound）且 active
+// （ErrInvalidTransition——suspended / retiring / retired 不接新承诺）；端口未装配
+// ErrAgentStatusUnavailable（宁拒不放行）。与 checkOwner（存在性即可——契约
+// 事实记录）区分：交接是责任转移的受控通道，承接方必须能履职。
+func (s *Service) checkHandoverTarget(ctx context.Context, agentID string) error {
+	if s.agentLookup == nil {
+		return ErrAgentStatusUnavailable
+	}
+	st, ok, err := s.agentLookup.AgentStatus(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrAgentNotFound
+	}
+	if st != AgentStatusActive {
+		return fmt.Errorf("%w: 承接人 %s 非 active（%s）——不接新承诺", ErrInvalidTransition, agentID, st)
+	}
+	return nil
+}
+
+// HandoverOffer 发起交接（交接第一段）：CAS 版本 → 状态族 → 在途唯一 → 承接人
+// ≠ 当前 owner → 承接人存在且 active → pending 置位 + handover_offered 事件。
+// owner 不变（责任不因单方意愿转移）、contract_version 不递增（控制面事实）。
+func (s *Service) HandoverOffer(ctx context.Context, missionID string, expectedVersion int, newOwner, notes string) (Mission, error) {
+	newOwner = strings.TrimSpace(newOwner)
+	if n := utf8.RuneCountInString(newOwner); n < 1 || n > 128 {
+		return Mission{}, fmt.Errorf("%w: new_owner_agent_id 须 1..128 字", ErrInvalidMission)
+	}
+	if utf8.RuneCountInString(notes) > 2000 {
+		return Mission{}, fmt.Errorf("%w: notes ≤2000 字", ErrInvalidMission)
+	}
+	cur, ok, err := s.store.MissionByID(ctx, missionID)
+	if err != nil {
+		return Mission{}, err
+	}
+	if !ok {
+		return Mission{}, ErrMissionNotFound
+	}
+	if cur.ContractVersion != expectedVersion {
+		return Mission{}, fmt.Errorf("%w: 期望 v%d，当前 v%d", ErrVersionConflict, expectedVersion, cur.ContractVersion)
+	}
+	if !HandoverOfferable(cur.Status) {
+		return Mission{}, fmt.Errorf("%w: %s 不可交接", ErrInvalidTransition, cur.Status)
+	}
+	if cur.PendingOwnerAgentID != "" {
+		return Mission{}, fmt.Errorf("%w: 已有在途交接（→ %s），先承接/婉拒/撤回", ErrInvalidTransition, cur.PendingOwnerAgentID)
+	}
+	if newOwner == cur.OwnerAgentID {
+		return Mission{}, fmt.Errorf("%w: 承接人即当前负责人", ErrInvalidTransition)
+	}
+	if err := s.checkHandoverTarget(ctx, newOwner); err != nil {
+		return Mission{}, err
+	}
+	payload, err := json.Marshal(map[string]any{
+		"from_owner": cur.OwnerAgentID, "to_owner": newOwner, "notes": notes,
+		"contract_version": expectedVersion, // CAS 后的实际版本随事实留痕
+	})
+	if err != nil {
+		return Mission{}, fmt.Errorf("mission: 交接事件构造失败：%w", err)
+	}
+	out, ok2, err := s.store.HandoverOffer(ctx, missionID, expectedVersion, newOwner, Event{
+		MissionID: missionID, EventType: EventHandoverOffered, Payload: payload, OccurredAt: s.now(),
+	})
+	if err != nil {
+		return Mission{}, err
+	}
+	if !ok2 {
+		return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
+	}
+	return out, nil
+}
+
+// HandoverAccept 承接（交接第二段——承接回执）：CAS 版本 → 有在途 → 状态族
+// （offer 后若进 reviewing / canceling / 终态则拒绝——先了结任务状态）→ 承接人仍
+// active（复核）→ owner 翻转 + pending 清空 + 完备性重判（unassigned draft 齐备
+// → ready 入调度列；running / waiting / paused 执行控制投影保持）+
+// handover_accepted 事件（from / to / contract_version / status_at_accept / note）。
+func (s *Service) HandoverAccept(ctx context.Context, missionID string, expectedVersion int, note string) (Mission, error) {
+	if utf8.RuneCountInString(note) > 280 {
+		return Mission{}, fmt.Errorf("%w: note ≤280 字", ErrInvalidMission)
+	}
+	cur, ok, err := s.store.MissionByID(ctx, missionID)
+	if err != nil {
+		return Mission{}, err
+	}
+	if !ok {
+		return Mission{}, ErrMissionNotFound
+	}
+	if cur.ContractVersion != expectedVersion {
+		return Mission{}, fmt.Errorf("%w: 期望 v%d，当前 v%d", ErrVersionConflict, expectedVersion, cur.ContractVersion)
+	}
+	if cur.PendingOwnerAgentID == "" {
+		return Mission{}, fmt.Errorf("%w: 无在途交接", ErrInvalidTransition)
+	}
+	if !HandoverOfferable(cur.Status) {
+		return Mission{}, fmt.Errorf("%w: %s 不可承接（先了结任务状态）", ErrInvalidTransition, cur.Status)
+	}
+	if err := s.checkHandoverTarget(ctx, cur.PendingOwnerAgentID); err != nil {
+		return Mission{}, err
+	}
+	// 完备性重判仅 draft（齐备则 ready——交接同时是存量 unassigned 任务的指派通道）；
+	// 其余状态保持（存储事务内以现行状态为准——陈旧读不得盖回调度列）。
+	target := cur.Status
+	if cur.Status == StatusDraft {
+		next := cur
+		next.OwnerAgentID = cur.PendingOwnerAgentID
+		target = statusOf(next)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"from_owner": cur.OwnerAgentID, "to_owner": cur.PendingOwnerAgentID,
+		"contract_version": expectedVersion, "status_at_accept": target, "note": note,
+	})
+	if err != nil {
+		return Mission{}, fmt.Errorf("mission: 承接回执构造失败：%w", err)
+	}
+	out, ok2, err := s.store.HandoverAccept(ctx, missionID, expectedVersion, cur.PendingOwnerAgentID, target, Event{
+		MissionID: missionID, EventType: EventHandoverAccepted, Payload: payload, OccurredAt: s.now(),
+	})
+	if err != nil {
+		return Mission{}, err
+	}
+	if !ok2 {
+		return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
+	}
+	return out, nil
+}
+
+// HandoverDecline 婉拒（承接人显式不接——"显式无人承接"留痕，AT-03）：pending
+// 清空 + handover_declined 事件；owner 不变。
+func (s *Service) HandoverDecline(ctx context.Context, missionID string, expectedVersion int, reason string) (Mission, error) {
+	return s.handoverWithdraw(ctx, missionID, expectedVersion, reason, EventHandoverDeclined)
+}
+
+// HandoverRevoke 撤回（发起人了结在途交接——改派前先撤回，在途唯一）：pending
+// 清空 + handover_revoked 事件；owner 不变。
+func (s *Service) HandoverRevoke(ctx context.Context, missionID string, expectedVersion int, reason string) (Mission, error) {
+	return s.handoverWithdraw(ctx, missionID, expectedVersion, reason, EventHandoverRevoked)
+}
+
+// handoverWithdraw 婉拒/撤回共用：任何状态可了结在途交接（不应存在卡死路径）。
+func (s *Service) handoverWithdraw(ctx context.Context, missionID string, expectedVersion int, reason, eventType string) (Mission, error) {
+	if utf8.RuneCountInString(reason) > 280 {
+		return Mission{}, fmt.Errorf("%w: reason ≤280 字", ErrInvalidMission)
+	}
+	cur, ok, err := s.store.MissionByID(ctx, missionID)
+	if err != nil {
+		return Mission{}, err
+	}
+	if !ok {
+		return Mission{}, ErrMissionNotFound
+	}
+	if cur.ContractVersion != expectedVersion {
+		return Mission{}, fmt.Errorf("%w: 期望 v%d，当前 v%d", ErrVersionConflict, expectedVersion, cur.ContractVersion)
+	}
+	if cur.PendingOwnerAgentID == "" {
+		return Mission{}, fmt.Errorf("%w: 无在途交接", ErrInvalidTransition)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"from_owner": cur.OwnerAgentID, "to_owner": cur.PendingOwnerAgentID,
+		"reason": reason, "contract_version": expectedVersion,
+	})
+	if err != nil {
+		return Mission{}, fmt.Errorf("mission: 交接了结事件构造失败：%w", err)
+	}
+	out, ok2, err := s.store.HandoverWithdraw(ctx, missionID, expectedVersion, cur.PendingOwnerAgentID, Event{
+		MissionID: missionID, EventType: eventType, Payload: payload, OccurredAt: s.now(),
+	})
+	if err != nil {
+		return Mission{}, err
+	}
+	if !ok2 {
+		return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
+	}
+	return out, nil
+}
+
+// HandoverHistory 交接史读面：四类 handover_* 事件按 seq 升序组装；未知任务
+// ok=false。
+func (s *Service) HandoverHistory(ctx context.Context, missionID string) ([]HandoverFact, bool, error) {
+	evs, ok, err := s.store.MissionEvents(ctx, missionID)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	out := []HandoverFact{}
+	for _, e := range evs {
+		var kind string
+		switch e.EventType {
+		case EventHandoverOffered:
+			kind = "offered"
+		case EventHandoverAccepted:
+			kind = "accepted"
+		case EventHandoverDeclined:
+			kind = "declined"
+		case EventHandoverRevoked:
+			kind = "revoked"
+		default:
+			continue
+		}
+		var p struct {
+			FromOwner       string `json:"from_owner"`
+			ToOwner         string `json:"to_owner"`
+			Notes           string `json:"notes"`
+			Note            string `json:"note"`
+			Reason          string `json:"reason"`
+			StatusAtAccept  string `json:"status_at_accept"`
+			ContractVersion int    `json:"contract_version"`
+		}
+		if json.Unmarshal(e.Payload, &p) != nil {
+			continue
+		}
+		out = append(out, HandoverFact{
+			Kind: kind, FromOwnerAgentID: p.FromOwner, ToOwnerAgentID: p.ToOwner,
+			Notes: p.Notes, Note: p.Note, Reason: p.Reason, StatusAtAccept: p.StatusAtAccept,
+			ContractVersion: p.ContractVersion, OccurredAt: e.OccurredAt,
+		})
+	}
+	return out, true, nil
+}
+
 // Revise 修订契约（= revise_mission）：全量替换 + 版本追加；expected_version
 // CAS——败者 ErrVersionConflict（可见重试）；终态拒修订；完备性重判
 // （draft ↔ ready 双向，事件留痕）；执行控制投影保持（running/paused/
@@ -478,6 +762,11 @@ func (s *Service) Revise(ctx context.Context, missionID string, expectedVersion 
 		return Mission{}, fmt.Errorf("%w: accepted 不可修订", ErrInvalidTransition)
 	case StatusReviewing:
 		return Mission{}, fmt.Errorf("%w: 验收期间契约冻结（先退回）", ErrInvalidTransition)
+	}
+	// 0.6.12 / ADR-0035 §3：在途交接冻结窗——修订通道整包换 owner 与交接通道不得
+	// 竞态（先承接/婉拒/撤回）；存储事务内同守卫。
+	if cur.PendingOwnerAgentID != "" {
+		return Mission{}, fmt.Errorf("%w: 交接待承接（→ %s），先了结交接再修订", ErrInvalidTransition, cur.PendingOwnerAgentID)
 	}
 	next := cur
 	next.ContractVersion = cur.ContractVersion + 1
@@ -614,6 +903,11 @@ func (s *Service) MarkCanceling(ctx context.Context, missionID string, expectedV
 	if cur.Status == StatusAccepted {
 		return Mission{}, fmt.Errorf("%w: accepted 不可取消", ErrInvalidTransition)
 	}
+	// 0.6.12 / ADR-0035 §3：在途交接冻结窗——停止编排与归属转移不同时进行
+	// （要取消先撤回/婉拒交接）；存储事务内同守卫。
+	if cur.PendingOwnerAgentID != "" {
+		return Mission{}, fmt.Errorf("%w: 交接待承接（→ %s），先了结交接再取消", ErrInvalidTransition, cur.PendingOwnerAgentID)
+	}
 	out, ok2, err := s.store.MarkCanceling(ctx, missionID, expectedVersion, reason, s.now())
 	if err != nil {
 		return Mission{}, err
@@ -708,6 +1002,11 @@ func (s *Service) RequestReview(ctx context.Context, missionID string, expectedV
 		}
 		return Mission{}, fmt.Errorf("%w: reviewing 中不可换包（先退回）", ErrInvalidTransition)
 	case StatusReady:
+		// 0.6.12 / ADR-0035 §3：在途交接冻结窗——验收基线含归属静定（先了结交接）；
+		// 存储事务内同守卫。
+		if cur.PendingOwnerAgentID != "" {
+			return Mission{}, fmt.Errorf("%w: 交接待承接（→ %s），先了结交接再送验", ErrInvalidTransition, cur.PendingOwnerAgentID)
+		}
 		payload, err := json.Marshal(map[string]string{"from": StatusReady, "to": StatusReviewing, "package_id": packageID})
 		if err != nil {
 			return Mission{}, fmt.Errorf("mission: 送验事件构造失败：%w", err)

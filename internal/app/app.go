@@ -296,8 +296,11 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	// 独立 Agent 身份域（RFC-0018 / ADR-0017，0.5.0）：SQLite 权威（v7 表）+
 	// 注册表单向同步。装载后先迁移磁盘存量（先于扫描），扫描完成后增量同步；
 	// 身份 API 读前另有惰性幂等同步兜底（手动登记/删除最终一致）。
+	// 0.6.12 / ADR-0035：承诺门实装——退役前 owned 非终态 Mission 须逐一交接
+	// （承接回执）或取消；Store 直查避免与 mission 服务的构造环。
 	identitySvc := personalagent.New(store, personalagent.NewRegistryAdapter(harnessRegistry),
-		personalagent.WithNewAgentID(func() string { return newID("ag") }), personalagent.WithNow(clock))
+		personalagent.WithNewAgentID(func() string { return newID("ag") }), personalagent.WithNow(clock),
+		personalagent.WithCommitments(missionCommitments{missions: store}))
 	if rep, err := identitySvc.SyncFromHarness(ctx); err != nil {
 		logger.Warn("agent 身份迁移失败（读面前惰性重试）", "err", err)
 	} else {
@@ -1320,7 +1323,8 @@ func (a execRoomEvents) RoomEvents(ctx context.Context, roomID string) ([]execct
 	return out, nil
 }
 
-// missionAgentLookup mission.AgentLookup 的身份域适配（owner 存在性）。
+// missionAgentLookup mission.AgentLookup 的身份域适配（owner 存在性 + 生命周期
+// 状态——0.6.12 交接承接人须 active）。
 type missionAgentLookup struct{ svc *personalagent.Service }
 
 func (l missionAgentLookup) AgentExists(ctx context.Context, agentID string) (bool, error) {
@@ -1329,6 +1333,48 @@ func (l missionAgentLookup) AgentExists(ctx context.Context, agentID string) (bo
 		return false, err
 	}
 	return ok, nil
+}
+
+// AgentStatus 身份生命周期状态（ADR-0035：offer / accept 两点复核承接人 active）。
+func (l missionAgentLookup) AgentStatus(ctx context.Context, agentID string) (string, bool, error) {
+	a, ok, err := l.svc.AgentByID(ctx, agentID)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	return a.Status, true, nil
+}
+
+// missionLister 承诺门所需的最小 mission 读面（Store 直查——装配期无服务环依赖：
+// 身份服务先于 mission 服务构造，承诺门不能反向持 mission.Service）。
+type missionLister interface {
+	ListMissions(ctx context.Context) ([]mission.Summary, error)
+}
+
+// missionCommitments personalagent.CommitmentChecker 的 Mission 域实装（0.6.12 /
+// ADR-0035 §4，AT-03）：非终态 owned Mission = 未处置承诺——draft / ready / running /
+// waiting / paused / reviewing / canceling 全计入；accepted / canceled 不计（责任已随
+// 裁定/取消了结）；**在途交接仍计入**（owner 未翻转、承接回执未落——§3.3 不变量）。
+// unassigned 任务不入任何人清单。0.5.1 预留端口至此首次接生产装配：retire 停留
+// retiring 直至清单清空（逐一交接承接或取消）。
+type missionCommitments struct{ missions missionLister }
+
+func (c missionCommitments) Outstanding(ctx context.Context, agentID string) ([]string, error) {
+	list, err := c.missions.ListMissions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("承诺门读取任务: %w", err)
+	}
+	out := []string{}
+	for _, m := range list {
+		if m.OwnerAgentID != agentID || m.Status == mission.StatusAccepted || m.Status == mission.StatusCanceled {
+			continue
+		}
+		obj := m.Objective
+		if r := []rune(obj); len(r) > 40 {
+			obj = string(r[:40]) + "…"
+		}
+		out = append(out, fmt.Sprintf("%s（%s）%s", m.MissionID, m.Status, obj))
+	}
+	return out, nil
 }
 
 // identityAgentLookup slot.AgentLookup 的身份域适配（任职前置校验：

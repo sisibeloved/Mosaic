@@ -35,6 +35,14 @@ func (l missionIdentAgents) AgentExists(ctx context.Context, agentID string) (bo
 	return ok, nil
 }
 
+func (l missionIdentAgents) AgentStatus(ctx context.Context, agentID string) (string, bool, error) {
+	a, ok, err := l.svc.AgentByID(ctx, agentID)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	return a.Status, true, nil
+}
+
 // missionTestServer 身份 + Mission 契约装配。
 func missionTestServer(t *testing.T) *httptest.Server {
 	t.Helper()

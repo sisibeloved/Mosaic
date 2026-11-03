@@ -17,6 +17,7 @@ import {
   type MissionSummary,
   type MissionView,
   type ReopenRequestView,
+  type HandoverEventView,
   type ReturnNoticeView,
   type SlotInstanceView,
 } from "../api/client";
@@ -572,6 +573,12 @@ function MissionDetail({
         <span className="rounded bg-surface-3 px-1.5 py-px text-[10px] text-dim">v{detail.contract_version}</span>
         <span className="text-faint">
           负责人：{detail.owner_agent_id || "unassigned"} · 验收人：{detail.reviewer || "请求人自验"}
+          {detail.pending_owner_agent_id && (
+            <span className="ml-1 rounded bg-surface-3 px-1.5 py-px text-[10px] text-warn"
+              title="在途交接（ADR-0035）：owner 不变直至承接；修订/送验/取消冻结，先了结交接">
+              ⇄ 待承接 → {detail.pending_owner_agent_id}
+            </span>
+          )}
           {srcNow && (
             <span
               className="ml-1 rounded bg-surface-3 px-1.5 py-px font-mono text-[10px]"
@@ -854,6 +861,7 @@ function MissionDetail({
         </div>
       )}
 
+      <HandoverSection missionID={missionID} detail={detail} agents={agents} onChanged={() => load()} />
       <ReopenSection missionID={missionID} contractVersion={detail?.contract_version ?? 0} onChanged={() => load()} />
       {(srcNow || (returnNotices ?? []).length > 0) && (
         <div className="flex flex-col gap-1 rounded-lg bg-surface-2 p-2">
@@ -1621,6 +1629,154 @@ function ReopenSection({ missionID, contractVersion, onChanged }: {
                   <span className="text-faint">受影响 {r.affected_mission_ids.length} 项</span>
                 )}
                 {r.reason && <span className="text-dim truncate">{r.reason}</span>}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+// HandoverSection 责任交接（0.6.12 / ADR-0035）：发起（承接人 + 交接说明；owner 不变、
+// pending 置位）→ 承接（owner 翻转 + 回执）| 婉拒 | 撤回；历史读面（含承接回执）。
+// 个人版 owner 代行双方动作（身份域无 per-agent 凭证）。
+const HANDOVER_OFFERABLE = new Set(["draft", "ready", "running", "waiting", "paused"]);
+const HANDOVER_KIND_LABEL: Record<string, string> = { offered: "发起", accepted: "承接回执", declined: "婉拒", revoked: "撤回" };
+
+function HandoverSection({ missionID, detail, agents, onChanged }: {
+  missionID: string;
+  detail: MissionView;
+  agents: { agent_id: string; display_name: string }[];
+  onChanged: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [newOwner, setNewOwner] = useState("");
+  const [notes, setNotes] = useState("");
+  const [text, setText] = useState(""); // 承接备注 / 婉拒·撤回原因（≤280）
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [history, setHistory] = useState<HandoverEventView[] | null>(null);
+  const [histErr, setHistErr] = useState(false);
+  const pending = detail.pending_owner_agent_id;
+  const version = detail.contract_version;
+
+  useEffect(() => {
+    let alive = true;
+    let seq = 0;
+    let applied = 0;
+    const load = () => {
+      const cur = ++seq;
+      void api
+        .listMissionHandovers(missionID)
+        .then((r) => {
+          if (!alive || cur < applied) return; // 只丢比已显示更旧的响应
+          applied = cur;
+          setHistErr(false);
+          setHistory(r.events);
+        })
+        .catch(() => {
+          if (!alive || cur < applied) return;
+          setHistErr(true); // 错误可见（不静默清空成功结果）
+        });
+    };
+    load();
+    return () => {
+      alive = false;
+    };
+  }, [missionID, msg, pending]);
+
+  const run = async (label: string, fn: () => Promise<MissionView>) => {
+    setBusy(true); setMsg(null);
+    try {
+      const m = await fn();
+      setMsg(`${label}完成（负责人 ${m.owner_agent_id || "unassigned"}${m.pending_owner_agent_id ? `，待承接 → ${m.pending_owner_agent_id}` : ""}）`);
+      setNewOwner(""); setNotes(""); setText(""); setOpen(false);
+      onChanged();
+    } catch (e) {
+      setMsg(e instanceof ApiError ? `${e.code}：${e.message}` : String(e));
+    } finally { setBusy(false); }
+  };
+
+  const canOffer = HANDOVER_OFFERABLE.has(detail.status) && !pending;
+  const candidates = agents.filter((a) => a.agent_id !== detail.owner_agent_id);
+  const nameOf = (id: string) => agents.find((a) => a.agent_id === id)?.display_name ?? id;
+
+  return (
+    <div className="flex flex-col gap-1 rounded-lg bg-surface-2 p-2">
+      <div className="flex items-center gap-2">
+        <p className="text-faint">责任交接（handover）</p>
+        {(history?.length ?? 0) > 0 && <span className="text-faint text-[11px]">{history!.length} 条历史</span>}
+        {!pending && (
+          <button onClick={() => setOpen(!open)} disabled={busy || !canOffer}
+            title={canOffer ? "" : "仅 draft/ready/running/waiting/paused 可发起（reviewing 先退回或裁定；canceling 先收尾；终态无物可交）"}
+            className="ml-auto rounded-lg bg-surface-3 px-2 py-1 text-xs text-accent disabled:opacity-40">
+            {open ? "收起" : "发起交接"}
+          </button>
+        )}
+      </div>
+      {pending && (
+        <div className="flex flex-col gap-1 rounded border border-warn/40 bg-surface p-1.5">
+          <p className="text-[11px] text-warn">
+            待承接 → {nameOf(pending)}（{pending}）· 发起人 {detail.owner_agent_id || "unassigned"} 仍为负责人；修订/送验/取消已冻结，先了结交接。
+          </p>
+          <input value={text} onChange={(e) => setText(e.target.value)} maxLength={280}
+            placeholder="承接备注 / 婉拒或撤回原因（≤280 字，可空）"
+            className="rounded border border-border bg-surface px-1.5 py-1 text-xs outline-none" />
+          <div className="flex flex-wrap gap-1">
+            <button onClick={() => run("承接", () => api.acceptMissionHandover(missionID, { expected_version: version, ...(text.trim() ? { note: text.trim() } : {}) }))}
+              disabled={busy} className="rounded-lg bg-surface-3 px-2 py-1 text-xs text-ok disabled:opacity-40">
+              承接（负责人 → {nameOf(pending)}）
+            </button>
+            <button onClick={() => run("婉拒", () => api.declineMissionHandover(missionID, { expected_version: version, ...(text.trim() ? { reason: text.trim() } : {}) }))}
+              disabled={busy} className="rounded-lg bg-surface-3 px-2 py-1 text-xs text-warn disabled:opacity-40">
+              婉拒
+            </button>
+            <button onClick={() => run("撤回", () => api.revokeMissionHandover(missionID, { expected_version: version, ...(text.trim() ? { reason: text.trim() } : {}) }))}
+              disabled={busy} className="rounded-lg bg-surface-3 px-2 py-1 text-xs text-dim disabled:opacity-40">
+              撤回
+            </button>
+          </div>
+        </div>
+      )}
+      {open && !pending && (
+        <div className="flex flex-col gap-1.5">
+          <select value={newOwner} onChange={(e) => setNewOwner(e.target.value)}
+            className="rounded border border-border bg-surface px-1.5 py-1 text-sm outline-none">
+            <option value="">选择承接人（须存在且 active；{candidates.length} 候选）</option>
+            {candidates.map((a) => (
+              <option key={a.agent_id} value={a.agent_id}>{a.display_name}（{a.agent_id}）</option>
+            ))}
+          </select>
+          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} maxLength={2000}
+            placeholder="交接说明——在途事项 / 未决动作 / 证据指引（≤2000 字，可空）"
+            className="rounded border border-border bg-surface px-1.5 py-1 text-xs outline-none" />
+          <button onClick={() => run("发起", () => api.offerMissionHandover(missionID, { expected_version: version, new_owner_agent_id: newOwner, ...(notes.trim() ? { notes: notes.trim() } : {}) }))}
+            disabled={busy || !newOwner}
+            className="rounded-lg bg-surface-3 px-2 py-1 text-xs text-accent disabled:opacity-40">
+            {busy ? "提交中…" : `发起交接（契约 v${version}；owner 不变直至承接）`}
+          </button>
+        </div>
+      )}
+      {msg && <p className="text-[11px] text-dim">{msg}</p>}
+      {histErr && (
+        <button onClick={() => setMsg(null)} className="self-start text-[11px] text-warn underline">
+          交接历史加载失败——点击重试
+        </button>
+      )}
+      {(history?.length ?? 0) > 0 && (
+        <details>
+          <summary className="cursor-pointer select-none text-faint text-[11px]">交接历史</summary>
+          <ul className="mt-0.5 flex flex-col gap-0.5">
+            {history!.map((h, i) => (
+              <li key={`${h.kind}-${h.occurred_at}-${i}`} className="flex flex-wrap items-center gap-x-2 text-[11px]">
+                <span className={h.kind === "accepted" ? "text-ok" : h.kind === "offered" ? "text-accent" : "text-warn"}>
+                  {HANDOVER_KIND_LABEL[h.kind] ?? h.kind}
+                </span>
+                <span className="font-mono text-faint">{h.from_owner_agent_id || "unassigned"} → {h.to_owner_agent_id}</span>
+                <span className="text-faint">v{h.contract_version} · {new Date(h.occurred_at).toLocaleString()}</span>
+                {h.status_at_accept && <span className="text-faint">承接时 {h.status_at_accept}</span>}
+                {(h.notes || h.note || h.reason) && <span className="text-dim truncate">{h.notes || h.note || h.reason}</span>}
               </li>
             ))}
           </ul>

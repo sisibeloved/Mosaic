@@ -24,6 +24,13 @@ func (a stubAgents) AgentExists(_ context.Context, id string) (bool, error) {
 	return a.ids[id], nil
 }
 
+func (a stubAgents) AgentStatus(_ context.Context, id string) (string, bool, error) {
+	if !a.ids[id] {
+		return "", false, nil
+	}
+	return mission.AgentStatusActive, true, nil
+}
+
 type ctlMissions struct{ svc *mission.Service }
 
 func (p ctlMissions) ListReady(ctx context.Context) ([]missionrun.MissionRef, error) {

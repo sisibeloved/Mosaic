@@ -2318,7 +2318,9 @@ func missionView(m mission.Mission) apigen.MissionView {
 		// 复审 R12：轮次仅 reviewing/accepted 公开（OpenAPI 约定其余状态为 0）；
 		// 库内计数单调递增不受影响
 		ReviewRound: reviewRoundView(m), OwnerAgentId: m.OwnerAgentID,
-		Requester: m.Requester, Reviewer: m.Reviewer, RoomSource: roomSource,
+		// 0.6.12 / ADR-0035：在途交接承接人（空 = 无在途交接）
+		PendingOwnerAgentId: m.PendingOwnerAgentID,
+		Requester:           m.Requester, Reviewer: m.Reviewer, RoomSource: roomSource,
 		Objective: m.Objective, Scope: m.Scope,
 		Constraints: constraints, AcceptanceCriteria: acceptance,
 		DeliverableSpecs: deliverables, SourceRefs: sources, ReturnTargets: returns,
@@ -3394,6 +3396,153 @@ func reopenView(v reopen.RequestView) apigen.ReopenRequestView {
 		out.Affected = &affected
 	}
 	return out
+}
+
+// ---- 责任交接（0.6.12 / ADR-0035）：五端点——写四端点过 guardWrite 三件套 +
+// MaxBytesReader + DisallowUnknownFields（0.6.11 二审 #5 同例）；错误经
+// writeHandoverError 映射（400 invalid_handover / 404 / 409 / 503）。
+
+// decodeHandoverBody 交接请求体严格解码（1 MiB + 未知字段 400）。
+func decodeHandoverBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_handover", "请求体解析（未知字段或超限）："+err.Error())
+		return false
+	}
+	return true
+}
+
+// writeHandoverError 交接错误映射：形状不合法 400 invalid_handover；身份状态端口
+// 未装配 503；其余沿 writeMissionError（404 mission/agent / 409 version_conflict /
+// invalid_transition）。
+func writeHandoverError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, mission.ErrInvalidMission):
+		writeError(w, http.StatusBadRequest, "invalid_handover", err.Error())
+	case errors.Is(err, mission.ErrAgentStatusUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "identity_unavailable", err.Error())
+	default:
+		writeMissionError(w, err)
+	}
+}
+
+// OfferMissionHandover 发起交接（交接第一段）：pending 置位、owner 不变。
+func (s *server) OfferMissionHandover(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.missionUnavailable(w) || !s.guardWrite(w, r, true) {
+		return
+	}
+	var body struct {
+		ExpectedVersion int     `json:"expected_version"`
+		NewOwnerAgentId string  `json:"new_owner_agent_id"`
+		Notes           *string `json:"notes"`
+	}
+	if !decodeHandoverBody(w, r, &body) {
+		return
+	}
+	m, err := s.deps.Missions.HandoverOffer(r.Context(), missionID, body.ExpectedVersion, body.NewOwnerAgentId, derefStr(body.Notes))
+	if err != nil {
+		writeHandoverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, missionView(m))
+}
+
+// AcceptMissionHandover 承接（交接第二段——承接回执）：owner 翻转、pending 清空。
+func (s *server) AcceptMissionHandover(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.missionUnavailable(w) || !s.guardWrite(w, r, true) {
+		return
+	}
+	var body struct {
+		ExpectedVersion int     `json:"expected_version"`
+		Note            *string `json:"note"`
+	}
+	if !decodeHandoverBody(w, r, &body) {
+		return
+	}
+	m, err := s.deps.Missions.HandoverAccept(r.Context(), missionID, body.ExpectedVersion, derefStr(body.Note))
+	if err != nil {
+		writeHandoverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, missionView(m))
+}
+
+// DeclineMissionHandover 婉拒（承接人显式不接——留痕）。
+func (s *server) DeclineMissionHandover(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.missionUnavailable(w) {
+		return
+	}
+	s.resolveHandover(w, r, missionID, s.deps.Missions.HandoverDecline)
+}
+
+// RevokeMissionHandover 撤回（发起人了结在途交接）。
+func (s *server) RevokeMissionHandover(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.missionUnavailable(w) {
+		return
+	}
+	s.resolveHandover(w, r, missionID, s.deps.Missions.HandoverRevoke)
+}
+
+func (s *server) resolveHandover(w http.ResponseWriter, r *http.Request, missionID string,
+	fn func(ctx context.Context, missionID string, expectedVersion int, reason string) (mission.Mission, error)) {
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	var body struct {
+		ExpectedVersion int     `json:"expected_version"`
+		Reason          *string `json:"reason"`
+	}
+	if !decodeHandoverBody(w, r, &body) {
+		return
+	}
+	m, err := fn(r.Context(), missionID, body.ExpectedVersion, derefStr(body.Reason))
+	if err != nil {
+		writeHandoverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, missionView(m))
+}
+
+// ListMissionHandovers 交接史（事件流组装，seq 升序——含承接回执）。
+func (s *server) ListMissionHandovers(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.missionUnavailable(w) {
+		return
+	}
+	facts, ok, err := s.deps.Missions.HandoverHistory(r.Context(), missionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "mission_read_failed", err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "mission_not_found", "Mission 不存在")
+		return
+	}
+	out := make([]apigen.HandoverEventView, 0, len(facts))
+	for _, f := range facts {
+		v := apigen.HandoverEventView{
+			Kind: apigen.HandoverEventViewKind(f.Kind), FromOwnerAgentId: f.FromOwnerAgentID,
+			ToOwnerAgentId: f.ToOwnerAgentID, ContractVersion: f.ContractVersion,
+		}
+		if f.Notes != "" {
+			v.Notes = &f.Notes
+		}
+		if f.Note != "" {
+			v.Note = &f.Note
+		}
+		if f.Reason != "" {
+			v.Reason = &f.Reason
+		}
+		if f.StatusAtAccept != "" {
+			v.StatusAtAccept = &f.StatusAtAccept
+		}
+		if ts, err := time.Parse(time.RFC3339, f.OccurredAt); err == nil {
+			v.OccurredAt = ts
+		}
+		out = append(out, v)
+	}
+	writeJSON(w, http.StatusOK, apigen.HandoverEventList{Events: out})
 }
 
 func returnNoticeView(n missionreturn.Notice) apigen.ReturnNoticeView {

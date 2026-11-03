@@ -594,6 +594,13 @@ var migrationV23 = []string{
 	"INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (23, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
 }
 
+// migrationV29（0.6.12 / ADR-0035）：责任交接——missions 增 pending_owner_agent_id
+// （在途交接承接人；空 = 无在途交接）。逐语句加列（重复容忍）+ 登记。
+var migrationV29 = []string{
+	"ALTER TABLE missions ADD COLUMN pending_owner_agent_id TEXT NOT NULL DEFAULT ''",
+	"INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (29, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+}
+
 // migrationV24（0.6.9 复审 R2/R9 / ADR-0032 v0.2）：v23 升级残留数据补正——
 // 在审/已验收任务的轮次 0 补为 1（否则裁定 0 被拒、1 与库存 0 冲突——卡死）；
 // v22 已取消行的受审包引用清空（与新取消同口径；在审与已接受的包及事件保留）。
@@ -755,6 +762,13 @@ func Open(path string) (*Store, error) {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
 			return nil, fmt.Errorf("sqlite: migration v28: %w", err)
+		}
+	}
+	// v29 迁移（0.6.12 / ADR-0035）：missions.pending_owner_agent_id——逐语句，重复加列容忍
+	for _, stmt := range migrationV29 {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("sqlite: migration v29: %w", err)
 		}
 	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
@@ -2740,13 +2754,13 @@ SELECT agent_id, skills, tools, context, runtime_capabilities, workspace_access,
 // ---- Mission 契约域（RFC-0018 §3.1/§3.2/§6.1 / ADR-0023，0.6.0；v13 表，端口实现）----
 
 // missionCols missions 投影读取列。
-const missionCols = `mission_id, contract_version, status, owner_agent_id, requester, objective, content, created_at, updated_at, waiting_reason, review_package_id, review_round`
+const missionCols = `mission_id, contract_version, status, owner_agent_id, requester, objective, content, created_at, updated_at, waiting_reason, review_package_id, review_round, pending_owner_agent_id`
 
 func scanMission(row interface{ Scan(...any) error }) (mission.Mission, error) {
 	var m mission.Mission
 	var content string
 	if err := row.Scan(&m.MissionID, &m.ContractVersion, &m.Status, &m.OwnerAgentID,
-		&m.Requester, &m.Objective, &content, &m.CreatedAt, &m.UpdatedAt, &m.WaitingReason, &m.ReviewPackageID, &m.ReviewRound); err != nil {
+		&m.Requester, &m.Objective, &content, &m.CreatedAt, &m.UpdatedAt, &m.WaitingReason, &m.ReviewPackageID, &m.ReviewRound, &m.PendingOwnerAgentID); err != nil {
 		return mission.Mission{}, err
 	}
 	if err := json.Unmarshal([]byte(content), &m.Content); err != nil {
@@ -2789,18 +2803,19 @@ func (s *Store) ReviseMission(ctx context.Context, missionID string, expectedVer
 	ok := false // 事务内判定（不得事后按版本号推断——CAS 败者会被误判胜）
 	err = s.identityWriteTx(ctx, func(q identityExec) error {
 		var version int
-		var status string
+		var status, pending string
 		err := q.QueryRowContext(ctx,
-			`SELECT contract_version, status FROM missions WHERE mission_id = ?`, missionID).Scan(&version, &status)
+			`SELECT contract_version, status, pending_owner_agent_id FROM missions WHERE mission_id = ?`, missionID).Scan(&version, &status, &pending)
 		if errors.Is(err, sql.ErrNoRows) {
 			return mission.ErrMissionNotFound
 		}
 		if err != nil {
 			return fmt.Errorf("sqlite: revise probe: %w", err)
 		}
-		// 0.6.9：accepted 同终态拒修订；reviewing 基线冻结。
+		// 0.6.9：accepted 同终态拒修订；reviewing 基线冻结。0.6.12 / ADR-0035 §3：
+		// 在途交接冻结窗（事务内核对——服务层先读后并发 offer 落地也拦）。
 		if version != expectedVersion || status == mission.StatusCanceled ||
-			status == mission.StatusAccepted || status == mission.StatusReviewing {
+			status == mission.StatusAccepted || status == mission.StatusReviewing || pending != "" {
 			return nil // ok=false：败因由服务层重读分辨
 		}
 		// 0.6.6 审校 P1：执行控制投影的事务内保持——next.Status 是服务层旧读
@@ -2848,20 +2863,20 @@ UPDATE missions SET contract_version = ?, status = ?, owner_agent_id = ?, object
 // → 条件更新 → status_changed 事件。guard 判定可进才转移；ok=false = 前置
 // 不符（服务方重读分辨——幂等先读在服务层）。
 func (s *Store) transitionMissionIf(ctx context.Context, missionID string, expectedVersion int,
-	to, reason, occurredAt string, guard func(version int, status string) bool) (mission.Mission, bool, error) {
+	to, reason, occurredAt string, guard func(version int, status, pending string) bool) (mission.Mission, bool, error) {
 	ok := false
 	err := s.identityWriteTx(ctx, func(q identityExec) error {
 		var version int
-		var status string
+		var status, pending string
 		err := q.QueryRowContext(ctx,
-			`SELECT contract_version, status FROM missions WHERE mission_id = ?`, missionID).Scan(&version, &status)
+			`SELECT contract_version, status, pending_owner_agent_id FROM missions WHERE mission_id = ?`, missionID).Scan(&version, &status, &pending)
 		if errors.Is(err, sql.ErrNoRows) {
 			return mission.ErrMissionNotFound
 		}
 		if err != nil {
 			return fmt.Errorf("sqlite: control probe: %w", err)
 		}
-		if !guard(version, status) {
+		if !guard(version, status, pending) {
 			return nil
 		}
 		// 0.6.7：等待原因——paused 保留（恢复据此回 waiting）、回 waiting 保留；
@@ -2897,7 +2912,7 @@ func (s *Store) transitionMissionIf(ctx context.Context, missionID string, expec
 // PauseMission CAS 暂停（ready | running → paused）。
 func (s *Store) PauseMission(ctx context.Context, missionID string, expectedVersion int, reason, occurredAt string) (mission.Mission, bool, error) {
 	return s.transitionMissionIf(ctx, missionID, expectedVersion, mission.StatusPaused, reason, occurredAt,
-		func(version int, status string) bool {
+		func(version int, status, _ string) bool {
 			return version == expectedVersion && (status == mission.StatusReady || status == mission.StatusRunning || status == mission.StatusWaiting)
 		})
 }
@@ -2906,23 +2921,24 @@ func (s *Store) PauseMission(ctx context.Context, missionID string, expectedVers
 // 按当前契约完备性判定——0.6.6 审校 P2）。
 func (s *Store) ResumeMission(ctx context.Context, missionID string, expectedVersion int, target, occurredAt string) (mission.Mission, bool, error) {
 	return s.transitionMissionIf(ctx, missionID, expectedVersion, target, "", occurredAt,
-		func(version int, status string) bool {
+		func(version int, status, _ string) bool {
 			return version == expectedVersion && status == mission.StatusPaused
 		})
 }
 
-// MarkCanceling CAS 停止意图（非终态 → canceling；0.6.9：accepted 为终态拒）。
+// MarkCanceling CAS 停止意图（非终态 → canceling；0.6.9：accepted 为终态拒；
+// 0.6.12：在途交接冻结窗——事务内核对）。
 func (s *Store) MarkCanceling(ctx context.Context, missionID string, expectedVersion int, reason, occurredAt string) (mission.Mission, bool, error) {
 	return s.transitionMissionIf(ctx, missionID, expectedVersion, mission.StatusCanceling, reason, occurredAt,
-		func(version int, status string) bool {
-			return version == expectedVersion && status != mission.StatusCanceled && status != mission.StatusAccepted
+		func(version int, status, pending string) bool {
+			return version == expectedVersion && status != mission.StatusCanceled && status != mission.StatusAccepted && pending == ""
 		})
 }
 
 // FinishCancel 收尾（canceling → canceled；无版本守卫——控制序在服务层）。
 func (s *Store) FinishCancel(ctx context.Context, missionID, reason, occurredAt string) (mission.Mission, bool, error) {
 	return s.transitionMissionIf(ctx, missionID, 0, mission.StatusCanceled, reason, occurredAt,
-		func(_ int, status string) bool {
+		func(_ int, status, _ string) bool {
 			return status == mission.StatusCanceling
 		})
 }
@@ -2953,9 +2969,9 @@ func (s *Store) CreateMission(ctx context.Context, m mission.Mission, src *missi
 			}
 		}
 		if _, err := q.ExecContext(ctx, `
-INSERT INTO missions (`+missionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO missions (`+missionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			m.MissionID, m.ContractVersion, m.Status, m.OwnerAgentID, m.Requester,
-			m.Objective, string(raw), m.CreatedAt, m.UpdatedAt, m.WaitingReason, m.ReviewPackageID, m.ReviewRound); err != nil {
+			m.Objective, string(raw), m.CreatedAt, m.UpdatedAt, m.WaitingReason, m.ReviewPackageID, m.ReviewRound, m.PendingOwnerAgentID); err != nil {
 			return fmt.Errorf("sqlite: create mission: %w", err)
 		}
 		if err := insertMissionVersion(ctx, q, m, string(raw)); err != nil {
@@ -3362,6 +3378,130 @@ INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES
 	return out, true, err
 }
 
+// ---- 责任交接（0.6.12 / ADR-0035；v29 pending_owner_agent_id）----
+
+// handoverProbe 交接事务内探测（版本 / 状态 / 归属 / 在途承接人）。
+func handoverProbe(ctx context.Context, q identityExec, missionID string) (version int, status, owner, pending string, err error) {
+	err = q.QueryRowContext(ctx,
+		`SELECT contract_version, status, owner_agent_id, pending_owner_agent_id FROM missions WHERE mission_id = ?`,
+		missionID).Scan(&version, &status, &owner, &pending)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = mission.ErrMissionNotFound
+	} else if err != nil {
+		err = fmt.Errorf("sqlite: handover probe: %w", err)
+	}
+	return
+}
+
+// HandoverOffer 发起交接：版本 + 状态族（HandoverOfferable 单源）+ 无在途 →
+// pending 置位 + handover_offered 事件，单事务；owner / 版本不变。
+func (s *Store) HandoverOffer(ctx context.Context, missionID string, expectedVersion int, newOwner string, event mission.Event) (mission.Mission, bool, error) {
+	ok := false
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		version, status, _, pending, err := handoverProbe(ctx, q, missionID)
+		if err != nil {
+			return err
+		}
+		if version != expectedVersion || !mission.HandoverOfferable(status) || pending != "" {
+			return nil
+		}
+		if _, err := q.ExecContext(ctx,
+			`UPDATE missions SET pending_owner_agent_id = ?, updated_at = ? WHERE mission_id = ?`,
+			newOwner, event.OccurredAt, missionID); err != nil {
+			return fmt.Errorf("sqlite: handover offer: %w", err)
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+			missionID, event.EventType, string(event.Payload), event.OccurredAt); err != nil {
+			return fmt.Errorf("sqlite: handover offer event: %w", err)
+		}
+		ok = true
+		return nil
+	})
+	if err != nil || !ok {
+		return mission.Mission{}, ok, err
+	}
+	out, _, err := s.MissionByID(ctx, missionID)
+	return out, true, err
+}
+
+// HandoverAccept 承接（承接回执）：版本 + pending 锚（防撤回改派后的旧 accept）+
+// 状态族 → owner = pending、pending 清空、draft 按 targetStatus（服务层完备性
+// 重判）投影、其余状态保持（事务内以现行为准——陈旧 ready 不得盖回调度列）+
+// handover_accepted 事件（+ 状态变化时 status_changed reason=handover），单事务。
+func (s *Store) HandoverAccept(ctx context.Context, missionID string, expectedVersion int, expectPending, targetStatus string, event mission.Event) (mission.Mission, bool, error) {
+	ok := false
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		version, status, _, pending, err := handoverProbe(ctx, q, missionID)
+		if err != nil {
+			return err
+		}
+		if version != expectedVersion || pending == "" || pending != expectPending || !mission.HandoverOfferable(status) {
+			return nil
+		}
+		newStatus := status
+		if status == mission.StatusDraft {
+			newStatus = targetStatus
+		}
+		if _, err := q.ExecContext(ctx,
+			`UPDATE missions SET owner_agent_id = ?, pending_owner_agent_id = '', status = ?, updated_at = ? WHERE mission_id = ?`,
+			pending, newStatus, event.OccurredAt, missionID); err != nil {
+			return fmt.Errorf("sqlite: handover accept: %w", err)
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+			missionID, event.EventType, string(event.Payload), event.OccurredAt); err != nil {
+			return fmt.Errorf("sqlite: handover accept event: %w", err)
+		}
+		if newStatus != status {
+			if err := appendMissionEvent(ctx, q, missionID, mission.EventStatusChanged, map[string]string{
+				"from": status, "to": newStatus, "reason": "handover",
+			}, event.OccurredAt); err != nil {
+				return err
+			}
+		}
+		ok = true
+		return nil
+	})
+	if err != nil || !ok {
+		return mission.Mission{}, ok, err
+	}
+	out, _, err := s.MissionByID(ctx, missionID)
+	return out, true, err
+}
+
+// HandoverWithdraw 婉拒/撤回共用：版本 + pending 锚 → pending 清空 + 事件
+// （declined | revoked 由 event 携带），单事务；任何状态可了结在途交接。
+func (s *Store) HandoverWithdraw(ctx context.Context, missionID string, expectedVersion int, expectPending string, event mission.Event) (mission.Mission, bool, error) {
+	ok := false
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		version, _, _, pending, err := handoverProbe(ctx, q, missionID)
+		if err != nil {
+			return err
+		}
+		if version != expectedVersion || pending == "" || pending != expectPending {
+			return nil
+		}
+		if _, err := q.ExecContext(ctx,
+			`UPDATE missions SET pending_owner_agent_id = '', updated_at = ? WHERE mission_id = ?`,
+			event.OccurredAt, missionID); err != nil {
+			return fmt.Errorf("sqlite: handover withdraw: %w", err)
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+			missionID, event.EventType, string(event.Payload), event.OccurredAt); err != nil {
+			return fmt.Errorf("sqlite: handover withdraw event: %w", err)
+		}
+		ok = true
+		return nil
+	})
+	if err != nil || !ok {
+		return mission.Mission{}, ok, err
+	}
+	out, _, err := s.MissionByID(ctx, missionID)
+	return out, true, err
+}
+
 // RequestReview 条件送验（0.6.9 / ADR-0032；v0.2 #2/#3）：单事务——版本 + ready
 // 守卫 → **事务内复核无在途/未处置 Run**（ErrUnsettledRuns）→ reviewing +
 // review_package_id + review_round 单调递增 + 事件。
@@ -3369,16 +3509,17 @@ func (s *Store) RequestReview(ctx context.Context, missionID string, expectedVer
 	ok := false
 	err := s.identityWriteTx(ctx, func(q identityExec) error {
 		var version int
-		var status string
+		var status, pending string
 		err := q.QueryRowContext(ctx,
-			`SELECT contract_version, status FROM missions WHERE mission_id = ?`, missionID).Scan(&version, &status)
+			`SELECT contract_version, status, pending_owner_agent_id FROM missions WHERE mission_id = ?`, missionID).Scan(&version, &status, &pending)
 		if errors.Is(err, sql.ErrNoRows) {
 			return mission.ErrMissionNotFound
 		}
 		if err != nil {
 			return fmt.Errorf("sqlite: review probe: %w", err)
 		}
-		if version != expectedVersion || status != mission.StatusReady {
+		// 0.6.12 / ADR-0035 §3：在途交接冻结窗（事务内核对）。
+		if version != expectedVersion || status != mission.StatusReady || pending != "" {
 			return nil
 		}
 		// 审校 #2：送验事务内复核未决 Run（在途 / 未处置 unknown）

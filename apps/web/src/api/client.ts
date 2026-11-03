@@ -57,6 +57,11 @@ export type DeliveryPackageView = Schemas["DeliveryPackageView"];
 export type ReturnNoticeView = Schemas["ReturnNoticeView"];
 export type ReopenRequestView = Schemas["ReopenRequestView"];
 export type ReopenSubmit = Schemas["ReopenSubmit"];
+/** 0.6.12 责任交接（ADR-0035）：offer → accept | decline | revoke；承接回执随事件留痕。 */
+export type HandoverSubmit = Schemas["HandoverSubmit"];
+export type HandoverAccept = Schemas["HandoverAccept"];
+export type HandoverResolve = Schemas["HandoverResolve"];
+export type HandoverEventView = Schemas["HandoverEventView"];
 export type DeliveryPackageSubmit = Schemas["DeliveryPackageSubmit"];
 export type AcceptanceMappingEntry = Schemas["AcceptanceMappingEntry"];
 /** 0.5.5 职责准入（ADR-0022）：授权档案与 readiness report。 */
@@ -690,6 +695,22 @@ export const api = {
   },
   listReopenRequests(missionID: string): Promise<{ requests: ReopenRequestView[] }> {
     return request(`/v1/missions/${encodeURIComponent(missionID)}/reopen-requests`);
+  },
+  /** 0.6.12 责任交接（ADR-0035）：发起（pending 置位、owner 不变）→ 承接（owner 翻转 + 回执）| 婉拒 | 撤回。 */
+  offerMissionHandover(missionID: string, req: HandoverSubmit): Promise<MissionView> {
+    return post(`/v1/missions/${encodeURIComponent(missionID)}/handover`, req);
+  },
+  acceptMissionHandover(missionID: string, req: HandoverAccept): Promise<MissionView> {
+    return post(`/v1/missions/${encodeURIComponent(missionID)}/handover/accept`, req);
+  },
+  declineMissionHandover(missionID: string, req: HandoverResolve): Promise<MissionView> {
+    return post(`/v1/missions/${encodeURIComponent(missionID)}/handover/decline`, req);
+  },
+  revokeMissionHandover(missionID: string, req: HandoverResolve): Promise<MissionView> {
+    return post(`/v1/missions/${encodeURIComponent(missionID)}/handover/revoke`, req);
+  },
+  listMissionHandovers(missionID: string): Promise<{ events: HandoverEventView[] }> {
+    return request(`/v1/missions/${encodeURIComponent(missionID)}/handovers`);
   },
   /** 0.6.2 执行上下文清单历史（摘要，创建序倒序——各时点"会交付什么"）。 */
   listContextManifests(missionID: string): Promise<{ manifests: ContextManifestSummary[] }> {

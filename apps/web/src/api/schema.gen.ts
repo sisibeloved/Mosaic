@@ -2043,6 +2043,117 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/missions/{mission_id}/handover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 发起责任交接（handover——记录在途交接，owner 不变直至承接）
+         * @description 0.6.12 / ADR-0035（RFC-0018 §3.3/§4.5/§8.1/§11.2，AT-03）：Mission 换负责人的
+         *     受控通道第一段。前置：状态 ∈ draft/ready/running/waiting/paused（reviewing 验收
+         *     基线冻结、canceling 停止瞬态、accepted/canceled 终态拒绝）；无在途交接（唯一
+         *     ——先了结旧交接）；承接人存在且 active（suspended/retiring/retired 不接新承诺）。
+         *     效果：pending_owner_agent_id 置位 + handover_offered 事件（append-only）；
+         *     owner 不变（责任不因单方意愿转移）、contract_version 不递增（控制面事实）。
+         *     在途交接冻结窗：Revise/RequestReview/MarkCanceling 拒绝（先了结交接），
+         *     Pause/Resume/ReopenRequest 照常。
+         */
+        post: operations["offerMissionHandover"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/missions/{mission_id}/handover/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 承接交接（owner 翻转 + 承接回执 handover_accepted）
+         * @description 0.6.12 / ADR-0035：交接第二段——单事务：owner = 承接人 + pending 清空 +
+         *     handover_accepted 事件（**承接回执**：from/to/contract_version/
+         *     status_at_accept/note）。完备性重判：unassigned draft 承接后齐备 → ready
+         *     入调度列；执行控制投影保持（running/waiting/paused 承接不翻）。承接人
+         *     仍须 active（offer 后状态可能变化，复核拦截）。contract_version 不递增。
+         */
+        post: operations["acceptMissionHandover"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/missions/{mission_id}/handover/decline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 婉拒交接（pending 清空 + handover_declined 事件留痕）
+         * @description 0.6.12 / ADR-0035：承接人显式婉拒（"显式无人承接"留痕——AT-03）。
+         *     pending 清空 + handover_declined 事件（reason）；owner 不变；可在途任意
+         *     状态了结（不应存在卡死路径）。contract_version 不递增。
+         */
+        post: operations["declineMissionHandover"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/missions/{mission_id}/handover/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 撤回交接（发起人了结在途交接，pending 清空 + handover_revoked 事件）
+         * @description 0.6.12 / ADR-0035：发起人撤回（改派前先撤回——在途唯一）。pending 清空 +
+         *     handover_revoked 事件（reason）；owner 不变。contract_version 不递增。
+         */
+        post: operations["revokeMissionHandover"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/missions/{mission_id}/handovers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 交接史（事件流组装，seq 升序——含承接回执） */
+        get: operations["listMissionHandovers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/missions/{mission_id}/return-notices": {
         parameters: {
             query?: never;
@@ -3642,6 +3753,57 @@ export interface components {
             /** @description 按 seq 升序 */
             requests: components["schemas"]["ReopenRequestView"][];
         };
+        /** @description 发起责任交接（RFC-0018 §11.2 交接命令面 / ADR-0035，0.6.12）。 */
+        HandoverSubmit: {
+            /** @description CAS——与当前 contract_version 不符 409 */
+            expected_version: number;
+            /** @description 承接人（≠当前 owner；须存在且 active） */
+            new_owner_agent_id: string;
+            /** @description 交接说明——在途事项/未决动作/证据指引（§8.1 轻量承载体；完整交接包随 0.7+） */
+            notes?: string;
+        };
+        /** @description 承接交接（承接回执随 handover_accepted 事件留痕）。 */
+        HandoverAccept: {
+            /** @description CAS——与当前 contract_version 不符 409 */
+            expected_version: number;
+            /** @description 承接备注（进回执事件） */
+            note?: string;
+        };
+        /** @description 婉拒/撤回交接（了结在途交接，事件留痕）。 */
+        HandoverResolve: {
+            /** @description CAS——与当前 contract_version 不符 409 */
+            expected_version: number;
+            /** @description 婉拒/撤回原因（进事件） */
+            reason?: string;
+        };
+        /** @description 交接事实（mission_events.handover_* 组装；append-only——kind=accepted 为承接回执）。 */
+        HandoverEventView: {
+            /**
+             * @description offered 发起 / accepted 承接回执 / declined 婉拒 / revoked 撤回
+             * @enum {string}
+             */
+            kind: "offered" | "accepted" | "declined" | "revoked";
+            /** @description 发起时负责人（空 = unassigned 指派） */
+            from_owner_agent_id: string;
+            /** @description 承接人 */
+            to_owner_agent_id: string;
+            /** @description 交接说明（offered 携带） */
+            notes?: string;
+            /** @description 承接备注（accepted 携带） */
+            note?: string;
+            /** @description 婉拒/撤回原因（declined/revoked 携带） */
+            reason?: string;
+            /** @description 承接时的任务状态（accepted 携带——B 接手的是什么） */
+            status_at_accept?: string;
+            /** @description 事实时点的契约版本（CAS 后实际值随事件留痕） */
+            contract_version: number;
+            /** Format: date-time */
+            occurred_at: string;
+        };
+        HandoverEventList: {
+            /** @description 按 seq 升序 */
+            events: components["schemas"]["HandoverEventView"][];
+        };
         /** @description 执行结果回房引用（ADR-0033 / 0.6.10；reopen 扩展 ADR-0034 / 0.6.11）——message.posted 载荷 mission_ref 的 HTTP 投影；系统 actor 专用，post_message 命令面不接受（人类不能伪造）。 */
         MissionRef: {
             mission_id: string;
@@ -4320,6 +4482,8 @@ export interface components {
             review_round: number;
             /** @description 负责人（空 = 显式 unassigned，§3.3 不变量） */
             owner_agent_id: string;
+            /** @description 在途交接承接人（0.6.12 / ADR-0035：handover 发起置位、承接/婉拒/撤回清空；空 = 无在途交接。在途期间 owner 不变、Revise/RequestReview/MarkCanceling 冻结） */
+            pending_owner_agent_id: string;
             /** @description 请求人（0.6.0 恒 owner——本地单用户） */
             requester: string;
             /** @description 验收人（空 = 请求人自验） */
@@ -4363,8 +4527,8 @@ export interface components {
             seq: number;
             mission_id: string;
             /** @enum {string} */
-            event_type: "created" | "contract_revised" | "status_changed";
-            /** @description 事件体——created: {contract_version, status}；contract_revised: {from_version, to_version}；status_changed: {from, to, reason} */
+            event_type: "created" | "contract_revised" | "status_changed" | "reopen_requested" | "handover_offered" | "handover_accepted" | "handover_declined" | "handover_revoked";
+            /** @description 事件体——created: {contract_version, status}；contract_revised: {from_version, to_version}；status_changed: {from, to, reason}；reopen_requested: {request_id, decision_ref, evidence_refs, affected_mission_ids, reason, contract_version}；handover_offered: {from_owner, to_owner, notes, contract_version}；handover_accepted: {from_owner, to_owner, contract_version, status_at_accept, note}（承接回执）；handover_declined/handover_revoked: {from_owner, to_owner, reason, contract_version} */
             payload: Record<string, never>;
             /** Format: date-time */
             occurred_at: string;
@@ -9247,6 +9411,261 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReopenRequestList"];
+                };
+            };
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    offerMissionHandover: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HandoverSubmit"];
+            };
+        };
+        responses: {
+            /** @description 已发起（pending_owner_agent_id 可见；owner 仍为原负责人） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionView"];
+                };
+            };
+            /** @description 形状/上限不合法（invalid_handover） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Mission 或承接人不存在（mission_not_found / agent_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 版本冲突（version_conflict）或状态/冻结窗/在途唯一/承接人非 active（invalid_transition） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+        };
+    };
+    acceptMissionHandover: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HandoverAccept"];
+            };
+        };
+        responses: {
+            /** @description 已承接（owner 翻转） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionView"];
+                };
+            };
+            /** @description 形状/上限不合法（invalid_handover） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 版本冲突 / 无在途交接 / 状态族不符 / 承接人非 active（invalid_transition | version_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+        };
+    };
+    declineMissionHandover: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HandoverResolve"];
+            };
+        };
+        responses: {
+            /** @description 已婉拒（pending 清空） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionView"];
+                };
+            };
+            /** @description 形状/上限不合法（invalid_handover） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 版本冲突 / 无在途交接（invalid_transition | version_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+        };
+    };
+    revokeMissionHandover: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HandoverResolve"];
+            };
+        };
+        responses: {
+            /** @description 已撤回（pending 清空） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionView"];
+                };
+            };
+            /** @description 形状/上限不合法（invalid_handover） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 版本冲突 / 无在途交接（invalid_transition | version_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+        };
+    };
+    listMissionHandovers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 交接事件列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HandoverEventList"];
                 };
             };
             /** @description Mission 不存在（mission_not_found） */

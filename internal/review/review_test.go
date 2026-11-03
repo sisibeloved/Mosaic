@@ -13,6 +13,9 @@ import (
 type stubAgents struct{}
 
 func (stubAgents) AgentExists(context.Context, string) (bool, error) { return true, nil }
+func (stubAgents) AgentStatus(context.Context, string) (string, bool, error) {
+	return mission.AgentStatusActive, true, nil
+}
 
 type fakePackages struct{ facts map[string]PackageFacts }
 
