@@ -169,7 +169,7 @@ func TestHandoverEndpoints(t *testing.T) {
 
 	// 冻结窗：修订 / 取消 409；在途唯一：二发 409
 	if resp := postSlot(t, ts.URL+"/v1/missions/"+mid+"/revise",
-		`{"expected_version":1,"objective":"x","scope":"y","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"]}`); resp.StatusCode != http.StatusConflict {
+		`{"expected_version":1,"expected_owner_agent_id":"`+a+`","objective":"x","scope":"y","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"]}`); resp.StatusCode != http.StatusConflict {
 		t.Fatalf("冻结窗修订应 409: %d", resp.StatusCode)
 	}
 	if resp := postSlot(t, ts.URL+"/v1/missions/"+mid+"/cancel", `{"expected_version":1}`); resp.StatusCode != http.StatusConflict {

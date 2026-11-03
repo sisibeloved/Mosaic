@@ -372,6 +372,10 @@ function MissionDetail({
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [reviseOpen, setReviseOpen] = useState(false);
+  // 复审 #1：修订草稿基准——打開時固定所见 owner + contract_version；提交锚取
+  // 基准值（轮询保鲜的是**显示**，不是用户编辑所依据的事实——草稿携旧 owner 时
+  // 锚与当前不符 409，用户重开表单，不得以提交时点轮询值放行旧草稿覆盖新归属）。
+  const [reviseBase, setReviseBase] = useState<{ v: number; owner: string } | null>(null);
   const [form, setForm] = useState({ objective: "", scope: "", acceptance: "", deliverables: "", sources: "", owner: "" });
   const [cancelReason, setCancelReason] = useState("");
   const [sendablePkgs, setSendablePkgs] = useState<DeliveryPackageView[]>([]);
@@ -471,7 +475,7 @@ function MissionDetail({
         setDetail(d);
         setVersions(v.versions);
         setEvents(e.events);
-        appliedSrcRef.current = 0; // 权威落地重置轮询应用序号（审校 #6：在途旧快照不得盖回）
+        appliedSrcRef.current = cur; // 复审 #3：记代次（与轮询同一计数——旧轮询响应天然过期）
       })
       .catch((e) => {
         if (seq.current !== cur) return;
@@ -481,9 +485,11 @@ function MissionDetail({
 
   useEffect(load, [missionID]); // 父层按 missionID key 重挂载；onChanged 后手动 load
 
-  const appliedSrcRef = useRef(0); // 四审 #1：来源响应已应用序号（乱序丢弃；详情重载重置为权威值）
+  // 复审 #3：getMission 响应已应用代次——手动 load 与轮询从**同一 seq 计数**取号，
+  // 应用只认最新已应用之后的更大号；不再有清零路径（清零会让在途旧响应重新可应用，
+  // 已显示的新归属/待承接被旧快照盖回）。
+  const appliedSrcRef = useRef(0);
   useEffect(() => {
-    appliedSrcRef.current = 0;
     setRoomSourceNow(detail?.room_source ?? null);
   }, [detail?.room_source]);
 
@@ -493,33 +499,34 @@ function MissionDetail({
     let seqRN = 0;
     let appliedRN = 0;
     const loadRN = () => {
-      const seq = ++seqRN;
+      const rn = ++seqRN;
       // 复审 #3：两请求各自独立更新——台账不被来源挂起挡住、删房标记不被台账
       // 失败挡住；#4：只丢弃**比已显示更旧**的响应——轮询间隔短于单轮耗时的
       // 连续慢响应不再被发起序号全部丢弃（每轮到达的最新结果总会显示）。
       void api
         .listMissionReturnNotices(missionID)
         .then((r) => {
-          if (!alive || seq < appliedRN) return;
-          appliedRN = seq;
+          if (!alive || rn < appliedRN) return;
+          appliedRN = rn;
           setReturnErr(null);
           setReturnNotices(r.notices);
         })
         .catch(() => {
           // 四审 #5：忽略早于最新已显示成功的失败（旧失败不得在 delivered 之上
           // 再提示"暂不可用"）；失败保留末次成功结果。
-          if (!alive || seq < appliedRN) return;
+          if (!alive || rn < appliedRN) return;
           setReturnErr("回房台账暂不可用（显示上次结果）");
         });
+      // 复审 #3：从共享 seq 计数取号——手动 load 与轮询同一代次空间；应用条件
+      // ticket >= 已应用代次（迟到旧响应丢弃）。0.6.12 审校 #6：同步刷新交接元数据
+      // （owner / pending / 状态 / 版本）——他处发起/承接/婉拒/撤回后本页可见待承接
+      // 入口；表单草稿独立 state 不受影响（裁定草稿按轮次隔离既有守卫）。
+      const ticket = ++seq.current;
       void api
         .getMission(missionID)
         .then((m) => {
-          // 四审 #1：来源成功单设已应用序号——较早的成功响应晚到不得抹掉
-          // 已显示的删房标记。0.6.12 审校 #6：同步刷新交接元数据（owner /
-          // pending / 状态 / 版本）——他处发起/承接/婉拒/撤回后本页可见待承接
-          // 入口；表单草稿独立 state 不受影响（裁定草稿按轮次隔离既有守卫）。
-          if (!alive || seq <= appliedSrcRef.current) return;
-          appliedSrcRef.current = seq;
+          if (!alive || ticket < appliedSrcRef.current) return;
+          appliedSrcRef.current = ticket;
           setDetail(m);
           setRoomSourceNow(m.room_source ?? null);
         })
@@ -656,6 +663,7 @@ function MissionDetail({
             disabled={busy || !owned}
             onClick={() => {
               setReviseOpen((o) => !o);
+              setReviseBase({ v: detail.contract_version, owner: detail.owner_agent_id ?? "" });
               setForm({
                 objective: detail.objective,
                 scope: detail.scope,
@@ -953,16 +961,17 @@ function MissionDetail({
           <div>
             <button
               type="button"
-              disabled={busy || !owned || !form.objective.trim() || !form.scope.trim()}
+              disabled={busy || !owned || !form.objective.trim() || !form.scope.trim() || !reviseBase}
               onClick={() =>
                 void act(async () => {
                   if (detail.mission_id !== missionID) throw new Error("详情未就绪，已阻止写入");
                   // 全量替换语义：未编辑字段从当前契约快照保留（审校 P1#2——
                   // 漏传即清空，预算/约束/返回位/验收人/委派不得被缺省重置）
                   await api.reviseMission(missionID, {
-                    expected_version: detail.contract_version,
-                    // 0.6.12 审校 #2：归属锚——提交时点所见 owner（轮询保鲜；承接翻转后旧表单 409）
-                    expected_owner_agent_id: detail.owner_agent_id ?? '',
+                    // 复审 #1：版本与归属锚取**草稿基准**（打开表单时固定）——
+                    // 轮询刷新的是显示；旧草稿对不上当前基准时 409 可见，不放行
+                    expected_version: reviseBase?.v ?? detail.contract_version,
+                    expected_owner_agent_id: reviseBase?.owner ?? detail.owner_agent_id ?? '',
                     ...(form.owner ? { owner_agent_id: form.owner } : {}),
                     objective: form.objective.trim(),
                     scope: form.scope.trim(),
@@ -1669,6 +1678,11 @@ function HandoverSection({ missionID, detail, agents, onChanged }: {
   const pending = detail.pending_owner_agent_id;
   const offerID = detail.pending_offer_id ?? "";
   const version = detail.contract_version;
+  // 复审 #4：备注草稿按发起隔离——同人重新邀请（pending 不变、offer_id 已换）时
+  // 旧备注不带进新 offer。
+  useEffect(() => {
+    setText("");
+  }, [offerID]);
 
   useEffect(() => {
     let alive = true;
@@ -1693,7 +1707,7 @@ function HandoverSection({ missionID, detail, agents, onChanged }: {
     return () => {
       alive = false;
     };
-  }, [missionID, msg, pending, histTick]);
+  }, [missionID, msg, offerID, histTick]); // 复审 #4：按 offer_id 刷新（pending 不变而 offer 已换时不显示旧说明）
 
   const run = async (label: string, fn: () => Promise<MissionView>) => {
     setBusy(true); setMsg(null);

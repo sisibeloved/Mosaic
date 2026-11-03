@@ -299,11 +299,12 @@ type Store interface {
 	HandoverOffer(ctx context.Context, missionID string, expectedVersion int, newOwner, offerID string, event Event) (Mission, bool, error)
 	// HandoverAccept 承接（承接回执）：contract_version 匹配、在途发起标识 ==
 	// expectOffer（锚——审校 #1：撤回改派后旧 accept 拒绝）且非空、状态族同上 →
-	// owner = pending、pending 清空、draft 按 targetStatus（服务层完备性重判）投影、
-	// 其余状态保持（执行控制投影事务内以现行为准）+ handover_accepted 事件（回执
-	// status_at_accept 由**事务内核对后的实际状态**注入——审校 #4；+ 状态变化时
-	// status_changed reason=handover），单事务；ok=false 同上。
-	HandoverAccept(ctx context.Context, missionID string, expectedVersion int, expectOffer, targetStatus string, event Event) (Mission, bool, error)
+	// owner = pending、pending 清空、**draft 按事务内现行 content + 新 owner 重判**
+	//（HandoverDraftTarget 单源——复审 #2：事务前快照不参与事实判定）、其余状态
+	// 保持（执行控制投影事务内以现行为准）+ handover_accepted 事件（回执
+	// from_owner / status_at_accept 由**事务内核对后的实际值**注入）+ 状态变化时
+	// status_changed reason=handover，单事务；ok=false 同上。
+	HandoverAccept(ctx context.Context, missionID string, expectedVersion int, expectOffer string, event Event) (Mission, bool, error)
 	// HandoverWithdraw 婉拒/撤回共用：contract_version 匹配、在途发起标识 ==
 	// expectOffer 且非空 → pending 清空 + 事件（declined | revoked 由 event 携带），
 	// 单事务；任何状态可了结在途交接（不应存在卡死路径）。
@@ -446,6 +447,29 @@ func InjectReviewFacts(payload []byte, contractVersion, reviewRound int) []byte 
 		return payload
 	}
 	return out
+}
+
+// InjectHandoverFacts 交接事件载荷注入**事务内核对后的实际归属**（复审 #2：服务
+// 层读后 owner 被并发翻转的交错不得进事件——from_owner 记落地时点的真实负责人，
+// 与行内 owner_agent_id 同源）。
+func InjectHandoverFacts(payload []byte, actualOwner string) []byte {
+	var m map[string]any
+	if json.Unmarshal(payload, &m) != nil {
+		m = map[string]any{}
+	}
+	m["from_owner"] = actualOwner
+	out, err := json.Marshal(m)
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
+// HandoverDraftTarget draft 承接后的完备性重判单源（复审 #2：存储事务内按**现行
+// content** 与新 owner 计算——statusOf 同一判定；服务层快照不参与）。齐备 →
+// ready（交接同时是存量 unassigned 任务的指派通道），否则保持 draft。
+func HandoverDraftTarget(ownerAgentID string, c Content) string {
+	return statusOf(Mission{OwnerAgentID: ownerAgentID, Content: c})
 }
 
 // InjectHandoverStatus 承接回执载荷注入**事务内核对后的实际任务状态**（0.6.12
@@ -660,26 +684,18 @@ func (s *Service) HandoverAccept(ctx context.Context, missionID string, expected
 	if err := s.checkHandoverTarget(ctx, cur.PendingOwnerAgentID); err != nil {
 		return Mission{}, err
 	}
-	// 完备性重判仅 draft（齐备则 ready——交接同时是存量 unassigned 任务的指派通道）；
-	// 其余状态保持（存储事务内以现行状态为准——陈旧读不得盖回调度列）。
-	target := cur.Status
-	if cur.Status == StatusDraft {
-		next := cur
-		next.OwnerAgentID = cur.PendingOwnerAgentID
-		target = statusOf(next)
-	}
-	// 审校 #4：status_at_accept 是**事务内核对后的实际状态**（预填值仅占位——
-	// 服务层读后被并发暂停/恢复的交错不得进回执；InjectHandoverStatus 同
-	// InjectReviewFacts 先例）。
+	// 复审 #2：完备性重判与回执事实全部在存储事务内按现行值生成——draft 重判由
+	// 事务内按现行 content + 新 owner 自算（HandoverDraftTarget 单源）；回执
+	// from_owner / status_at_accept 由事务内注入（服务层预填仅占位）。
 	payload, err := json.Marshal(map[string]any{
 		"offer_id":   offerID,
 		"from_owner": cur.OwnerAgentID, "to_owner": cur.PendingOwnerAgentID,
-		"contract_version": expectedVersion, "status_at_accept": target, "note": note,
+		"contract_version": expectedVersion, "status_at_accept": cur.Status, "note": note,
 	})
 	if err != nil {
 		return Mission{}, fmt.Errorf("mission: 承接回执构造失败：%w", err)
 	}
-	out, ok2, err := s.store.HandoverAccept(ctx, missionID, expectedVersion, offerID, target, Event{
+	out, ok2, err := s.store.HandoverAccept(ctx, missionID, expectedVersion, offerID, Event{
 		MissionID: missionID, EventType: EventHandoverAccepted, Payload: payload, OccurredAt: s.now(),
 	})
 	if err != nil {

@@ -482,3 +482,53 @@ func TestHandoverAcceptReceiptStatus(t *testing.T) {
 		t.Fatalf("回执须记实际 paused: %s", receipt)
 	}
 }
+
+// TestHandoverFactsInjectedStoreLevel 复审 #2：事件事实由临界区内现值生成——
+// store 级直调（payload 预填陈旧 from_owner），注入后与行内 owner 一致；draft
+// 重判按临界区 content（并发改 status 模拟：paused 行直接置 draft，承接按现行
+// content 重判 ready，不被事务前快照放回 paused）。
+func TestHandoverFactsInjectedStoreLevel(t *testing.T) {
+	mem := NewMemStore()
+	ctx := context.Background()
+	svc := New(mem, WithNow(fixedNow), WithNewMissionID(func() string { return "mi_fi" }),
+		WithAgentLookup(handoverAgents()))
+	m, err := svc.Create(ctx, "ag_a", fullContent(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 陈旧 from_owner 预填（模拟服务层读后并发翻转）——MemStore 临界区内注入
+	ev := Event{EventType: EventHandoverOffered, OccurredAt: fixedNow()}
+	ev.Payload = []byte(`{"from_owner":"ag_stale","to_owner":"ag_b","offer_id":"hdo_fi1","contract_version":1}`)
+	if out, ok, err := mem.HandoverOffer(ctx, m.MissionID, 1, "ag_b", "hdo_fi1", ev); err != nil || !ok || out.PendingOfferID != "hdo_fi1" {
+		t.Fatalf("offer: ok=%v %v", ok, err)
+	}
+	evs, _, _ := mem.MissionEvents(ctx, m.MissionID)
+	var got string
+	for _, e := range evs {
+		if e.EventType == EventHandoverOffered {
+			got = string(e.Payload)
+		}
+	}
+	if !strings.Contains(got, `"from_owner":"ag_a"`) || strings.Contains(got, "ag_stale") {
+		t.Fatalf("offer 事件须注入临界区内 owner: %s", got)
+	}
+
+	// 并发把 paused 带到 draft（模拟 paused→resume 重判不完备外的路径：此处直接
+	// 构造行状态交错）——承接按临界区 content + 新 owner 重判，完备 → ready
+	wp := `{"offer_id":"hdo_fi1"}`
+	if _, ok, err := mem.HandoverWithdraw(ctx, m.MissionID, 1, "hdo_fi1", Event{EventType: EventHandoverRevoked, Payload: []byte(wp), OccurredAt: fixedNow()}); err != nil || !ok {
+		t.Fatalf("withdraw: %v %v", ok, err)
+	}
+	mem.missions[0].Status = StatusPaused
+	if _, ok, err := mem.HandoverOffer(ctx, m.MissionID, 1, "ag_b", "hdo_fi2", Event{EventType: EventHandoverOffered, Payload: []byte(`{"offer_id":"hdo_fi2"}`), OccurredAt: fixedNow()}); err != nil || !ok {
+		t.Fatalf("offer2: %v %v", ok, err)
+	}
+	mem.missions[0].Status = StatusDraft // 并发交错：临界区前一刻状态翻 draft
+	acc, ok, err := mem.HandoverAccept(ctx, m.MissionID, 1, "hdo_fi2", Event{EventType: EventHandoverAccepted, Payload: []byte(`{"status_at_accept":"draft"}`), OccurredAt: fixedNow()})
+	if err != nil || !ok {
+		t.Fatalf("accept: %v %v", ok, err)
+	}
+	if acc.Status != StatusReady || acc.OwnerAgentID != "ag_b" {
+		t.Fatalf("draft 重判须按临界区 content → ready（不得放回 paused/陈旧 draft）: %+v", acc)
+	}
+}

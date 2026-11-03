@@ -100,6 +100,21 @@ Outstanding(agentID) = { m : m.owner_agent_id == agentID ∧ m.status ∉ {accep
 
 ## 修订记录
 
+- v0.3（2026-11-03）：复审修复（"1 项 P1、3 项 P2、1 项 P3"）——
+  **P1#1 旧草稿覆盖新归属**：修订表单打開時固定基准（reviseBase：所见
+  owner + contract_version），提交锚取基准值——轮询只保鲜显示，不得以提交时点
+  轮询值放行旧草稿（草稿携旧 owner 时锚与当前不符 409，重开表单）。
+  **P2#2 事务前快照仍影响事实**：offer 事件 from_owner 由事务内注入
+  （InjectHandoverFacts）；accept 的 draft 完备性重判移入事务内按**现行
+  content** + 新 owner 自算（HandoverDraftTarget 单源，Store 签名删
+  targetStatus）——并发把状态带到 draft 时完整任务不再被放回 paused。
+  **P2#3 旧轮询覆盖新详情**：手动 load 与轮询从**同一 seq 计数**取号、应用只认
+  最新已应用之后的更大号；删除两处清零路径（清零使在途旧响应重新可应用）。
+  **P2#4 同人改派后说明与操作错位**：交接历史按 offer_id 刷新（pending 不变而
+  offer 已换时不显示旧说明）；备注草稿按 offer_id 隔离清空。
+  **P3#5 必填键缺席不拒**：revise 的 expected_owner_agent_id 经 presence 在场
+  检查——缺席 400 bad_request（Go 零值与显式空串不可分；空串 = 预期
+  unassigned 不受影响）。
 - v0.2（2026-11-03）：审校修复（"3 项 P1、3 项 P2、1 项 P3"）——
   **P1#1 旧交接操作处理新交接**：发起生成 `offer_id`（`hdo_` 前缀，行存
   `pending_offer_id` + 事件回链）；承接/婉拒/撤回请求**必填** `offer_id`——撤回

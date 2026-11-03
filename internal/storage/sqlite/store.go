@@ -3415,11 +3415,13 @@ func handoverProbe(ctx context.Context, q identityExec, missionID string) (versi
 }
 
 // HandoverOffer 发起交接：版本 + 状态族（HandoverOfferable 单源）+ 无在途 →
-// pending 置位 + handover_offered 事件，单事务；owner / 版本不变。
+// pending 置位 + handover_offered 事件（from_owner 注入**事务内核对后的实际
+// 归属**——复审 #2：服务层读后 owner 被并发翻转的交错不进事件），单事务；
+// owner / 版本不变。
 func (s *Store) HandoverOffer(ctx context.Context, missionID string, expectedVersion int, newOwner, offerID string, event mission.Event) (mission.Mission, bool, error) {
 	ok := false
 	err := s.identityWriteTx(ctx, func(q identityExec) error {
-		version, status, _, pending, _, err := handoverProbe(ctx, q, missionID)
+		version, status, owner, pending, _, err := handoverProbe(ctx, q, missionID)
 		if err != nil {
 			return err
 		}
@@ -3431,6 +3433,7 @@ func (s *Store) HandoverOffer(ctx context.Context, missionID string, expectedVer
 			newOwner, offerID, event.OccurredAt, missionID); err != nil {
 			return fmt.Errorf("sqlite: handover offer: %w", err)
 		}
+		event.Payload = mission.InjectHandoverFacts(event.Payload, owner)
 		if _, err := q.ExecContext(ctx, `
 INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
 			missionID, event.EventType, string(event.Payload), event.OccurredAt); err != nil {
@@ -3449,15 +3452,16 @@ INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES
 // HandoverAccept 承接（承接回执）：版本 + 发起标识锚（审校 #1——撤回改派后的
 // 旧 accept 拒）+ 状态族 + **承接人身份事务内核对**（审校 #3a——服务层先读后
 // 承接人被退役的交错在此拦：retired/retiring/suspended 不接新承诺）→ owner =
-// pending、pending 清空、draft 按 targetStatus（服务层完备性重判——修订被冻结
-// 窗挡住，内容不变判有效）投影、其余状态保持（事务内以现行为准——陈旧 ready
-// 不得盖回调度列）+ handover_accepted 事件（status_at_accept 注入**UPDATE 后
-// 回读的实际状态**——审校 #4）+ 状态变化时 status_changed reason=handover，
-// 单事务。
-func (s *Store) HandoverAccept(ctx context.Context, missionID string, expectedVersion int, expectOffer, targetStatus string, event mission.Event) (mission.Mission, bool, error) {
+// pending、pending 清空、**draft 按事务内现行 content + 新 owner 重判**
+// （复审 #2：HandoverDraftTarget 单源——修订被冻结窗挡住，现行 content 即权威；
+// 并发把状态带到 draft（如 paused→resume 重判）时完整任务不再被事务前快照放回
+// paused）、其余状态保持（事务内以现行为准）+ handover_accepted 事件（from_owner /
+// status_at_accept 注入**事务内核对后的实际值**）+ 状态变化时 status_changed
+// reason=handover，单事务。
+func (s *Store) HandoverAccept(ctx context.Context, missionID string, expectedVersion int, expectOffer string, event mission.Event) (mission.Mission, bool, error) {
 	ok := false
 	err := s.identityWriteTx(ctx, func(q identityExec) error {
-		version, status, _, pending, offer, err := handoverProbe(ctx, q, missionID)
+		version, status, owner, pending, offer, err := handoverProbe(ctx, q, missionID)
 		if err != nil {
 			return err
 		}
@@ -3478,14 +3482,25 @@ func (s *Store) HandoverAccept(ctx context.Context, missionID string, expectedVe
 		}
 		newStatus := status
 		if status == mission.StatusDraft {
-			newStatus = targetStatus
+			// 复审 #2：事务内按**现行 content** 重判（服务层/事务前快照不参与）。
+			var rawContent string
+			if err := q.QueryRowContext(ctx,
+				`SELECT content FROM missions WHERE mission_id = ?`, missionID).Scan(&rawContent); err != nil {
+				return fmt.Errorf("sqlite: handover accept content: %w", err)
+			}
+			var c mission.Content
+			if err := json.Unmarshal([]byte(rawContent), &c); err != nil {
+				return fmt.Errorf("sqlite: handover accept content unmarshal: %w", err)
+			}
+			newStatus = mission.HandoverDraftTarget(pending, c)
 		}
 		if _, err := q.ExecContext(ctx,
 			`UPDATE missions SET owner_agent_id = ?, pending_owner_agent_id = '', pending_offer_id = '', status = ?, updated_at = ? WHERE mission_id = ?`,
 			pending, newStatus, event.OccurredAt, missionID); err != nil {
 			return fmt.Errorf("sqlite: handover accept: %w", err)
 		}
-		// 审校 #4：回执记**事务内核对后的实际状态**（服务层预填仅占位）。
+		// 审校 #4 + 复审 #2：回执记**事务内核对后的实际归属与状态**（预填仅占位）。
+		event.Payload = mission.InjectHandoverFacts(event.Payload, owner)
 		event.Payload = mission.InjectHandoverStatus(event.Payload, newStatus)
 		if _, err := q.ExecContext(ctx, `
 INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,

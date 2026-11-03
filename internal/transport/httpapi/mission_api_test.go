@@ -151,6 +151,12 @@ func TestMissionEndpoints(t *testing.T) {
 	}
 
 	// 3) CAS 冲突：旧版本号 → 409 version_conflict
+	// 复审 #5：必填键缺席 400 bad_request（Go 零值与显式空串不可分——presence 在场检查）
+	miss := postSlot(t, ts.URL+"/v1/missions/"+draft.MissionID+"/revise",
+		`{"expected_version":1,"objective":"x","scope":"y","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"]}`)
+	if miss.StatusCode != http.StatusBadRequest || errCodeOf(t, miss) != "bad_request" {
+		t.Fatalf("缺归属锚键须 400 bad_request: %d %s", miss.StatusCode, errCodeOf(t, miss))
+	}
 	bad := postSlot(t, ts.URL+"/v1/missions/"+draft.MissionID+"/revise",
 		`{"expected_version":1,"expected_owner_agent_id":"`+agDoc.AgentID+`","objective":"x","scope":"y","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"]}`)
 	if bad.StatusCode != http.StatusConflict || errCodeOf(t, bad) != "version_conflict" {

@@ -87,11 +87,11 @@ func TestHandoverStoreIT(t *testing.T) {
 	}
 
 	// 承接：发起标识锚不符 ok=false；锚相符 → owner 翻转、pending 清空、回执事件、版本不变
-	if _, ok, _ := store.HandoverAccept(ctx, m.MissionID, 1, "hdo_bogus", mission.StatusReady,
+	if _, ok, _ := store.HandoverAccept(ctx, m.MissionID, 1, "hdo_bogus",
 		handoverEvent(mission.EventHandoverAccepted, map[string]any{}, "t")); ok {
 		t.Fatal("offer 锚不符须 ok=false")
 	}
-	acc, ok, err := store.HandoverAccept(ctx, m.MissionID, 1, "hdo_it_1", mission.StatusReady,
+	acc, ok, err := store.HandoverAccept(ctx, m.MissionID, 1, "hdo_it_1",
 		handoverEvent(mission.EventHandoverAccepted, map[string]any{"from_owner": "ag_a", "to_owner": "ag_b", "status_at_accept": "ready", "contract_version": 1}, "2026-11-03T12:01:00Z"))
 	if err != nil || !ok || acc.OwnerAgentID != "ag_b" || acc.PendingOwnerAgentID != "" || acc.ContractVersion != 1 || acc.Status != mission.StatusReady {
 		t.Fatalf("承接: ok=%v %+v %v", ok, acc, err)
@@ -149,7 +149,7 @@ func TestHandoverAcceptIdentityGateIT(t *testing.T) {
 	if _, err := store.db.Exec(`UPDATE agents SET status = 'retired' WHERE agent_id = 'ag_gate'`); err != nil {
 		t.Fatal(err)
 	}
-	if out, ok, err := store.HandoverAccept(ctx, m.MissionID, 1, "hdo_g1", mission.StatusReady,
+	if out, ok, err := store.HandoverAccept(ctx, m.MissionID, 1, "hdo_g1",
 		handoverEvent(mission.EventHandoverAccepted, map[string]any{}, "t")); err != nil || ok || out.OwnerAgentID != "" {
 		t.Fatalf("retired 承接须 ok=false 且零翻转: ok=%v %+v %v", ok, out, err)
 	}
@@ -188,7 +188,7 @@ func TestRetireCommitmentsGateIT(t *testing.T) {
 		handoverEvent(mission.EventHandoverOffered, map[string]any{"offer_id": "hdo_r1"}, "t")); err != nil || !ok {
 		t.Fatal(err)
 	}
-	if _, ok, err := store.HandoverAccept(ctx, m.MissionID, 1, "hdo_r1", mission.StatusReady,
+	if _, ok, err := store.HandoverAccept(ctx, m.MissionID, 1, "hdo_r1",
 		handoverEvent(mission.EventHandoverAccepted, map[string]any{}, "t")); err != nil || !ok {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestHandoverAcceptReceiptStatusIT(t *testing.T) {
 	if _, ok, err := store.PauseMission(ctx, m.MissionID, 1, "排空", "t"); err != nil || !ok {
 		t.Fatal(err)
 	}
-	if _, ok, err := store.HandoverAccept(ctx, m.MissionID, 1, "hdo_s1", mission.StatusReady,
+	if _, ok, err := store.HandoverAccept(ctx, m.MissionID, 1, "hdo_s1",
 		handoverEvent(mission.EventHandoverAccepted, map[string]any{"status_at_accept": "ready"}, "t")); err != nil || !ok {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ func TestHandoverAcceptCompletenessIT(t *testing.T) {
 		handoverEvent(mission.EventHandoverOffered, map[string]any{"from_owner": "", "to_owner": "ag_b", "offer_id": "hdo_it_d1"}, "t")); err != nil || !ok {
 		t.Fatalf("draft 发起: ok=%v %v", ok, err)
 	}
-	acc, ok, err := store.HandoverAccept(ctx, row.MissionID, 1, "hdo_it_d1", mission.StatusReady,
+	acc, ok, err := store.HandoverAccept(ctx, row.MissionID, 1, "hdo_it_d1",
 		handoverEvent(mission.EventHandoverAccepted, map[string]any{"from_owner": "", "to_owner": "ag_b", "status_at_accept": "ready"}, "t"))
 	if err != nil || !ok || acc.Status != mission.StatusReady || acc.OwnerAgentID != "ag_b" {
 		t.Fatalf("承接完备性重判: ok=%v %+v %v", ok, acc, err)
@@ -316,5 +316,64 @@ func TestHandoverUpgradeIT(t *testing.T) {
 	store3.db.QueryRow(`SELECT COUNT(*) FROM migrations WHERE version = 29`).Scan(&v29)
 	if v29 != 1 {
 		t.Fatalf("v29 登记须恰 1: %d", v29)
+	}
+}
+
+// TestHandoverFactsInjectedIT 复审 #2：事件事实由事务内现值生成。
+// (a) offer：payload 预填陈旧 from_owner、事务前行内 owner 已被并发翻转（SQL 直写
+// 模拟）→ 事件记事务内 owner；(b) accept：offer 后并发把状态带到 draft（SQL 直写，
+// 模拟 paused→resume 重判交错）→ 完备契约按**现行 content** 重判 ready，不被
+// 事务前快照放回 paused；回执 from_owner / status_at_accept 均为事务内值。
+func TestHandoverFactsInjectedIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	ctx := context.Background()
+	for _, a := range []personalagent.Agent{
+		{AgentID: "ag_fx", DisplayName: "事实乙", Status: "active", Source: "manual", CreatedAt: "2026-11-03T10:00:00Z"},
+	} {
+		if _, err := store.EnsureAgent(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := store.CreateMission(ctx, missionRow(mission.StatusReady, "ag_src"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// (a) offer：事务前行内 owner 已翻为 ag_other（SQL 直写模拟并发承接）
+	if _, err := store.db.Exec(`UPDATE missions SET owner_agent_id = 'ag_other' WHERE mission_id = ?`, m.MissionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.HandoverOffer(ctx, m.MissionID, 1, "ag_fx", "hdo_fx1",
+		handoverEvent(mission.EventHandoverOffered, map[string]any{"from_owner": "ag_stale", "to_owner": "ag_fx", "offer_id": "hdo_fx1"}, "t")); err != nil || !ok {
+		t.Fatalf("offer: ok=%v %v", ok, err)
+	}
+	evs, _, _ := store.MissionEvents(ctx, m.MissionID)
+	for _, e := range evs {
+		if e.EventType == mission.EventHandoverOffered {
+			if !strings.Contains(string(e.Payload), `"from_owner":"ag_other"`) || strings.Contains(string(e.Payload), "ag_stale") {
+				t.Fatalf("offer 事件须注入事务内 owner: %s", e.Payload)
+			}
+		}
+	}
+	// (b) accept：并发把状态带到 draft——完备 content 重判 ready（旧实现按服务层
+	// 快照 targetStatus 会放回 paused）
+	if _, err := store.db.Exec(`UPDATE missions SET status = 'draft' WHERE mission_id = ?`, m.MissionID); err != nil {
+		t.Fatal(err)
+	}
+	acc, ok, err := store.HandoverAccept(ctx, m.MissionID, 1, "hdo_fx1",
+		handoverEvent(mission.EventHandoverAccepted, map[string]any{"status_at_accept": "draft"}, "t"))
+	if err != nil || !ok {
+		t.Fatalf("accept: ok=%v %v", ok, err)
+	}
+	if acc.Status != mission.StatusReady || acc.OwnerAgentID != "ag_fx" {
+		t.Fatalf("draft 重判须按现行 content → ready: %+v", acc)
+	}
+	evs, _, _ = store.MissionEvents(ctx, m.MissionID)
+	for _, e := range evs {
+		if e.EventType == mission.EventHandoverAccepted {
+			if !strings.Contains(string(e.Payload), `"status_at_accept":"ready"`) ||
+				!strings.Contains(string(e.Payload), `"from_owner":"ag_other"`) {
+				t.Fatalf("回执须记事务内事实: %s", e.Payload)
+			}
+		}
 	}
 }

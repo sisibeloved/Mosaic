@@ -380,14 +380,16 @@ func (m *MemStore) HandoverOffer(_ context.Context, missionID string, expectedVe
 	m.missions[i] = cur
 	m.seq++
 	event.Seq = m.seq
+	event.Payload = InjectHandoverFacts(event.Payload, cur.OwnerAgentID) // 复审 #2：临界区内归属
 	m.events[missionID] = append(m.events[missionID], event)
 	return cur, true, nil
 }
 
 // HandoverAccept 承接（承接回执）：版本 + 发起标识锚（审校 #1）+ 状态族 → owner
-// 翻转、pending 清空、draft 按 targetStatus 投影（其余保持——临界区内以现行为准）
+// 翻转、pending 清空、draft 按现行 content + 新 owner 临界区内重判（复审 #2——
+// 服务层快照不参与），其余保持
 // + 事件（status_at_accept 注入**临界区后实际状态**——审校 #4）。
-func (m *MemStore) HandoverAccept(_ context.Context, missionID string, expectedVersion int, expectOffer, targetStatus string, event Event) (Mission, bool, error) {
+func (m *MemStore) HandoverAccept(_ context.Context, missionID string, expectedVersion int, expectOffer string, event Event) (Mission, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	i, ok := m.indexOfLocked(missionID)
@@ -400,16 +402,19 @@ func (m *MemStore) HandoverAccept(_ context.Context, missionID string, expectedV
 		return Mission{}, false, nil
 	}
 	prev := cur.Status
+	prevOwner := cur.OwnerAgentID // 复审 #2：翻转前归属进回执（临界区内现值）
 	cur.OwnerAgentID = cur.PendingOwnerAgentID
 	cur.PendingOwnerAgentID = ""
 	cur.PendingOfferID = ""
 	if prev == StatusDraft {
-		cur.Status = targetStatus
+		// 复审 #2：临界区内按现行 content + 新 owner 重判（HandoverDraftTarget 单源）
+		cur.Status = HandoverDraftTarget(cur.OwnerAgentID, cur.Content)
 	}
 	cur.UpdatedAt = event.OccurredAt
 	m.missions[i] = cur
 	m.seq++
 	event.Seq = m.seq
+	event.Payload = InjectHandoverFacts(event.Payload, prevOwner)
 	event.Payload = InjectHandoverStatus(event.Payload, cur.Status)
 	m.events[missionID] = append(m.events[missionID], event)
 	if prev != cur.Status {

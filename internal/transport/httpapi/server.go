@@ -1977,6 +1977,12 @@ func (s *server) ReviseMission(w http.ResponseWriter, r *http.Request, missionID
 		writeError(w, http.StatusBadRequest, "invalid_mission", "expected_version 须 ≥1")
 		return
 	}
+	// 复审 #5：必填键在场检查——Go 零值 "" 与显式空串（预期 unassigned）不可分，
+	// 缺席 400 bad_request（presence 记原始键集；budget 在场校验同例）。
+	if _, present := presence["expected_owner_agent_id"]; !present {
+		writeError(w, http.StatusBadRequest, "bad_request", "expected_owner_agent_id 必填（空串 = 预期 unassigned——归属锚，0.6.12）")
+		return
+	}
 	m, err := s.deps.Missions.Revise(r.Context(), missionID, int(req.ExpectedVersion), req.ExpectedOwnerAgentId, derefStr(req.OwnerAgentId),
 		missionContentOf(req.Budget, req.Constraints, req.Delegation, req.Objective, req.Scope, req.Reviewer, req.AcceptanceCriteria, req.DeliverableSpecs, req.SourceRefs, req.ReturnTargets))
 	if err != nil {
