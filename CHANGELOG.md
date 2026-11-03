@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- 修复 0.6.11 二审发现（独立复审报告"5 项 P2"，ADR-0034 v0.3）：**(#1) 版本冲突被误报为已暂停**——already_paused 分支的版本冲突重读重试一次，仍冲突如实返回 failed。**(#2) 事务提交后断线丢暂停**——Service 层在 store 事务成功后零值返回（暂停步骤不依赖读取回值）。**(#3) `not_pausable` 枚举缺失**——补 OpenAPI 并再生成。**(#4) 历史首次加载失败静默**——错误状态可见 + 原地重试。**(#5) 请求校验不完整**——MaxBytesReader（1 MiB）+ DisallowUnknownFields。
+
 - 修复 0.6.11 审校发现（独立审校报告"1 项 P1、5 项 P2、1 项 P3"，ADR-0034 v0.2）：**(P1) 重开接口绕过写权限检查**——SubmitReopenRequest 补 guardWrite（Origin / Content-Type / X-Owner-Token 三件套 + 请求大小限制）。**(#2) 断线后暂停步骤丢失**——事实落地后暂停改用独立上下文（请求断线不丢暂停）。**(#3) 已暂停目标重试不重发停止信号**——already_paused 仍过控制面（幂等重发 SignalStopByMission）。**(#4) 非终态被报为 terminal**——draft/reviewing/canceling 明确报 `not_pausable`（terminal 保留给 accepted/canceled）。**(#5/#6) SPA**——重开历史乱序守卫 + 失败保留旧值 + 暂停失败原因 detail 展示。**(#7) v28 迁移登记遗漏**——补 INSERT OR IGNORE。
 
 ## [0.6.10] - 2026-11-02

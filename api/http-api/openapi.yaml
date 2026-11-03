@@ -5521,7 +5521,7 @@ components:
       description: 受影响工作项的逐项暂停结果（如实报告——失败不回滚请求事实）。
       properties:
         mission_id: { type: string }
-        result: { type: string, enum: [paused, already_paused, terminal, not_found, failed], description: paused 本次暂停 / already_paused 幂等 / terminal 终态无执行可停 / not_found 不存在 / failed 暂停面错误 }
+        result: { type: string, enum: [paused, already_paused, terminal, not_pausable, not_found, failed], description: paused 本次暂停 / already_paused 幂等 / terminal 终态（accepted/canceled）无执行可停 / not_pausable 非终态但不可暂停（draft/reviewing/canceling） / not_found 不存在 / failed 暂停面错误 }
         detail: { type: string, description: failed 时的原因 }
     ReopenRequestView:
       type: object

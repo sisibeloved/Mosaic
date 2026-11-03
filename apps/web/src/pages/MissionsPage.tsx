@@ -1527,6 +1527,7 @@ function ReopenSection({ missionID, contractVersion, onChanged }: {
   const [msg, setMsg] = useState<string | null>(null);
   const [history, setHistory] = useState<ReopenRequestView[] | null>(null);
 
+  const [histErr, setHistErr] = useState(false); // 二审 #4：首次/重试失败可见可重试
   useEffect(() => {
     let alive = true;
     let seq = 0;
@@ -1538,10 +1539,12 @@ function ReopenSection({ missionID, contractVersion, onChanged }: {
         .then((r) => {
           if (!alive || cur < applied) return; // 审校 #5：只丢比已显示更旧的响应
           applied = cur;
+          setHistErr(false);
           setHistory(r.requests);
         })
         .catch(() => {
-          /* 审校 #5：失败保留末次成功结果（不静默清空） */
+          if (!alive || cur < applied) return;
+          setHistErr(true); // 二审 #4：错误可见（不静默清空成功结果）
         });
     };
     load();
@@ -1600,6 +1603,11 @@ function ReopenSection({ missionID, contractVersion, onChanged }: {
         </div>
       )}
       {msg && <p className="text-[11px] text-dim">{msg}</p>}
+      {histErr && (
+        <button onClick={() => setMsg(null)} className="self-start text-[11px] text-warn underline">
+          重开历史加载失败——点击重试
+        </button>
+      )}
       {(history?.length ?? 0) > 0 && (
         <details>
           <summary className="cursor-pointer select-none text-faint text-[11px]">重开历史</summary>

@@ -165,13 +165,41 @@ func (s *Service) pauseAffected(ctx context.Context, id, requestID string) Affec
 	}
 	switch cur.Status {
 	case mission.StatusPaused:
-		// 审校 #3：已 paused 仍过控制面（幂等）——首次暂停后停止信号可能未送达
-		//（执行器仍在跑），重试须重发停止信号（missioncontrol.PauseMission 幂等：
-		// 已 paused 时跳过 CAS 但仍调 SignalStopByMission）。
-		if _, err := s.pauser.PauseMission(ctx, id, cur.ContractVersion, "reopen:"+requestID); err != nil && !isVersionConflict(err) {
-			return AffectedResult{MissionID: id, Result: "failed", Detail: "停止信号补发失败：" + err.Error()}
+		// 审校 #3 + 二审 #1：已 paused 仍过控制面（幂等重发停止信号——首次暂停
+		// 后信号可能未送达）；版本冲突（并发修订）不吞——重读重试一次，仍冲突
+		// 如实返回 failed（不得误报 already_paused——执行器可能仍在跑）。
+		for attempt := 0; attempt < 2; attempt++ {
+			_, err := s.pauser.PauseMission(ctx, id, cur.ContractVersion, "reopen:"+requestID)
+			if err == nil {
+				return AffectedResult{MissionID: id, Result: "already_paused"}
+			}
+			if !isVersionConflict(err) {
+				return AffectedResult{MissionID: id, Result: "failed", Detail: "停止信号补发失败：" + err.Error()}
+			}
+			again, ok2, gerr := s.missions.Get(ctx, id)
+			if gerr != nil || !ok2 {
+				d := "任务已不存在"
+				if gerr != nil {
+					d = gerr.Error()
+				}
+				return AffectedResult{MissionID: id, Result: "failed", Detail: d}
+			}
+			cur = again
+			if cur.Status != mission.StatusPaused {
+				break // 状态变了（如被恢复）——走外层重判
+			}
 		}
-		return AffectedResult{MissionID: id, Result: "already_paused"}
+		if cur.Status == mission.StatusPaused {
+			return AffectedResult{MissionID: id, Result: "failed", Detail: "版本冲突重试耗尽（停止信号可能未送达）"}
+		}
+		// 状态变化后 fallthrough 到下方重判
+		if cur.Status == mission.StatusReady || cur.Status == mission.StatusRunning || cur.Status == mission.StatusWaiting {
+			if _, err := s.pauser.PauseMission(ctx, id, cur.ContractVersion, "reopen:"+requestID); err != nil {
+				return AffectedResult{MissionID: id, Result: "failed", Detail: err.Error()}
+			}
+			return AffectedResult{MissionID: id, Result: "paused"}
+		}
+		return AffectedResult{MissionID: id, Result: "not_pausable", Detail: string(cur.Status)}
 	case mission.StatusReady, mission.StatusRunning, mission.StatusWaiting:
 		reason := "reopen:" + requestID
 		for attempt := 0; attempt < 2; attempt++ {

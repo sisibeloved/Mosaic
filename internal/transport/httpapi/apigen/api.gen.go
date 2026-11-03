@@ -1088,6 +1088,7 @@ const (
 	ReopenAffectedResultResultAlreadyPaused ReopenAffectedResultResult = "already_paused"
 	ReopenAffectedResultResultFailed        ReopenAffectedResultResult = "failed"
 	ReopenAffectedResultResultNotFound      ReopenAffectedResultResult = "not_found"
+	ReopenAffectedResultResultNotPausable   ReopenAffectedResultResult = "not_pausable"
 	ReopenAffectedResultResultPaused        ReopenAffectedResultResult = "paused"
 	ReopenAffectedResultResultTerminal      ReopenAffectedResultResult = "terminal"
 )
@@ -1100,6 +1101,8 @@ func (e ReopenAffectedResultResult) Valid() bool {
 	case ReopenAffectedResultResultFailed:
 		return true
 	case ReopenAffectedResultResultNotFound:
+		return true
+	case ReopenAffectedResultResultNotPausable:
 		return true
 	case ReopenAffectedResultResultPaused:
 		return true
@@ -3700,11 +3703,11 @@ type ReopenAffectedResult struct {
 	Detail    *string `json:"detail,omitempty"`
 	MissionId string  `json:"mission_id"`
 
-	// Result paused 本次暂停 / already_paused 幂等 / terminal 终态无执行可停 / not_found 不存在 / failed 暂停面错误
+	// Result paused 本次暂停 / already_paused 幂等 / terminal 终态（accepted/canceled）无执行可停 / not_pausable 非终态但不可暂停（draft/reviewing/canceling） / not_found 不存在 / failed 暂停面错误
 	Result ReopenAffectedResultResult `json:"result"`
 }
 
-// ReopenAffectedResultResult paused 本次暂停 / already_paused 幂等 / terminal 终态无执行可停 / not_found 不存在 / failed 暂停面错误
+// ReopenAffectedResultResult paused 本次暂停 / already_paused 幂等 / terminal 终态（accepted/canceled）无执行可停 / not_pausable 非终态但不可暂停（draft/reviewing/canceling） / not_found 不存在 / failed 暂停面错误
 type ReopenAffectedResultResult string
 
 // ReopenRequestList defines model for ReopenRequestList.

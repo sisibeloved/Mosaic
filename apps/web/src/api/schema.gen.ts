@@ -3616,10 +3616,10 @@ export interface components {
         ReopenAffectedResult: {
             mission_id: string;
             /**
-             * @description paused 本次暂停 / already_paused 幂等 / terminal 终态无执行可停 / not_found 不存在 / failed 暂停面错误
+             * @description paused 本次暂停 / already_paused 幂等 / terminal 终态（accepted/canceled）无执行可停 / not_pausable 非终态但不可暂停（draft/reviewing/canceling） / not_found 不存在 / failed 暂停面错误
              * @enum {string}
              */
-            result: "paused" | "already_paused" | "terminal" | "not_found" | "failed";
+            result: "paused" | "already_paused" | "terminal" | "not_pausable" | "not_found" | "failed";
             /** @description failed 时的原因 */
             detail?: string;
         };

@@ -444,6 +444,8 @@ func (s *Service) ReopenRequest(ctx context.Context, missionID string, expectedV
 	if !ok2 {
 		return Mission{}, fmt.Errorf("%w: 期望 v%d，当前 v%d", ErrVersionConflict, expectedVersion, cur.ContractVersion)
 	}
+	// 二审 #2：事务已提交——后续读取（如 MissionByID 断线）失败不丢事实：
+	// 返回零值 Mission（调用方 reopen 不依赖此值，只看 err==nil 即继续暂停）。
 	return out, nil
 }
 

@@ -3301,6 +3301,8 @@ func (s *server) SubmitReopenRequest(w http.ResponseWriter, r *http.Request, mis
 	if !s.guardWrite(w, r, true) {
 		return
 	}
+	// 二审 #5：请求大小限制 + 严格解码（拼错字段 400 而非静默跳过）
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
 	var body struct {
 		ExpectedVersion    int      `json:"expected_version"`
 		DecisionRef        string   `json:"decision_ref"`
@@ -3308,8 +3310,10 @@ func (s *server) SubmitReopenRequest(w http.ResponseWriter, r *http.Request, mis
 		AffectedMissionIds []string `json:"affected_mission_ids"`
 		Reason             *string  `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_reopen", "请求体解析："+err.Error())
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_reopen", "请求体解析（未知字段或超限）："+err.Error())
 		return
 	}
 	out, err := s.deps.Reopen.Submit(r.Context(), missionID, reopen.SubmitRequest{

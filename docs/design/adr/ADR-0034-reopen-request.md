@@ -114,6 +114,12 @@ contract_version / occurred_at）。逐项暂停结果不在此视图（见 §2�
 
 ## 修订记录
 
+- v0.3（2026-11-03）：二审修复（5 项 P2）——#1 already_paused 版本冲突不吞：
+  重读重试一次，仍冲突如实返回 failed（不得误报已暂停——执行器可能仍在跑）；
+  #2 事务提交后读取失败不丢暂停：Service 层 ReopenRequest 在 store 成功后
+  零值 Mission 继续返回（暂停不依赖读取回值）；#3 `not_pausable` 补 OpenAPI
+  枚举并再生成 Go/TS；#4 SPA 历史首次失败：错误状态可见 + 原地重试按钮；
+  #5 请求校验：MaxBytesReader（1 MiB）+ DisallowUnknownFields（拼错字段 400）。
 - v0.2（2026-11-03）：审校修复（"1 项 P1、5 项 P2、1 项 P3"）——P1 写门：
   SubmitReopenRequest 补 guardWrite（Origin / Content-Type 含 boundary /
   X-Owner-Token 三件套 + 请求大小限制——重开可暂停任意任务，不可绕过生产写门）；
