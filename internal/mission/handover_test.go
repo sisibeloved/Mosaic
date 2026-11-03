@@ -25,7 +25,7 @@ func TestHandoverOfferAcceptCycle(t *testing.T) {
 	m := readyWithReviewer(t, svc, "") // owner ag_a, ready v1
 
 	out, err := svc.HandoverOffer(ctx, m.MissionID, 1, "ag_b", "在途 Run 无；验收标准见契约 v1")
-	if err != nil || out.PendingOwnerAgentID != "ag_b" || out.OwnerAgentID != "ag_a" {
+	if err != nil || out.PendingOwnerAgentID != "ag_b" || out.OwnerAgentID != "ag_a" || out.PendingOfferID == "" {
 		t.Fatalf("发起: %+v %v", out, err)
 	}
 	if out.ContractVersion != 1 {
@@ -36,11 +36,12 @@ func TestHandoverOfferAcceptCycle(t *testing.T) {
 	if last.EventType != EventHandoverOffered ||
 		!strings.Contains(string(last.Payload), `"from_owner":"ag_a"`) ||
 		!strings.Contains(string(last.Payload), `"to_owner":"ag_b"`) ||
-		!strings.Contains(string(last.Payload), `"contract_version":1`) {
+		!strings.Contains(string(last.Payload), `"contract_version":1`) ||
+		!strings.Contains(string(last.Payload), `"offer_id":"`) {
 		t.Fatalf("发起事件失真: %s %s", last.EventType, last.Payload)
 	}
 
-	acc, err := svc.HandoverAccept(ctx, m.MissionID, 1, "已接手")
+	acc, err := svc.HandoverAccept(ctx, m.MissionID, 1, out.PendingOfferID, "已接手")
 	if err != nil || acc.OwnerAgentID != "ag_b" || acc.PendingOwnerAgentID != "" {
 		t.Fatalf("承接: %+v %v", acc, err)
 	}
@@ -71,7 +72,8 @@ func TestHandoverOfferAcceptCycle(t *testing.T) {
 		t.Fatalf("历史: %v %v %d", hf, err, len(hf))
 	}
 	if hf[0].Kind != "offered" || hf[1].Kind != "accepted" ||
-		hf[1].FromOwnerAgentID != "ag_a" || hf[1].ToOwnerAgentID != "ag_b" {
+		hf[1].FromOwnerAgentID != "ag_a" || hf[1].ToOwnerAgentID != "ag_b" ||
+		hf[0].OfferID == "" || hf[1].OfferID != hf[0].OfferID {
 		t.Fatalf("历史失真: %+v", hf)
 	}
 }
@@ -182,7 +184,7 @@ func TestHandoverFreezeWindow(t *testing.T) {
 	if _, err := svc.HandoverOffer(ctx, m.MissionID, 1, "ag_b", ""); err != nil {
 		t.Fatalf("发起: %v", err)
 	}
-	if _, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", fullContent()); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", "ag_a", fullContent()); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("冻结窗内修订须拒绝: %v", err)
 	}
 	if _, err := svc.RequestReview(ctx, m.MissionID, 1, "dlv_1"); !errors.Is(err, ErrInvalidTransition) {
@@ -211,13 +213,14 @@ func TestHandoverAcceptCompleteness(t *testing.T) {
 	if draft.Status != StatusDraft {
 		t.Fatalf("前置: %s", draft.Status)
 	}
-	if _, err := svc.HandoverOffer(ctx, draft.MissionID, 1, "ag_b", ""); err != nil {
+	of1, err := svc.HandoverOffer(ctx, draft.MissionID, 1, "ag_b", "")
+	if err != nil {
 		t.Fatalf("发起: %v", err)
 	}
 	if got, _, _ := svc.Get(ctx, draft.MissionID); got.Status != StatusDraft || got.OwnerAgentID != "" {
 		t.Fatalf("发起不改归属与状态: %+v", got)
 	}
-	acc, err := svc.HandoverAccept(ctx, draft.MissionID, 1, "")
+	acc, err := svc.HandoverAccept(ctx, draft.MissionID, 1, of1.PendingOfferID, "")
 	if err != nil || acc.Status != StatusReady || acc.OwnerAgentID != "ag_b" {
 		t.Fatalf("承接完备性重判: %+v %v", acc, err)
 	}
@@ -247,8 +250,8 @@ func TestHandoverAcceptCompleteness(t *testing.T) {
 	c := fullContent()
 	c.AcceptanceCriteria = nil
 	d2, _ := svc.Create(ctx, "", c, nil)
-	svc.HandoverOffer(ctx, d2.MissionID, 1, "ag_b", "")
-	acc2, err := svc.HandoverAccept(ctx, d2.MissionID, 1, "")
+	of2, _ := svc.HandoverOffer(ctx, d2.MissionID, 1, "ag_b", "")
+	acc2, err := svc.HandoverAccept(ctx, d2.MissionID, 1, of2.PendingOfferID, "")
 	if err != nil || acc2.Status != StatusDraft || acc2.OwnerAgentID != "ag_b" {
 		t.Fatalf("不完备保持 draft + 归属仍翻转: %+v %v", acc2, err)
 	}
@@ -277,8 +280,8 @@ func TestHandoverAcceptExecutionProjection(t *testing.T) {
 	} {
 		m, _ := svc.Create(ctx, "ag_a", fullContent(), nil)
 		want := pre(m.MissionID)
-		svc.HandoverOffer(ctx, m.MissionID, 1, "ag_b", "")
-		acc, err := svc.HandoverAccept(ctx, m.MissionID, 1, "")
+		of, _ := svc.HandoverOffer(ctx, m.MissionID, 1, "ag_b", "")
+		acc, err := svc.HandoverAccept(ctx, m.MissionID, 1, of.PendingOfferID, "")
 		if err != nil || acc.Status != want || acc.OwnerAgentID != "ag_b" {
 			t.Fatalf("%s 投影保持: %+v %v（want %s）", name, acc, err, want)
 		}
@@ -297,15 +300,15 @@ func TestHandoverDeclineRevoke(t *testing.T) {
 	ctx := context.Background()
 	m := readyWithReviewer(t, svc, "")
 
-	if _, err := svc.HandoverDecline(ctx, m.MissionID, 1, "没理由"); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := svc.HandoverDecline(ctx, m.MissionID, 1, "hdo_x", "没理由"); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("无在途婉拒须拒绝: %v", err)
 	}
-	if _, err := svc.HandoverRevoke(ctx, m.MissionID, 1, "没理由"); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := svc.HandoverRevoke(ctx, m.MissionID, 1, "hdo_x", "没理由"); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("无在途撤回须拒绝: %v", err)
 	}
 
-	svc.HandoverOffer(ctx, m.MissionID, 1, "ag_b", "")
-	d, err := svc.HandoverDecline(ctx, m.MissionID, 1, "暂不接手")
+	ofa, _ := svc.HandoverOffer(ctx, m.MissionID, 1, "ag_b", "")
+	d, err := svc.HandoverDecline(ctx, m.MissionID, 1, ofa.PendingOfferID, "暂不接手")
 	if err != nil || d.PendingOwnerAgentID != "" || d.OwnerAgentID != "ag_a" {
 		t.Fatalf("婉拒: %+v %v", d, err)
 	}
@@ -315,10 +318,11 @@ func TestHandoverDeclineRevoke(t *testing.T) {
 		t.Fatalf("婉拒事件失真: %s", evs[len(evs)-1].Payload)
 	}
 
-	if _, err := svc.HandoverOffer(ctx, m.MissionID, 1, "ag_c", strings.Repeat("字", 1)); err != nil {
+	ofb, err := svc.HandoverOffer(ctx, m.MissionID, 1, "ag_c", strings.Repeat("字", 1))
+	if err != nil {
 		t.Fatalf("婉拒后可再发起: %v", err)
 	}
-	r, err := svc.HandoverRevoke(ctx, m.MissionID, 1, "改派")
+	r, err := svc.HandoverRevoke(ctx, m.MissionID, 1, ofb.PendingOfferID, "改派")
 	if err != nil || r.PendingOwnerAgentID != "" || r.OwnerAgentID != "ag_a" {
 		t.Fatalf("撤回: %+v %v", r, err)
 	}
@@ -326,10 +330,10 @@ func TestHandoverDeclineRevoke(t *testing.T) {
 	if evs[len(evs)-1].EventType != EventHandoverRevoked {
 		t.Fatalf("撤回事件失真: %s", evs[len(evs)-1].EventType)
 	}
-	if _, err := svc.HandoverDecline(ctx, m.MissionID, 1, strings.Repeat("字", 281)); !errors.Is(err, ErrInvalidMission) {
+	if _, err := svc.HandoverDecline(ctx, m.MissionID, 1, "hdo_x", strings.Repeat("字", 281)); !errors.Is(err, ErrInvalidMission) {
 		t.Fatalf("reason 超限: %v", err)
 	}
-	if _, err := svc.HandoverAccept(ctx, m.MissionID, 1, strings.Repeat("字", 281)); !errors.Is(err, ErrInvalidMission) {
+	if _, err := svc.HandoverAccept(ctx, m.MissionID, 1, "hdo_x", strings.Repeat("字", 281)); !errors.Is(err, ErrInvalidMission) {
 		t.Fatalf("note 超限: %v", err)
 	}
 }
@@ -344,20 +348,25 @@ func TestHandoverAcceptGuards(t *testing.T) {
 	})
 	ctx := context.Background()
 	m := readyWithReviewer(t, svc, "")
-	svc.HandoverOffer(ctx, m.MissionID, 1, "ag_b", "")
+	ofg, err := svc.HandoverOffer(ctx, m.MissionID, 1, "ag_b", "")
+	if err != nil {
+		t.Fatalf("发起: %v", err)
+	}
 
-	if _, err := svc.HandoverAccept(ctx, m.MissionID, 9, ""); !errors.Is(err, ErrVersionConflict) {
+	if _, err := svc.HandoverAccept(ctx, m.MissionID, 9, ofg.PendingOfferID, ""); !errors.Is(err, ErrVersionConflict) {
 		t.Fatalf("CAS 冲突: %v", err)
 	}
-	// offer 后 B 转 suspended：accept 复核拒绝
+	// offer 后 B 转 suspended：accept 复核拒绝（真实锚——确因身份而非锚拒）
 	statuses["ag_b"] = "suspended"
-	if _, err := svc.HandoverAccept(ctx, m.MissionID, 1, ""); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := svc.HandoverAccept(ctx, m.MissionID, 1, ofg.PendingOfferID, ""); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("承接人非 active 须拒绝: %v", err)
 	}
 	// 撤回后旧 accept 拒（无在途）
 	statuses["ag_b"] = "active"
-	svc.HandoverRevoke(ctx, m.MissionID, 1, "改派")
-	if _, err := svc.HandoverAccept(ctx, m.MissionID, 1, ""); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := svc.HandoverRevoke(ctx, m.MissionID, 1, ofg.PendingOfferID, "改派"); err != nil {
+		t.Fatalf("撤回: %v", err)
+	}
+	if _, err := svc.HandoverAccept(ctx, m.MissionID, 1, ofg.PendingOfferID, ""); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("撤回后旧 accept 须拒绝: %v", err)
 	}
 }
@@ -372,5 +381,104 @@ func TestHandoverAgentStatusPortMissing(t *testing.T) {
 	}
 	if _, err := svc.HandoverOffer(ctx, m.MissionID, 1, "ag_b", ""); !errors.Is(err, ErrAgentStatusUnavailable) {
 		t.Fatalf("未装配状态端口须拒绝发起: %v", err)
+	}
+}
+
+// TestHandoverOfferAnchor 审校 #1：承接/婉拒/撤回绑定所见发起——撤回改派后
+// （contract_version 不递增）旧请求一律拒绝；空 offer_id 拒绝。
+func TestHandoverOfferAnchor(t *testing.T) {
+	svc, _ := newSvc(t, handoverAgents())
+	ctx := context.Background()
+	m := readyWithReviewer(t, svc, "")
+	out, err := svc.HandoverOffer(ctx, m.MissionID, 1, "ag_b", "")
+	if err != nil || out.PendingOfferID == "" {
+		t.Fatalf("发起: %+v %v", out, err)
+	}
+	first := out.PendingOfferID
+
+	if _, err := svc.HandoverAccept(ctx, m.MissionID, 1, "", ""); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("空 offer_id 须拒: %v", err)
+	}
+	if _, err := svc.HandoverAccept(ctx, m.MissionID, 1, "hdo_bogus", ""); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("陌生 offer_id 须拒: %v", err)
+	}
+	// 撤回（正确锚）→ 改派 ag_c → 旧 offer 的承接/婉拒均拒
+	if _, err := svc.HandoverRevoke(ctx, m.MissionID, 1, first, "改派"); err != nil {
+		t.Fatalf("撤回: %v", err)
+	}
+	out2, err := svc.HandoverOffer(ctx, m.MissionID, 1, "ag_c", "")
+	if err != nil {
+		t.Fatalf("改派: %v", err)
+	}
+	if out2.PendingOfferID == first {
+		t.Fatal("新发起不得复用旧 offer_id")
+	}
+	if _, err := svc.HandoverAccept(ctx, m.MissionID, 1, first, ""); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("旧承接须拒（不得处理新交接）: %v", err)
+	}
+	if _, err := svc.HandoverDecline(ctx, m.MissionID, 1, first, ""); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("旧婉拒须拒: %v", err)
+	}
+	if _, err := svc.HandoverRevoke(ctx, m.MissionID, 1, first, ""); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("旧撤回须拒: %v", err)
+	}
+	// 正确锚照常
+	if _, err := svc.HandoverAccept(ctx, m.MissionID, 1, out2.PendingOfferID, ""); err != nil {
+		t.Fatalf("新锚承接: %v", err)
+	}
+	if got, _, _ := svc.Get(ctx, m.MissionID); got.OwnerAgentID != "ag_c" {
+		t.Fatalf("承接翻转: %+v", got)
+	}
+}
+
+// TestReviseOwnerAnchor 审校 #2：承接翻转 owner 后（版本不递增），携旧 owner 的
+// 修订被 ErrOwnerMismatch 拒——不得无感知撤销责任转移；携新 owner 照常。
+func TestReviseOwnerAnchor(t *testing.T) {
+	svc, _ := newSvc(t, handoverAgents())
+	ctx := context.Background()
+	m := readyWithReviewer(t, svc, "") // owner ag_a
+	out, _ := svc.HandoverOffer(ctx, m.MissionID, 1, "ag_b", "")
+	if _, err := svc.HandoverAccept(ctx, m.MissionID, 1, out.PendingOfferID, ""); err != nil {
+		t.Fatalf("承接: %v", err)
+	}
+	got, _, _ := svc.Get(ctx, m.MissionID)
+	if got.OwnerAgentID != "ag_b" || got.ContractVersion != 1 {
+		t.Fatalf("承接后: %+v", got)
+	}
+	if _, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", "ag_a", fullContent()); !errors.Is(err, ErrOwnerMismatch) {
+		t.Fatalf("旧 owner 修订须拒: %v", err)
+	}
+	if _, err := svc.Revise(ctx, m.MissionID, 1, "", "ag_b", fullContent()); !errors.Is(err, ErrOwnerMismatch) {
+		t.Fatalf("预期 unassigned 修订须拒: %v", err)
+	}
+	up, err := svc.Revise(ctx, m.MissionID, 1, "ag_b", "ag_b", fullContent())
+	if err != nil || up.OwnerAgentID != "ag_b" || up.ContractVersion != 2 {
+		t.Fatalf("新 owner 修订照常: %+v %v", up, err)
+	}
+}
+
+// TestHandoverAcceptReceiptStatus 审校 #4：回执记**承接时实际状态**（MemStore
+// 临界区内注入）——offer 后并发暂停（模拟服务层陈旧读），承接回执须记 paused。
+func TestHandoverAcceptReceiptStatus(t *testing.T) {
+	svc, mem := newSvc(t, handoverAgents())
+	ctx := context.Background()
+	m := readyWithReviewer(t, svc, "")
+	out, _ := svc.HandoverOffer(ctx, m.MissionID, 1, "ag_b", "")
+	// 服务层读后并发暂停（模拟：直接改 mem 状态——服务层下次读见 paused）
+	if _, ok, _ := mem.PauseMission(ctx, m.MissionID, 1, "排空", "t"); !ok {
+		t.Fatal("并发暂停前置失败")
+	}
+	if _, err := svc.HandoverAccept(ctx, m.MissionID, 1, out.PendingOfferID, ""); err != nil {
+		t.Fatalf("paused 承接: %v", err)
+	}
+	evs, _, _ := svc.MissionEvents(ctx, m.MissionID)
+	var receipt string
+	for _, e := range evs {
+		if e.EventType == EventHandoverAccepted {
+			receipt = string(e.Payload)
+		}
+	}
+	if !strings.Contains(receipt, `"status_at_accept":"paused"`) {
+		t.Fatalf("回执须记实际 paused: %s", receipt)
 	}
 }

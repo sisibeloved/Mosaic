@@ -53,7 +53,7 @@ func TestRequestReviewCycle(t *testing.T) {
 	if changed, _ := svc.MarkRunning(ctx, m.MissionID); changed {
 		t.Fatal("reviewing 不可被调度")
 	}
-	if _, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", fullContent()); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", "ag_a", fullContent()); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("验收期间修订须拒绝（基线冻结）: %v", err)
 	}
 	if _, err := svc.Pause(ctx, m.MissionID, 1, ""); !errors.Is(err, ErrInvalidTransition) {
@@ -113,7 +113,7 @@ func TestRecordReviewAcceptedTerminal(t *testing.T) {
 		t.Fatalf("裁定事件须携 decision/包锚/逐项依据: %s", last)
 	}
 	// 终态拒绝族
-	if _, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", fullContent()); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", "ag_a", fullContent()); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("accepted 修订: %v", err)
 	}
 	if _, err := svc.MarkCanceling(ctx, m.MissionID, 1, ""); !errors.Is(err, ErrInvalidTransition) {

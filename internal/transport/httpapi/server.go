@@ -1977,7 +1977,7 @@ func (s *server) ReviseMission(w http.ResponseWriter, r *http.Request, missionID
 		writeError(w, http.StatusBadRequest, "invalid_mission", "expected_version 须 ≥1")
 		return
 	}
-	m, err := s.deps.Missions.Revise(r.Context(), missionID, int(req.ExpectedVersion), derefStr(req.OwnerAgentId),
+	m, err := s.deps.Missions.Revise(r.Context(), missionID, int(req.ExpectedVersion), req.ExpectedOwnerAgentId, derefStr(req.OwnerAgentId),
 		missionContentOf(req.Budget, req.Constraints, req.Delegation, req.Objective, req.Scope, req.Reviewer, req.AcceptanceCriteria, req.DeliverableSpecs, req.SourceRefs, req.ReturnTargets))
 	if err != nil {
 		writeMissionError(w, err)
@@ -2318,8 +2318,10 @@ func missionView(m mission.Mission) apigen.MissionView {
 		// 复审 R12：轮次仅 reviewing/accepted 公开（OpenAPI 约定其余状态为 0）；
 		// 库内计数单调递增不受影响
 		ReviewRound: reviewRoundView(m), OwnerAgentId: m.OwnerAgentID,
-		// 0.6.12 / ADR-0035：在途交接承接人（空 = 无在途交接）
+		// 0.6.12 / ADR-0035：在途交接承接人与发起标识（空 = 无在途交接；offer_id
+		// 是承接/婉拒/撤回请求的锚——审校 #1）
 		PendingOwnerAgentId: m.PendingOwnerAgentID,
+		PendingOfferId:      m.PendingOfferID,
 		Requester:           m.Requester, Reviewer: m.Reviewer, RoomSource: roomSource,
 		Objective: m.Objective, Scope: m.Scope,
 		Constraints: constraints, AcceptanceCriteria: acceptance,
@@ -3315,6 +3317,12 @@ func (s *server) SubmitReopenRequest(w http.ResponseWriter, r *http.Request, mis
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
+		// 0.6.12 审校 #7 同款：超限 413（协议约定），形状问题仍 400。
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1 MiB 上限")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid_reopen", "请求体解析（未知字段或超限）："+err.Error())
 		return
 	}
@@ -3402,12 +3410,18 @@ func reopenView(v reopen.RequestView) apigen.ReopenRequestView {
 // MaxBytesReader + DisallowUnknownFields（0.6.11 二审 #5 同例）；错误经
 // writeHandoverError 映射（400 invalid_handover / 404 / 409 / 503）。
 
-// decodeHandoverBody 交接请求体严格解码（1 MiB + 未知字段 400）。
+// decodeHandoverBody 交接请求体严格解码（1 MiB + 未知字段 400）。审校 #7：
+// 超限是 MaxBytesError → 413 body_too_large（协议约定；形状问题仍 400）。
 func decodeHandoverBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1 MiB 上限")
+			return false
+		}
 		writeError(w, http.StatusBadRequest, "invalid_handover", "请求体解析（未知字段或超限）："+err.Error())
 		return false
 	}
@@ -3456,12 +3470,13 @@ func (s *server) AcceptMissionHandover(w http.ResponseWriter, r *http.Request, m
 	}
 	var body struct {
 		ExpectedVersion int     `json:"expected_version"`
+		OfferId         string  `json:"offer_id"`
 		Note            *string `json:"note"`
 	}
 	if !decodeHandoverBody(w, r, &body) {
 		return
 	}
-	m, err := s.deps.Missions.HandoverAccept(r.Context(), missionID, body.ExpectedVersion, derefStr(body.Note))
+	m, err := s.deps.Missions.HandoverAccept(r.Context(), missionID, body.ExpectedVersion, body.OfferId, derefStr(body.Note))
 	if err != nil {
 		writeHandoverError(w, err)
 		return
@@ -3486,18 +3501,19 @@ func (s *server) RevokeMissionHandover(w http.ResponseWriter, r *http.Request, m
 }
 
 func (s *server) resolveHandover(w http.ResponseWriter, r *http.Request, missionID string,
-	fn func(ctx context.Context, missionID string, expectedVersion int, reason string) (mission.Mission, error)) {
+	fn func(ctx context.Context, missionID string, expectedVersion int, offerID, reason string) (mission.Mission, error)) {
 	if !s.guardWrite(w, r, true) {
 		return
 	}
 	var body struct {
 		ExpectedVersion int     `json:"expected_version"`
+		OfferId         string  `json:"offer_id"`
 		Reason          *string `json:"reason"`
 	}
 	if !decodeHandoverBody(w, r, &body) {
 		return
 	}
-	m, err := fn(r.Context(), missionID, body.ExpectedVersion, derefStr(body.Reason))
+	m, err := fn(r.Context(), missionID, body.ExpectedVersion, body.OfferId, derefStr(body.Reason))
 	if err != nil {
 		writeHandoverError(w, err)
 		return
@@ -3522,8 +3538,9 @@ func (s *server) ListMissionHandovers(w http.ResponseWriter, r *http.Request, mi
 	out := make([]apigen.HandoverEventView, 0, len(facts))
 	for _, f := range facts {
 		v := apigen.HandoverEventView{
-			Kind: apigen.HandoverEventViewKind(f.Kind), FromOwnerAgentId: f.FromOwnerAgentID,
-			ToOwnerAgentId: f.ToOwnerAgentID, ContractVersion: f.ContractVersion,
+			Kind: apigen.HandoverEventViewKind(f.Kind), OfferId: f.OfferID,
+			FromOwnerAgentId: f.FromOwnerAgentID,
+			ToOwnerAgentId:   f.ToOwnerAgentID, ContractVersion: f.ContractVersion,
 		}
 		if f.Notes != "" {
 			v.Notes = &f.Notes
@@ -3999,6 +4016,9 @@ func writeMissionError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_mission", err.Error())
 	case errors.Is(err, mission.ErrVersionConflict):
 		writeError(w, http.StatusConflict, "version_conflict", err.Error())
+	case errors.Is(err, mission.ErrOwnerMismatch):
+		// 0.6.12 审校 #2：归属锚不符——承接翻转 owner 后携旧 owner 的修订被拒
+		writeError(w, http.StatusConflict, "owner_mismatch", err.Error())
 	case errors.Is(err, mission.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, "invalid_transition", err.Error())
 	case errors.Is(err, mission.ErrSourceAlreadyMapped):

@@ -55,7 +55,7 @@ func (m *MemStore) MissionIDBySource(_ context.Context, roomID, taskID string) (
 	return id, ok, nil
 }
 
-func (m *MemStore) ReviseMission(_ context.Context, missionID string, expectedVersion int, next Mission) (Mission, bool, error) {
+func (m *MemStore) ReviseMission(_ context.Context, missionID string, expectedVersion int, expectedOwner string, next Mission) (Mission, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	idx, ok := m.indexOfLocked(missionID)
@@ -63,8 +63,9 @@ func (m *MemStore) ReviseMission(_ context.Context, missionID string, expectedVe
 		return Mission{}, false, ErrMissionNotFound
 	}
 	cur := m.missions[idx]
-	// 0.6.9：accepted 同终态拒修订；reviewing 基线冻结。0.6.12：在途交接冻结窗。
-	if cur.ContractVersion != expectedVersion || cur.Status == StatusCanceled ||
+	// 0.6.9：accepted 同终态拒修订；reviewing 基线冻结。0.6.12：在途交接冻结窗
+	// + 归属锚（审校 #2——承接翻转 owner 不递增版本，旧 owner 修订拒）。
+	if cur.ContractVersion != expectedVersion || cur.OwnerAgentID != expectedOwner || cur.Status == StatusCanceled ||
 		cur.Status == StatusAccepted || cur.Status == StatusReviewing || cur.PendingOwnerAgentID != "" {
 		return Mission{}, false, nil
 	}
@@ -361,8 +362,8 @@ func (m *MemStore) MarkWaiting(_ context.Context, missionID, from, reason string
 }
 
 // HandoverOffer 发起交接（0.6.12 / ADR-0035）：版本 + 状态族 + 无在途 → pending
-// 置位 + 事件；owner 与版本不变。
-func (m *MemStore) HandoverOffer(_ context.Context, missionID string, expectedVersion int, newOwner string, event Event) (Mission, bool, error) {
+// 置位（承接人 + 发起标识）+ 事件；owner 与版本不变。
+func (m *MemStore) HandoverOffer(_ context.Context, missionID string, expectedVersion int, newOwner, offerID string, event Event) (Mission, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	i, ok := m.indexOfLocked(missionID)
@@ -374,6 +375,7 @@ func (m *MemStore) HandoverOffer(_ context.Context, missionID string, expectedVe
 		return Mission{}, false, nil
 	}
 	cur.PendingOwnerAgentID = newOwner
+	cur.PendingOfferID = offerID
 	cur.UpdatedAt = event.OccurredAt
 	m.missions[i] = cur
 	m.seq++
@@ -382,10 +384,10 @@ func (m *MemStore) HandoverOffer(_ context.Context, missionID string, expectedVe
 	return cur, true, nil
 }
 
-// HandoverAccept 承接（承接回执）：版本 + pending 锚 + 状态族 → owner 翻转、
-// pending 清空、draft 按 targetStatus 投影（其余保持——临界区内以现行为准）+
-// 事件（+ 状态变化时 status_changed reason=handover）。
-func (m *MemStore) HandoverAccept(_ context.Context, missionID string, expectedVersion int, expectPending, targetStatus string, event Event) (Mission, bool, error) {
+// HandoverAccept 承接（承接回执）：版本 + 发起标识锚（审校 #1）+ 状态族 → owner
+// 翻转、pending 清空、draft 按 targetStatus 投影（其余保持——临界区内以现行为准）
+// + 事件（status_at_accept 注入**临界区后实际状态**——审校 #4）。
+func (m *MemStore) HandoverAccept(_ context.Context, missionID string, expectedVersion int, expectOffer, targetStatus string, event Event) (Mission, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	i, ok := m.indexOfLocked(missionID)
@@ -393,13 +395,14 @@ func (m *MemStore) HandoverAccept(_ context.Context, missionID string, expectedV
 		return Mission{}, false, ErrMissionNotFound
 	}
 	cur := m.missions[i]
-	if cur.ContractVersion != expectedVersion || cur.PendingOwnerAgentID == "" ||
-		cur.PendingOwnerAgentID != expectPending || !HandoverOfferable(cur.Status) {
+	if cur.ContractVersion != expectedVersion || cur.PendingOfferID == "" ||
+		cur.PendingOfferID != expectOffer || !HandoverOfferable(cur.Status) {
 		return Mission{}, false, nil
 	}
 	prev := cur.Status
 	cur.OwnerAgentID = cur.PendingOwnerAgentID
 	cur.PendingOwnerAgentID = ""
+	cur.PendingOfferID = ""
 	if prev == StatusDraft {
 		cur.Status = targetStatus
 	}
@@ -407,6 +410,7 @@ func (m *MemStore) HandoverAccept(_ context.Context, missionID string, expectedV
 	m.missions[i] = cur
 	m.seq++
 	event.Seq = m.seq
+	event.Payload = InjectHandoverStatus(event.Payload, cur.Status)
 	m.events[missionID] = append(m.events[missionID], event)
 	if prev != cur.Status {
 		m.appendEventLocked(missionID, EventStatusChanged, map[string]string{
@@ -416,8 +420,8 @@ func (m *MemStore) HandoverAccept(_ context.Context, missionID string, expectedV
 	return cur, true, nil
 }
 
-// HandoverWithdraw 婉拒/撤回共用：版本 + pending 锚 → pending 清空 + 事件。
-func (m *MemStore) HandoverWithdraw(_ context.Context, missionID string, expectedVersion int, expectPending string, event Event) (Mission, bool, error) {
+// HandoverWithdraw 婉拒/撤回共用：版本 + 发起标识锚（审校 #1）→ pending 清空 + 事件。
+func (m *MemStore) HandoverWithdraw(_ context.Context, missionID string, expectedVersion int, expectOffer string, event Event) (Mission, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	i, ok := m.indexOfLocked(missionID)
@@ -425,10 +429,11 @@ func (m *MemStore) HandoverWithdraw(_ context.Context, missionID string, expecte
 		return Mission{}, false, ErrMissionNotFound
 	}
 	cur := m.missions[i]
-	if cur.ContractVersion != expectedVersion || cur.PendingOwnerAgentID == "" || cur.PendingOwnerAgentID != expectPending {
+	if cur.ContractVersion != expectedVersion || cur.PendingOfferID == "" || cur.PendingOfferID != expectOffer {
 		return Mission{}, false, nil
 	}
 	cur.PendingOwnerAgentID = ""
+	cur.PendingOfferID = ""
 	cur.UpdatedAt = event.OccurredAt
 	m.missions[i] = cur
 	m.seq++

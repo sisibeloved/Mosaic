@@ -3121,13 +3121,18 @@ type HandoffRequirements struct {
 	Required []string `json:"required"`
 }
 
-// HandoverAccept 承接交接（承接回执随 handover_accepted 事件留痕）。
+// HandoverAccept 承接交接（承接回执随 handover_accepted 事件留痕）。offer_id 锚（0.6.12 审校 #1，
+// **必填**）：绑定调用方所见的具体发起——撤回改派后（contract_version 不递增），针对旧
+// 发起的承接/婉拒/撤回被 409 拒绝（不得处理换了承接人的新交接）。
 type HandoverAccept struct {
 	// ExpectedVersion CAS——与当前 contract_version 不符 409
 	ExpectedVersion int `json:"expected_version"`
 
 	// Note 承接备注（进回执事件）
 	Note *string `json:"note,omitempty"`
+
+	// OfferId 所见在途交接的发起标识（MissionView.pending_offer_id）；不符 409 invalid_transition
+	OfferId string `json:"offer_id"`
 }
 
 // HandoverEventList defines model for HandoverEventList.
@@ -3136,7 +3141,7 @@ type HandoverEventList struct {
 	Events []HandoverEventView `json:"events"`
 }
 
-// HandoverEventView 交接事实（mission_events.handover_* 组装；append-only——kind=accepted 为承接回执）。
+// HandoverEventView 交接事实（mission_events.handover_* 组装；append-only——kind=accepted 为承接回执）。offer_id 为发起标识回链（四类事实同源——撤回改派各自独立成对）。
 type HandoverEventView struct {
 	// ContractVersion 事实时点的契约版本（CAS 后实际值随事件留痕）
 	ContractVersion int `json:"contract_version"`
@@ -3154,6 +3159,9 @@ type HandoverEventView struct {
 	Notes      *string   `json:"notes,omitempty"`
 	OccurredAt time.Time `json:"occurred_at"`
 
+	// OfferId 发起标识（同一发起的 offered→accepted/declined/revoked 同 id；hdo_ 前缀生成）
+	OfferId string `json:"offer_id"`
+
 	// Reason 婉拒/撤回原因（declined/revoked 携带）
 	Reason *string `json:"reason,omitempty"`
 
@@ -3167,10 +3175,13 @@ type HandoverEventView struct {
 // HandoverEventViewKind offered 发起 / accepted 承接回执 / declined 婉拒 / revoked 撤回
 type HandoverEventViewKind string
 
-// HandoverResolve 婉拒/撤回交接（了结在途交接，事件留痕）。
+// HandoverResolve 婉拒/撤回交接（了结在途交接，事件留痕）；offer_id 锚同 HandoverAccept。
 type HandoverResolve struct {
 	// ExpectedVersion CAS——与当前 contract_version 不符 409
 	ExpectedVersion int `json:"expected_version"`
+
+	// OfferId 所见在途交接的发起标识；不符 409 invalid_transition
+	OfferId string `json:"offer_id"`
 
 	// Reason 婉拒/撤回原因（进事件）
 	Reason *string `json:"reason,omitempty"`
@@ -3505,6 +3516,9 @@ type MissionReviewRequest struct {
 }
 
 // MissionRevise 修订请求体（全量替换 + 版本追加；expected_version CAS——AT-13 并发修订冲突明确拒绝）。
+// 0.6.12 审校 #2：+= expected_owner_agent_id（**必填**，空串 = 预期 unassigned）——修订换 owner
+// 须以调用方所见归属为锚；责任承接翻转 owner 后（contract_version 不递增），携旧 owner 的
+// 修订被 409 owner_mismatch 拒绝（旧表单不得无感知撤销已完成的责任转移）。
 type MissionRevise struct {
 	AcceptanceCriteria []string `json:"acceptance_criteria"`
 
@@ -3515,6 +3529,9 @@ type MissionRevise struct {
 	// Delegation 委派策略；缺省语义 = 不允许委派（安全缺省）。
 	Delegation       *DelegationPolicy `json:"delegation,omitempty"`
 	DeliverableSpecs []string          `json:"deliverable_specs"`
+
+	// ExpectedOwnerAgentId 调用方所见的当前负责人（空串 = 预期 unassigned）；事务内核对——不匹配 409 owner_mismatch（0.6.12 审校 #2：防旧修订撤销承接翻转）
+	ExpectedOwnerAgentId string `json:"expected_owner_agent_id"`
 
 	// ExpectedVersion 调用方所见 contract_version；不匹配 409 version_conflict
 	ExpectedVersion int       `json:"expected_version"`
@@ -3639,6 +3656,9 @@ type MissionView struct {
 
 	// OwnerAgentId 负责人（空 = 显式 unassigned，§3.3 不变量）
 	OwnerAgentId string `json:"owner_agent_id"`
+
+	// PendingOfferId 在途交接发起标识（0.6.12 审校 #1：承接/婉拒/撤回请求须绑定此锚——撤回改派后旧请求 409；空 = 无在途交接）
+	PendingOfferId string `json:"pending_offer_id"`
 
 	// PendingOwnerAgentId 在途交接承接人（0.6.12 / ADR-0035：handover 发起置位、承接/婉拒/撤回清空；空 = 无在途交接。在途期间 owner 不变、Revise/RequestReview/MarkCanceling 冻结）
 	PendingOwnerAgentId string `json:"pending_owner_agent_id"`

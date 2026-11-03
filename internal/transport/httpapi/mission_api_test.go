@@ -138,7 +138,7 @@ func TestMissionEndpoints(t *testing.T) {
 	// 2) 修订补齐（owner + 验收）→ ready v2
 	full := strings.Replace(missionFullBody, `"reviewer": "ag_seq_1"`, `"reviewer": ""`, 1)
 	rev := postSlot(t, ts.URL+"/v1/missions/"+draft.MissionID+"/revise",
-		`{"expected_version":1,"owner_agent_id":"`+agDoc.AgentID+`","objective":"完成契约验收","scope":"Mission 契约域","acceptance_criteria":["七端点全绿"],"deliverable_specs":["测试报告"],"source_refs":["room:abc:seq1"]}`)
+		`{"expected_version":1,"expected_owner_agent_id":"","owner_agent_id":"`+agDoc.AgentID+`","objective":"完成契约验收","scope":"Mission 契约域","acceptance_criteria":["七端点全绿"],"deliverable_specs":["测试报告"],"source_refs":["room:abc:seq1"]}`)
 	var up struct {
 		Status          string `json:"status"`
 		ContractVersion int    `json:"contract_version"`
@@ -152,7 +152,7 @@ func TestMissionEndpoints(t *testing.T) {
 
 	// 3) CAS 冲突：旧版本号 → 409 version_conflict
 	bad := postSlot(t, ts.URL+"/v1/missions/"+draft.MissionID+"/revise",
-		`{"expected_version":1,"objective":"x","scope":"y","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"]}`)
+		`{"expected_version":1,"expected_owner_agent_id":"`+agDoc.AgentID+`","objective":"x","scope":"y","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"]}`)
 	if bad.StatusCode != http.StatusConflict || errCodeOf(t, bad) != "version_conflict" {
 		t.Fatalf("CAS 冲突: %d %s", bad.StatusCode, errCodeOf(t, bad))
 	}
@@ -314,7 +314,7 @@ func TestMissionRequiredFieldsAndBudget(t *testing.T) {
 
 	// 4) 合法显式预算修订 → 200 且预算按请求落（不被缺省覆盖）
 	r4 := postSlot(t, ts.URL+"/v1/missions/"+base.MissionID+"/revise",
-		`{"expected_version":1,"objective":"o2","scope":"s","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"],"constraints":["c"],"return_targets":["room:x"],"reviewer":"rv","budget":{"concurrency":1,"max_runs":3,"max_wall_clock_seconds":1200,"max_retries":0,"max_delegation_depth":0}}`)
+		`{"expected_version":1,"expected_owner_agent_id":"`+agDoc.AgentID+`","objective":"o2","scope":"s","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"],"constraints":["c"],"return_targets":["room:x"],"reviewer":"rv","budget":{"concurrency":1,"max_runs":3,"max_wall_clock_seconds":1200,"max_retries":0,"max_delegation_depth":0}}`)
 	if r4.StatusCode != http.StatusOK {
 		t.Fatalf("合法修订: %d", r4.StatusCode)
 	}
@@ -349,7 +349,7 @@ func TestMissionConcurrentReviseAPI(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			r := postSlot(t, ts.URL+"/v1/missions/"+m.MissionID+"/revise",
-				`{"expected_version":1,"objective":"并发修订 `+itoa(int64(i))+`","scope":"s","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"]}`)
+				`{"expected_version":1,"expected_owner_agent_id":"","objective":"并发修订 `+itoa(int64(i))+`","scope":"s","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"]}`)
 			if r.StatusCode == http.StatusOK {
 				wins.Add(1)
 			} else if r.StatusCode == http.StatusConflict {

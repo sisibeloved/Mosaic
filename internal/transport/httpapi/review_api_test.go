@@ -117,7 +117,7 @@ func TestReviewEndpointsFlow(t *testing.T) {
 	if r.StatusCode != http.StatusConflict || errCodeOf(t, r) != "mission_reviewing" {
 		t.Fatalf("验收期间提交: %d", r.StatusCode)
 	}
-	r = postSlot(t, ts.URL+"/v1/missions/"+mi+"/revise", `{"expected_version":1,"objective":"o2","scope":"s","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"],"owner_agent_id":"ag_r1"}`)
+	r = postSlot(t, ts.URL+"/v1/missions/"+mi+"/revise", `{"expected_version":1,"expected_owner_agent_id":"ag_r1","objective":"o2","scope":"s","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"],"owner_agent_id":"ag_r1"}`)
 	if r.StatusCode != http.StatusConflict || errCodeOf(t, r) != "invalid_transition" {
 		t.Fatalf("验收期间修订: %d", r.StatusCode)
 	}
@@ -157,7 +157,7 @@ func TestReviewEndpointsFlow(t *testing.T) {
 
 	// 5) accepted 终态拒绝族
 	for name, tc := range map[string]struct{ path, body, code string }{
-		"修订":  {"/revise", `{"expected_version":1,"objective":"o","scope":"s","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"],"owner_agent_id":"ag_r1"}`, "invalid_transition"},
+		"修订":  {"/revise", `{"expected_version":1,"expected_owner_agent_id":"ag_r1","objective":"o","scope":"s","acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"],"owner_agent_id":"ag_r1"}`, "invalid_transition"},
 		"取消":  {"/cancel", `{"expected_version":1}`, "invalid_transition"},
 		"暂停":  {"/pause", `{"expected_version":1}`, "invalid_transition"},
 		"再送验": {"/request-review", `{"expected_version":1,"package_id":"` + full2 + `"}`, "invalid_transition"},

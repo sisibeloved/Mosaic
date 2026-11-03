@@ -60,7 +60,8 @@ func TestMissionCommitmentsOutstanding(t *testing.T) {
 	}
 
 	// 在途交接（pending）仍计入：owner 未翻转
-	if _, err := svc.HandoverOffer(ctx, owned.MissionID, 1, "ag_b", ""); err != nil {
+	of, err := svc.HandoverOffer(ctx, owned.MissionID, 1, "ag_b", "")
+	if err != nil || of.PendingOfferID == "" {
 		t.Fatal(err)
 	}
 	out, _ = c.Outstanding(ctx, "ag_a")
@@ -68,7 +69,7 @@ func TestMissionCommitmentsOutstanding(t *testing.T) {
 		t.Fatalf("在途交接仍计入（回执未落）: %v", out)
 	}
 	// 承接落地 → 承诺转移
-	if _, err := svc.HandoverAccept(ctx, owned.MissionID, 1, ""); err != nil {
+	if _, err := svc.HandoverAccept(ctx, owned.MissionID, 1, of.PendingOfferID, ""); err != nil {
 		t.Fatal(err)
 	}
 	if out, _ = c.Outstanding(ctx, "ag_a"); len(out) != 0 {

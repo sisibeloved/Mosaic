@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/sisibeloved/Mosaic/internal/mission"
+	"github.com/sisibeloved/Mosaic/internal/personalagent"
 )
 
 func handoverEvent(kind string, payload map[string]any, at string) mission.Event {
@@ -24,6 +25,15 @@ func handoverEvent(kind string, payload map[string]any, at string) mission.Event
 func TestHandoverStoreIT(t *testing.T) {
 	store, _ := openTempStore(t)
 	ctx := context.Background()
+	// 审校 #3a：承接事务内核对承接人身份——直查 agents 表，须先有身份行
+	for _, a := range []personalagent.Agent{
+		{AgentID: "ag_b", DisplayName: "乙", Status: "active", Source: "manual", CreatedAt: "2026-11-03T10:00:00Z"},
+		{AgentID: "ag_c", DisplayName: "丙", Status: "active", Source: "manual", CreatedAt: "2026-11-03T10:00:02Z"},
+	} {
+		if _, err := store.EnsureAgent(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	var v29 int
 	store.db.QueryRow(`SELECT COUNT(*) FROM migrations WHERE version = 29`).Scan(&v29)
@@ -40,13 +50,13 @@ func TestHandoverStoreIT(t *testing.T) {
 	}
 
 	// 发起：pending 置位、owner/版本不变、事件
-	out, ok, err := store.HandoverOffer(ctx, m.MissionID, 1, "ag_b",
-		handoverEvent(mission.EventHandoverOffered, map[string]any{"from_owner": "ag_a", "to_owner": "ag_b", "contract_version": 1}, "2026-11-03T12:00:00Z"))
-	if err != nil || !ok || out.PendingOwnerAgentID != "ag_b" || out.OwnerAgentID != "ag_a" || out.ContractVersion != 1 {
+	out, ok, err := store.HandoverOffer(ctx, m.MissionID, 1, "ag_b", "hdo_it_1",
+		handoverEvent(mission.EventHandoverOffered, map[string]any{"from_owner": "ag_a", "to_owner": "ag_b", "offer_id": "hdo_it_1", "contract_version": 1}, "2026-11-03T12:00:00Z"))
+	if err != nil || !ok || out.PendingOwnerAgentID != "ag_b" || out.PendingOfferID != "hdo_it_1" || out.OwnerAgentID != "ag_a" || out.ContractVersion != 1 {
 		t.Fatalf("发起: ok=%v %+v %v", ok, out, err)
 	}
 	// 在途唯一：二发 ok=false
-	if _, ok, _ := store.HandoverOffer(ctx, m.MissionID, 1, "ag_c",
+	if _, ok, _ := store.HandoverOffer(ctx, m.MissionID, 1, "ag_c", "hdo_it_2",
 		handoverEvent(mission.EventHandoverOffered, map[string]any{}, "t")); ok {
 		t.Fatal("在途唯一：二发须 ok=false")
 	}
@@ -55,8 +65,12 @@ func TestHandoverStoreIT(t *testing.T) {
 	next := out
 	next.ContractVersion = 2
 	next.Objective = "改"
-	if _, ok, err := store.ReviseMission(ctx, m.MissionID, 1, next); err != nil || ok {
+	if _, ok, err := store.ReviseMission(ctx, m.MissionID, 1, "ag_a", next); err != nil || ok {
 		t.Fatalf("冻结窗修订须 ok=false: ok=%v %v", ok, err)
+	}
+	// 审校 #2：归属锚——owner 不符的修订 ok=false（承接翻转后旧表单）
+	if _, ok, err := store.ReviseMission(ctx, m.MissionID, 1, "ag_z", next); err != nil || ok {
+		t.Fatalf("归属锚不符修订须 ok=false: ok=%v %v", ok, err)
 	}
 	if _, ok, err := store.RequestReview(ctx, m.MissionID, 1, "dlv_1",
 		handoverEvent(mission.EventStatusChanged, map[string]any{}, "t")); err != nil || ok {
@@ -72,12 +86,12 @@ func TestHandoverStoreIT(t *testing.T) {
 		t.Fatalf("恢复: ok=%v %v", ok, err)
 	}
 
-	// 承接：锚不符 ok=false；锚相符 → owner 翻转、pending 清空、回执事件、版本不变
-	if _, ok, _ := store.HandoverAccept(ctx, m.MissionID, 1, "ag_c", mission.StatusReady,
+	// 承接：发起标识锚不符 ok=false；锚相符 → owner 翻转、pending 清空、回执事件、版本不变
+	if _, ok, _ := store.HandoverAccept(ctx, m.MissionID, 1, "hdo_bogus", mission.StatusReady,
 		handoverEvent(mission.EventHandoverAccepted, map[string]any{}, "t")); ok {
-		t.Fatal("pending 锚不符须 ok=false")
+		t.Fatal("offer 锚不符须 ok=false")
 	}
-	acc, ok, err := store.HandoverAccept(ctx, m.MissionID, 1, "ag_b", mission.StatusReady,
+	acc, ok, err := store.HandoverAccept(ctx, m.MissionID, 1, "hdo_it_1", mission.StatusReady,
 		handoverEvent(mission.EventHandoverAccepted, map[string]any{"from_owner": "ag_a", "to_owner": "ag_b", "status_at_accept": "ready", "contract_version": 1}, "2026-11-03T12:01:00Z"))
 	if err != nil || !ok || acc.OwnerAgentID != "ag_b" || acc.PendingOwnerAgentID != "" || acc.ContractVersion != 1 || acc.Status != mission.StatusReady {
 		t.Fatalf("承接: ok=%v %+v %v", ok, acc, err)
@@ -103,15 +117,121 @@ func TestHandoverStoreIT(t *testing.T) {
 		t.Fatalf("摘要归属: %+v", list)
 	}
 	// 了结：无在途 ok=false
-	if _, ok, _ := store.HandoverWithdraw(ctx, m.MissionID, 1, "ag_b",
+	if _, ok, _ := store.HandoverWithdraw(ctx, m.MissionID, 1, "hdo_it_1",
 		handoverEvent(mission.EventHandoverRevoked, map[string]any{}, "t")); ok {
 		t.Fatal("无在途撤回须 ok=false")
 	}
-	// 承接后修订恢复可用（冻结窗解除）
+	// 承接后修订恢复可用（冻结窗解除；归属锚 = 新 owner）
 	next = acc
 	next.ContractVersion = 2
-	if _, ok, err := store.ReviseMission(ctx, m.MissionID, 1, next); err != nil || !ok {
+	if _, ok, err := store.ReviseMission(ctx, m.MissionID, 1, "ag_b", next); err != nil || !ok {
 		t.Fatalf("承接后修订: ok=%v %v", ok, err)
+	}
+}
+
+// TestHandoverAcceptIdentityGateIT 审校 #3a：承接事务内核对承接人身份——offer
+// 后 SQL 直写置 retired（模拟服务层校验后的竞态窗口），accept 须 ok=false 且零写入。
+func TestHandoverAcceptIdentityGateIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	ctx := context.Background()
+	if _, err := store.EnsureAgent(ctx, personalagent.Agent{AgentID: "ag_gate", DisplayName: "门", Status: "active", Source: "manual", CreatedAt: "2026-11-03T10:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := store.CreateMission(ctx, missionRow(mission.StatusReady, "ag_src"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.HandoverOffer(ctx, m.MissionID, 1, "ag_gate", "hdo_g1",
+		handoverEvent(mission.EventHandoverOffered, map[string]any{"from_owner": "ag_src", "to_owner": "ag_gate", "offer_id": "hdo_g1"}, "t")); err != nil || !ok {
+		t.Fatalf("发起: ok=%v %v", ok, err)
+	}
+	// 竞态窗口：服务层身份校验后、事务前，承接人被退役（SQL 直写模拟——门拦截方向）
+	if _, err := store.db.Exec(`UPDATE agents SET status = 'retired' WHERE agent_id = 'ag_gate'`); err != nil {
+		t.Fatal(err)
+	}
+	if out, ok, err := store.HandoverAccept(ctx, m.MissionID, 1, "hdo_g1", mission.StatusReady,
+		handoverEvent(mission.EventHandoverAccepted, map[string]any{}, "t")); err != nil || ok || out.OwnerAgentID != "" {
+		t.Fatalf("retired 承接须 ok=false 且零翻转: ok=%v %+v %v", ok, out, err)
+	}
+	got, _, _ := store.MissionByID(ctx, m.MissionID)
+	if got.OwnerAgentID != "ag_src" || got.PendingOwnerAgentID != "ag_gate" {
+		t.Fatalf("零写入: %+v", got)
+	}
+}
+
+// TestRetireCommitmentsGateIT 审校 #3b：退役事务内核对未处置承诺——owned 非终态
+// 任务存在时 RetireAgent 零写入（done=false）；承接翻转后放行。
+func TestRetireCommitmentsGateIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	ctx := context.Background()
+	if _, err := store.EnsureAgent(ctx, personalagent.Agent{AgentID: "ag_r1", DisplayName: "退役甲", Status: "active", Source: "manual", CreatedAt: "2026-11-03T10:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnsureAgent(ctx, personalagent.Agent{AgentID: "ag_r2", DisplayName: "接手乙", Status: "active", Source: "manual", CreatedAt: "2026-11-03T10:00:01Z"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := store.CreateMission(ctx, missionRow(mission.StatusReady, "ag_r1"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// owned 非终态任务在——事务门拦（零写入；from 探针先于门读到 active 属实）
+	if _, done, err := store.RetireAgent(ctx, "ag_r1", []string{"active"}, "清退", "t"); err != nil || done {
+		t.Fatalf("门拦: done=%v %v", done, err)
+	}
+	var st string
+	store.db.QueryRow(`SELECT status FROM agents WHERE agent_id = 'ag_r1'`).Scan(&st)
+	if st != "active" {
+		t.Fatalf("门拦须零写入（仍 active）: %s", st)
+	}
+	// 交接落地 → 门放行 → retired
+	if _, ok, err := store.HandoverOffer(ctx, m.MissionID, 1, "ag_r2", "hdo_r1",
+		handoverEvent(mission.EventHandoverOffered, map[string]any{"offer_id": "hdo_r1"}, "t")); err != nil || !ok {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.HandoverAccept(ctx, m.MissionID, 1, "hdo_r1", mission.StatusReady,
+		handoverEvent(mission.EventHandoverAccepted, map[string]any{}, "t")); err != nil || !ok {
+		t.Fatal(err)
+	}
+	if _, done, err := store.RetireAgent(ctx, "ag_r1", []string{"active"}, "清退", "t"); err != nil || !done {
+		t.Fatalf("清单空后退役: done=%v %v", done, err)
+	}
+}
+
+// TestHandoverAcceptReceiptStatusIT 审校 #4：回执注入事务内实际状态——offer（ready）
+// 后并发暂停，accept 事务内 status=paused，回执记 paused（服务层预填 ready 不进事件）。
+func TestHandoverAcceptReceiptStatusIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	ctx := context.Background()
+	if _, err := store.EnsureAgent(ctx, personalagent.Agent{AgentID: "ag_s2", DisplayName: "状态乙", Status: "active", Source: "manual", CreatedAt: "2026-11-03T10:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := store.CreateMission(ctx, missionRow(mission.StatusReady, "ag_src"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.HandoverOffer(ctx, m.MissionID, 1, "ag_s2", "hdo_s1",
+		handoverEvent(mission.EventHandoverOffered, map[string]any{"offer_id": "hdo_s1"}, "t")); err != nil || !ok {
+		t.Fatal(err)
+	}
+	// 并发暂停（服务层陈旧读 = ready；事务内实为 paused）
+	if _, ok, err := store.PauseMission(ctx, m.MissionID, 1, "排空", "t"); err != nil || !ok {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.HandoverAccept(ctx, m.MissionID, 1, "hdo_s1", mission.StatusReady,
+		handoverEvent(mission.EventHandoverAccepted, map[string]any{"status_at_accept": "ready"}, "t")); err != nil || !ok {
+		t.Fatal(err)
+	}
+	got, _, _ := store.MissionByID(ctx, m.MissionID)
+	if got.Status != mission.StatusPaused || got.OwnerAgentID != "ag_s2" {
+		t.Fatalf("承接保持 paused + 翻转: %+v", got)
+	}
+	evs, _, _ := store.MissionEvents(ctx, m.MissionID)
+	for _, e := range evs {
+		if e.EventType == mission.EventHandoverAccepted {
+			if !strings.Contains(string(e.Payload), `"status_at_accept":"paused"`) {
+				t.Fatalf("回执须注入实际 paused: %s", e.Payload)
+			}
+		}
 	}
 }
 
@@ -120,16 +240,19 @@ func TestHandoverStoreIT(t *testing.T) {
 func TestHandoverAcceptCompletenessIT(t *testing.T) {
 	store, _ := openTempStore(t)
 	ctx := context.Background()
+	if _, err := store.EnsureAgent(ctx, personalagent.Agent{AgentID: "ag_b", DisplayName: "乙", Status: "active", Source: "manual", CreatedAt: "2026-11-03T10:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
 	row := missionRow(mission.StatusDraft, "")
 	row.MissionID = "mi_it_draft"
 	if _, err := store.CreateMission(ctx, row, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := store.HandoverOffer(ctx, row.MissionID, 1, "ag_b",
-		handoverEvent(mission.EventHandoverOffered, map[string]any{"from_owner": "", "to_owner": "ag_b"}, "t")); err != nil || !ok {
+	if _, ok, err := store.HandoverOffer(ctx, row.MissionID, 1, "ag_b", "hdo_it_d1",
+		handoverEvent(mission.EventHandoverOffered, map[string]any{"from_owner": "", "to_owner": "ag_b", "offer_id": "hdo_it_d1"}, "t")); err != nil || !ok {
 		t.Fatalf("draft 发起: ok=%v %v", ok, err)
 	}
-	acc, ok, err := store.HandoverAccept(ctx, row.MissionID, 1, "ag_b", mission.StatusReady,
+	acc, ok, err := store.HandoverAccept(ctx, row.MissionID, 1, "hdo_it_d1", mission.StatusReady,
 		handoverEvent(mission.EventHandoverAccepted, map[string]any{"from_owner": "", "to_owner": "ag_b", "status_at_accept": "ready"}, "t"))
 	if err != nil || !ok || acc.Status != mission.StatusReady || acc.OwnerAgentID != "ag_b" {
 		t.Fatalf("承接完备性重判: ok=%v %+v %v", ok, acc, err)
@@ -179,8 +302,8 @@ func TestHandoverUpgradeIT(t *testing.T) {
 	if err != nil || !ok || m.PendingOwnerAgentID != "" || m.OwnerAgentID != "ag_a" {
 		t.Fatalf("升级后读取: ok=%v %+v %v", ok, m, err)
 	}
-	if out, ok, err := store2.HandoverOffer(ctx, "mi_it_1", 1, "ag_b",
-		handoverEvent(mission.EventHandoverOffered, map[string]any{"from_owner": "ag_a", "to_owner": "ag_b"}, "t")); err != nil || !ok || out.PendingOwnerAgentID != "ag_b" {
+	if out, ok, err := store2.HandoverOffer(ctx, "mi_it_1", 1, "ag_b", "hdo_up_1",
+		handoverEvent(mission.EventHandoverOffered, map[string]any{"from_owner": "ag_a", "to_owner": "ag_b", "offer_id": "hdo_up_1"}, "t")); err != nil || !ok || out.PendingOwnerAgentID != "ag_b" || out.PendingOfferID != "hdo_up_1" {
 		t.Fatalf("升级后发起: ok=%v %+v %v", ok, out, err)
 	}
 	// 再开一次：幂等（重复加列容忍、登记不重复）

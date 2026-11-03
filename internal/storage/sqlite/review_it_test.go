@@ -70,7 +70,7 @@ func TestMissionReviewStoreIT(t *testing.T) {
 	next := m
 	next.ContractVersion = 2
 	next.UpdatedAt = "t2b"
-	if _, ok, _ := store.ReviseMission(ctx, m.MissionID, 1, next); ok {
+	if _, ok, _ := store.ReviseMission(ctx, m.MissionID, 1, "ag_it", next); ok {
 		t.Fatal("reviewing 修订应 ok=false（基线冻结）")
 	}
 	// PauseMission 不含 reviewing
@@ -104,7 +104,7 @@ func TestMissionReviewStoreIT(t *testing.T) {
 	if _, ok, _ := store.MarkCanceling(ctx, m.MissionID, 1, "", "t6"); ok {
 		t.Fatal("accepted 不可取消")
 	}
-	if _, ok, _ := store.ReviseMission(ctx, m.MissionID, 1, next); ok {
+	if _, ok, _ := store.ReviseMission(ctx, m.MissionID, 1, "ag_it", next); ok {
 		t.Fatal("accepted 不可修订")
 	}
 	if _, ok, _ := store.PauseMission(ctx, m.MissionID, 1, "", "t6"); ok {

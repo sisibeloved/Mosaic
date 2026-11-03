@@ -40,7 +40,7 @@ func TestReviseStaleReadPreservesControlStatus(t *testing.T) {
 		next := m
 		next.ContractVersion = 2
 		next.Status = StatusReady // 陈旧投影——不得覆盖现行控制状态
-		out, ok, err := mem.ReviseMission(ctx, m.MissionID, 1, next)
+		out, ok, err := mem.ReviseMission(ctx, m.MissionID, 1, "ag_a", next)
 		if err != nil || !ok {
 			t.Fatalf("%s 修订应落库: ok=%v err=%v", st, ok, err)
 		}
@@ -65,7 +65,7 @@ func TestResumeRejudgesCompleteness(t *testing.T) {
 	}
 	dropped := fullContent()
 	dropped.AcceptanceCriteria = nil // 修订删除验收条件 → 不完备
-	if _, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", dropped); err != nil {
+	if _, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", "ag_a", dropped); err != nil {
 		t.Fatalf("修订: %v", err)
 	}
 	if got, _, _ := svc.Get(ctx, m.MissionID); got.Status != StatusPaused {
@@ -87,7 +87,7 @@ func TestResumeRejudgesCompleteness(t *testing.T) {
 	// 补齐验收（draft 修订回完备）：draft 无暂停面，修订本身即回 ready
 	// （完备性重判双向；Resume 不递增版本——期望 v2）。
 	restored := fullContent()
-	if _, err := svc.Revise(ctx, m.MissionID, 2, "ag_a", restored); err != nil {
+	if _, err := svc.Revise(ctx, m.MissionID, 2, "ag_a", "ag_a", restored); err != nil {
 		t.Fatalf("补齐修订: %v", err)
 	}
 	if got, _, _ := svc.Get(ctx, m.MissionID); got.Status != StatusReady {

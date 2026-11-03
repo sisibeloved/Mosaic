@@ -700,6 +700,9 @@ export const api = {
   offerMissionHandover(missionID: string, req: HandoverSubmit): Promise<MissionView> {
     return post(`/v1/missions/${encodeURIComponent(missionID)}/handover`, req);
   },
+  /** offer_id 锚（0.6.12 审校 #1）：绑定所见发起——撤回改派后旧请求 409。 */
+  /** offer_id 锚（0.6.12 审校 #1）：绑定所见发起——撤回改派后旧请求 409。 */
+  /** offer_id 锚（0.6.12 审校 #1）：绑定所见发起——撤回改派后旧请求 409。 */
   acceptMissionHandover(missionID: string, req: HandoverAccept): Promise<MissionView> {
     return post(`/v1/missions/${encodeURIComponent(missionID)}/handover/accept`, req);
   },

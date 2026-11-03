@@ -75,8 +75,7 @@ func (s *Service) Retire(ctx context.Context, agentID, reason string) (Lifecycle
 				return LifecycleResult{}, fmt.Errorf("personalagent: 原子退役: %w", err)
 			}
 			if !done {
-				// 读后竞态：状态已被并发转移改写——按可见拒绝处理
-				return LifecycleResult{}, fmt.Errorf("%w: %s → retired", ErrInvalidTransition, cur.Status)
+				return s.retireSettle(ctx, agentID, cur.Status, reason)
 			}
 		} else {
 			if _, done, err := s.store.TransitionAgent(ctx, agentID,
@@ -88,12 +87,15 @@ func (s *Service) Retire(ctx context.Context, agentID, reason string) (Lifecycle
 		}
 	case StatusRetiring:
 		if len(outstanding) == 0 {
-			// 中断/承诺阻塞后的重试：只补 retiring → retired 终段
-			if _, done, err := s.store.TransitionAgent(ctx, agentID,
-				[]string{StatusRetiring}, StatusRetired, reason, s.now()); err != nil {
+			// 0.6.12 审校 #3b：重试收尾改走 RetireAgent（只补终段 + **未处置承诺
+			// 事务门**——TransitionAgent 旁路无门，门空判定后并发承接落地会留下
+			// retired 负责人的未完成任务）。
+			_, done, err := s.store.RetireAgent(ctx, agentID, []string{StatusRetiring}, reason, s.now())
+			if err != nil {
 				return LifecycleResult{}, fmt.Errorf("personalagent: 完成 retired: %w", err)
-			} else if !done {
-				return LifecycleResult{}, fmt.Errorf("%w: retiring → retired", ErrInvalidTransition)
+			}
+			if !done {
+				return s.retireSettle(ctx, agentID, StatusRetiring, reason)
 			}
 		}
 		// 非空：停留 retiring（不重复记事件）
@@ -162,6 +164,41 @@ func (s *Service) simpleTransition(ctx context.Context, agentID string, allowedF
 		return LifecycleResult{}, ErrInvalidTransition
 	}
 	return s.lifecycleResult(ctx, agentID, nil)
+}
+
+// retireSettle 原子退役被事务门拦下（done=false，零写入）后的竞态处置（0.6.12
+// 审校 #3b）：承诺门先行判定为空与事务内核对之间，承接可能翻转归属使清单变非空
+// （或反序）。重查清单——非空：停留 retiring（active/suspended 先入 retiring；
+// 已 retiring 停留）并返回**最新**清单；仍空：状态被并发转移改写，如实拒绝。
+func (s *Service) retireSettle(ctx context.Context, agentID, curStatus, reason string) (LifecycleResult, error) {
+	var again []string
+	if s.commitments != nil {
+		items, err := s.commitments.Outstanding(ctx, agentID)
+		if err != nil {
+			return LifecycleResult{}, fmt.Errorf("personalagent: 承诺门复核: %w", err)
+		}
+		if len(items) > 0 {
+			again = items
+		}
+	}
+	if len(again) == 0 {
+		return LifecycleResult{}, fmt.Errorf("%w: %s → retired（状态已被并发转移改写）", ErrInvalidTransition, curStatus)
+	}
+	if curStatus == StatusActive || curStatus == StatusSuspended {
+		if _, done, err := s.store.TransitionAgent(ctx, agentID,
+			[]string{curStatus}, StatusRetiring, reason, s.now()); err != nil {
+			return LifecycleResult{}, fmt.Errorf("personalagent: 入 retiring: %w", err)
+		} else if !done {
+			// 并发已入 retiring / 其他转移——停留语义不受影响，返回最新清单
+			now, _, rerr := s.store.AgentByID(ctx, agentID)
+			if rerr != nil {
+				return LifecycleResult{}, rerr
+			} else if now.Status == StatusRetired {
+				return LifecycleResult{}, fmt.Errorf("%w: 已被并发退役", ErrInvalidTransition)
+			}
+		}
+	}
+	return s.lifecycleResult(ctx, agentID, again)
 }
 
 // lifecycleResult 组装转移结果视图（Get 含惰性同步，幂等无副作用）。

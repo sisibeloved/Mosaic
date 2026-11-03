@@ -193,7 +193,7 @@ func TestCancelTwoStageTerminal(t *testing.T) {
 	if _, err := svc.MarkCanceling(ctx, m.MissionID, 1, ""); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("终态重复取消应拒绝: %v", err)
 	}
-	if _, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", fullContent()); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", "ag_a", fullContent()); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("终态修订应拒绝: %v", err)
 	}
 	if _, err := svc.Pause(ctx, m.MissionID, 1, ""); !errors.Is(err, ErrInvalidTransition) {
@@ -231,7 +231,7 @@ func TestRevisePreservesControlStates(t *testing.T) {
 		pre(m.MissionID)
 		c := fullContent()
 		c.Objective = "修订后的目标"
-		out, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", c)
+		out, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", "ag_a", c)
 		if err != nil {
 			t.Fatalf("%s 修订: %v", name, err)
 		}
@@ -248,7 +248,7 @@ func TestRevisePreservesControlStates(t *testing.T) {
 
 	// draft/ready 照旧重判（回归）
 	d, _ := svc.Create(ctx, "", fullContent(), nil)
-	up, err := svc.Revise(ctx, d.MissionID, 1, "ag_a", fullContent())
+	up, err := svc.Revise(ctx, d.MissionID, 1, "", "ag_a", fullContent()) // 当前 owner 为空——归属锚取现值
 	if err != nil || up.Status != StatusReady {
 		t.Fatalf("draft 补齐照旧 ready: %+v %v", up, err)
 	}

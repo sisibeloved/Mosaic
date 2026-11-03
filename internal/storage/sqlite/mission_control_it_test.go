@@ -74,7 +74,7 @@ func TestMissionControlStoreIT(t *testing.T) {
 	next.ContractVersion = 2
 	next.Status = mission.StatusReady // 陈旧投影（读到 ready 后停止意图落地的交错）
 	next.UpdatedAt = "t5b"
-	if _, ok, _ := store.ReviseMission(ctx, m.MissionID, 1, next); !ok {
+	if _, ok, _ := store.ReviseMission(ctx, m.MissionID, 1, "ag_it", next); !ok {
 		t.Fatal("canceling 修订应可用")
 	}
 	if got, _, _ := store.MissionByID(ctx, m.MissionID); got.Status != mission.StatusCanceling {

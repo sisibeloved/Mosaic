@@ -2242,7 +2242,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "409":
-          description: 版本冲突（version_conflict）或终态拒修订（invalid_transition）
+          description: 版本冲突（version_conflict）/ 终态拒修订（invalid_transition）/ 归属锚不符——责任承接翻转 owner 后携旧 owner 的修订被拒（owner_mismatch，0.6.12 审校 #2）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3518,7 +3518,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "409":
-          description: 版本冲突 / 无在途交接 / 状态族不符 / 承接人非 active（invalid_transition | version_conflict）
+          description: 版本冲突 / 无在途交接 / 发起标识不符（offer_id 锚）/ 状态族不符 / 承接人非 active（invalid_transition | version_conflict）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3561,7 +3561,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "409":
-          description: 版本冲突 / 无在途交接（invalid_transition | version_conflict）
+          description: 版本冲突 / 无在途交接 / 发起标识不符（offer_id 锚）（invalid_transition | version_conflict）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3603,7 +3603,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "409":
-          description: 版本冲突 / 无在途交接（invalid_transition | version_conflict）
+          description: 版本冲突 / 无在途交接 / 发起标识不符（offer_id 锚）（invalid_transition | version_conflict）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -5756,27 +5756,33 @@ components:
         notes: { type: string, maxLength: 2000, description: "交接说明——在途事项/未决动作/证据指引（§8.1 轻量承载体；完整交接包随 0.7+）" }
     HandoverAccept:
       type: object
-      required: [expected_version]
+      required: [expected_version, offer_id]
       additionalProperties: false
-      description: 承接交接（承接回执随 handover_accepted 事件留痕）。
+      description: |
+        承接交接（承接回执随 handover_accepted 事件留痕）。offer_id 锚（0.6.12 审校 #1，
+        **必填**）：绑定调用方所见的具体发起——撤回改派后（contract_version 不递增），针对旧
+        发起的承接/婉拒/撤回被 409 拒绝（不得处理换了承接人的新交接）。
       properties:
         expected_version: { type: integer, minimum: 1, description: CAS——与当前 contract_version 不符 409 }
+        offer_id: { type: string, minLength: 1, description: 所见在途交接的发起标识（MissionView.pending_offer_id）；不符 409 invalid_transition }
         note: { type: string, maxLength: 280, description: 承接备注（进回执事件） }
     HandoverResolve:
       type: object
-      required: [expected_version]
+      required: [expected_version, offer_id]
       additionalProperties: false
-      description: 婉拒/撤回交接（了结在途交接，事件留痕）。
+      description: 婉拒/撤回交接（了结在途交接，事件留痕）；offer_id 锚同 HandoverAccept。
       properties:
         expected_version: { type: integer, minimum: 1, description: CAS——与当前 contract_version 不符 409 }
+        offer_id: { type: string, minLength: 1, description: 所见在途交接的发起标识；不符 409 invalid_transition }
         reason: { type: string, maxLength: 280, description: 婉拒/撤回原因（进事件） }
     HandoverEventView:
       type: object
-      required: [kind, from_owner_agent_id, to_owner_agent_id, contract_version, occurred_at]
+      required: [kind, offer_id, from_owner_agent_id, to_owner_agent_id, contract_version, occurred_at]
       additionalProperties: false
-      description: 交接事实（mission_events.handover_* 组装；append-only——kind=accepted 为承接回执）。
+      description: 交接事实（mission_events.handover_* 组装；append-only——kind=accepted 为承接回执）。offer_id 为发起标识回链（四类事实同源——撤回改派各自独立成对）。
       properties:
         kind: { type: string, enum: [offered, accepted, declined, revoked], description: offered 发起 / accepted 承接回执 / declined 婉拒 / revoked 撤回 }
+        offer_id: { type: string, description: 发起标识（同一发起的 offered→accepted/declined/revoked 同 id；hdo_ 前缀生成） }
         from_owner_agent_id: { type: string, description: 发起时负责人（空 = unassigned 指派） }
         to_owner_agent_id: { type: string, description: 承接人 }
         notes: { type: string, description: 交接说明（offered 携带） }
@@ -6352,11 +6358,16 @@ components:
         reviewer: { type: string, maxLength: 64 }
     MissionRevise:
       type: object
-      required: [expected_version, objective, scope, acceptance_criteria, deliverable_specs, source_refs]
+      required: [expected_version, expected_owner_agent_id, objective, scope, acceptance_criteria, deliverable_specs, source_refs]
       additionalProperties: false
-      description: 修订请求体（全量替换 + 版本追加；expected_version CAS——AT-13 并发修订冲突明确拒绝）。
+      description: |
+        修订请求体（全量替换 + 版本追加；expected_version CAS——AT-13 并发修订冲突明确拒绝）。
+        0.6.12 审校 #2：+= expected_owner_agent_id（**必填**，空串 = 预期 unassigned）——修订换 owner
+        须以调用方所见归属为锚；责任承接翻转 owner 后（contract_version 不递增），携旧 owner 的
+        修订被 409 owner_mismatch 拒绝（旧表单不得无感知撤销已完成的责任转移）。
       properties:
         expected_version: { type: integer, minimum: 1, description: 调用方所见 contract_version；不匹配 409 version_conflict }
+        expected_owner_agent_id: { type: string, description: "调用方所见的当前负责人（空串 = 预期 unassigned）；事务内核对——不匹配 409 owner_mismatch（0.6.12 审校 #2：防旧修订撤销承接翻转）" }
         owner_agent_id: { type: string, pattern: "^ag_[0-9A-Za-z_-]+$" }
         objective: { type: string, minLength: 1, maxLength: 512 }
         scope: { type: string, minLength: 1, maxLength: 512 }
@@ -6436,7 +6447,7 @@ components:
         expected_version: { type: integer, minimum: 1, description: 调用方所见 contract_version；不匹配 409 version_conflict }
     MissionView:
       type: object
-      required: [mission_id, contract_version, status, waiting_reason, review_package_id, review_round, owner_agent_id, pending_owner_agent_id, requester, reviewer, objective, scope, constraints, acceptance_criteria, deliverable_specs, source_refs, return_targets, budget, delegation, created_at, updated_at]
+      required: [mission_id, contract_version, status, waiting_reason, review_package_id, review_round, owner_agent_id, pending_owner_agent_id, pending_offer_id, requester, reviewer, objective, scope, constraints, acceptance_criteria, deliverable_specs, source_refs, return_targets, budget, delegation, created_at, updated_at]
       description: |
         Mission 契约（ADR-0023 / 0.6.0 + ADR-0024 房间来源 / 0.6.1）。
         status：draft（契约不完备——验收/来源/交付物缺失或 unassigned）/
@@ -6456,6 +6467,7 @@ components:
         review_round: { type: integer, description: "送验轮次（0.6.9 审校 #3：每次 request_review 单调递增——裁定须核对轮次，防旧裁定落到下一轮；非 reviewing/accepted 为 0）" }
         owner_agent_id: { type: string, description: 负责人（空 = 显式 unassigned，§3.3 不变量） }
         pending_owner_agent_id: { type: string, description: "在途交接承接人（0.6.12 / ADR-0035：handover 发起置位、承接/婉拒/撤回清空；空 = 无在途交接。在途期间 owner 不变、Revise/RequestReview/MarkCanceling 冻结）" }
+        pending_offer_id: { type: string, description: "在途交接发起标识（0.6.12 审校 #1：承接/婉拒/撤回请求须绑定此锚——撤回改派后旧请求 409；空 = 无在途交接）" }
         requester: { type: string, description: 请求人（0.6.0 恒 owner——本地单用户） }
         reviewer: { type: string, description: 验收人（空 = 请求人自验） }
         objective: { type: string }

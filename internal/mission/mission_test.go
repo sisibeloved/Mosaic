@@ -170,7 +170,7 @@ func TestReviseCAS(t *testing.T) {
 			defer wg.Done()
 			c := fullContent()
 			c.Objective = fmt.Sprintf("修订 %d", i)
-			out, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", c)
+			out, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", "ag_a", c)
 			switch {
 			case err == nil:
 				wins.Add(1)
@@ -200,7 +200,7 @@ func TestReviseCompletenessTransition(t *testing.T) {
 		t.Fatalf("unassigned 应 draft: %+v %v", m, err)
 	}
 
-	up, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", fullContent())
+	up, err := svc.Revise(ctx, m.MissionID, 1, "", "ag_a", fullContent())
 	if err != nil || up.Status != StatusReady || up.ContractVersion != 2 {
 		t.Fatalf("补齐 owner 应 ready v2: %+v %v", up, err)
 	}
@@ -214,7 +214,7 @@ func TestReviseCompletenessTransition(t *testing.T) {
 
 	down := fullContent()
 	down.AcceptanceCriteria = nil
-	d2, err := svc.Revise(ctx, m.MissionID, 2, "ag_a", down)
+	d2, err := svc.Revise(ctx, m.MissionID, 2, "ag_a", "ag_a", down)
 	if err != nil || d2.Status != StatusDraft {
 		t.Fatalf("削减验收应回 draft: %+v %v", d2, err)
 	}
@@ -247,10 +247,10 @@ func TestCancelTerminal(t *testing.T) {
 	if _, err := svc.MarkCanceling(ctx, m.MissionID, 1, ""); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("重复取消应转移拒绝: %v", err)
 	}
-	if _, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", fullContent()); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", "ag_a", fullContent()); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("终态修订应拒绝: %v", err)
 	}
-	if _, err := svc.Revise(ctx, m.MissionID, 5, "ag_a", fullContent()); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := svc.Revise(ctx, m.MissionID, 5, "ag_a", "ag_a", fullContent()); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("终态下版本不匹配仍应转移拒绝（终态先判）: %v", err)
 	}
 }
@@ -262,7 +262,7 @@ func TestVersionsAndEvents(t *testing.T) {
 	m, _ := svc.Create(ctx, "", fullContent(), nil)
 	c2 := fullContent()
 	c2.Objective = "v2"
-	svc.Revise(ctx, m.MissionID, 1, "ag_a", c2) // draft → ready
+	svc.Revise(ctx, m.MissionID, 1, "", "ag_a", c2) // draft（unassigned）→ ready：归属锚 = 当前 owner（空）
 
 	vs, ok, _ := svc.MissionVersions(ctx, m.MissionID)
 	if !ok || len(vs) != 2 || vs[0].ContractVersion != 1 || vs[0].Status != StatusDraft || vs[1].Status != StatusReady {

@@ -100,4 +100,22 @@ Outstanding(agentID) = { m : m.owner_agent_id == agentID ∧ m.status ∉ {accep
 
 ## 修订记录
 
+- v0.2（2026-11-03）：审校修复（"3 项 P1、3 项 P2、1 项 P3"）——
+  **P1#1 旧交接操作处理新交接**：发起生成 `offer_id`（`hdo_` 前缀，行存
+  `pending_offer_id` + 事件回链）；承接/婉拒/撤回请求**必填** `offer_id`——撤回
+  改派后（contract_version 不递增）旧请求一律 409（服务层 + 存储事务内双锚）。
+  **P1#2 旧修订撤销责任转移**：revise 请求**必填** `expected_owner_agent_id`
+  （空串 = 预期 unassigned）——归属锚事务内核对，承接翻转 owner 后携旧 owner 的
+  修订 409 `owner_mismatch`（个人版单客户端生态，契约收紧随 0.6.12 发布）。
+  **P1#3 承接×退役双向竞态**：承接事务内直查 agents 表复核承接人 active
+  （同库跨表——RequestReview 复核 runs 同例）；retiring→retired 收尾段改走
+  RetireAgent（统一过**未处置承诺事务门**——TransitionAgent 旁路无门）；门拦下
+  （done=false 零写入）服务层重查清单停留 retiring 并返回最新清单。
+  **P2#4 回执陈旧快照**：`status_at_accept` 由**事务内核对后的实际状态**注入
+  （`InjectHandoverStatus`——InjectReviewFacts 同例）；并发暂停/恢复交错不进回执。
+  **P2#5 历史重试按钮失效**：交接与重开（0.6.11 遗留同病）两处改独立刷新计数
+  tick 触发重查。**P2#6 页面不同步外部交接变化**：详情 5s 轮询的 getMission 改
+  刷新整个 detail（owner/pending/状态/版本——他处发起/承接后本页可见待承接入口）；
+  表单草稿独立 state 不受影响；权威落地重置轮询应用序号。**P3#7 超限返回码**：
+  MaxBytesError 单独识别 → 413 `body_too_large`（交接 + 重开两处；协议已约定）。
 - v0.1（2026-11-03）：首版（随 0.6.12 实施）。

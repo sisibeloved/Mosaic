@@ -471,6 +471,7 @@ function MissionDetail({
         setDetail(d);
         setVersions(v.versions);
         setEvents(e.events);
+        appliedSrcRef.current = 0; // 权威落地重置轮询应用序号（审校 #6：在途旧快照不得盖回）
       })
       .catch((e) => {
         if (seq.current !== cur) return;
@@ -514,9 +515,12 @@ function MissionDetail({
         .getMission(missionID)
         .then((m) => {
           // 四审 #1：来源成功单设已应用序号——较早的成功响应晚到不得抹掉
-          // 已显示的删房标记。
+          // 已显示的删房标记。0.6.12 审校 #6：同步刷新交接元数据（owner /
+          // pending / 状态 / 版本）——他处发起/承接/婉拒/撤回后本页可见待承接
+          // 入口；表单草稿独立 state 不受影响（裁定草稿按轮次隔离既有守卫）。
           if (!alive || seq <= appliedSrcRef.current) return;
           appliedSrcRef.current = seq;
+          setDetail(m);
           setRoomSourceNow(m.room_source ?? null);
         })
         .catch(() => {
@@ -957,6 +961,8 @@ function MissionDetail({
                   // 漏传即清空，预算/约束/返回位/验收人/委派不得被缺省重置）
                   await api.reviseMission(missionID, {
                     expected_version: detail.contract_version,
+                    // 0.6.12 审校 #2：归属锚——提交时点所见 owner（轮询保鲜；承接翻转后旧表单 409）
+                    expected_owner_agent_id: detail.owner_agent_id ?? '',
                     ...(form.owner ? { owner_agent_id: form.owner } : {}),
                     objective: form.objective.trim(),
                     scope: form.scope.trim(),
@@ -1536,6 +1542,7 @@ function ReopenSection({ missionID, contractVersion, onChanged }: {
   const [history, setHistory] = useState<ReopenRequestView[] | null>(null);
 
   const [histErr, setHistErr] = useState(false); // 二审 #4：首次/重试失败可见可重试
+  const [histTick, setHistTick] = useState(0); // 0.6.12 审校 #5：重试须独立刷新计数（msg 已空时 setMsg(null) 不触发重查）
   useEffect(() => {
     let alive = true;
     let seq = 0;
@@ -1559,7 +1566,7 @@ function ReopenSection({ missionID, contractVersion, onChanged }: {
     return () => {
       alive = false;
     };
-  }, [missionID, msg]);
+  }, [missionID, msg, histTick]);
 
   const submit = async () => {
     setBusy(true); setMsg(null);
@@ -1612,7 +1619,7 @@ function ReopenSection({ missionID, contractVersion, onChanged }: {
       )}
       {msg && <p className="text-[11px] text-dim">{msg}</p>}
       {histErr && (
-        <button onClick={() => setMsg(null)} className="self-start text-[11px] text-warn underline">
+        <button onClick={() => setHistTick((t) => t + 1)} className="self-start text-[11px] text-warn underline">
           重开历史加载失败——点击重试
         </button>
       )}
@@ -1658,7 +1665,9 @@ function HandoverSection({ missionID, detail, agents, onChanged }: {
   const [msg, setMsg] = useState<string | null>(null);
   const [history, setHistory] = useState<HandoverEventView[] | null>(null);
   const [histErr, setHistErr] = useState(false);
+  const [histTick, setHistTick] = useState(0); // 审校 #5：重试按钮独立刷新计数
   const pending = detail.pending_owner_agent_id;
+  const offerID = detail.pending_offer_id ?? "";
   const version = detail.contract_version;
 
   useEffect(() => {
@@ -1684,7 +1693,7 @@ function HandoverSection({ missionID, detail, agents, onChanged }: {
     return () => {
       alive = false;
     };
-  }, [missionID, msg, pending]);
+  }, [missionID, msg, pending, histTick]);
 
   const run = async (label: string, fn: () => Promise<MissionView>) => {
     setBusy(true); setMsg(null);
@@ -1724,15 +1733,15 @@ function HandoverSection({ missionID, detail, agents, onChanged }: {
             placeholder="承接备注 / 婉拒或撤回原因（≤280 字，可空）"
             className="rounded border border-border bg-surface px-1.5 py-1 text-xs outline-none" />
           <div className="flex flex-wrap gap-1">
-            <button onClick={() => run("承接", () => api.acceptMissionHandover(missionID, { expected_version: version, ...(text.trim() ? { note: text.trim() } : {}) }))}
+            <button onClick={() => run("承接", () => api.acceptMissionHandover(missionID, { expected_version: version, offer_id: offerID, ...(text.trim() ? { note: text.trim() } : {}) }))}
               disabled={busy} className="rounded-lg bg-surface-3 px-2 py-1 text-xs text-ok disabled:opacity-40">
               承接（负责人 → {nameOf(pending)}）
             </button>
-            <button onClick={() => run("婉拒", () => api.declineMissionHandover(missionID, { expected_version: version, ...(text.trim() ? { reason: text.trim() } : {}) }))}
+            <button onClick={() => run("婉拒", () => api.declineMissionHandover(missionID, { expected_version: version, offer_id: offerID, ...(text.trim() ? { reason: text.trim() } : {}) }))}
               disabled={busy} className="rounded-lg bg-surface-3 px-2 py-1 text-xs text-warn disabled:opacity-40">
               婉拒
             </button>
-            <button onClick={() => run("撤回", () => api.revokeMissionHandover(missionID, { expected_version: version, ...(text.trim() ? { reason: text.trim() } : {}) }))}
+            <button onClick={() => run("撤回", () => api.revokeMissionHandover(missionID, { expected_version: version, offer_id: offerID, ...(text.trim() ? { reason: text.trim() } : {}) }))}
               disabled={busy} className="rounded-lg bg-surface-3 px-2 py-1 text-xs text-dim disabled:opacity-40">
               撤回
             </button>
@@ -1760,7 +1769,7 @@ function HandoverSection({ missionID, detail, agents, onChanged }: {
       )}
       {msg && <p className="text-[11px] text-dim">{msg}</p>}
       {histErr && (
-        <button onClick={() => setMsg(null)} className="self-start text-[11px] text-warn underline">
+        <button onClick={() => setHistTick((t) => t + 1)} className="self-start text-[11px] text-warn underline">
           交接历史加载失败——点击重试
         </button>
       )}
@@ -1773,6 +1782,7 @@ function HandoverSection({ missionID, detail, agents, onChanged }: {
                 <span className={h.kind === "accepted" ? "text-ok" : h.kind === "offered" ? "text-accent" : "text-warn"}>
                   {HANDOVER_KIND_LABEL[h.kind] ?? h.kind}
                 </span>
+                <span className="font-mono text-faint text-[10px]">{h.offer_id}</span>
                 <span className="font-mono text-faint">{h.from_owner_agent_id || "unassigned"} → {h.to_owner_agent_id}</span>
                 <span className="text-faint">v{h.contract_version} · {new Date(h.occurred_at).toLocaleString()}</span>
                 {h.status_at_accept && <span className="text-faint">承接时 {h.status_at_accept}</span>}

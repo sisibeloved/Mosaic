@@ -155,6 +155,17 @@ func TestHandoverEndpoints(t *testing.T) {
 	if doc["pending_owner_agent_id"] != b || doc["owner_agent_id"] != a || doc["contract_version"] != float64(1) {
 		t.Fatalf("发起视图: %v", doc)
 	}
+	offerID, _ := doc["pending_offer_id"].(string)
+	if offerID == "" {
+		t.Fatalf("发起须携 pending_offer_id: %v", doc)
+	}
+	// 审校 #1：缺 offer_id / 陌生 offer_id 的承接 409（不得处理当前在途）
+	if resp := postSlot(t, ts.URL+"/v1/missions/"+mid+"/handover/accept", `{"expected_version":1}`); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("缺 offer_id 承接须 409: %d", resp.StatusCode)
+	}
+	if resp := postSlot(t, ts.URL+"/v1/missions/"+mid+"/handover/accept", `{"expected_version":1,"offer_id":"hdo_bogus"}`); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("陌生 offer_id 承接须 409: %d", resp.StatusCode)
+	}
 
 	// 冻结窗：修订 / 取消 409；在途唯一：二发 409
 	if resp := postSlot(t, ts.URL+"/v1/missions/"+mid+"/revise",
@@ -174,7 +185,7 @@ func TestHandoverEndpoints(t *testing.T) {
 		`{"expected_version":9}`); resp.StatusCode != http.StatusConflict || errCodeOf(t, resp) != "version_conflict" {
 		t.Fatalf("承接 CAS: %d %s", resp.StatusCode, errCodeOf(t, resp))
 	}
-	resp = postSlot(t, ts.URL+"/v1/missions/"+mid+"/handover/accept", `{"expected_version":1,"note":"已接手"}`)
+	resp = postSlot(t, ts.URL+"/v1/missions/"+mid+"/handover/accept", `{"expected_version":1,"offer_id":"`+offerID+`","note":"已接手"}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("承接: %d", resp.StatusCode)
 	}
@@ -182,8 +193,8 @@ func TestHandoverEndpoints(t *testing.T) {
 	if doc["owner_agent_id"] != b || doc["pending_owner_agent_id"] != "" || doc["contract_version"] != float64(1) {
 		t.Fatalf("承接视图: %v", doc)
 	}
-	// 再承接（无在途）409
-	if resp := postSlot(t, ts.URL+"/v1/missions/"+mid+"/handover/accept", `{"expected_version":1}`); resp.StatusCode != http.StatusConflict {
+	// 再承接（无在途，旧锚）409
+	if resp := postSlot(t, ts.URL+"/v1/missions/"+mid+"/handover/accept", `{"expected_version":1,"offer_id":"`+offerID+`"}`); resp.StatusCode != http.StatusConflict {
 		t.Fatalf("无在途承接: %d", resp.StatusCode)
 	}
 
@@ -195,7 +206,7 @@ func TestHandoverEndpoints(t *testing.T) {
 	}
 	acc, _ := evs[1].(map[string]any)
 	if acc["kind"] != "accepted" || acc["from_owner_agent_id"] != a || acc["to_owner_agent_id"] != b ||
-		acc["status_at_accept"] != "ready" || acc["note"] != "已接手" {
+		acc["status_at_accept"] != "ready" || acc["note"] != "已接手" || acc["offer_id"] != offerID {
 		t.Fatalf("承接回执失真: %v", acc)
 	}
 
@@ -203,26 +214,40 @@ func TestHandoverEndpoints(t *testing.T) {
 	mid2, _ := mkOwnedMission(t, ts, b)
 	c := mkAgent(t, ts, "丙2")
 	resp = postSlot(t, ts.URL+"/v1/missions/"+mid2+"/handover", `{"expected_version":1,"new_owner_agent_id":"`+c+`"}`)
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("发起2: %d", resp.StatusCode)
+	doc2 := handoverJSON(t, resp)
+	offer2, _ := doc2["pending_offer_id"].(string)
+	// 审校 #1：撤回改派后，针对旧发起的婉拒 409
+	if resp := postSlot(t, ts.URL+"/v1/missions/"+mid2+"/handover/revoke", `{"expected_version":1,"offer_id":"`+offer2+`"}`); resp.StatusCode != http.StatusOK {
+		t.Fatalf("撤回2: %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
 	}
-	resp.Body.Close()
-	resp = postSlot(t, ts.URL+"/v1/missions/"+mid2+"/handover/decline", `{"expected_version":1,"reason":"暂不接手"}`)
+	if resp := postSlot(t, ts.URL+"/v1/missions/"+mid2+"/handover/decline", `{"expected_version":1,"offer_id":"`+offer2+`"}`); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("改派后旧婉拒须 409: %d", resp.StatusCode)
+	}
+	resp = postSlot(t, ts.URL+"/v1/missions/"+mid2+"/handover", `{"expected_version":1,"new_owner_agent_id":"`+c+`"}`)
+	doc3 := handoverJSON(t, resp)
+	offer3, _ := doc3["pending_offer_id"].(string)
+	resp = postSlot(t, ts.URL+"/v1/missions/"+mid2+"/handover/decline", `{"expected_version":1,"offer_id":"`+offer3+`","reason":"暂不接手"}`)
 	doc = handoverJSON(t, resp)
 	if resp.StatusCode != http.StatusOK || doc["pending_owner_agent_id"] != "" || doc["owner_agent_id"] != b {
 		t.Fatalf("婉拒: %d %v", resp.StatusCode, doc)
 	}
 	resp = postSlot(t, ts.URL+"/v1/missions/"+mid2+"/handover", `{"expected_version":1,"new_owner_agent_id":"`+c+`"}`)
-	resp.Body.Close()
-	resp = postSlot(t, ts.URL+"/v1/missions/"+mid2+"/handover/revoke", `{"expected_version":1,"reason":"改派"}`)
+	doc4 := handoverJSON(t, resp)
+	offer4, _ := doc4["pending_offer_id"].(string)
+	resp = postSlot(t, ts.URL+"/v1/missions/"+mid2+"/handover/revoke", `{"expected_version":1,"offer_id":"`+offer4+`","reason":"改派"}`)
 	doc = handoverJSON(t, resp)
 	if resp.StatusCode != http.StatusOK || doc["pending_owner_agent_id"] != "" {
 		t.Fatalf("撤回: %d %v", resp.StatusCode, doc)
 	}
 	_, got = getJSONMap(t, ts.URL+"/v1/missions/"+mid2+"/handovers")
 	evs, _ = got["events"].([]any)
-	if len(evs) != 4 || evs[1].(map[string]any)["kind"] != "declined" || evs[3].(map[string]any)["kind"] != "revoked" {
-		t.Fatalf("婉拒/撤回留痕: %v", got)
+	if len(evs) != 6 {
+		t.Fatalf("留痕（offered/revoked/offered/declined/offered/revoked）: %d", len(evs))
+	}
+	if evs[1].(map[string]any)["kind"] != "revoked" || evs[3].(map[string]any)["kind"] != "declined" || evs[5].(map[string]any)["kind"] != "revoked" {
+		t.Fatalf("婉拒/撤回留痕序: %v", got)
 	}
 
 	// 未知任务 404（写/读面）
@@ -260,7 +285,11 @@ func TestHandoverRetirementGate(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("retiring 发起: %d", resp.StatusCode)
 	}
-	resp.Body.Close()
+	docR := handoverJSON(t, resp)
+	oidR, _ := docR["pending_offer_id"].(string)
+	if oidR == "" {
+		t.Fatalf("retiring 发起须携锚: %v", docR)
+	}
 	// 未承接仍计入
 	resp = postSlot(t, ts.URL+"/v1/identity/agents/"+a+"/lifecycle", `{"action":"retire"}`)
 	if json.NewDecoder(resp.Body).Decode(&res) != nil || res.Agent.Status != "retiring" || len(res.Outstanding) != 1 {
@@ -268,8 +297,8 @@ func TestHandoverRetirementGate(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// 承接 → 清单空 → 重试 → retired
-	if resp := postSlot(t, ts.URL+"/v1/missions/"+mid+"/handover/accept", `{"expected_version":1}`); resp.StatusCode != http.StatusOK {
+	// 承接（绑定 retiring 发起的锚）→ 清单空 → 重试 → retired
+	if resp := postSlot(t, ts.URL+"/v1/missions/"+mid+"/handover/accept", `{"expected_version":1,"offer_id":"`+oidR+`"}`); resp.StatusCode != http.StatusOK {
 		t.Fatalf("承接: %d", resp.StatusCode)
 	} else {
 		resp.Body.Close()

@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 修复 0.6.12 审校发现（独立审校报告"3 项 P1、3 项 P2、1 项 P3"，ADR-0035 v0.2）：**(#1 P1) 旧交接操作会处理新的交接**——承接/婉拒/撤回只带 expected_version，撤回改派后（版本不递增）旧请求仍成功。发起生成 `offer_id`（`hdo_` 前缀；行存 `pending_offer_id` + 事件回链），三个了结动作**必填** `offer_id` 锚，服务层与存储事务内双校验。**(#2 P1) 旧修订能撤销已完成的责任转移**——承接翻转 owner 后契约仍 v1，旧表单（A/v1）保存成功把 owner 改回 A。revise 请求**必填** `expected_owner_agent_id`（归属锚，事务内核对）——不匹配 409 `owner_mismatch`（契约收紧：个人版单客户端生态，SPA 同步携带）。**(#3 P1) 承接与退役并发留下 retired 负责人的未完成任务**（双向竞态）——承接事务内直查 agents 表复核承接人 active；retiring→retired 收尾改走 RetireAgent 统一过**未处置承诺事务门**（原 TransitionAgent 旁路无门）；门拦下零写入、服务层重查清单停留 retiring。**(#4 P2) 承接回执用陈旧快照**——`status_at_accept` 改由事务内核对后的实际状态注入（并发暂停/恢复交错不进回执）。**(#5 P2) 交接/重开历史重试按钮不起作用**——改独立刷新计数触发重查（重开区为 0.6.11 遗留同病，一并修）。**(#6 P2) 详情页不同步外部交接变化**——5s 轮询刷新整个 detail（owner/pending/待承接入口可见），表单草稿不受影响。**(#7 P3) 超限请求返回 400 应为 413**——MaxBytesError 单独识别 → 413 `body_too_large`（交接 + 重开两处）。
+
 ### Added
 
 - **Mission 责任交接：`handover` 与退役承诺处置**（0.6 领域第十三件·收官 / ADR-0035，RFC-0018 §3.3/§4.5/§8.1/§11.2，AT-03）：Mission 换负责人的受控通道——两段式 **发起 → 承接 | 婉拒 | 撤回**：发起只置 `pending_owner_agent_id`（owner 不变——责任不因单方意愿转移；同一时刻至多一条在途交接）；承接单事务翻转 owner + **承接回执**（`handover_accepted` 事件：from / to / contract_version / status_at_accept / note）；婉拒 / 撤回了结在途交接并留痕（"显式无人承接"可审计）。四命令均不递增 `contract_version`（归属是控制面事实），事件 append-only（交接史不可改写）。承接人须存在且 **active**（suspended / retiring / retired 不接新承诺——offer 与 accept 两点复核）。**在途交接冻结窗**：pending 期间 Revise / RequestReview / MarkCanceling 拒绝（先了结交接——防修订通道整包换 owner 与交接通道竞态；存储事务内同守卫），Pause / Resume / ReopenRequest / 成果提交照常。**完备性重判**：unassigned draft 承接后契约齐备 → ready 入调度列（交接同时是存量任务的指派通道）；running / waiting / paused 执行控制投影保持（结果事实与 owner 无关）。**退役承诺门实装**（0.5.1 预留的 `personalagent.CommitmentChecker` 首次接生产装配）：非终态 owned Mission = 未处置承诺（含在途交接——回执未落责任未转移）；retire 停留 retiring + 返回清单，逐一交接承接或取消后清空 → retired（AT-03"未处置时退役不能完成"兑现）。

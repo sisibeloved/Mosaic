@@ -114,6 +114,10 @@ var (
 	// ErrAgentStatusUnavailable 身份状态查询端口未装配（0.6.12 / ADR-0035：交接
 	// 是责任转移的受控通道，承接人须 active——宁拒不放行）。
 	ErrAgentStatusUnavailable = errors.New("mission: 未装配身份状态查询（承接人校验不可用）")
+	// ErrOwnerMismatch 修订归属锚不符（0.6.12 审校 #2）：责任承接翻转 owner 后
+	// （contract_version 不递增），携旧 owner 的修订被拒——旧表单不得无感知撤销
+	// 已完成的责任转移；携带方所见 owner 重试。
+	ErrOwnerMismatch = errors.New("mission: 归属锚不符（任务负责人已变化）")
 )
 
 // Budget 预算（§6.1：并发、总 Run 数、墙钟、重试与委派深度）——0.6.0 为
@@ -165,9 +169,12 @@ type Mission struct {
 	// PendingOwnerAgentID 在途交接承接人（0.6.12 / ADR-0035）：handover 发起置位、
 	// 承接/婉拒/撤回清空；空 = 无在途交接。在途期间 owner 不变（责任不因单方意愿
 	// 转移）；Revise / RequestReview / MarkCanceling 冻结（先了结交接）。
-	PendingOwnerAgentID string      `json:"pending_owner_agent_id"`
-	Requester           string      `json:"requester"`
-	RoomSource          *RoomSource `json:"room_source"` // 房间交办来源（非房间交办 null；创建事实）
+	PendingOwnerAgentID string `json:"pending_owner_agent_id"`
+	// PendingOfferID 在途交接发起标识（0.6.12 审校 #1：承接/婉拒/撤回请求绑定此锚
+	// ——撤回改派后 contract_version 不递增，旧请求须被拒而非处理新交接）。
+	PendingOfferID string      `json:"pending_offer_id"`
+	Requester      string      `json:"requester"`
+	RoomSource     *RoomSource `json:"room_source"` // 房间交办来源（非房间交办 null；创建事实）
 	Content
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
@@ -228,10 +235,12 @@ type Store interface {
 	CreateMission(ctx context.Context, m Mission, src *RoomSource) (Mission, error)
 	// MissionIDBySource 来源映射查询；未映射 ok=false。
 	MissionIDBySource(ctx context.Context, roomID, taskID string) (string, bool, error)
-	// Revise CAS 修订：contract_version 匹配且非终态才落新版本行 + 投影更新
-	// + contract_revised（及完备性变化时 status_changed）事件，单事务；
-	// ok=false = 版本不匹配或已终态（服务方重读区分）。
-	ReviseMission(ctx context.Context, missionID string, expectedVersion int, next Mission) (Mission, bool, error)
+	// Revise CAS 修订：contract_version 匹配、**当前 owner == expectedOwner**
+	//（0.6.12 审校 #2 归属锚——承接翻转 owner 不递增版本，旧表单修订不得无感知
+	// 撤销责任转移）且非终态才落新版本行 + 投影更新 + contract_revised（及完备性
+	// 变化时 status_changed）事件，单事务；ok=false = 版本不匹配/归属锚不符/已终态
+	//（服务方重读区分）。
+	ReviseMission(ctx context.Context, missionID string, expectedVersion int, expectedOwner string, next Mission) (Mission, bool, error)
 	// PauseMission CAS 暂停（0.6.6 / ADR-0029；0.6.7 += waiting——等待原因
 	// 保留）：contract_version 匹配且 status ∈ (ready, running, waiting) →
 	// paused + status_changed（from/to/reason）
@@ -285,19 +294,20 @@ type Store interface {
 	RecordReview(ctx context.Context, missionID string, expectedVersion, expectedRound int, to string, event Event, expectedPackage string) (Mission, bool, error)
 	// HandoverOffer 发起交接（0.6.12 / ADR-0035）：contract_version 匹配、状态 ∈
 	// draft/ready/running/waiting/paused、无在途交接 → pending_owner = newOwner +
-	// handover_offered 事件，单事务；ok=false = 版本不符/状态族外/已有在途（服务
-	// 方重读分辨）。owner 与版本不变。
-	HandoverOffer(ctx context.Context, missionID string, expectedVersion int, newOwner string, event Event) (Mission, bool, error)
-	// HandoverAccept 承接（承接回执）：contract_version 匹配、pending ==
-	// expectPending（锚——防撤回改派后的旧 accept）且非空、状态族同上 → owner =
-	// pending、pending 清空、draft 按 targetStatus（服务层完备性重判）投影、其余
-	// 状态保持（执行控制投影事务内以现行为准）+ handover_accepted 事件（+ 状态
-	// 变化时 status_changed reason=handover），单事务；ok=false 同上。
-	HandoverAccept(ctx context.Context, missionID string, expectedVersion int, expectPending, targetStatus string, event Event) (Mission, bool, error)
-	// HandoverWithdraw 婉拒/撤回共用：contract_version 匹配、pending == expectPending
-	// 且非空 → pending 清空 + 事件（declined | revoked 由 event 携带），单事务；
-	// 任何状态可了结在途交接（不应存在卡死路径）。
-	HandoverWithdraw(ctx context.Context, missionID string, expectedVersion int, expectPending string, event Event) (Mission, bool, error)
+	// pending_offer_id = offerID + handover_offered 事件，单事务；ok=false = 版本
+	// 不符/状态族外/已有在途（服务方重读分辨）。owner 与版本不变。
+	HandoverOffer(ctx context.Context, missionID string, expectedVersion int, newOwner, offerID string, event Event) (Mission, bool, error)
+	// HandoverAccept 承接（承接回执）：contract_version 匹配、在途发起标识 ==
+	// expectOffer（锚——审校 #1：撤回改派后旧 accept 拒绝）且非空、状态族同上 →
+	// owner = pending、pending 清空、draft 按 targetStatus（服务层完备性重判）投影、
+	// 其余状态保持（执行控制投影事务内以现行为准）+ handover_accepted 事件（回执
+	// status_at_accept 由**事务内核对后的实际状态**注入——审校 #4；+ 状态变化时
+	// status_changed reason=handover），单事务；ok=false 同上。
+	HandoverAccept(ctx context.Context, missionID string, expectedVersion int, expectOffer, targetStatus string, event Event) (Mission, bool, error)
+	// HandoverWithdraw 婉拒/撤回共用：contract_version 匹配、在途发起标识 ==
+	// expectOffer 且非空 → pending 清空 + 事件（declined | revoked 由 event 携带），
+	// 单事务；任何状态可了结在途交接（不应存在卡死路径）。
+	HandoverWithdraw(ctx context.Context, missionID string, expectedVersion int, expectOffer string, event Event) (Mission, bool, error)
 }
 
 // Service 契约服务：校验单源 + 完备性判定单源 + CAS 编排。
@@ -305,8 +315,9 @@ type Service struct {
 	store        Store
 	now          func() string
 	newMissionID func() string
-	agentLookup  AgentLookup  // nil = owner 存在性校验不可用（创建/修订拒带 owner）
-	sourceLookup SourceLookup // nil = 房间来源校验不可用（创建拒带 room_source）
+	newOfferID   func() string // 交接发起标识（0.6.12 审校 #1：hdo_ 前缀——承接/婉拒/撤回的锚）
+	agentLookup  AgentLookup   // nil = owner 存在性校验不可用（创建/修订拒带 owner）
+	sourceLookup SourceLookup  // nil = 房间来源校验不可用（创建拒带 room_source）
 }
 
 // Option 装配选项（测试注入确定性时钟/ID 生成器）。
@@ -317,6 +328,10 @@ func WithNow(f func() string) Option { return func(s *Service) { s.now = f } }
 
 // WithNewMissionID 注入 ID 生成器（缺省：mi_ + 时间有序 + 随机后缀）。
 func WithNewMissionID(f func() string) Option { return func(s *Service) { s.newMissionID = f } }
+
+// WithNewOfferID 注入交接发起标识生成器（缺省：hdo_ + 时间有序 + 随机后缀；
+// 0.6.12 审校 #1——同一时刻至多一条在途交接，id 在发起时生成并随事件回链）。
+func WithNewOfferID(f func() string) Option { return func(s *Service) { s.newOfferID = f } }
 
 // WithAgentLookup 注入身份域查询端口。
 func WithAgentLookup(l AgentLookup) Option { return func(s *Service) { s.agentLookup = l } }
@@ -330,6 +345,7 @@ func New(store Store, opts ...Option) *Service {
 		store:        store,
 		now:          func() string { return nowUTC() },
 		newMissionID: newMissionID,
+		newOfferID:   newOfferID,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -344,6 +360,13 @@ func newMissionID() string {
 	var b [8]byte
 	_, _ = crand.Read(b[:])
 	return "mi_" + strconv.FormatInt(time.Now().UnixMilli(), 36) + hex.EncodeToString(b[:])
+}
+
+// newOfferID 缺省：hdo_ + 时间有序毫秒（36 进制）+ 随机后缀。
+func newOfferID() string {
+	var b [8]byte
+	_, _ = crand.Read(b[:])
+	return "hdo_" + strconv.FormatInt(time.Now().UnixMilli(), 36) + hex.EncodeToString(b[:])
 }
 
 // Create 建契约（= create_mission，§11.2）：校验 → owner/来源存在性 →
@@ -425,6 +448,22 @@ func InjectReviewFacts(payload []byte, contractVersion, reviewRound int) []byte 
 	return out
 }
 
+// InjectHandoverStatus 承接回执载荷注入**事务内核对后的实际任务状态**（0.6.12
+// 审校 #4——InjectReviewFacts 同例）：服务层预填的 status_at_accept 只是占位，
+// 存储事务内 UPDATE 后回读实际状态再落事件——并发暂停/恢复交错不进回执。
+func InjectHandoverStatus(payload []byte, actualStatus string) []byte {
+	var m map[string]any
+	if json.Unmarshal(payload, &m) != nil {
+		m = map[string]any{}
+	}
+	m["status_at_accept"] = actualStatus
+	out, err := json.Marshal(m)
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
 // blankTrim 判空去首尾（Unicode White_Space ∪ U+FEFF——与 SPA blankTrim 同集，
 // 0.6.9 审校 #1 / 复审 R6 口径）。
 func blankTrim(s string) string {
@@ -490,7 +529,8 @@ func (s *Service) ReopenRequest(ctx context.Context, missionID string, expectedV
 
 // HandoverFact 交接事实读面（事件流组装；Kind=accepted 即承接回执）。
 type HandoverFact struct {
-	Kind             string `json:"kind"` // offered | accepted | declined | revoked
+	Kind             string `json:"kind"`     // offered | accepted | declined | revoked
+	OfferID          string `json:"offer_id"` // 发起标识回链（同一发起的 offered→accepted/declined/revoked 同 id）
 	FromOwnerAgentID string `json:"from_owner_agent_id"`
 	ToOwnerAgentID   string `json:"to_owner_agent_id"`
 	Notes            string `json:"notes,omitempty"`            // offered
@@ -567,14 +607,16 @@ func (s *Service) HandoverOffer(ctx context.Context, missionID string, expectedV
 	if err := s.checkHandoverTarget(ctx, newOwner); err != nil {
 		return Mission{}, err
 	}
+	offerID := s.newOfferID()
 	payload, err := json.Marshal(map[string]any{
+		"offer_id":   offerID,
 		"from_owner": cur.OwnerAgentID, "to_owner": newOwner, "notes": notes,
 		"contract_version": expectedVersion, // CAS 后的实际版本随事实留痕
 	})
 	if err != nil {
 		return Mission{}, fmt.Errorf("mission: 交接事件构造失败：%w", err)
 	}
-	out, ok2, err := s.store.HandoverOffer(ctx, missionID, expectedVersion, newOwner, Event{
+	out, ok2, err := s.store.HandoverOffer(ctx, missionID, expectedVersion, newOwner, offerID, Event{
 		MissionID: missionID, EventType: EventHandoverOffered, Payload: payload, OccurredAt: s.now(),
 	})
 	if err != nil {
@@ -591,7 +633,7 @@ func (s *Service) HandoverOffer(ctx context.Context, missionID string, expectedV
 // active（复核）→ owner 翻转 + pending 清空 + 完备性重判（unassigned draft 齐备
 // → ready 入调度列；running / waiting / paused 执行控制投影保持）+
 // handover_accepted 事件（from / to / contract_version / status_at_accept / note）。
-func (s *Service) HandoverAccept(ctx context.Context, missionID string, expectedVersion int, note string) (Mission, error) {
+func (s *Service) HandoverAccept(ctx context.Context, missionID string, expectedVersion int, offerID, note string) (Mission, error) {
 	if utf8.RuneCountInString(note) > 280 {
 		return Mission{}, fmt.Errorf("%w: note ≤280 字", ErrInvalidMission)
 	}
@@ -608,6 +650,10 @@ func (s *Service) HandoverAccept(ctx context.Context, missionID string, expected
 	if cur.PendingOwnerAgentID == "" {
 		return Mission{}, fmt.Errorf("%w: 无在途交接", ErrInvalidTransition)
 	}
+	// 审校 #1：请求绑定所见发起——撤回改派后（版本不递增）旧承接不得处理新交接。
+	if offerID == "" || cur.PendingOfferID != offerID {
+		return Mission{}, fmt.Errorf("%w: 在途交接已变化（所见发起 %q 已不在途——请刷新）", ErrInvalidTransition, offerID)
+	}
 	if !HandoverOfferable(cur.Status) {
 		return Mission{}, fmt.Errorf("%w: %s 不可承接（先了结任务状态）", ErrInvalidTransition, cur.Status)
 	}
@@ -622,14 +668,18 @@ func (s *Service) HandoverAccept(ctx context.Context, missionID string, expected
 		next.OwnerAgentID = cur.PendingOwnerAgentID
 		target = statusOf(next)
 	}
+	// 审校 #4：status_at_accept 是**事务内核对后的实际状态**（预填值仅占位——
+	// 服务层读后被并发暂停/恢复的交错不得进回执；InjectHandoverStatus 同
+	// InjectReviewFacts 先例）。
 	payload, err := json.Marshal(map[string]any{
+		"offer_id":   offerID,
 		"from_owner": cur.OwnerAgentID, "to_owner": cur.PendingOwnerAgentID,
 		"contract_version": expectedVersion, "status_at_accept": target, "note": note,
 	})
 	if err != nil {
 		return Mission{}, fmt.Errorf("mission: 承接回执构造失败：%w", err)
 	}
-	out, ok2, err := s.store.HandoverAccept(ctx, missionID, expectedVersion, cur.PendingOwnerAgentID, target, Event{
+	out, ok2, err := s.store.HandoverAccept(ctx, missionID, expectedVersion, offerID, target, Event{
 		MissionID: missionID, EventType: EventHandoverAccepted, Payload: payload, OccurredAt: s.now(),
 	})
 	if err != nil {
@@ -643,18 +693,18 @@ func (s *Service) HandoverAccept(ctx context.Context, missionID string, expected
 
 // HandoverDecline 婉拒（承接人显式不接——"显式无人承接"留痕，AT-03）：pending
 // 清空 + handover_declined 事件；owner 不变。
-func (s *Service) HandoverDecline(ctx context.Context, missionID string, expectedVersion int, reason string) (Mission, error) {
-	return s.handoverWithdraw(ctx, missionID, expectedVersion, reason, EventHandoverDeclined)
+func (s *Service) HandoverDecline(ctx context.Context, missionID string, expectedVersion int, offerID, reason string) (Mission, error) {
+	return s.handoverWithdraw(ctx, missionID, expectedVersion, offerID, reason, EventHandoverDeclined)
 }
 
 // HandoverRevoke 撤回（发起人了结在途交接——改派前先撤回，在途唯一）：pending
 // 清空 + handover_revoked 事件；owner 不变。
-func (s *Service) HandoverRevoke(ctx context.Context, missionID string, expectedVersion int, reason string) (Mission, error) {
-	return s.handoverWithdraw(ctx, missionID, expectedVersion, reason, EventHandoverRevoked)
+func (s *Service) HandoverRevoke(ctx context.Context, missionID string, expectedVersion int, offerID, reason string) (Mission, error) {
+	return s.handoverWithdraw(ctx, missionID, expectedVersion, offerID, reason, EventHandoverRevoked)
 }
 
 // handoverWithdraw 婉拒/撤回共用：任何状态可了结在途交接（不应存在卡死路径）。
-func (s *Service) handoverWithdraw(ctx context.Context, missionID string, expectedVersion int, reason, eventType string) (Mission, error) {
+func (s *Service) handoverWithdraw(ctx context.Context, missionID string, expectedVersion int, offerID, reason, eventType string) (Mission, error) {
 	if utf8.RuneCountInString(reason) > 280 {
 		return Mission{}, fmt.Errorf("%w: reason ≤280 字", ErrInvalidMission)
 	}
@@ -671,14 +721,19 @@ func (s *Service) handoverWithdraw(ctx context.Context, missionID string, expect
 	if cur.PendingOwnerAgentID == "" {
 		return Mission{}, fmt.Errorf("%w: 无在途交接", ErrInvalidTransition)
 	}
+	// 审校 #1：婉拒/撤回同样绑定所见发起。
+	if offerID == "" || cur.PendingOfferID != offerID {
+		return Mission{}, fmt.Errorf("%w: 在途交接已变化（所见发起 %q 已不在途——请刷新）", ErrInvalidTransition, offerID)
+	}
 	payload, err := json.Marshal(map[string]any{
+		"offer_id":   offerID,
 		"from_owner": cur.OwnerAgentID, "to_owner": cur.PendingOwnerAgentID,
 		"reason": reason, "contract_version": expectedVersion,
 	})
 	if err != nil {
 		return Mission{}, fmt.Errorf("mission: 交接了结事件构造失败：%w", err)
 	}
-	out, ok2, err := s.store.HandoverWithdraw(ctx, missionID, expectedVersion, cur.PendingOwnerAgentID, Event{
+	out, ok2, err := s.store.HandoverWithdraw(ctx, missionID, expectedVersion, offerID, Event{
 		MissionID: missionID, EventType: eventType, Payload: payload, OccurredAt: s.now(),
 	})
 	if err != nil {
@@ -713,6 +768,7 @@ func (s *Service) HandoverHistory(ctx context.Context, missionID string) ([]Hand
 			continue
 		}
 		var p struct {
+			OfferID         string `json:"offer_id"`
 			FromOwner       string `json:"from_owner"`
 			ToOwner         string `json:"to_owner"`
 			Notes           string `json:"notes"`
@@ -725,7 +781,7 @@ func (s *Service) HandoverHistory(ctx context.Context, missionID string) ([]Hand
 			continue
 		}
 		out = append(out, HandoverFact{
-			Kind: kind, FromOwnerAgentID: p.FromOwner, ToOwnerAgentID: p.ToOwner,
+			Kind: kind, OfferID: p.OfferID, FromOwnerAgentID: p.FromOwner, ToOwnerAgentID: p.ToOwner,
 			Notes: p.Notes, Note: p.Note, Reason: p.Reason, StatusAtAccept: p.StatusAtAccept,
 			ContractVersion: p.ContractVersion, OccurredAt: e.OccurredAt,
 		})
@@ -734,10 +790,12 @@ func (s *Service) HandoverHistory(ctx context.Context, missionID string) ([]Hand
 }
 
 // Revise 修订契约（= revise_mission）：全量替换 + 版本追加；expected_version
-// CAS——败者 ErrVersionConflict（可见重试）；终态拒修订；完备性重判
-// （draft ↔ ready 双向，事件留痕）；执行控制投影保持（running/paused/
-// canceling 中修订不改执行状态——ADR-0029 决策 5）。
-func (s *Service) Revise(ctx context.Context, missionID string, expectedVersion int, ownerAgentID string, c Content) (Mission, error) {
+// CAS——败者 ErrVersionConflict（可见重试）；**expectedOwner 归属锚**（0.6.12 审校
+// #2——与当前 owner 不符 ErrOwnerMismatch：承接翻转 owner 不递增版本，携旧 owner
+// 的修订被拒，不得无感知撤销已完成的责任转移；空串 = 预期 unassigned）；终态拒
+// 修订；完备性重判（draft ↔ ready 双向，事件留痕）；执行控制投影保持（running/
+// paused/canceling 中修订不改执行状态——ADR-0029 决策 5）。
+func (s *Service) Revise(ctx context.Context, missionID string, expectedVersion int, expectedOwner, ownerAgentID string, c Content) (Mission, error) {
 	if err := ValidateContent(c); err != nil {
 		return Mission{}, err
 	}
@@ -752,6 +810,10 @@ func (s *Service) Revise(ctx context.Context, missionID string, expectedVersion 
 	}
 	if !ok {
 		return Mission{}, ErrMissionNotFound
+	}
+	if cur.OwnerAgentID != expectedOwner {
+		return Mission{}, fmt.Errorf("%w: 期望负责人 %q，当前 %q（承接可能已翻转归属——请刷新）",
+			ErrOwnerMismatch, expectedOwner, cur.OwnerAgentID)
 	}
 	// 0.6.9 / ADR-0032：accepted 与 canceled 同为终态不可修订；reviewing 验收
 	// 基线冻结（须先退回）。
@@ -784,12 +846,12 @@ func (s *Service) Revise(ctx context.Context, missionID string, expectedVersion 
 		next.Status = cur.Status
 	}
 	next.UpdatedAt = s.now()
-	out, ok2, err := s.store.ReviseMission(ctx, missionID, expectedVersion, next)
+	out, ok2, err := s.store.ReviseMission(ctx, missionID, expectedVersion, expectedOwner, next)
 	if err != nil {
 		return Mission{}, err
 	}
 	if !ok2 {
-		return Mission{}, s.casOrTransition(ctx, missionID, expectedVersion)
+		return Mission{}, s.casOrOwnerOrTransition(ctx, missionID, expectedVersion, expectedOwner)
 	}
 	return out, nil
 }
@@ -1220,6 +1282,26 @@ func (s *Service) casOrTransition(ctx context.Context, missionID string, expecte
 	}
 	if cur.ContractVersion != expectedVersion {
 		return fmt.Errorf("%w: 期望 v%d，当前 v%d", ErrVersionConflict, expectedVersion, cur.ContractVersion)
+	}
+	return fmt.Errorf("%w: %s", ErrInvalidTransition, cur.Status)
+}
+
+// casOrOwnerOrTransition 修订 CAS 败因分辨（0.6.12 审校 #2）：版本不匹配 →
+// 版本冲突；归属锚不匹配 → ErrOwnerMismatch（调用方所见 owner 已被承接翻转）；
+// 其余 → 终态/转移拒绝。
+func (s *Service) casOrOwnerOrTransition(ctx context.Context, missionID string, expectedVersion int, expectedOwner string) error {
+	cur, ok, err := s.store.MissionByID(ctx, missionID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrMissionNotFound
+	}
+	if cur.ContractVersion != expectedVersion {
+		return fmt.Errorf("%w: 期望 v%d，当前 v%d", ErrVersionConflict, expectedVersion, cur.ContractVersion)
+	}
+	if cur.OwnerAgentID != expectedOwner {
+		return fmt.Errorf("%w: 期望负责人 %q，当前 %q", ErrOwnerMismatch, expectedOwner, cur.OwnerAgentID)
 	}
 	return fmt.Errorf("%w: %s", ErrInvalidTransition, cur.Status)
 }

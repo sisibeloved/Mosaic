@@ -3762,27 +3762,37 @@ export interface components {
             /** @description 交接说明——在途事项/未决动作/证据指引（§8.1 轻量承载体；完整交接包随 0.7+） */
             notes?: string;
         };
-        /** @description 承接交接（承接回执随 handover_accepted 事件留痕）。 */
+        /**
+         * @description 承接交接（承接回执随 handover_accepted 事件留痕）。offer_id 锚（0.6.12 审校 #1，
+         *     **必填**）：绑定调用方所见的具体发起——撤回改派后（contract_version 不递增），针对旧
+         *     发起的承接/婉拒/撤回被 409 拒绝（不得处理换了承接人的新交接）。
+         */
         HandoverAccept: {
             /** @description CAS——与当前 contract_version 不符 409 */
             expected_version: number;
+            /** @description 所见在途交接的发起标识（MissionView.pending_offer_id）；不符 409 invalid_transition */
+            offer_id: string;
             /** @description 承接备注（进回执事件） */
             note?: string;
         };
-        /** @description 婉拒/撤回交接（了结在途交接，事件留痕）。 */
+        /** @description 婉拒/撤回交接（了结在途交接，事件留痕）；offer_id 锚同 HandoverAccept。 */
         HandoverResolve: {
             /** @description CAS——与当前 contract_version 不符 409 */
             expected_version: number;
+            /** @description 所见在途交接的发起标识；不符 409 invalid_transition */
+            offer_id: string;
             /** @description 婉拒/撤回原因（进事件） */
             reason?: string;
         };
-        /** @description 交接事实（mission_events.handover_* 组装；append-only——kind=accepted 为承接回执）。 */
+        /** @description 交接事实（mission_events.handover_* 组装；append-only——kind=accepted 为承接回执）。offer_id 为发起标识回链（四类事实同源——撤回改派各自独立成对）。 */
         HandoverEventView: {
             /**
              * @description offered 发起 / accepted 承接回执 / declined 婉拒 / revoked 撤回
              * @enum {string}
              */
             kind: "offered" | "accepted" | "declined" | "revoked";
+            /** @description 发起标识（同一发起的 offered→accepted/declined/revoked 同 id；hdo_ 前缀生成） */
+            offer_id: string;
             /** @description 发起时负责人（空 = unassigned 指派） */
             from_owner_agent_id: string;
             /** @description 承接人 */
@@ -4399,10 +4409,17 @@ export interface components {
             delegation?: components["schemas"]["DelegationPolicy"];
             reviewer?: string;
         };
-        /** @description 修订请求体（全量替换 + 版本追加；expected_version CAS——AT-13 并发修订冲突明确拒绝）。 */
+        /**
+         * @description 修订请求体（全量替换 + 版本追加；expected_version CAS——AT-13 并发修订冲突明确拒绝）。
+         *     0.6.12 审校 #2：+= expected_owner_agent_id（**必填**，空串 = 预期 unassigned）——修订换 owner
+         *     须以调用方所见归属为锚；责任承接翻转 owner 后（contract_version 不递增），携旧 owner 的
+         *     修订被 409 owner_mismatch 拒绝（旧表单不得无感知撤销已完成的责任转移）。
+         */
         MissionRevise: {
             /** @description 调用方所见 contract_version；不匹配 409 version_conflict */
             expected_version: number;
+            /** @description 调用方所见的当前负责人（空串 = 预期 unassigned）；事务内核对——不匹配 409 owner_mismatch（0.6.12 审校 #2：防旧修订撤销承接翻转） */
+            expected_owner_agent_id: string;
             owner_agent_id?: string;
             objective: string;
             scope: string;
@@ -4484,6 +4501,8 @@ export interface components {
             owner_agent_id: string;
             /** @description 在途交接承接人（0.6.12 / ADR-0035：handover 发起置位、承接/婉拒/撤回清空；空 = 无在途交接。在途期间 owner 不变、Revise/RequestReview/MarkCanceling 冻结） */
             pending_owner_agent_id: string;
+            /** @description 在途交接发起标识（0.6.12 审校 #1：承接/婉拒/撤回请求须绑定此锚——撤回改派后旧请求 409；空 = 无在途交接） */
+            pending_offer_id: string;
             /** @description 请求人（0.6.0 恒 owner——本地单用户） */
             requester: string;
             /** @description 验收人（空 = 请求人自验） */
@@ -7833,7 +7852,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description 版本冲突（version_conflict）或终态拒修订（invalid_transition） */
+            /** @description 版本冲突（version_conflict）/ 终态拒修订（invalid_transition）/ 归属锚不符——责任承接翻转 owner 后携旧 owner 的修订被拒（owner_mismatch，0.6.12 审校 */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -9523,7 +9542,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description 版本冲突 / 无在途交接 / 状态族不符 / 承接人非 active（invalid_transition | version_conflict） */
+            /** @description 版本冲突 / 无在途交接 / 发起标识不符（offer_id 锚）/ 状态族不符 / 承接人非 active（invalid_transition | version_conflict） */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -9579,7 +9598,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description 版本冲突 / 无在途交接（invalid_transition | version_conflict） */
+            /** @description 版本冲突 / 无在途交接 / 发起标识不符（offer_id 锚）（invalid_transition | version_conflict） */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -9635,7 +9654,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description 版本冲突 / 无在途交接（invalid_transition | version_conflict） */
+            /** @description 版本冲突 / 无在途交接 / 发起标识不符（offer_id 锚）（invalid_transition | version_conflict） */
             409: {
                 headers: {
                     [name: string]: unknown;

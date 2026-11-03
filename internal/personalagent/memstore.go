@@ -151,7 +151,11 @@ func (m *MemStore) RetireAgent(_ context.Context, agentID string, allowedFrom []
 	if !allowedIn(allowedFrom, from) {
 		return "", false, nil
 	}
-	m.appendChangedLocked(agentID, from, StatusRetiring, reason, occurredAt)
+	// 0.6.12 审校 #3b 对齐：retiring 入参只补终段（不重复记 retiring）。测试件
+	// 无 missions 表——未处置承诺事务门以服务层先行判定为准（生产面 = sqlite）。
+	if from != StatusRetiring {
+		m.appendChangedLocked(agentID, from, StatusRetiring, reason, occurredAt)
+	}
 	m.appendChangedLocked(agentID, StatusRetiring, StatusRetired, reason, occurredAt)
 	m.agents[idx].Status = StatusRetired
 	return from, true, nil

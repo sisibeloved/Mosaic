@@ -105,7 +105,7 @@ func TestClearWaitingToDraftWhenIncomplete(t *testing.T) {
 	// waiting 中修订（投影保持 waiting；版本 +1）
 	c := fullContent()
 	c.AcceptanceCriteria = nil
-	rev, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", c)
+	rev, err := svc.Revise(ctx, m.MissionID, 1, "ag_a", "ag_a", c)
 	if err != nil || rev.Status != StatusWaiting || rev.ContractVersion != 2 || rev.WaitingReason != "reconciliation" {
 		t.Fatalf("waiting 中修订须保持投影与等待原因: %+v %v", rev, err)
 	}
