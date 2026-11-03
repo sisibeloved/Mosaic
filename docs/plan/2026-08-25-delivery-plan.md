@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.59 |
+| 版本 | v2.60 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -26,7 +26,7 @@
 
 ## 0.2 当前 Roadmap
 
-当前产品版本为 **v0.6.10**（0.6 领域已交付 0.6.0–0.6.10：MissionContract、房间交办/网关首切片、执行上下文清单、本地 Environment/Runtime、RuntimeLease、单 Agent Mission 执行、Mission 暂停/恢复/取消、Run 崩溃恢复、DeliveryPackage 成果提交、Mission 验收与执行结果回房；下一件 0.6.11 决策重开请求未开工）；0.5 领域线已收官；0.6 的 RFC 已于 2026-10-30 增补内嵌轻量级智能体网关设计（§0.6 说明，尚未实现）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
+当前产品版本为 **v0.6.10**（0.6 领域已交付 0.6.0–0.6.10：MissionContract、房间交办/网关首切片、执行上下文清单、本地 Environment/Runtime、RuntimeLease、单 Agent Mission 执行、Mission 暂停/恢复/取消、Run 崩溃恢复、DeliveryPackage 成果提交、Mission 验收与执行结果回房；0.6.11 决策重开请求已实施待定版）；0.5 领域线已收官；0.6 的 RFC 已于 2026-10-30 增补内嵌轻量级智能体网关设计（§0.6 说明，尚未实现）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
 
 | 版本线 | 领域 / 产品目标 | 设计来源 / RFC-0018 阶段映射 |
 |---|---|---|
@@ -179,6 +179,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.60 | 2026-11-03 | Mosaic 项目组 / ZCode | **0.6.11 决策重开请求（RFC-0018 §10.2/§11.2 / ADR-0034）——0.6 领域线第十二件**。reopen_request：负责人标出受影响决定（decision_ref）+ 证据 + 需停工作项 → CAS 版本（任意状态，不翻转终态）+ reopen_requested 事件（append-only 不改写旧回执）→ 逐项暂停（paused/already/terminal/not_found/failed 如实报告，失败不回滚）→ 交回 Room 复用回房通知栈（kind=reopen——migration v28 decision_ref/affected_count 快照列 + 投影器扩扫；暂停保留/删除待决/重启重放/去重全继承）；GET reopen-requests 读面；SPA 重开表单 + 历史 + 房间 reopen 徽标。不自动重开 Room、不翻收束、不自动匹配受影响任务（负责人显式标出）。各层测试先行：UT 域服务 6 例（形状/CAS/逐项暂停五型/List/判空）+ mission UT（事件载荷事实/终态可发起/形状族）+ IT reopen 通知（投影→decision_ref/affected_count 快照→原子投递→mission_ref.kind=reopen/decision_ref/轮次 0）；全量 vet/-race + it/st 串行 + SPA 绿 + 真机冒烟 16 项复跑 ALL-PASS（回归） |
 | v2.59 | 2026-11-02 | Mosaic 项目组 / ZCode | **定版 v0.6.10（负责人指令："发布"）——0.6 领域线第十一件**。CHANGELOG [Unreleased]（Added 执行结果回房：返回通知 + Fixed 四轮审校 9 + 1 + 7 + 5 项与 CI 揪出的 run 停止基线竞态）定版 **[0.6.10] - 2026-11-02**，保留空 [Unreleased]；README 当前版本推进 v0.6.10、路线图 0.6 系列标注 0.6.0–0.6.10 已交付与 0.6.11 指向；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.6.10 + GitHub Release 发布说明与 Windows 产物（于 tag 的干净 worktree 重建）；CI 三平台绿基线（04cf966 已验，定版提交复验） |
 | v2.58 | 2026-11-02 | Mosaic 项目组 / ZCode | **0.6.10 四审收口（独立复审报告：3 P2 产品 + 1 P2 测试缺口——ADR-0033 v0.4 修订）+ 两项既有补正**。#1/#5 SPA 来源成功单设已应用序号（旧成功不抹删房标记）、台账失败忽略早于最新成功的响应；#2 送验缺轮次按本次送验区间显式裁定校准（v22→v24 混合历史配对一致——纯计数/纯显式场景不变）；#3 取消恒 0（三面一致）；#4 run 回归改确定性同步屏障（先登记停止-cause 非空 cancel 为 no-op-再放行结果：旧实现 30/30 失败、新 30/30 通过）；既有：classify 认老式 to=returned（v22 实测 3 条漏卡）+ migration v27 游标首次重置幂等补投（登记守卫不每启动重扫）。新增 IT 三例（混合历史 1/1、2/2、1/1 配对 / 取消恒 0 三面 / v27 补投幂等与游标守卫）；全量 vet/-race + it/st 串行 + SPA 绿 + 真机冒烟 16 项复跑 ALL-PASS |
 | v2.57 | 2026-11-02 | Mosaic 项目组 / ZCode | **0.6.10 复审修复（独立复审报告：2 项 P1、3 项 P2、2 项 P3——ADR-0033 v0.3 修订）**。#1 P1（基线即有）停止在场时执行器成功返回不得发布：done 分支统一先查停止意图（不分成败），迟到正文只进 late_result 审计（AT-12）；#2 P1（上轮竞态修复引入的回归）已取结果放回缓冲通道交 finalizeStopped——审计/释放恰一次、不空等 stopGrace（租约不滞留到 TTL）；#5 裁定轮次按同包先行送验还原（同包送验/裁定同轮——v22 升级计数不串轮）；#6 版本行查到即保留空摘要（BOM 目标不回退）；#7 投递侧墓碑回填优先取房间实际删除时间；#3/#4 SPA 台账与来源独立更新 + 只丢弃比已显示更旧的响应。新增回归：run 强制停止与结果同就绪（终态/正文不发布/late_result 审计/租约恰一次/不空等）+ IT 同包轮次配对与 BOM 空摘要 + 墓碑原时间断言；全量 vet/-race + it/st 串行 + SPA 绿 + 真机冒烟 16 项复跑 ALL-PASS |

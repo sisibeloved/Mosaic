@@ -299,6 +299,24 @@ func (m *MemStore) RequestReview(_ context.Context, missionID string, expectedVe
 
 // RecordReview 条件裁定（0.6.9；v0.2 #3 轮次守卫）：reviewing 且轮次相符 → to
 // （accepted 保留锚 / ready 清锚——轮次回 0）。
+// ReopenRequest CAS 版本（任意状态）+ reopen_requested 事件；不改状态与版本。
+func (m *MemStore) ReopenRequest(_ context.Context, missionID string, expectedVersion int, event Event) (Mission, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i, ok := m.indexOfLocked(missionID)
+	if !ok {
+		return Mission{}, false, ErrMissionNotFound
+	}
+	cur := m.missions[i]
+	if cur.ContractVersion != expectedVersion {
+		return Mission{}, false, nil
+	}
+	m.seq++
+	event.Seq = m.seq
+	m.events[missionID] = append(m.events[missionID], event)
+	return cur, true, nil
+}
+
 func (m *MemStore) RecordReview(_ context.Context, missionID string, expectedVersion, expectedRound int, to string, event Event, expectedPackage string) (Mission, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -3359,6 +3359,78 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /v1/missions/{mission_id}/reopen-request:
+    post:
+      operationId: submitReopenRequest
+      summary: 决策重开请求（reopen_request——记录 + 暂停受影响执行 + 交回 Room）
+      description: |
+        0.6.11 / ADR-0034（RFC-0018 §10.2/§11.2）：触及决策的 falsifier 出现时，
+        负责人提交重开请求——标出受影响决定（decision_ref）、证据与需停止的工作项。
+        CAS 后追加 reopen_requested 事件（append-only——已发生的外部动作与旧回执
+        不改写）；逐项暂停受影响任务（reason=reopen:<request_id> 回链；terminal
+        跳过、already_paused 幂等、失败不回滚请求）；交回 Room 复用回房通知
+        （kind=reopen——暂停房保留恢复后发布、删除房任务中心待决）。不自动重开
+        Room、不翻转 Mission 终态（任何状态均可发起，含 accepted）。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: mission_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReopenSubmit" }
+      responses:
+        "201":
+          description: 已记录（Mission 状态不变；逐项暂停结果随响应返回）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReopenRequestView" }
+        "400":
+          description: 形状/上限不合法（invalid_reopen）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Mission 不存在（mission_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 版本冲突（version_conflict）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: 重开域未装配（reopen_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/missions/{mission_id}/reopen-requests:
+    get:
+      operationId: listReopenRequests
+      summary: 重开请求列表（事件流组装，seq 升序——任务中心待决可见性）
+      parameters:
+        - name: mission_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 请求列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReopenRequestList" }
+        "404":
+          description: Mission 不存在（mission_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/missions/{mission_id}/return-notices:
     get:
       operationId: listMissionReturnNotices
@@ -5431,14 +5503,59 @@ components:
           items: { type: string }
           description: 选配降级项（不阻塞）
         effective_workspace_access: { type: string, enum: [none, read, read_write] }
+    ReopenSubmit:
+      type: object
+      required: [expected_version, decision_ref, evidence_refs]
+      additionalProperties: false
+      description: 决策重开请求（RFC-0018 §11.2 reopen_request / ADR-0034，0.6.11）——负责人标出受影响决定、证据与需停止的工作项。
+      properties:
+        expected_version: { type: integer, minimum: 1, description: CAS——与当前 contract_version 不符 409 }
+        decision_ref: { type: string, minLength: 1, maxLength: 256, description: 受影响决定的引用（收束胶囊 / 文档修订 / 决策版本——自由引用串，不做存在性校验） }
+        evidence_refs: { type: array, minItems: 1, maxItems: 8, items: { type: string, minLength: 1, maxLength: 256 }, description: 反证 / 触发证据的引用 }
+        affected_mission_ids: { type: array, maxItems: 16, items: { type: string }, description: 需停止的工作项（可空 = 仅请求不暂停；含自身亦允许） }
+        reason: { type: string, maxLength: 280, description: 说明（进卡片与事件） }
+    ReopenAffectedResult:
+      type: object
+      required: [mission_id, result]
+      additionalProperties: false
+      description: 受影响工作项的逐项暂停结果（如实报告——失败不回滚请求事实）。
+      properties:
+        mission_id: { type: string }
+        result: { type: string, enum: [paused, already_paused, terminal, not_found, failed], description: paused 本次暂停 / already_paused 幂等 / terminal 终态无执行可停 / not_found 不存在 / failed 暂停面错误 }
+        detail: { type: string, description: failed 时的原因 }
+    ReopenRequestView:
+      type: object
+      required: [request_id, mission_id, decision_ref, evidence_refs, affected_mission_ids, contract_version, occurred_at]
+      additionalProperties: false
+      description: 重开请求事实（mission_events.reopen_requested 组装；append-only——旧回执不改写）。
+      properties:
+        request_id: { type: string }
+        mission_id: { type: string }
+        decision_ref: { type: string }
+        evidence_refs: { type: array, items: { type: string } }
+        affected_mission_ids: { type: array, items: { type: string } }
+        reason: { type: string }
+        contract_version: { type: integer, minimum: 1, description: 请求时点的契约版本（CAS 后实际值随事件留痕） }
+        occurred_at: { type: string, format: date-time }
+        affected: { type: array, items: { $ref: "#/components/schemas/ReopenAffectedResult" }, description: 逐项暂停结果——仅提交响应携带（读面不回填，留痕在各任务 paused 事件 reason=reopen:<request_id>） }
+    ReopenRequestList:
+      type: object
+      required: [requests]
+      additionalProperties: false
+      properties:
+        requests:
+          type: array
+          description: 按 seq 升序
+          items: { $ref: "#/components/schemas/ReopenRequestView" }
     MissionRef:
       type: object
       required: [mission_id, kind, contract_version, task_id, source_seq]
       additionalProperties: false
-      description: 执行结果回房引用（ADR-0033 / 0.6.10）——message.posted 载荷 mission_ref 的 HTTP 投影；系统 actor 专用，post_message 命令面不接受（人类不能伪造）。
+      description: 执行结果回房引用（ADR-0033 / 0.6.10；reopen 扩展 ADR-0034 / 0.6.11）——message.posted 载荷 mission_ref 的 HTTP 投影；系统 actor 专用，post_message 命令面不接受（人类不能伪造）。
       properties:
         mission_id: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
-        kind: { type: string, enum: [reviewing, accepted, returned, canceled], description: 来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消 }
+        kind: { type: string, enum: [reviewing, accepted, returned, canceled, reopen], description: 来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消 / 决策重开请求 }
+        decision_ref: { type: string, minLength: 1, maxLength: 256, description: 重开请求指向的受影响决定引用（仅 kind=reopen 携带） }
         contract_version: { type: integer, minimum: 1 }
         review_round: { type: integer, minimum: 0, description: 送验轮次（canceled 为 0） }
         package_id: { type: string, pattern: "^dlv_[0-9A-Za-z_-]+$", description: 受审交付包（reviewing / accepted / returned 携带） }
@@ -5454,7 +5571,7 @@ components:
         mission_id: { type: string }
         room_id: { type: string }
         task_id: { type: string }
-        kind: { type: string, enum: [reviewing, accepted, returned, canceled] }
+        kind: { type: string, enum: [reviewing, accepted, returned, canceled, reopen] }
         source_seq: { type: integer, minimum: 1 }
         contract_version: { type: integer, minimum: 1 }
         review_round: { type: integer, minimum: 0 }

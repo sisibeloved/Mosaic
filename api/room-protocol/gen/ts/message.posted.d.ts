@@ -89,9 +89,13 @@ export interface MessagePostedPayload {
   mission_ref?: {
     mission_id: string;
     /**
-     * 来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消
+     * 来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消 / 决策重开请求（ADR-0034 / 0.6.11）
      */
-    kind: "reviewing" | "accepted" | "returned" | "canceled";
+    kind: "reviewing" | "accepted" | "returned" | "canceled" | "reopen";
+    /**
+     * 重开请求指向的受影响决定引用（仅 kind=reopen 携带；收束胶囊 / 文档修订 / 决策版本）
+     */
+    decision_ref?: string;
     contract_version: number;
     /**
      * 送验轮次（reviewing / accepted / returned 携带；canceled 为 0）

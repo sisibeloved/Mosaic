@@ -64,7 +64,8 @@
       "additionalProperties": false,
       "properties": {
         "mission_id": { "type": "string", "pattern": "^mi_[0-9A-Za-z_-]+$" },
-        "kind": { "type": "string", "enum": ["reviewing", "accepted", "returned", "canceled"], "description": "来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消" },
+        "kind": { "type": "string", "enum": ["reviewing", "accepted", "returned", "canceled", "reopen"], "description": "来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消 / 决策重开请求（ADR-0034 / 0.6.11）" },
+        "decision_ref": { "type": "string", "minLength": 1, "maxLength": 256, "description": "重开请求指向的受影响决定引用（仅 kind=reopen 携带；收束胶囊 / 文档修订 / 决策版本）" },
         "contract_version": { "type": "integer", "minimum": 1 },
         "review_round": { "type": "integer", "minimum": 0, "description": "送验轮次（reviewing / accepted / returned 携带；canceled 为 0）" },
         "package_id": { "type": "string", "pattern": "^dlv_[0-9A-Za-z_-]+$", "description": "受审交付包（reviewing / accepted / returned 携带）" },

@@ -368,12 +368,14 @@ type ExternalRef struct {
 // 不能伪造。source_seq = 来源 mission_events.seq，同一事实恰一张卡（去重键）。
 type MissionRef struct {
 	MissionID       string `json:"mission_id"`
-	Kind            string `json:"kind"`                   // reviewing | accepted | returned | canceled
+	Kind            string `json:"kind"`                   // reviewing | accepted | returned | canceled | reopen
 	ContractVersion int    `json:"contract_version"`       // 事实对应的契约版本
-	ReviewRound     int    `json:"review_round,omitempty"` // 送验轮次（canceled 为 0）
+	ReviewRound     int    `json:"review_round,omitempty"` // 送验轮次（canceled / reopen 为 0）
 	PackageID       string `json:"package_id,omitempty"`   // 受审交付包
 	TaskID          string `json:"task_id"`                // 来源任务卡（ADR-0024 映射）
 	SourceSeq       int64  `json:"source_seq"`             // 来源 mission_events.seq——去重键
+	// DecisionRef 重开请求指向的受影响决定引用（仅 kind=reopen，ADR-0034 / 0.6.11）。
+	DecisionRef string `json:"decision_ref,omitempty"`
 }
 
 // DecodeDocPayload 按事件类型把 DocEnvelope.Payload 解码为对应边界结构。

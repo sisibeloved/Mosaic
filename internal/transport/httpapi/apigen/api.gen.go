@@ -787,6 +787,7 @@ func (e MissionEventEventType) Valid() bool {
 const (
 	MissionRefKindAccepted  MissionRefKind = "accepted"
 	MissionRefKindCanceled  MissionRefKind = "canceled"
+	MissionRefKindReopen    MissionRefKind = "reopen"
 	MissionRefKindReturned  MissionRefKind = "returned"
 	MissionRefKindReviewing MissionRefKind = "reviewing"
 )
@@ -797,6 +798,8 @@ func (e MissionRefKind) Valid() bool {
 	case MissionRefKindAccepted:
 		return true
 	case MissionRefKindCanceled:
+		return true
+	case MissionRefKindReopen:
 		return true
 	case MissionRefKindReturned:
 		return true
@@ -1080,10 +1083,38 @@ func (e ReadinessReportViewEffectiveWorkspaceAccess) Valid() bool {
 	}
 }
 
+// Defines values for ReopenAffectedResultResult.
+const (
+	ReopenAffectedResultResultAlreadyPaused ReopenAffectedResultResult = "already_paused"
+	ReopenAffectedResultResultFailed        ReopenAffectedResultResult = "failed"
+	ReopenAffectedResultResultNotFound      ReopenAffectedResultResult = "not_found"
+	ReopenAffectedResultResultPaused        ReopenAffectedResultResult = "paused"
+	ReopenAffectedResultResultTerminal      ReopenAffectedResultResult = "terminal"
+)
+
+// Valid indicates whether the value is a known member of the ReopenAffectedResultResult enum.
+func (e ReopenAffectedResultResult) Valid() bool {
+	switch e {
+	case ReopenAffectedResultResultAlreadyPaused:
+		return true
+	case ReopenAffectedResultResultFailed:
+		return true
+	case ReopenAffectedResultResultNotFound:
+		return true
+	case ReopenAffectedResultResultPaused:
+		return true
+	case ReopenAffectedResultResultTerminal:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ReturnNoticeViewKind.
 const (
 	ReturnNoticeViewKindAccepted  ReturnNoticeViewKind = "accepted"
 	ReturnNoticeViewKindCanceled  ReturnNoticeViewKind = "canceled"
+	ReturnNoticeViewKindReopen    ReturnNoticeViewKind = "reopen"
 	ReturnNoticeViewKindReturned  ReturnNoticeViewKind = "returned"
 	ReturnNoticeViewKindReviewing ReturnNoticeViewKind = "reviewing"
 )
@@ -1094,6 +1125,8 @@ func (e ReturnNoticeViewKind) Valid() bool {
 	case ReturnNoticeViewKindAccepted:
 		return true
 	case ReturnNoticeViewKindCanceled:
+		return true
+	case ReturnNoticeViewKindReopen:
 		return true
 	case ReturnNoticeViewKindReturned:
 		return true
@@ -3303,11 +3336,14 @@ type MissionPause struct {
 	Reason *string `json:"reason,omitempty"`
 }
 
-// MissionRef 执行结果回房引用（ADR-0033 / 0.6.10）——message.posted 载荷 mission_ref 的 HTTP 投影；系统 actor 专用，post_message 命令面不接受（人类不能伪造）。
+// MissionRef 执行结果回房引用（ADR-0033 / 0.6.10；reopen 扩展 ADR-0034 / 0.6.11）——message.posted 载荷 mission_ref 的 HTTP 投影；系统 actor 专用，post_message 命令面不接受（人类不能伪造）。
 type MissionRef struct {
 	ContractVersion int `json:"contract_version"`
 
-	// Kind 来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消
+	// DecisionRef 重开请求指向的受影响决定引用（仅 kind=reopen 携带）
+	DecisionRef *string `json:"decision_ref,omitempty"`
+
+	// Kind 来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消 / 决策重开请求
 	Kind      MissionRefKind `json:"kind"`
 	MissionId string         `json:"mission_id"`
 
@@ -3322,7 +3358,7 @@ type MissionRef struct {
 	TaskId    string `json:"task_id"`
 }
 
-// MissionRefKind 来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消
+// MissionRefKind 来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消 / 决策重开请求
 type MissionRefKind string
 
 // MissionResume 恢复请求体（0.6.6 / ADR-0029：paused → ready——调度器自动拾取）。
@@ -3656,6 +3692,59 @@ type ReceiptListView struct {
 		Watermark    string   `json:"watermark"`
 	} `json:"receipts"`
 	RoomId string `json:"room_id"`
+}
+
+// ReopenAffectedResult 受影响工作项的逐项暂停结果（如实报告——失败不回滚请求事实）。
+type ReopenAffectedResult struct {
+	// Detail failed 时的原因
+	Detail    *string `json:"detail,omitempty"`
+	MissionId string  `json:"mission_id"`
+
+	// Result paused 本次暂停 / already_paused 幂等 / terminal 终态无执行可停 / not_found 不存在 / failed 暂停面错误
+	Result ReopenAffectedResultResult `json:"result"`
+}
+
+// ReopenAffectedResultResult paused 本次暂停 / already_paused 幂等 / terminal 终态无执行可停 / not_found 不存在 / failed 暂停面错误
+type ReopenAffectedResultResult string
+
+// ReopenRequestList defines model for ReopenRequestList.
+type ReopenRequestList struct {
+	// Requests 按 seq 升序
+	Requests []ReopenRequestView `json:"requests"`
+}
+
+// ReopenRequestView 重开请求事实（mission_events.reopen_requested 组装；append-only——旧回执不改写）。
+type ReopenRequestView struct {
+	// Affected 逐项暂停结果——仅提交响应携带（读面不回填，留痕在各任务 paused 事件 reason=reopen:<request_id>）
+	Affected           *[]ReopenAffectedResult `json:"affected,omitempty"`
+	AffectedMissionIds []string                `json:"affected_mission_ids"`
+
+	// ContractVersion 请求时点的契约版本（CAS 后实际值随事件留痕）
+	ContractVersion int       `json:"contract_version"`
+	DecisionRef     string    `json:"decision_ref"`
+	EvidenceRefs    []string  `json:"evidence_refs"`
+	MissionId       string    `json:"mission_id"`
+	OccurredAt      time.Time `json:"occurred_at"`
+	Reason          *string   `json:"reason,omitempty"`
+	RequestId       string    `json:"request_id"`
+}
+
+// ReopenSubmit 决策重开请求（RFC-0018 §11.2 reopen_request / ADR-0034，0.6.11）——负责人标出受影响决定、证据与需停止的工作项。
+type ReopenSubmit struct {
+	// AffectedMissionIds 需停止的工作项（可空 = 仅请求不暂停；含自身亦允许）
+	AffectedMissionIds *[]string `json:"affected_mission_ids,omitempty"`
+
+	// DecisionRef 受影响决定的引用（收束胶囊 / 文档修订 / 决策版本——自由引用串，不做存在性校验）
+	DecisionRef string `json:"decision_ref"`
+
+	// EvidenceRefs 反证 / 触发证据的引用
+	EvidenceRefs []string `json:"evidence_refs"`
+
+	// ExpectedVersion CAS——与当前 contract_version 不符 409
+	ExpectedVersion int `json:"expected_version"`
+
+	// Reason 说明（进卡片与事件）
+	Reason *string `json:"reason,omitempty"`
 }
 
 // ReturnNoticeList defines model for ReturnNoticeList.
@@ -4907,6 +4996,9 @@ type SubmitDeliveryPackageJSONRequestBody = DeliveryPackageSubmit
 // PauseMissionJSONRequestBody defines body for PauseMission for application/json ContentType.
 type PauseMissionJSONRequestBody = MissionPause
 
+// SubmitReopenRequestJSONRequestBody defines body for SubmitReopenRequest for application/json ContentType.
+type SubmitReopenRequestJSONRequestBody = ReopenSubmit
+
 // RequestMissionReviewJSONRequestBody defines body for RequestMissionReview for application/json ContentType.
 type RequestMissionReviewJSONRequestBody = MissionReviewRequest
 
@@ -5161,6 +5253,12 @@ type ServerInterface interface {
 	// PauseMission 暂停 Mission（CAS；阻止新调度 + 在途 Run 安全边界停止）
 	// (POST /v1/missions/{mission_id}/pause)
 	PauseMission(w http.ResponseWriter, r *http.Request, missionId string)
+	// SubmitReopenRequest 决策重开请求（reopen_request——记录 + 暂停受影响执行 + 交回 Room）
+	// (POST /v1/missions/{mission_id}/reopen-request)
+	SubmitReopenRequest(w http.ResponseWriter, r *http.Request, missionId string)
+	// ListReopenRequests 重开请求列表（事件流组装，seq 升序——任务中心待决可见性）
+	// (GET /v1/missions/{mission_id}/reopen-requests)
+	ListReopenRequests(w http.ResponseWriter, r *http.Request, missionId string)
 	// RequestMissionReview 提请验收（request_review——必需交付项检查 + ready → reviewing）
 	// (POST /v1/missions/{mission_id}/request-review)
 	RequestMissionReview(w http.ResponseWriter, r *http.Request, missionId string)
@@ -6925,6 +7023,58 @@ func (siw *ServerInterfaceWrapper) PauseMission(w http.ResponseWriter, r *http.R
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PauseMission(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SubmitReopenRequest operation middleware
+func (siw *ServerInterfaceWrapper) SubmitReopenRequest(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SubmitReopenRequest(w, r, missionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListReopenRequests operation middleware
+func (siw *ServerInterfaceWrapper) ListReopenRequests(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "mission_id" -------------
+	var missionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "mission_id", r.PathValue("mission_id"), &missionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "mission_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListReopenRequests(w, r, missionId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8701,6 +8851,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/runtime-leases/{lease_id}/check-fence", wrapper.CheckRuntimeLeaseFence)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/runs", wrapper.ListMissionRuns)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/runs", wrapper.CreateMissionRun)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/reopen-request", wrapper.SubmitReopenRequest)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/reopen-requests", wrapper.ListReopenRequests)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/return-notices", wrapper.ListMissionReturnNotices)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/missions/{mission_id}/delivery-packages", wrapper.ListDeliveryPackages)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/delivery-packages", wrapper.SubmitDeliveryPackage)

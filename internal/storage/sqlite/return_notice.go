@@ -59,6 +59,13 @@ INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (25, strftime('%Y-
 	"ALTER TABLE mission_sources ADD COLUMN deleted_at TEXT",
 }
 
+// migrationV28（0.6.11 / ADR-0034）：重开通知快照列——decision_ref（受影响决定
+// 引用）与 affected_count（受影响工作项数）。逐语句加列（重复容忍）。
+var migrationV28 = []string{
+	"ALTER TABLE mission_return_notices ADD COLUMN decision_ref TEXT NOT NULL DEFAULT ''",
+	"ALTER TABLE mission_return_notices ADD COLUMN affected_count INTEGER NOT NULL DEFAULT 0",
+}
+
 // migrationV27（0.6.10 四审·既有补正）：老式 `to=returned` 退回事件（0.6.9
 // 初版形态——#10 审校前 to 即 returned，v0.2 起才为 to=ready+decision=returned）
 // 此前不被 classify 识别，且游标已越过——重置投影游标使下一轮全量重扫：
@@ -243,6 +250,16 @@ func roundAtEvent(ctx context.Context, conn *sql.Conn, missionID string, seq int
 	return n
 }
 
+// reopenRequestedPayload reopen_requested 事件的载荷字段（ADR-0034 / 0.6.11）。
+type reopenRequestedPayload struct {
+	RequestID          string   `json:"request_id"`
+	DecisionRef        string   `json:"decision_ref"`
+	EvidenceRefs       []string `json:"evidence_refs"`
+	AffectedMissionIDs []string `json:"affected_mission_ids"`
+	Reason             string   `json:"reason"`
+	ContractVersion    int      `json:"contract_version"`
+}
+
 // classify 事实 → 通知 kind（表 1，ADR-0033 §1）；非四类返回空。
 func classify(p statusChangedPayload) missionreturn.Kind {
 	switch {
@@ -296,25 +313,34 @@ func (a ReturnStore) Project(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("sqlite: read return cursor: %w", err)
 	}
 	rows, err := conn.QueryContext(ctx, `
-		SELECT seq, mission_id, payload FROM mission_events
-		WHERE seq > ? AND event_type = 'status_changed' ORDER BY seq LIMIT 500`, lastSeq)
+		SELECT seq, mission_id, event_type, payload FROM mission_events
+		WHERE seq > ? AND event_type IN ('status_changed', 'reopen_requested')
+		ORDER BY seq LIMIT 500`, lastSeq)
 	if err != nil {
 		return 0, fmt.Errorf("sqlite: scan mission_events: %w", err)
 	}
 	type fact struct {
 		seq       int64
 		missionID string
+		eventType string
 		payload   statusChangedPayload
+		reopen    reopenRequestedPayload
+		hasReopen bool
 	}
 	var facts []fact
 	for rows.Next() {
 		var f fact
 		var payload string
-		if err := rows.Scan(&f.seq, &f.missionID, &payload); err != nil {
+		if err := rows.Scan(&f.seq, &f.missionID, &f.eventType, &payload); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("sqlite: scan mission_events row: %w", err)
 		}
-		_ = json.Unmarshal([]byte(payload), &f.payload)
+		if f.eventType == "reopen_requested" {
+			_ = json.Unmarshal([]byte(payload), &f.reopen)
+			f.hasReopen = true
+		} else {
+			_ = json.Unmarshal([]byte(payload), &f.payload)
+		}
 		facts = append(facts, f)
 	}
 	rows.Close()
@@ -325,6 +351,9 @@ func (a ReturnStore) Project(ctx context.Context) (int, error) {
 	for _, f := range facts {
 		lastSeq = f.seq
 		kind := classify(f.payload)
+		if f.hasReopen {
+			kind = missionreturn.KindReopen
+		}
 		if kind == "" {
 			continue
 		}
@@ -342,6 +371,9 @@ func (a ReturnStore) Project(ctx context.Context) (int, error) {
 		// objective 取该版本行的不可变快照，不读 missions 当前行（v1 退回后修订
 		// v2 的重放不得把旧包记到 v2、显示 v2 目标）。
 		contractVersion := f.payload.ContractVersion
+		if f.hasReopen {
+			contractVersion = f.reopen.ContractVersion
+		}
 		if contractVersion <= 0 {
 			contractVersion = versionAtEvent(ctx, conn, f.missionID, f.seq)
 		}
@@ -354,7 +386,10 @@ func (a ReturnStore) Project(ctx context.Context) (int, error) {
 			}
 		}
 		reviewRound := f.payload.ReviewRound
-		if reviewRound <= 0 {
+		if f.hasReopen {
+			reviewRound = 0 // 重开请求无轮次语义（mission_ref 契约 reopen 为 0）
+		}
+		if reviewRound <= 0 && !f.hasReopen {
 			switch kind {
 			case missionreturn.KindReviewing:
 				// 四审 #2：先按本次送验区间的显式裁定校准（v22→v24 混合历史——
@@ -373,16 +408,23 @@ func (a ReturnStore) Project(ctx context.Context) (int, error) {
 				reviewRound = 0
 			}
 		}
+		// reopen 快照（0.6.11 / ADR-0034）：reason / decision_ref / affected_count 取事件载荷
+		reasonSnap, decisionRef, affectedCount := f.payload.Reason, "", 0
+		if f.hasReopen {
+			reasonSnap = f.reopen.Reason
+			decisionRef = truncateRunes(f.reopen.DecisionRef, 256)
+			affectedCount = len(f.reopen.AffectedMissionIDs)
+		}
 		res, err := conn.ExecContext(ctx, `
 			INSERT OR IGNORE INTO mission_return_notices
 			(notice_id, source_seq, mission_id, room_id, task_id, kind, contract_version,
-			 review_round, package_id, reviewer, reason, objective, status, attempts,
-			 next_attempt_at, last_error, room_event_id, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, '', '', '',
+			 review_round, package_id, reviewer, reason, objective, decision_ref, affected_count,
+			 status, attempts, next_attempt_at, last_error, room_event_id, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, '', '', '',
 			        strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
 			"rn_"+strconv.FormatInt(f.seq, 10), f.seq, f.missionID, roomID, taskID, string(kind),
 			contractVersion, reviewRound, f.payload.PackageID, f.payload.Reviewer,
-			truncateRunes(f.payload.Reason, 200), objective)
+			truncateRunes(reasonSnap, 200), objective, decisionRef, affectedCount)
 		if err != nil {
 			return 0, fmt.Errorf("sqlite: insert return notice: %w", err)
 		}
@@ -402,13 +444,15 @@ func (a ReturnStore) Project(ctx context.Context) (int, error) {
 }
 
 const returnNoticeCols = `notice_id, source_seq, mission_id, room_id, task_id, kind,
- contract_version, review_round, package_id, reviewer, reason, objective, status,
+ contract_version, review_round, package_id, reviewer, reason, objective,
+ decision_ref, affected_count, status,
  attempts, next_attempt_at, last_error, room_event_id, created_at, updated_at`
 
 func scanReturnNotice(row interface{ Scan(...any) error }) (missionreturn.Notice, error) {
 	var n missionreturn.Notice
 	err := row.Scan(&n.NoticeID, &n.SourceSeq, &n.MissionID, &n.RoomID, &n.TaskID, &n.Kind,
 		&n.ContractVersion, &n.ReviewRound, &n.PackageID, &n.Reviewer, &n.Reason, &n.Objective,
+		&n.DecisionRef, &n.AffectedCount,
 		&n.Status, &n.Attempts, &n.NextAttemptAt, &n.LastError, &n.RoomEventID, &n.CreatedAt, &n.UpdatedAt)
 	if err != nil {
 		return missionreturn.Notice{}, err
@@ -567,6 +611,7 @@ func (a ReturnStore) Deliver(ctx context.Context, n missionreturn.Notice, env mi
 			PackageID:       n.PackageID,
 			TaskID:          n.TaskID,
 			SourceSeq:       n.SourceSeq,
+			DecisionRef:     n.DecisionRef,
 		},
 	})
 	if err != nil {

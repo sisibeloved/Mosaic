@@ -16,6 +16,7 @@ import {
   type MissionRunView,
   type MissionSummary,
   type MissionView,
+  type ReopenRequestView,
   type ReturnNoticeView,
   type SlotInstanceView,
 } from "../api/client";
@@ -853,6 +854,7 @@ function MissionDetail({
         </div>
       )}
 
+      <ReopenSection missionID={missionID} contractVersion={detail?.contract_version ?? 0} onChanged={() => load()} />
       {(srcNow || (returnNotices ?? []).length > 0) && (
         <div className="flex flex-col gap-1 rounded-lg bg-surface-2 p-2">
           <p className="text-faint">回房（执行结果 → 来源房间 · ADR-0033）</p>
@@ -1507,5 +1509,96 @@ function ExecContextCard({ missionID, ownerAgentID, canceled }: { missionID: str
         )}
       </div>
     </details>
+  );
+}
+
+
+// 0.6.11 决策重开请求区（ADR-0034）：提交表单 + 历史列表（任何状态可发起——
+// accepted 终态的新证据重开正是典型场景；不翻转状态）。
+function ReopenSection({ missionID, contractVersion, onChanged }: {
+  missionID: string; contractVersion: number; onChanged: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [decisionRef, setDecisionRef] = useState("");
+  const [evidence, setEvidence] = useState("");
+  const [affected, setAffected] = useState("");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [history, setHistory] = useState<ReopenRequestView[] | null>(null);
+
+  useEffect(() => {
+    void api.listReopenRequests(missionID).then((r) => setHistory(r.requests)).catch(() => setHistory([]));
+  }, [missionID, msg]);
+
+  const submit = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const out = await api.submitReopenRequest(missionID, {
+        expected_version: contractVersion,
+        decision_ref: decisionRef.trim(),
+        evidence_refs: evidence.split(/\n/).map((x) => x.trim()).filter(Boolean),
+        ...(affected.trim() ? { affected_mission_ids: affected.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean) } : {}),
+        ...(reason.trim() ? { reason: reason.trim() } : {}),
+      });
+      const parts = (out.affected ?? []).map((a) => `${a.mission_id}: ${a.result}`).join("；");
+      setMsg(`已记录 ${out.request_id}${parts ? `（${parts}）` : ""}`);
+      setDecisionRef(""); setEvidence(""); setAffected(""); setReason(""); setOpen(false);
+      onChanged();
+    } catch (e) {
+      setMsg(e instanceof ApiError ? `${e.code}：${e.message}` : String(e));
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="flex flex-col gap-1 rounded-lg bg-surface-2 p-2">
+      <div className="flex items-center gap-2">
+        <p className="text-faint">决策重开（reopen_request）</p>
+        {(history?.length ?? 0) > 0 && <span className="text-faint text-[11px]">{history!.length} 条历史</span>}
+        <button onClick={() => setOpen(!open)} disabled={busy}
+          className="ml-auto rounded-lg bg-surface-3 px-2 py-1 text-xs text-warn disabled:opacity-40">
+          {open ? "收起" : "提请重开"}
+        </button>
+      </div>
+      {open && (
+        <div className="flex flex-col gap-1.5">
+          <input value={decisionRef} onChange={(e) => setDecisionRef(e.target.value)}
+            placeholder="受影响决定引用（如 closure:room:seq42——必填）"
+            className="rounded border border-border bg-surface px-1.5 py-1 text-sm outline-none" />
+          <textarea value={evidence} onChange={(e) => setEvidence(e.target.value)} rows={2}
+            placeholder="证据引用（每行一项——至少 1 条）"
+            className="rounded border border-border bg-surface px-1.5 py-1 font-mono text-xs outline-none" />
+          <textarea value={affected} onChange={(e) => setAffected(e.target.value)} rows={2}
+            placeholder="需暂停的工作项任务 ID（空格/逗号/换行分隔——可空）"
+            className="rounded border border-border bg-surface px-1.5 py-1 font-mono text-xs outline-none" />
+          <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2}
+            placeholder="原因（≤280 字）"
+            className="rounded border border-border bg-surface px-1.5 py-1 text-xs outline-none" />
+          <button onClick={submit} disabled={busy || !decisionRef.trim() || !evidence.trim()}
+            className="rounded-lg bg-surface-3 px-2 py-1 text-xs text-warn disabled:opacity-40">
+            {busy ? "提交中…" : `提交重开（契约 v${contractVersion}）`}
+          </button>
+        </div>
+      )}
+      {msg && <p className="text-[11px] text-dim">{msg}</p>}
+      {(history?.length ?? 0) > 0 && (
+        <details>
+          <summary className="cursor-pointer select-none text-faint text-[11px]">重开历史</summary>
+          <ul className="mt-0.5 flex flex-col gap-0.5">
+            {history!.map((r) => (
+              <li key={r.request_id} className="flex flex-wrap items-center gap-x-2 text-[11px]">
+                <span className="font-mono text-faint">{r.request_id}</span>
+                <span className="text-warn">{r.decision_ref}</span>
+                <span className="text-faint">v{r.contract_version} · {new Date(r.occurred_at).toLocaleString()}</span>
+                {r.affected_mission_ids.length > 0 && (
+                  <span className="text-faint">受影响 {r.affected_mission_ids.length} 项</span>
+                )}
+                {r.reason && <span className="text-dim truncate">{r.reason}</span>}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
   );
 }

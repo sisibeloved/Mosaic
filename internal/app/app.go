@@ -49,6 +49,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
+	"github.com/sisibeloved/Mosaic/internal/reopen"
 	"github.com/sisibeloved/Mosaic/internal/review"
 	"github.com/sisibeloved/Mosaic/internal/room"
 	missionrun "github.com/sisibeloved/Mosaic/internal/run"
@@ -425,6 +426,9 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	// 周期原子投递回来源房间（房间暂停保留待恢复、删除取消 + 来源墓碑、其余
 	// 有界重试）；与 server 同生命周期，未投出的行留待下次启动重放。
 	returnStore := sqlite.ReturnStore{Store: store}
+	// 重开域（0.6.11 / ADR-0034）：reopen_request——事实先落 + 逐项暂停 + 交回 Room。
+	reopenSvc := reopen.New(missionSvc, missioncontrol.New(missionSvc, runSvc),
+		reopen.WithNow(clock), reopen.WithNewRequestID(newID))
 	returnWorker := missionreturn.New(returnStore,
 		missionreturn.WithNewID(newID),
 		missionreturn.WithLogger(logger))
@@ -448,6 +452,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Delivery:         deliverySvc,
 		Review:           review.New(missionSvc, deliveryPackagesAdapter{deliverySvc}, reviewRunsAdapter{runSvc}),
 		ReturnNotices:    returnStore,
+		Reopen:           reopenSvc,
 		Logger:           logger,
 		Dev:              opts.Dev,
 		Budget:           budgetLimits,

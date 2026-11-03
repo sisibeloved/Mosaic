@@ -2000,6 +2000,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/missions/{mission_id}/reopen-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 决策重开请求（reopen_request——记录 + 暂停受影响执行 + 交回 Room）
+         * @description 0.6.11 / ADR-0034（RFC-0018 §10.2/§11.2）：触及决策的 falsifier 出现时，
+         *     负责人提交重开请求——标出受影响决定（decision_ref）、证据与需停止的工作项。
+         *     CAS 后追加 reopen_requested 事件（append-only——已发生的外部动作与旧回执
+         *     不改写）；逐项暂停受影响任务（reason=reopen:<request_id> 回链；terminal
+         *     跳过、already_paused 幂等、失败不回滚请求）；交回 Room 复用回房通知
+         *     （kind=reopen——暂停房保留恢复后发布、删除房任务中心待决）。不自动重开
+         *     Room、不翻转 Mission 终态（任何状态均可发起，含 accepted）。
+         */
+        post: operations["submitReopenRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/missions/{mission_id}/reopen-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 重开请求列表（事件流组装，seq 升序——任务中心待决可见性） */
+        get: operations["listReopenRequests"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/missions/{mission_id}/return-notices": {
         parameters: {
             query?: never;
@@ -3556,14 +3599,59 @@ export interface components {
             /** @enum {string} */
             effective_workspace_access: "none" | "read" | "read_write";
         };
-        /** @description 执行结果回房引用（ADR-0033 / 0.6.10）——message.posted 载荷 mission_ref 的 HTTP 投影；系统 actor 专用，post_message 命令面不接受（人类不能伪造）。 */
+        /** @description 决策重开请求（RFC-0018 §11.2 reopen_request / ADR-0034，0.6.11）——负责人标出受影响决定、证据与需停止的工作项。 */
+        ReopenSubmit: {
+            /** @description CAS——与当前 contract_version 不符 409 */
+            expected_version: number;
+            /** @description 受影响决定的引用（收束胶囊 / 文档修订 / 决策版本——自由引用串，不做存在性校验） */
+            decision_ref: string;
+            /** @description 反证 / 触发证据的引用 */
+            evidence_refs: string[];
+            /** @description 需停止的工作项（可空 = 仅请求不暂停；含自身亦允许） */
+            affected_mission_ids?: string[];
+            /** @description 说明（进卡片与事件） */
+            reason?: string;
+        };
+        /** @description 受影响工作项的逐项暂停结果（如实报告——失败不回滚请求事实）。 */
+        ReopenAffectedResult: {
+            mission_id: string;
+            /**
+             * @description paused 本次暂停 / already_paused 幂等 / terminal 终态无执行可停 / not_found 不存在 / failed 暂停面错误
+             * @enum {string}
+             */
+            result: "paused" | "already_paused" | "terminal" | "not_found" | "failed";
+            /** @description failed 时的原因 */
+            detail?: string;
+        };
+        /** @description 重开请求事实（mission_events.reopen_requested 组装；append-only——旧回执不改写）。 */
+        ReopenRequestView: {
+            request_id: string;
+            mission_id: string;
+            decision_ref: string;
+            evidence_refs: string[];
+            affected_mission_ids: string[];
+            reason?: string;
+            /** @description 请求时点的契约版本（CAS 后实际值随事件留痕） */
+            contract_version: number;
+            /** Format: date-time */
+            occurred_at: string;
+            /** @description 逐项暂停结果——仅提交响应携带（读面不回填，留痕在各任务 paused 事件 reason=reopen:<request_id>） */
+            affected?: components["schemas"]["ReopenAffectedResult"][];
+        };
+        ReopenRequestList: {
+            /** @description 按 seq 升序 */
+            requests: components["schemas"]["ReopenRequestView"][];
+        };
+        /** @description 执行结果回房引用（ADR-0033 / 0.6.10；reopen 扩展 ADR-0034 / 0.6.11）——message.posted 载荷 mission_ref 的 HTTP 投影；系统 actor 专用，post_message 命令面不接受（人类不能伪造）。 */
         MissionRef: {
             mission_id: string;
             /**
-             * @description 来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消
+             * @description 来源事实：已提请验收 / 验收通过 / 验收退回 / 终局取消 / 决策重开请求
              * @enum {string}
              */
-            kind: "reviewing" | "accepted" | "returned" | "canceled";
+            kind: "reviewing" | "accepted" | "returned" | "canceled" | "reopen";
+            /** @description 重开请求指向的受影响决定引用（仅 kind=reopen 携带） */
+            decision_ref?: string;
             contract_version: number;
             /** @description 送验轮次（canceled 为 0） */
             review_round?: number;
@@ -3580,7 +3668,7 @@ export interface components {
             room_id: string;
             task_id: string;
             /** @enum {string} */
-            kind: "reviewing" | "accepted" | "returned" | "canceled";
+            kind: "reviewing" | "accepted" | "returned" | "canceled" | "reopen";
             source_seq: number;
             contract_version: number;
             review_round: number;
@@ -9067,6 +9155,102 @@ export interface operations {
             415: components["responses"]["UnsupportedMediaType"];
             /** @description Run 域未装配（run_unavailable） */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    submitReopenRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReopenSubmit"];
+            };
+        };
+        responses: {
+            /** @description 已记录（Mission 状态不变；逐项暂停结果随响应返回） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReopenRequestView"];
+                };
+            };
+            /** @description 形状/上限不合法（invalid_reopen） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 版本冲突（version_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 重开域未装配（reopen_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listReopenRequests: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 请求列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReopenRequestList"];
+                };
+            };
+            /** @description Mission 不存在（mission_not_found） */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

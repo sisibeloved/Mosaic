@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- **决策重开请求：`reopen_request`**（0.6 领域第十二件 / ADR-0034，RFC-0018 §10.2/§11.2）：触及决策的 falsifier 出现时，负责人提交重开请求——标出受影响决定（`decision_ref`）、证据与需停止的工作项；事实先落（`reopen_requested` 事件——append-only 不改写旧回执），逐项暂停受影响任务（`paused | already_paused | terminal | not_found | failed` 如实报告，失败不回滚请求），交回 Room 复用回房通知（`kind=reopen`——暂停房保留 / 删房待决 / 重启重放全继承）。不自动重开 Room、不翻转 Mission 终态（任何状态可发起，含 accepted）。
+  - **`POST /v1/missions/{id}/reopen-request`**：CAS 版本（任意状态）+ `reopen_requested` 事件 + 逐项暂停 + 通知行；`GET /v1/missions/{id}/reopen-requests` 读面（任务中心待决可见性）。
+  - **migration v28**：`mission_return_notices` += `decision_ref` / `affected_count` 快照列；投影器扩扫 `reopen_requested` 事件——卡片正文 `🔁 决策重开请求：「{决定引用}」——发起任务「{目标}」：{原因}（受影响 n 项）`，`mission_ref` += `kind: reopen` 与 `decision_ref`。
+  - **SPA**：任务详情「决策重开」区（提交表单——决定引用 / 证据 / 受影响项 / 原因 + 历史列表）；房间时间线 reopen 徽标 + 决定引用。
+
 ## [0.6.10] - 2026-11-02
 
 ### Added

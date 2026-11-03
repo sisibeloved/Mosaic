@@ -21,12 +21,13 @@ export type GraphEdge = Snapshot["graph"][number];
  * 系统 actor（par_system）专用，命令面不接受；source_seq = 去重键。 */
 export interface MissionRef {
   mission_id: string;
-  kind: "reviewing" | "accepted" | "returned" | "canceled";
+  kind: "reviewing" | "accepted" | "returned" | "canceled" | "reopen";
   contract_version: number;
   review_round?: number;
   package_id?: string;
   task_id: string;
   source_seq: number;
+  decision_ref?: string;
 }
 
 export interface TimelineEntry {

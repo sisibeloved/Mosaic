@@ -36,6 +36,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/outbox"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	"github.com/sisibeloved/Mosaic/internal/protocol"
+	"github.com/sisibeloved/Mosaic/internal/reopen"
 	"github.com/sisibeloved/Mosaic/internal/review"
 	"github.com/sisibeloved/Mosaic/internal/room"
 	missionrun "github.com/sisibeloved/Mosaic/internal/run"
@@ -101,7 +102,10 @@ type Deps struct {
 	// ReturnNotices 回房通知读面（RFC-0018 §10.2 / ADR-0033，0.6.10；nil 时
 	// return-notices 端点 503）：执行结果回房的持久通知台账。
 	ReturnNotices ReturnNotices
-	Logger        *slog.Logger
+	// Reopen 决策重开域（RFC-0018 §11.2 reopen_request / ADR-0034，0.6.11；
+	// nil 时 reopen 端点 503）。
+	Reopen *reopen.Service
+	Logger *slog.Logger
 	// 开发者模式（M1 v1.8）：Dev 开启才注册 /v1/debug 只读端点与 UI 调试面板。
 	Dev    bool
 	Budget contextx.Limits         // 预算上限（状态端点的水位/梯度计算基准）
@@ -3283,6 +3287,104 @@ func (s *server) ListMissionReturnNotices(w http.ResponseWriter, r *http.Request
 		out = append(out, returnNoticeView(n))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"notices": out})
+}
+
+// SubmitReopenRequest 决策重开请求（ADR-0034 / 0.6.11）：CAS 落 reopen_requested
+// 事件（不翻转状态）→ 逐项暂停受影响工作项 → 交回 Room 走回房通知（kind=reopen）。
+func (s *server) SubmitReopenRequest(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.deps.Reopen == nil {
+		writeError(w, http.StatusServiceUnavailable, "reopen_unavailable", "重开域未装配")
+		return
+	}
+	var body struct {
+		ExpectedVersion    int      `json:"expected_version"`
+		DecisionRef        string   `json:"decision_ref"`
+		EvidenceRefs       []string `json:"evidence_refs"`
+		AffectedMissionIds []string `json:"affected_mission_ids"`
+		Reason             *string  `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_reopen", "请求体解析："+err.Error())
+		return
+	}
+	out, err := s.deps.Reopen.Submit(r.Context(), missionID, reopen.SubmitRequest{
+		ExpectedVersion:    body.ExpectedVersion,
+		DecisionRef:        body.DecisionRef,
+		EvidenceRefs:       body.EvidenceRefs,
+		AffectedMissionIDs: body.AffectedMissionIds,
+		Reason:             derefStr(body.Reason),
+	})
+	if err != nil {
+		writeReopenError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, reopenView(out))
+}
+
+// ListReopenRequests 重开请求列表（事件流组装——任务中心待决可见性）。
+func (s *server) ListReopenRequests(w http.ResponseWriter, r *http.Request, missionID string) {
+	if s.deps.Reopen == nil {
+		writeError(w, http.StatusServiceUnavailable, "reopen_unavailable", "重开域未装配")
+		return
+	}
+	list, err := s.deps.Reopen.List(r.Context(), missionID)
+	if err != nil {
+		writeReopenError(w, err)
+		return
+	}
+	out := make([]apigen.ReopenRequestView, 0, len(list))
+	for _, v := range list {
+		out = append(out, reopenView(v))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"requests": out})
+}
+
+func writeReopenError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, reopen.ErrInvalidReopen):
+		writeError(w, http.StatusBadRequest, "invalid_reopen", err.Error())
+	case errors.Is(err, mission.ErrVersionConflict):
+		writeError(w, http.StatusConflict, "version_conflict", err.Error())
+	case errors.Is(err, mission.ErrMissionNotFound):
+		writeError(w, http.StatusNotFound, "mission_not_found", "Mission 不存在")
+	default:
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+	}
+}
+
+func reopenView(v reopen.RequestView) apigen.ReopenRequestView {
+	evidence := v.EvidenceRefs
+	if evidence == nil {
+		evidence = []string{}
+	}
+	affectedIDs := v.AffectedMissionIDs
+	if affectedIDs == nil {
+		affectedIDs = []string{}
+	}
+	out := apigen.ReopenRequestView{
+		RequestId: v.RequestID, MissionId: v.MissionID,
+		DecisionRef: v.DecisionRef, EvidenceRefs: evidence,
+		AffectedMissionIds: affectedIDs,
+		ContractVersion:    v.ContractVersion,
+	}
+	if v.Reason != "" {
+		out.Reason = &v.Reason
+	}
+	if ts, err := time.Parse(time.RFC3339, v.OccurredAt); err == nil {
+		out.OccurredAt = ts
+	}
+	if len(v.Affected) > 0 {
+		affected := make([]apigen.ReopenAffectedResult, 0, len(v.Affected))
+		for _, a := range v.Affected {
+			aa := apigen.ReopenAffectedResult{MissionId: a.MissionID, Result: apigen.ReopenAffectedResultResult(a.Result)}
+			if a.Detail != "" {
+				aa.Detail = &a.Detail
+			}
+			affected = append(affected, aa)
+		}
+		out.Affected = &affected
+	}
+	return out
 }
 
 func returnNoticeView(n missionreturn.Notice) apigen.ReturnNoticeView {

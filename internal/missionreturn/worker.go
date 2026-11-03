@@ -25,6 +25,7 @@ const (
 	KindAccepted  Kind = "accepted"  // 验收通过（终态）
 	KindReturned  Kind = "returned"  // 验收退回
 	KindCanceled  Kind = "canceled"  // 终局取消
+	KindReopen    Kind = "reopen"    // 决策重开请求（0.6.11 / ADR-0034）
 )
 
 // Status 通知行状态。
@@ -62,6 +63,8 @@ type Notice struct {
 	Reviewer        string
 	Reason          string
 	Objective       string // ≤80 字摘要快照（投影时定格）
+	DecisionRef     string // 重开请求的决定引用快照（kind=reopen）
+	AffectedCount   int    // 重开请求的受影响工作项数（kind=reopen）
 	Status          Status
 	Attempts        int
 	NextAttemptAt   string // RFC3339；空 = 立即可试
@@ -237,6 +240,7 @@ func (w *Worker) envelopeOf(n Notice, now time.Time) EnvelopeInput {
 			PackageID:       n.PackageID,
 			TaskID:          n.TaskID,
 			SourceSeq:       n.SourceSeq,
+			DecisionRef:     n.DecisionRef,
 		},
 	}
 }
@@ -266,6 +270,15 @@ func bodyOf(n Notice) string {
 		return s
 	case KindCanceled:
 		return "⛔ 任务「" + n.Objective + "」已取消" + round
+	case KindReopen:
+		s := "🔁 决策重开请求：「" + n.DecisionRef + "」——发起任务「" + n.Objective + "」"
+		if n.Reason != "" {
+			s += "：" + truncate(n.Reason, 160)
+		}
+		if n.AffectedCount > 0 {
+			s += fmt.Sprintf("（受影响 %d 项）", n.AffectedCount)
+		}
+		return s
 	}
 	return "任务「" + n.Objective + "」状态更新" + round
 }

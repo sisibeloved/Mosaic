@@ -750,6 +750,13 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: migration v27: %w", err)
 	}
+	// v28 迁移（0.6.11 / ADR-0034）：重开通知快照列——逐语句，重复加列容忍
+	for _, stmt := range migrationV28 {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("sqlite: migration v28: %w", err)
+		}
+	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
 		db.Close()
@@ -3320,6 +3327,39 @@ func (s *Store) PackageByID(ctx context.Context, packageID string) (delivery.Pac
 		return delivery.Package{}, false, fmt.Errorf("sqlite: package by id: %w", err)
 	}
 	return p, true, nil
+}
+
+// RequestReopen 决策重开请求（0.6.11 / ADR-0034）：单事务——CAS 版本（**任意
+// 状态**：含 accepted 终态——新证据推翻已验收的决定正是重开典型场景）+
+// reopen_requested 事件；不改状态与版本。版本不符 ok=false。
+func (s *Store) ReopenRequest(ctx context.Context, missionID string, expectedVersion int, event mission.Event) (mission.Mission, bool, error) {
+	ok := false
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		var version int
+		err := q.QueryRowContext(ctx,
+			`SELECT contract_version FROM missions WHERE mission_id = ?`, missionID).Scan(&version)
+		if errors.Is(err, sql.ErrNoRows) {
+			return mission.ErrMissionNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("sqlite: reopen probe: %w", err)
+		}
+		if version != expectedVersion {
+			return nil
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+			missionID, event.EventType, string(event.Payload), event.OccurredAt); err != nil {
+			return fmt.Errorf("sqlite: reopen event: %w", err)
+		}
+		ok = true
+		return nil
+	})
+	if err != nil || !ok {
+		return mission.Mission{}, ok, err
+	}
+	out, _, err := s.MissionByID(ctx, missionID)
+	return out, true, err
 }
 
 // RequestReview 条件送验（0.6.9 / ADR-0032；v0.2 #2/#3）：单事务——版本 + ready

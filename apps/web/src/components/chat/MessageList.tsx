@@ -553,6 +553,7 @@ const MISSION_REF_META: Record<string, { label: string; cls: string }> = {
   accepted: { label: "验收通过", cls: "text-ok" },
   returned: { label: "验收退回", cls: "text-warn" },
   canceled: { label: "已取消", cls: "text-faint" },
+  reopen: { label: "决策重开", cls: "text-warn" },
 };
 
 function MissionRefCard({ mref }: { mref?: MissionRef }) {
@@ -567,6 +568,7 @@ function MissionRefCard({ mref }: { mref?: MissionRef }) {
       <span className={`font-semibold ${meta?.cls ?? "text-dim"}`}>任务结果 · {meta?.label ?? mref.kind}</span>
       <span className="truncate font-mono text-[10px] text-faint">{mref.task_id}</span>
       {mref.review_round ? <span className="shrink-0 text-faint">第 {mref.review_round} 轮</span> : null}
+      {mref.decision_ref ? <span className="shrink-0 font-mono text-[10px] text-faint">{mref.decision_ref}</span> : null}
       <span className="ml-auto shrink-0 text-accent">查看任务 →</span>
     </Link>
   );

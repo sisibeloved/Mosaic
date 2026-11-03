@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -65,6 +66,9 @@ const (
 	EventCreated         = "created"
 	EventContractRevised = "contract_revised"
 	EventStatusChanged   = "status_changed"
+	// EventReopenRequested 决策重开请求（0.6.11 / ADR-0034）：CAS 版本、任意状态
+	// 可追加——不改 Mission 状态、不翻转终态；事实随事件留痕（append-only）。
+	EventReopenRequested = "reopen_requested"
 )
 
 // RequesterOwner 本地单用户请求方（多入口请求方随网关/委派扩展）。
@@ -235,6 +239,9 @@ type Store interface {
 	MissionVersions(ctx context.Context, missionID string) ([]Mission, bool, error)
 	// Events 事件流（seq 升序）；未知 ok=false。
 	MissionEvents(ctx context.Context, missionID string) ([]Event, bool, error)
+	// ReopenRequest 决策重开请求（0.6.11 / ADR-0034）：CAS 版本（任意状态）+
+	// reopen_requested 事件，单事务；版本不符 ok=false。不改状态与版本。
+	ReopenRequest(ctx context.Context, missionID string, expectedVersion int, event Event) (Mission, bool, error)
 	// TransitionStatus 条件状态投影（0.6.5 / ADR-0028）：当前状态 == from
 	// 才更新为 to + 事件（单事务）；from 不符/Mission 未知/终态 = 无操作
 	// 成功（幂等——调用方序已知）。canceled 拒转。0.6.7：to != waiting 时
@@ -379,6 +386,65 @@ func InjectReviewFacts(payload []byte, contractVersion, reviewRound int) []byte 
 		return payload
 	}
 	return out
+}
+
+// blankTrim 判空去首尾（Unicode White_Space ∪ U+FEFF——与 SPA blankTrim 同集，
+// 0.6.9 审校 #1 / 复审 R6 口径）。
+func blankTrim(s string) string {
+	return strings.TrimFunc(s, func(r rune) bool { return unicode.IsSpace(r) || r == '\ufeff' })
+}
+
+// ReopenRequest 决策重开请求（0.6.11 / ADR-0034）：CAS 版本（任意状态——含
+// accepted 终态：新证据推翻已验收的决定正是重开典型场景）+ reopen_requested
+// 事件；Mission 状态与版本不变。形状在域口校验（decision_ref / 证据 / 受影响
+// 项 / reason 上限），版本不符 ErrVersionConflict。
+func (s *Service) ReopenRequest(ctx context.Context, missionID string, expectedVersion int,
+	requestID, decisionRef string, evidence, affected []string, reason string) (Mission, error) {
+	decisionRef = blankTrim(decisionRef)
+	if n := utf8.RuneCountInString(decisionRef); n < 1 || n > 256 {
+		return Mission{}, fmt.Errorf("%w: decision_ref 须 1..256 字", ErrInvalidMission)
+	}
+	if len(evidence) < 1 || len(evidence) > 8 {
+		return Mission{}, fmt.Errorf("%w: evidence_refs 须 1..8 条", ErrInvalidMission)
+	}
+	for i, e := range evidence {
+		if n := utf8.RuneCountInString(blankTrim(e)); n < 1 || n > 256 {
+			return Mission{}, fmt.Errorf("%w: evidence_refs[%d] 须 1..256 字", ErrInvalidMission, i)
+		}
+	}
+	if len(affected) > 16 {
+		return Mission{}, fmt.Errorf("%w: affected_mission_ids ≤16", ErrInvalidMission)
+	}
+	if utf8.RuneCountInString(reason) > 280 {
+		return Mission{}, fmt.Errorf("%w: reason ≤280 字", ErrInvalidMission)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"request_id": requestID, "decision_ref": decisionRef,
+		"evidence_refs": evidence, "affected_mission_ids": affected,
+		"reason": reason,
+		// 0.6.10 审校 #1 同例：CAS 后的实际契约版本随事实写入（回房投影不读当前行）
+		"contract_version": expectedVersion,
+	})
+	if err != nil {
+		return Mission{}, fmt.Errorf("mission: 重开事件构造失败：%w", err)
+	}
+	cur, ok, err := s.store.MissionByID(ctx, missionID)
+	if err != nil {
+		return Mission{}, err
+	}
+	if !ok {
+		return Mission{}, ErrMissionNotFound
+	}
+	out, ok2, err := s.store.ReopenRequest(ctx, missionID, expectedVersion, Event{
+		MissionID: missionID, EventType: EventReopenRequested, Payload: payload, OccurredAt: s.now(),
+	})
+	if err != nil {
+		return Mission{}, err
+	}
+	if !ok2 {
+		return Mission{}, fmt.Errorf("%w: 期望 v%d，当前 v%d", ErrVersionConflict, expectedVersion, cur.ContractVersion)
+	}
+	return out, nil
 }
 
 // Revise 修订契约（= revise_mission）：全量替换 + 版本追加；expected_version
