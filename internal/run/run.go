@@ -612,6 +612,18 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 		cleanupCtx, cleanupCancel := s.cleanupContext()
 		defer cleanupCancel()
 		if res.err != nil {
+			// 停止与执行器错误同时就绪的 select 竞态（CI macOS 实证）：停止意图
+			// 先于取消登记（stopRegistry.signal 互斥内 cause→cancel），执行器随后
+			// 返回的 context.Canceled 是停止的表现——按停止终理化，不记 failed。
+			// 无停止意图的取消/错误才是执行错误。
+			// ok 仅表示已注册（register 的 cause 为空串）——signal 过（非空
+			// cause）才是已停止意图；纯执行错误不得误判为停止。
+			if cause, ok := s.stops.cause(r.RunID); ok && cause != "" {
+				if err := s.finalizeStopped(cleanupCtx, &r, lease, cause, done); err != nil {
+					return r, fmt.Errorf("%w：%v", ErrTerminalWrite, err)
+				}
+				return r, nil
+			}
 			err := s.finalizeRun(cleanupCtx, &r, lease, StateFailed, truncateS(res.err.Error(), 1000), "", "")
 			if err != nil {
 				return r, fmt.Errorf("%w：%v（执行错误：%v）", ErrTerminalWrite, err, res.err)
