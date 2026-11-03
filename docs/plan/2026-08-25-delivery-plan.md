@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.67 |
+| 版本 | v2.68 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -26,7 +26,7 @@
 
 ## 0.2 当前 Roadmap
 
-当前产品版本为 **v0.6.11**（0.6 领域已交付 0.6.0–0.6.11：MissionContract、房间交办/网关首切片、执行上下文清单、本地 Environment/Runtime、RuntimeLease、单 Agent Mission 执行、Mission 暂停/恢复/取消、Run 崩溃恢复、DeliveryPackage 成果提交、Mission 验收、执行结果回房与决策重开请求；决策重开请求；0.6.12 Mission 责任交接已实施待定版——0.6 领域线十三件全部实施）；0.5 领域线已收官；0.6 的 RFC 已于 2026-10-30 增补内嵌轻量级智能体网关设计（§0.6 说明，尚未实现）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
+当前产品版本为 **v0.6.12**（0.6 领域已交付 0.6.0–0.6.12——领域线收官：MissionContract、房间交办/网关首切片、执行上下文清单、本地 Environment/Runtime、RuntimeLease、单 Agent Mission 执行、Mission 暂停/恢复/取消、Run 崩溃恢复、DeliveryPackage 成果提交、Mission 验收、执行结果回房、决策重开请求与 Mission 责任交接；Mission 责任交接——**0.6 领域线十三件全部定版收官**；下一领域 0.7 记忆与可移植恢复未开工）；0.5 领域线已收官；0.6 的 RFC 已于 2026-10-30 增补内嵌轻量级智能体网关设计（§0.6 说明，尚未实现）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
 
 | 版本线 | 领域 / 产品目标 | 设计来源 / RFC-0018 阶段映射 |
 |---|---|---|
@@ -179,6 +179,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.68 | 2026-11-03 | Mosaic 项目组 / ZCode | **定版 v0.6.12（负责人指令："发布"）——0.6 领域线第十三件·收官**。CHANGELOG [Unreleased]（Added Mission 责任交接 + Fixed 三轮审校 7+5+3=15 项）定版 **[0.6.12] - 2026-11-03**，保留空 [Unreleased]；README 当前版本推进 v0.6.12、路线图 0.6 系列标注 **0.6.0–0.6.12 已交付——0.6 线收官**（下一领域 0.7 记忆与可移植恢复）；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.6.12 + GitHub Release 发布说明与 Windows 产物（于 tag 的干净 worktree 重建）；CI 三平台绿基线（2264a91 已验，定版提交复验） |
 | v2.67 | 2026-11-03 | Mosaic 项目组 / ZCode | **0.6.12 三审修复（独立三审报告：1 P2 + 2 P3——ADR-0035 v0.4 修订）**。P2 首轮轮询作废初次加载（v0.3 统一代次回归）：取号源各自独立（load 守卫只看自身 seq）+ detail 应用层共用单调代次（载入响应时取号——三结果原子落地并覆盖先前轮询快照）；P3 交接历史资料记对应发起（histFor——刷新中/失败窗口不显示旧 offer 说明，明确标识资料状态）；P3 归属锚 presence 同拒 null（显式空串 = 预期 unassigned 不变）。API 增 null 400 用例；全量 vet/-race + it/st + SPA 绿 + 生成物一致；真机冒烟 31 项 ALL-PASS（新增 null 400 定向） |
 | v2.66 | 2026-11-03 | Mosaic 项目组 / ZCode | **0.6.12 复审修复（独立复审报告：1 P1 + 3 P2 + 1 P3——ADR-0035 v0.3 修订）**。#1 修订草稿基准 reviseBase（打开时固定 owner+版本，提交锚取基准——轮询只保鲜显示）；#2 事实全部事务内：offer from_owner 注入（InjectHandoverFacts）+ accept draft 重判按现行 content（HandoverDraftTarget 单源，Store 签名删 targetStatus）；#3 手动加载与轮询统一请求代次（删清零路径）；#4 交接历史/备注按 offer_id 刷新隔离；#5 revise 归属锚键 presence 在场检查（缺席 400）。新增 UT（store 级事实注入 + 交错重判）/ IT（SQL 直写模拟并发：owner 翻转后 offer 事件记现值、draft 交错重判 ready）/ API（缺锚键 400）；全量 vet/-race + it/st + SPA 绿 + 生成物一致；真机冒烟 30 项 ALL-PASS（新增缺锚键 400 定向） |
 | v2.65 | 2026-11-03 | Mosaic 项目组 / ZCode | **0.6.12 审校修复（独立审校报告：3 P1 + 3 P2 + 1 P3——ADR-0035 v0.2 修订）**。#1 offer_id 锚（承接/婉拒/撤回必填——撤回改派后旧请求 409，服务层+事务内双锚）；#2 修订归属锚 expected_owner_agent_id（必填，409 owner_mismatch——契约收紧随 0.6.12 发布）；#3 承接×退役双向竞态（accept 事务内查身份 + retiring→retired 统一过承诺事务门，门拦零写入停留 retiring）；#4 回执 status_at_accept 事务内核对注入；#5 交接+重开历史重试 tick（0.6.11 遗留同病一并修）；#6 详情轮询刷 detail（表单草稿不受影响）；#7 MaxBytesError→413 body_too_large（交接+重开）。v29 扩列 pending_offer_id（未发布迁移修订）。全量 vet/-race + it/st + SPA 绿 + 冒烟 30 项 ALL-PASS（含 R1/R2/R7 三项定向） |

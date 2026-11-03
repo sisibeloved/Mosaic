@@ -83,7 +83,7 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 文档
 
-- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.6.11）
+- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.6.12）
 - [架构设计说明书](docs/design/2026-08-13-mosaic-architecture-design.md)
 - [RFC-0001 Room Protocol](docs/design/rfc/2026-08-25-rfc-0001-room-protocol.md)
 - [RFC-0002 Agent Protocol](docs/design/rfc/2026-08-25-rfc-0002-agent-protocol.md)
@@ -95,12 +95,12 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 当前状态与路线图
 
-当前版本 **v0.6.11**（2026-11-03，0.6 Mission 与本地执行领域第十二件——决策重开请求：`reopen_request`（RFC-0018 §10.2/§11.2 / ADR-0034）：触及决策的 falsifier 出现时，负责人标出受影响决定（decision_ref）+ 证据 + 需停工作项——CAS 版本（任意状态不翻转终态）+ reopen_requested 事件（append-only 不改写旧回执），逐项暂停受影响任务（paused/already_paused/terminal/not_pausable/not_found/failed 如实报告），交回 Room 复用回房通知栈（kind=reopen——暂停保留/删房待决/重启重放全继承）；不自动重开 Room、写门三件套 + 严格解码 + 请求限流；SPA 重开表单 + 历史 + 房间 reopen 徽标，见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收；0.6 已交付 0.6.0–0.6.11（下一件 0.6.12 Mission 责任交接）。
+当前版本 **v0.6.12**（2026-11-03，0.6 Mission 与本地执行领域第十三件·收官——Mission 责任交接：`handover`（RFC-0018 §3.3/§4.5/§8.1/§11.2 / ADR-0035）：两段式交接（发起置 pending——owner 不变直至承接；承接翻转 + 承接回执；婉拒/撤回了结留痕），承接人须 active（offer/accept 两点复核 + 承接×退役双向事务门），在途交接冻结窗，unassigned draft 承接完备性重判入调度列，修订归属锚 expected_owner_agent_id（契约收紧——旧表单不得无感知撤销责任转移）；**退役承诺门实装**（0.5.1 预留 CommitmentChecker 首次接生产：非终态 owned Mission 为未处置承诺，retire 停留 retiring 直至逐一交接/取消——AT-03 兑现）；SPA 交接区 + 待承接徽标 + 交接历史；三轮独立审校 15 项全关闭，见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收；**0.6 已交付 0.6.0–0.6.12——0.6 领域线收官**（下一领域 0.7 记忆与可移植恢复，0.7.0 未开工）。
 
 后续版本采用 `大版本.领域中版本.特性小版本`（`X.Y.Z`）：**第三段每次只交付一个特性，第二段按领域聚合成系统能力**。领域中版本是版本线，不另发只用于汇总的版本；各小版本及验收口径见[交付与进度规划](docs/plan/2026-08-25-delivery-plan.md#02-当前-roadmap)。
 
 - **0.5 长期 Agent 与职责领域**（`0.5.0–0.5.5`，**0.5.0–0.5.5 已全部交付（领域收官）**）：独立 Agent 身份与生命周期、SlotSpec / SlotInstance、Binding 与职责准入。
-- **0.6 Mission 与本地执行领域**（`0.6.0–0.6.12`，**0.6.0–0.6.11 已交付**）：独立 Mission、房间交办、本地 Runtime / Lease、单 Agent 执行、交付验收与责任交接。
+- **0.6 Mission 与本地执行领域**（`0.6.0–0.6.12`，**0.6.0–0.6.12 已交付——0.6 线收官**）：独立 Mission、房间交办、本地 Runtime / Lease、单 Agent 执行、交付验收与责任交接。
 - **0.7 记忆与可移植恢复领域**（`0.7.0–0.7.9`）：分域记忆、Checkpoint、跨 Harness 续办、Portable Agent Bundle 与删除传播。
 - **0.8 有界 Swarm 协作领域**（`0.8.0–0.8.8`）：WorkItem DAG、长期 Agent 委派、临时 Worker、配额、取消隔离与结果汇总。
 - **0.9 持续事务与环境维护领域**（`0.9.0–0.9.8`）：Goal、持久唤醒、离线恢复、Runtime 排空升级与环境管理员。
