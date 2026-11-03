@@ -363,6 +363,24 @@ func (s *Service) checkSource(ctx context.Context, src *RoomSource) error {
 	return nil
 }
 
+// InjectReviewFacts 送验事件载荷补事实字段（0.6.10 审校 #1/#5）：存储事务内
+// 核对后的**实际**契约版本与送验轮次——回房投影按事件还原当时契约与当轮，
+// 不再读 missions 当前行（v1 退回后修订 v2 的重放不得把旧包记到 v2）。
+// 旧事件（无该字段）由投影按事件流重建，两路同一结果。
+func InjectReviewFacts(payload []byte, contractVersion, reviewRound int) []byte {
+	var m map[string]any
+	if json.Unmarshal(payload, &m) != nil {
+		m = map[string]any{}
+	}
+	m["contract_version"] = contractVersion
+	m["review_round"] = reviewRound
+	out, err := json.Marshal(m)
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
 // Revise 修订契约（= revise_mission）：全量替换 + 版本追加；expected_version
 // CAS——败者 ErrVersionConflict（可见重试）；终态拒修订；完备性重判
 // （draft ↔ ready 双向，事件留痕）；执行控制投影保持（running/paused/
@@ -702,7 +720,9 @@ func (s *Service) RecordReview(ctx context.Context, missionID string, expectedVe
 	payload, err := json.Marshal(map[string]any{
 		"from": StatusReviewing, "to": to, "decision": d.Decision,
 		"reviewer": d.Reviewer, "reason": d.Reason, "package_id": cur.ReviewPackageID,
-		"review_round": reviewRound, "item_notes": itemNotes,
+		// 0.6.10 审校 #1：裁定事实随当时契约版本留痕——回房投影不再读当前行
+		"contract_version": expectedVersion,
+		"review_round":     reviewRound, "item_notes": itemNotes,
 	})
 	if err != nil {
 		return Mission{}, fmt.Errorf("mission: 裁定事件构造失败：%w", err)

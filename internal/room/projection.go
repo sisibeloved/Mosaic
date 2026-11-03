@@ -32,8 +32,11 @@ type TimelineItem struct {
 	Attachments  []AttachmentDescriptor `json:"attachments,omitempty"`
 	Refs         []protocol.DocRef      `json:"refs,omitempty"`
 	ExternalRefs []protocol.ExternalRef `json:"external_refs,omitempty"`
-	ThreadID     *string                `json:"thread_id,omitempty"`
-	OccurredAt   string                 `json:"occurred_at"`
+	// MissionRef 执行结果回房引用（ADR-0033 / 0.6.10）：系统 actor 消息的引用
+	// 卡片数据源——快照/SSE 两路同形（0.6.10 审校 #3：刷新/重开不丢任务链接）。
+	MissionRef *protocol.MissionRef `json:"mission_ref,omitempty"`
+	ThreadID   *string              `json:"thread_id,omitempty"`
+	OccurredAt string               `json:"occurred_at"`
 }
 
 // Snapshot 快照载体：版本三元组 + 水位（opaque cursor）+ Timeline + 策略区。
@@ -209,6 +212,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 			Attachments  []AttachmentDescriptor `json:"attachments"`
 			Refs         []protocol.DocRef      `json:"refs"`
 			ExternalRefs []protocol.ExternalRef `json:"external_refs"`
+			MissionRef   *protocol.MissionRef   `json:"mission_ref"`
 		}
 		_ = json.Unmarshal(ev.Envelope.Payload, &body)
 		snap.Timeline = append(snap.Timeline, TimelineItem{
@@ -223,6 +227,7 @@ func ProjectSnapshot(roomID string, events []StoredEvent) Snapshot {
 			Attachments:  body.Attachments,
 			Refs:         body.Refs,
 			ExternalRefs: body.ExternalRefs,
+			MissionRef:   body.MissionRef,
 			ThreadID:     ev.Envelope.ThreadID,
 			OccurredAt:   ev.Envelope.OccurredAt,
 		})

@@ -1144,11 +1144,13 @@ const (
 	revealRevoked
 )
 
-// lastMessage 历史中最新 message.posted（反应波锚点——人类或 agent）。
+// lastMessage 历史中最新 message.posted（反应波锚点——人类或 agent）。0.6.10
+// 审校 #7：跳过 system 消息——回房卡不抢占已排定回复的讨论锚点（线程内点名后
+// 系统卡恰在反应窗口内到达时，round.opened 与回复仍指向原问题及线程）。
 func lastMessage(events []StoredEvent) *protocol.Envelope {
 	for i := len(events) - 1; i >= 0; i-- {
 		env := events[i].Envelope
-		if env.Type == protocol.EventMessagePosted {
+		if env.Type == protocol.EventMessagePosted && env.Actor.Kind != "system" {
 			return &env
 		}
 	}

@@ -375,8 +375,12 @@ function MissionDetail({
   const [sendablePkgs, setSendablePkgs] = useState<DeliveryPackageView[]>([]);
   const [pkgTick, setPkgTick] = useState(0); // 复审 R3：交付卡提交后刷新送验列表
   // 0.6.10 回房通知台账（ADR-0033）：详情打开期间 5s 轮询（投递是异步面——
-  // pending/held 会随后台 worker 变化）
+  // pending/held 会随后台 worker 变化）。审校 #4：序号守卫 + 失败保留末次成功
+  // 结果（空态与错误态分离，迟到响应不回退已送达）；#9：轮询顺带刷新来源元数据
+  // （他页删房后已挂载详情可见墓碑——room_source 局部更新，不打断表单草稿）。
   const [returnNotices, setReturnNotices] = useState<ReturnNoticeView[] | null>(null);
+  const [returnErr, setReturnErr] = useState<string | null>(null);
+  const [roomSourceNow, setRoomSourceNow] = useState<MissionView["room_source"]>(null);
   const [reviewedPkg, setReviewedPkg] = useState<DeliveryPackageView | null>(null);
   const [reviewPkgErr, setReviewPkgErr] = useState<string | null>(null);
   // 审校 #4：裁定草稿按轮次隔离——新一轮从契约重新初始化（验收人预填 #7、逐项备注、清原因）
@@ -474,17 +478,29 @@ function MissionDetail({
 
   useEffect(load, [missionID]); // 父层按 missionID key 重挂载；onChanged 后手动 load
 
-  // 0.6.10 回房台账：挂载即取 + 5s 轮询（worker 投递异步推进——pending/held 可见变化）
+  useEffect(() => {
+    setRoomSourceNow(detail?.room_source ?? null);
+  }, [detail?.room_source]);
+
+  // 回房台账：挂载即取 + 5s 轮询（worker 投递异步推进；详情重挂载/换任务即重置）
   useEffect(() => {
     let alive = true;
+    let seqRN = 0;
     const loadRN = () => {
-      void api
-        .listMissionReturnNotices(missionID)
-        .then((r) => {
-          if (alive) setReturnNotices(r.notices);
+      const seq = ++seqRN;
+      void Promise.all([
+        api.listMissionReturnNotices(missionID),
+        api.getMission(missionID).catch(() => null),
+      ])
+        .then(([r, m]) => {
+          if (!alive || seq !== seqRN) return; // 过期响应丢弃（乱序不回退）
+          setReturnErr(null);
+          setReturnNotices(r.notices);
+          if (m) setRoomSourceNow(m.room_source ?? null);
         })
         .catch(() => {
-          if (alive) setReturnNotices(null);
+          if (!alive || seq !== seqRN) return;
+          setReturnErr("回房台账暂不可用（显示上次结果）"); // 末次成功结果不动
         });
     };
     loadRN();
@@ -494,6 +510,8 @@ function MissionDetail({
       clearInterval(timer);
     };
   }, [missionID]);
+
+  const srcNow = roomSourceNow ?? detail?.room_source ?? null;
 
   // 写入归属守卫（审校 P1#1）：详情加载完成且归属当前任务才允许修订/取消——
   // 迟到响应或异常状态下绝不把写请求发给错误目标
@@ -535,17 +553,17 @@ function MissionDetail({
         <span className="rounded bg-surface-3 px-1.5 py-px text-[10px] text-dim">v{detail.contract_version}</span>
         <span className="text-faint">
           负责人：{detail.owner_agent_id || "unassigned"} · 验收人：{detail.reviewer || "请求人自验"}
-          {detail.room_source && (
+          {srcNow && (
             <span
               className="ml-1 rounded bg-surface-3 px-1.5 py-px font-mono text-[10px]"
               title={
-                detail.room_source.deleted_at
+                srcNow.deleted_at
                   ? "来源房间已删除（返回目标取消，结果保留——ADR-0033）"
                   : "房间交办来源（创建事实，不可修订）"
               }
             >
-              {detail.room_source.room_id}/{detail.room_source.task_id}
-              {detail.room_source.deleted_at ? "（房间已删除）" : ""}
+              {srcNow.room_id}/{srcNow.task_id}
+              {srcNow.deleted_at ? "（房间已删除）" : ""}
             </span>
           )}
         </span>
@@ -817,17 +835,20 @@ function MissionDetail({
         </div>
       )}
 
-      {(detail.room_source || (returnNotices ?? []).length > 0) && (
+      {(srcNow || (returnNotices ?? []).length > 0) && (
         <div className="flex flex-col gap-1 rounded-lg bg-surface-2 p-2">
           <p className="text-faint">回房（执行结果 → 来源房间 · ADR-0033）</p>
-          {detail.room_source?.deleted_at && (
+          {srcNow?.deleted_at && (
             <p className="text-warn">来源房间已删除——返回目标已取消；任务结果与来源映射保留（不重跑任务）。</p>
           )}
-          {(returnNotices ?? []).length === 0 ? (
+          {returnErr && <p className="text-warn">{returnErr}</p>}
+          {returnNotices === null ? (
+            <p className="text-faint">回房台账载入中…</p>
+          ) : returnNotices.length === 0 ? (
             <p className="text-faint">暂无回房通知（尚未送验/裁定）。</p>
           ) : (
             <ul className="flex flex-col gap-1">
-              {(returnNotices ?? []).map((n) => (
+              {returnNotices.map((n) => (
                 <li key={n.notice_id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
                   <span className={returnKindCls(n.kind)}>{returnKindLabel(n.kind)}</span>
                   <span className={returnStatusCls(n.status)}>{returnStatusLabel(n.status)}</span>
@@ -835,7 +856,7 @@ function MissionDetail({
                   {n.room_event_id ? <span className="font-mono text-faint">{n.room_event_id}</span> : null}
                   {n.status === "held" && <span className="text-warn">房间暂停——恢复后投递</span>}
                   {n.status === "failed" && <span className="text-danger">重试耗尽：{n.last_error ?? ""}</span>}
-                  {n.status === "canceled" && !detail.room_source?.deleted_at && (
+                  {n.status === "canceled" && !srcNow?.deleted_at && (
                     <span className="text-faint">房间已删除</span>
                   )}
                 </li>

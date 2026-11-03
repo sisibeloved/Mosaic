@@ -289,6 +289,8 @@ func (m *MemStore) RequestReview(_ context.Context, missionID string, expectedVe
 	cur.ReviewRound++ // 审校 #3：同包重审轮次也递增——单比包 ID 不足以防串轮
 	cur.UpdatedAt = event.OccurredAt
 	m.missions[i] = cur
+	// 0.6.10 审校 #1/#5：事务内核对后的实际版本与轮次随事件留痕
+	event.Payload = InjectReviewFacts(event.Payload, cur.ContractVersion, cur.ReviewRound)
 	m.seq++
 	event.Seq = m.seq
 	m.events[missionID] = append(m.events[missionID], event)

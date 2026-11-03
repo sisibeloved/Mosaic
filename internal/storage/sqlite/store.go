@@ -738,6 +738,12 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("sqlite: migration v25: %w", err)
 		}
 	}
+	// v26 迁移（0.6.10 审校 #8）：升级前已删房的来源墓碑回填（幂等 UPDATE，
+	// v24 先例——按 room_tombstones 原删除时间补 mission_sources.deleted_at）
+	if _, err := db.Exec(migrationV26); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("sqlite: migration v26: %w", err)
+	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
 		db.Close()
@@ -3346,6 +3352,14 @@ UPDATE missions SET status = ?, review_package_id = ?, review_round = review_rou
 			mission.StatusReviewing, packageID, event.OccurredAt, missionID); err != nil {
 			return fmt.Errorf("sqlite: review update: %w", err)
 		}
+		// 0.6.10 审校 #1/#5：事务内把**实际**轮次与版本写入送验事件载荷
+		//（UPDATE 后回读——同包重审也递增，不用调用方预读值）。
+		var newRound int
+		if err := q.QueryRowContext(ctx,
+			`SELECT review_round FROM missions WHERE mission_id = ?`, missionID).Scan(&newRound); err != nil {
+			return fmt.Errorf("sqlite: review round readback: %w", err)
+		}
+		event.Payload = mission.InjectReviewFacts(event.Payload, version, newRound)
 		if _, err := q.ExecContext(ctx, `
 INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
 			missionID, event.EventType, string(event.Payload), event.OccurredAt); err != nil {

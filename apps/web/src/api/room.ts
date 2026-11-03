@@ -590,6 +590,7 @@ export function useRoom(roomID: string | null): RoomHandle {
                 attachments: item.attachments ?? undefined,
                 refs: item.refs ?? undefined,
                 externalRefs: item.external_refs ?? undefined,
+                missionRef: item.mission_ref ?? undefined,
               }
             : {
                 // 系统事件持久化项（v1.25）：round/pause 提醒不再随 SSE 瞬态丢失

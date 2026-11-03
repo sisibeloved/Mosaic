@@ -59,6 +59,17 @@ INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (25, strftime('%Y-
 	"ALTER TABLE mission_sources ADD COLUMN deleted_at TEXT",
 }
 
+// migrationV26（0.6.10 审校 #8）：升级前已删房的来源墓碑回填——按
+// room_tombstones 原删除时间补 mission_sources.deleted_at（幂等 UPDATE，v24
+// 数据补正先例；覆盖 v25 加列之前的历史删除：v0.6.9 删房不触碰 mission_sources）。
+const migrationV26 = `
+UPDATE mission_sources
+   SET deleted_at = (SELECT t.deleted_at FROM room_tombstones t WHERE t.room_id = mission_sources.room_id)
+ WHERE deleted_at IS NULL
+   AND EXISTS (SELECT 1 FROM room_tombstones t WHERE t.room_id = mission_sources.room_id);
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (26, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+`
+
 // insertEnvelopeOnConn 单信封落库（room_events + outbox + message.posted 的 FTS 行）。
 // seq 由调用方分配（BEGIN IMMEDIATE 临界区内读 MAX(seq) 后自增）；返回 outbox global_pos。
 // 供 appendTx 与 ReturnStore.Deliver（ADR-0033 原子投递）共用——同一事件账本路径。
@@ -115,6 +126,56 @@ type statusChangedPayload struct {
 	Reason      string `json:"reason"`
 	PackageID   string `json:"package_id"`
 	ReviewRound int    `json:"review_round"`
+	// 0.6.10 审校 #1/#5：新事件的送验/裁定事务内核对后写入（InjectReviewFacts /
+	// 服务层载荷）——旧事件无此字段，由投影按事件流重建（见 versionAtEvent 等）。
+	ContractVersion int `json:"contract_version"`
+}
+
+// versionAtEvent 来源事件时点生效的契约版本（0.6.10 审校 #1）：created /
+// contract_revised 流内回溯（seq ≤ 来源 seq 的最近一条；revised 取 to_version）。
+func versionAtEvent(ctx context.Context, conn *sql.Conn, missionID string, seq int64) int {
+	var v int
+	err := conn.QueryRowContext(ctx, `
+		SELECT CASE event_type WHEN 'created' THEN json_extract(payload, '$.contract_version')
+		                          ELSE json_extract(payload, '$.to_version') END
+		FROM mission_events
+		WHERE mission_id = ? AND seq <= ? AND event_type IN ('created', 'contract_revised')
+		ORDER BY seq DESC LIMIT 1`, missionID, seq).Scan(&v)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+// objectiveAtVersion 版本行目标快照（mission_contract_versions 不可变 content）。
+func objectiveAtVersion(ctx context.Context, conn *sql.Conn, missionID string, version int) string {
+	if version <= 0 {
+		return ""
+	}
+	var content string
+	if err := conn.QueryRowContext(ctx,
+		`SELECT content FROM mission_contract_versions WHERE mission_id = ? AND version = ?`,
+		missionID, version).Scan(&content); err != nil {
+		return ""
+	}
+	var c struct {
+		Objective string `json:"objective"`
+	}
+	_ = json.Unmarshal([]byte(content), &c)
+	return truncateRunes(c.Objective, 80)
+}
+
+// roundAtEvent 旧 reviewing 事件轮次重建（0.6.10 审校 #5）：同一 Mission 截至该
+// seq 的送验计数——轮次随每次送验单调递增（同包重审也递增），计数即当轮。
+func roundAtEvent(ctx context.Context, conn *sql.Conn, missionID string, seq int64) int {
+	var n int
+	if err := conn.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mission_events
+		WHERE mission_id = ? AND seq <= ? AND event_type = 'status_changed'
+		  AND json_extract(payload, '$.to') = 'reviewing'`, missionID, seq).Scan(&n); err != nil {
+		return 0
+	}
+	return n
 }
 
 // classify 事实 → 通知 kind（表 1，ADR-0033 §1）；非四类返回空。
@@ -207,15 +268,25 @@ func (a ReturnStore) Project(ctx context.Context) (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("sqlite: mission source: %w", err)
 		}
-		var objective string
-		var contractVersion int
-		if err := conn.QueryRowContext(ctx,
-			"SELECT objective, contract_version FROM missions WHERE mission_id = ?", f.missionID,
-		).Scan(&objective, &contractVersion); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
+		// 0.6.10 审校 #1/#5：事实归属**当时**契约与轮次——payload 携带（新事件的
+		// 送验/裁定事务内写入）优先，否则按事件流重建（旧事件 / 升级重放）；
+		// objective 取该版本行的不可变快照，不读 missions 当前行（v1 退回后修订
+		// v2 的重放不得把旧包记到 v2、显示 v2 目标）。
+		contractVersion := f.payload.ContractVersion
+		if contractVersion <= 0 {
+			contractVersion = versionAtEvent(ctx, conn, f.missionID, f.seq)
+		}
+		objective := objectiveAtVersion(ctx, conn, f.missionID, contractVersion)
+		if objective == "" {
+			var cur string
+			if err := conn.QueryRowContext(ctx,
+				"SELECT objective FROM missions WHERE mission_id = ?", f.missionID).Scan(&cur); err == nil {
+				objective = truncateRunes(cur, 80)
 			}
-			return 0, fmt.Errorf("sqlite: mission row: %w", err)
+		}
+		reviewRound := f.payload.ReviewRound
+		if reviewRound <= 0 && kind == missionreturn.KindReviewing {
+			reviewRound = roundAtEvent(ctx, conn, f.missionID, f.seq)
 		}
 		res, err := conn.ExecContext(ctx, `
 			INSERT OR IGNORE INTO mission_return_notices
@@ -225,8 +296,8 @@ func (a ReturnStore) Project(ctx context.Context) (int, error) {
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, '', '', '',
 			        strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
 			"rn_"+strconv.FormatInt(f.seq, 10), f.seq, f.missionID, roomID, taskID, string(kind),
-			contractVersion, f.payload.ReviewRound, f.payload.PackageID, f.payload.Reviewer,
-			truncateRunes(f.payload.Reason, 200), truncateRunes(objective, 80))
+			contractVersion, reviewRound, f.payload.PackageID, f.payload.Reviewer,
+			truncateRunes(f.payload.Reason, 200), objective)
 		if err != nil {
 			return 0, fmt.Errorf("sqlite: insert return notice: %w", err)
 		}
@@ -266,11 +337,19 @@ func (a ReturnStore) Due(ctx context.Context, now string, limit int) ([]missionr
 	if limit <= 0 {
 		limit = 100
 	}
+	// 0.6.10 审校 #2/#6：先取各房**队首**未完成行（NOT EXISTS 更早 pending/held），
+	// 再判队首到期——队首在暂停复查/退避中时同房后继不越序（accepted 不会抢在
+	// reviewing 之前落房）；每房每轮至多一条，全局 LIMIT 是房间数上限——暂停房
+	// 积压不再占满批次饿死他房。房头成功/终态后，后继自然成为新队首。
 	rows, err := a.Store.db.QueryContext(ctx, `
-		SELECT `+returnNoticeCols+` FROM mission_return_notices
-		WHERE status IN ('pending', 'held')
-		  AND (next_attempt_at = '' OR datetime(next_attempt_at) <= datetime(?))
-		ORDER BY room_id, source_seq LIMIT ?`, now, limit)
+		SELECT `+returnNoticeCols+` FROM mission_return_notices n
+		WHERE n.status IN ('pending', 'held')
+		  AND NOT EXISTS (
+			SELECT 1 FROM mission_return_notices p
+			WHERE p.room_id = n.room_id AND p.status IN ('pending', 'held')
+			  AND p.source_seq < n.source_seq)
+		  AND (n.next_attempt_at = '' OR datetime(n.next_attempt_at) <= datetime(?))
+		ORDER BY n.room_id, n.source_seq LIMIT ?`, now, limit)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: due return notices: %w", err)
 	}
@@ -355,6 +434,20 @@ func (a ReturnStore) Deliver(ctx context.Context, n missionreturn.Notice, env mi
 		return fmt.Errorf("sqlite: room exists: %w", err)
 	}
 	if tombstoned || !hasRoom {
+		// 0.6.10 审校 #8：投递侧兜底回填来源墓碑（先删房后升级 / 账本缺失——
+		// DeleteRoom 级联与 migration v26 之外的补口）；结果与映射保留。
+		// 该 UPDATE 是本分支的既定副作用——显式提交后再返回错误（早退的 defer
+		// ROLLBACK 会把回填一并回滚）。
+		if _, err := conn.ExecContext(ctx, `
+			UPDATE mission_sources
+			SET deleted_at = COALESCE(deleted_at, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+			WHERE room_id = ?`, n.RoomID); err != nil {
+			return fmt.Errorf("sqlite: backfill source tombstone: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+			return fmt.Errorf("sqlite: commit: %w", err)
+		}
+		commit = true
 		return missionreturn.ErrRoomDeleted
 	}
 	// 暂停保留：最新 room.paused|room.started 为 paused 即不落卡（AT：恢复后发布）。

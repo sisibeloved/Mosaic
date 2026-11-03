@@ -154,4 +154,16 @@ DeliverReturnNotice(notice_id, envelope)：
 
 ## 修订记录
 
+- v0.2（2026-11-02）：审校修复（独立审校报告"2 项 P1、6 项 P2、1 项 P3"）——
+  #1 P1 事实归属当时契约：新事件的送验/裁定事务内写入实际 contract_version 与
+  review_round（InjectReviewFacts），旧事件由投影按事件流回溯（created /
+  contract_revised 序）+ 版本行 objective 快照 + 送验计数重建轮次——不读
+  missions 当前行；#2 P1 + #6 P2 房首调度：Due 先取各房**队首**未完成行再判到期
+  （NOT EXISTS 更早 pending/held）——队首暂停复查/退避中同房后继不越序，每房
+  每轮一条、暂停房积压不占满批次饿死他房；#5 送验轮次随事实留痕（同 #1）；
+  #8 migration v26 幂等回填升级前已删房的来源墓碑（按 room_tombstones 原删除
+  时间）+ 投递侧发现删除时兜底回填（显式提交后返回）；#3 快照两路同形：
+  room.TimelineItem += mission_ref（ProjectSnapshot 解码）+ SPA 快照映射；
+  #7 lastMessage 反应锚点跳过 system 消息；#4/#9 SPA 台账轮询序号守卫 + 失败
+  保留末次成功（空态/错误态分离）+ 顺带刷新来源元数据（他页删房可见墓碑）。
 - v0.1（2026-11-02）：首版（随 0.6.10 实施）。
