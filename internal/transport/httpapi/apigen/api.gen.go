@@ -2634,6 +2634,18 @@ type DevNote struct {
 	Type       string                 `json:"type"`
 }
 
+// DispatchClaimReleaseRequest 遗留认领释放请求（0.6.13 三审
+type DispatchClaimReleaseRequest struct {
+	// RequestDigest 认领行绑定的请求摘要（十六进制 SHA-256）
+	RequestDigest string `json:"request_digest"`
+}
+
+// DispatchClaimReleaseResult 释放结果。
+type DispatchClaimReleaseResult struct {
+	IdempotencyKey string `json:"idempotency_key"`
+	Released       bool   `json:"released"`
+}
+
 // DispatchReceiptView 投递回执（RFC-0018 §11.2.1 的 0.6.1 子集）：仅表示领域命令已提交
 // （domain_command_id = mission_id），后续执行状态经 Mission 查询——
 // 不得凭回执伪造 Run 成功或 Agent 承接。replayed=true 为幂等重放。
@@ -5115,6 +5127,9 @@ type RequestRestoreJSONBody struct {
 // RequestRestoreJSONBodyConfirm defines parameters for RequestRestore.
 type RequestRestoreJSONBodyConfirm bool
 
+// ReleaseDispatchClaimJSONRequestBody defines body for ReleaseDispatchClaim for application/json ContentType.
+type ReleaseDispatchClaimJSONRequestBody = DispatchClaimReleaseRequest
+
 // DispatchRequestJSONRequestBody defines body for DispatchRequest for application/json ContentType.
 type DispatchRequestJSONRequestBody = DispatchRequest
 
@@ -5276,6 +5291,9 @@ type ServerInterface interface {
 	// GetDeliveryPackage 单个交付包（供 request_review 的 delivery_package_ref 寻址）
 	// (GET /v1/delivery-packages/{package_id})
 	GetDeliveryPackage(w http.ResponseWriter, r *http.Request, packageId string)
+	// ReleaseDispatchClaim 遗留认领处置——确认未执行后释放键（0.6.13 三审
+	// (POST /v1/dispatch/claims/{idempotency_key}/release)
+	ReleaseDispatchClaim(w http.ResponseWriter, r *http.Request, idempotencyKey string)
 	// DispatchRequest 网关投递（复核 + 幂等 + 建契约 + 回执）
 	// (POST /v1/dispatch/dispatch)
 	DispatchRequest(w http.ResponseWriter, r *http.Request)
@@ -5751,6 +5769,32 @@ func (siw *ServerInterfaceWrapper) GetDeliveryPackage(w http.ResponseWriter, r *
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetDeliveryPackage(w, r, packageId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReleaseDispatchClaim operation middleware
+func (siw *ServerInterfaceWrapper) ReleaseDispatchClaim(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "idempotency_key" -------------
+	var idempotencyKey string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "idempotency_key", r.PathValue("idempotency_key"), &idempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "idempotency_key", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReleaseDispatchClaim(w, r, idempotencyKey)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -9200,6 +9244,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/dispatch/update", wrapper.UpdateDispatch)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/dispatch/dispatch", wrapper.DispatchRequest)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/dispatch/receipts", wrapper.GetDispatchReceipt)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/dispatch/claims/{idempotency_key}/release", wrapper.ReleaseDispatchClaim)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/runtimes", wrapper.ListRuntimes)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/runtimes/sync", wrapper.SyncRuntimes)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/runtimes/{runtime_id}", wrapper.GetRuntime)

@@ -2522,6 +2522,48 @@ func (s *server) GetDispatchReceipt(w http.ResponseWriter, r *http.Request, para
 	writeJSON(w, http.StatusOK, receiptView(receipt, true))
 }
 
+// ReleaseDispatchClaim 遗留认领处置（三审 #6 / ADR-0036 v0.4）：确认未执行后
+// 释放旧候选版遗留 pending——digest 须与认领行一致；已完结不可动。
+func (s *server) ReleaseDispatchClaim(w http.ResponseWriter, r *http.Request, idempotencyKey string) {
+	if s.dispatchUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.DispatchClaimReleaseRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "请求体不合法："+err.Error())
+		return
+	}
+	// 认领行探查：pending 且同摘要才可释放（digest 不符=他键；已完结不可动）
+	prior, found, err := s.deps.Dispatch.PendingClaim(r.Context(), idempotencyKey)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "dispatch_read_failed", err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "claim_not_found", "认领不存在（无 pending 行）")
+		return
+	}
+	if prior.DomainCommandID != "" {
+		writeError(w, http.StatusConflict, "claim_finalized", "回执已完结——不可释放（按幂等键重放即可）")
+		return
+	}
+	if prior.RequestDigest != req.RequestDigest {
+		writeError(w, http.StatusConflict, "digest_mismatch", "request_digest 与认领行不一致")
+		return
+	}
+	if err := s.deps.Dispatch.ReleaseClaim(r.Context(), idempotencyKey, req.RequestDigest); err != nil {
+		writeError(w, http.StatusInternalServerError, "dispatch_write_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, apigen.DispatchClaimReleaseResult{Released: true, IdempotencyKey: idempotencyKey})
+}
+
 // decisionView dispatch.Decision → apigen.RouteDecisionView。
 func decisionView(d dispatch.Decision) apigen.RouteDecisionView {
 	exp, _ := time.Parse(time.RFC3339Nano, d.ExpiresAt)
@@ -4106,6 +4148,9 @@ func writeDispatchError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "route_stale", err.Error())
 	case errors.Is(err, dispatch.ErrIdempotencyConflict):
 		writeError(w, http.StatusConflict, "idempotency_conflict", err.Error())
+	case errors.Is(err, dispatch.ErrLegacyPendingUnresolved):
+		// 三审 #2/#6：旧版遗留认领待核验——不冒领；携当前版本重试或 release 处置
+		writeError(w, http.StatusConflict, "legacy_pending_unresolved", err.Error())
 	case errors.Is(err, dispatch.ErrReceiptNotFound):
 		writeError(w, http.StatusNotFound, "receipt_not_found", err.Error())
 	case errors.Is(err, mission.ErrSourceAlreadyMapped):

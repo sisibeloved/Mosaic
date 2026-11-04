@@ -129,3 +129,50 @@ func TestManualRunBudgetAPI(t *testing.T) {
 	}
 	resp2.Body.Close()
 }
+
+// TestReleaseDispatchClaimAPI 三审 #6：遗留认领处置端点——无行 404 /
+// 已完结 409（不可动）；digest 核对与成功释放在 IT 层（ClaimByKey/ReleaseKey）覆盖。
+func TestReleaseDispatchClaimAPI(t *testing.T) {
+	ts, mSvc := slotDispatchServer(t, nil)
+	ctx := context.Background()
+	ag := postSlot(t, ts.URL+"/v1/identity/agents", `{"display_name":"负责人"}`)
+	var agDoc struct {
+		AgentID string `json:"agent_id"`
+	}
+	_ = json.NewDecoder(ag.Body).Decode(&agDoc)
+	ag.Body.Close()
+	src := mission.RoomSource{RoomID: "r1", TaskID: "tsk_a"}
+	m, err := mSvc.Create(ctx, agDoc.AgentID, mission.Content{
+		Objective: "原目标", Scope: "s", AcceptanceCriteria: []string{"a"},
+		DeliverableSpecs: []string{"d"}, SourceRefs: []string{"r:1"},
+	}, &src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 成功续接 → 已完结回执不可释放
+	ok := postSlot(t, ts.URL+"/v1/dispatch/update", `{"mission_id":"`+m.MissionID+`","expected_version":1,
+		"idempotency_key":"idem-rel-api","objective":"追加","scope":"s",
+		"acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"]}`)
+	if ok.StatusCode != http.StatusOK {
+		t.Fatalf("续接: %d", ok.StatusCode)
+	}
+	ok.Body.Close()
+	dg := make([]byte, 64)
+	for i := range dg {
+		dg[i] = 'a'
+	}
+	// 无认领行 → 404
+	r404 := postSlot(t, ts.URL+"/v1/dispatch/claims/idem-none/release", `{"request_digest":"`+string(dg)+`"}`)
+	code404, _ := errOf(t, r404)
+	if r404.StatusCode != http.StatusNotFound || code404 != "claim_not_found" {
+		t.Fatalf("无行须 404: %d %s", r404.StatusCode, code404)
+	}
+	r404.Body.Close()
+	// 已完结 → 409 claim_finalized
+	r409 := postSlot(t, ts.URL+"/v1/dispatch/claims/idem-rel-api/release", `{"request_digest":"`+string(dg)+`"}`)
+	code409, _ := errOf(t, r409)
+	if r409.StatusCode != http.StatusConflict || code409 != "claim_finalized" {
+		t.Fatalf("已完结须 409: %d %s", r409.StatusCode, code409)
+	}
+	r409.Body.Close()
+}

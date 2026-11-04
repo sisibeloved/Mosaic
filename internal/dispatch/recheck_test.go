@@ -25,23 +25,29 @@ func TestDispatchRejectReleasesAndRerouteConsistency(t *testing.T) {
 	}
 	svc.lookups.Slots = slots
 	ctx := context.Background()
+	req := ResolveRequest{Kind: KindCreateMission, SlotInstanceID: "si_1",
+		RoomSource: mission.RoomSource{RoomID: "r1", TaskID: "tsk_a"}, Contract: contract()}
 
-	d1, err := svc.Resolve(ctx, ResolveRequest{Kind: KindCreateMission, SlotInstanceID: "si_1",
-		RoomSource: mission.RoomSource{RoomID: "r1", TaskID: "tsk_a"}, Contract: contract()})
+	d1, err := svc.Resolve(ctx, req)
 	if err != nil || d1.Status != "resolved" {
 		t.Fatalf("解析: %+v %v", d1, err)
 	}
-	// 换绑后旧决策投递 → route_stale（认领须已释放）
+	// 换绑后旧决策投递 → route_stale（三审 #1：认领**不释放**——并发孪生共享）
 	slots.active["si_1"] = "ag_c"
 	if _, _, err := svc.Dispatch(ctx, DispatchCmd{RouteID: d1.RouteID, IdempotencyKey: "idem-rc"}); !errors.Is(err, ErrRouteStale) {
 		t.Fatalf("换绑拒绝: %v", err)
 	}
-	if _, found, _ := svc.store.ReceiptByKey(ctx, CallerOwner, ScopeWorkspace, "idem-rc"); found {
-		t.Fatal("被拒认领须已释放（公开查询不可见且不占键）")
+	// 同键异载荷（不同请求）→ 幂等冲突（键被同摘要 pending 占用——修复前被
+	// 释放后可冒用建第二单，三审 #1 串单根因）
+	other := req
+	other.RoomSource.TaskID = "tsk_b"
+	dOther, _ := svc.Resolve(ctx, other)
+	if _, _, err := svc.Dispatch(ctx, DispatchCmd{RouteID: dOther.RouteID, IdempotencyKey: "idem-rc"}); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("异载荷不得冒用被拒键: %v", err)
 	}
-	// 新决策（寻址到新任职 ag_c、未映射任务卡）同键投递成功
-	d2, err := svc.Resolve(ctx, ResolveRequest{Kind: KindCreateMission, SlotInstanceID: "si_1",
-		RoomSource: mission.RoomSource{RoomID: "r1", TaskID: "tsk_b"}, Contract: contract()})
+	// 同一原始请求重解析（新决策、同摘要）→ 换绑已修复 → 同键重投成功；
+	// 首次响应与重放/按键查询同一份（采纳原行 + route 真值）
+	d2, err := svc.Resolve(ctx, req)
 	if err != nil || d2.Status != "resolved" || d2.ResolvedAgentID != "ag_c" {
 		t.Fatalf("重解析: %+v %v", d2, err)
 	}
@@ -52,7 +58,6 @@ func TestDispatchRejectReleasesAndRerouteConsistency(t *testing.T) {
 	if rc.RouteID != d2.RouteID {
 		t.Fatalf("回执 route 须为实际成功决策: %+v", rc)
 	}
-	// 重放与按键查询与首次响应同一份（持久行即响应行）
 	again, replayed2, err := svc.Dispatch(ctx, DispatchCmd{RouteID: d2.RouteID, IdempotencyKey: "idem-rc"})
 	if err != nil || !replayed2 || again.ReceiptID != rc.ReceiptID || again.RouteID != rc.RouteID {
 		t.Fatalf("重放一致性: %+v vs %+v (%v)", again, rc, err)
@@ -60,6 +65,13 @@ func TestDispatchRejectReleasesAndRerouteConsistency(t *testing.T) {
 	persist, found, _ := svc.store.ReceiptByKey(ctx, CallerOwner, ScopeWorkspace, "idem-rc")
 	if !found || persist.ReceiptID != rc.ReceiptID || persist.RouteID != d2.RouteID {
 		t.Fatalf("按键查询与首次响应同一份: %+v vs %+v", persist, rc)
+	}
+	if ms, _ := svc.missions.(interface {
+		ListMissions(context.Context) ([]mission.Summary, error)
+	}); ms != nil {
+		if list, _ := ms.ListMissions(ctx); len(list) != 1 {
+			t.Fatalf("恰一单: %d", len(list))
+		}
 	}
 }
 
@@ -77,42 +89,45 @@ func TestUpdateLegacyPendingRecovery(t *testing.T) {
 	}
 	c2 := contract()
 	c2.Objective = "遗留恢复载荷"
-	// 模拟 b59a395 形态：修订已提交（v2）+ 认领行未完结（reason 空列）
-	up2, err := mSvc.Revise(ctx, m.MissionID, 1, "ag_a", "ag_a", c2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// 模拟 b59a395 形态：认领行未完结（reason 空列）
 	cmd := UpdateCmd{MissionID: m.MissionID, ExpectedVersion: 1,
 		IdempotencyKey: "idem-legacy", RequestID: "req_lg", Contract: c2, Reason: "任务卡追加"}
 	claim := Receipt{
 		ReceiptID: "dpr_legacy", CallerRef: CallerOwner, Scope: ScopeWorkspace,
 		IdempotencyKey: cmd.IdempotencyKey, RequestID: "req_lg",
-		RequestDigest: updateDigest(cmd), Reason: "", // v30 无 reason 列——升级后空
+		RequestDigest: updateDigest(cmd), Reason: "",
 		TargetRefs: []string{m.MissionID},
 	}
 	if _, conflict, finalized, err := svc.store.ClaimKey(ctx, claim); err != nil || conflict || finalized {
 		t.Fatalf("播种遗留 pending: %v", err)
 	}
-	// 同键重驱动（expected=1 对 v2 必 CAS 败）→ 内容等值恢复：完结 v2 回执
-	rc, replayed, err := svc.Update(ctx, cmd)
-	if err != nil || replayed {
-		t.Fatalf("遗留恢复: %+v replayed=%v %v", rc, replayed, err)
-	}
-	if rc.DomainCommandID != up2.MissionID+":revise:v2" || rc.ReceiptID != "dpr_legacy" {
-		t.Fatalf("恢复回执: %+v", rc)
-	}
-	if rc.Reason != "任务卡追加" {
-		t.Fatalf("reason 须以命令值回落（#12——空列不得抹掉输入）: %+v", rc)
-	}
-	// 不等值情形：v3 已是他人内容 → 冲突透传（认领保留——不宣告未知结果成功）
-	c3 := contract()
-	c3.Objective = "他人载荷"
-	if _, err := mSvc.Revise(ctx, m.MissionID, 2, "ag_a", "ag_a", c3); err != nil {
+	// (a) 任务已前进（v2 由他方提交）→ 同键原载荷重驱动 CAS 败 → 待核验
+	if _, err := mSvc.Revise(ctx, m.MissionID, 1, "ag_a", "ag_a", c2); err != nil {
 		t.Fatal(err)
 	}
-	cmd2 := UpdateCmd{MissionID: m.MissionID, ExpectedVersion: 2,
-		IdempotencyKey: "idem-legacy2", Contract: c2} // 内容与 v3 不等值
-	if _, _, err := svc.Update(ctx, cmd2); !errors.Is(err, mission.ErrVersionConflict) {
-		t.Fatalf("不等值须冲突: %v", err)
+	if _, _, err := svc.Update(ctx, cmd); !errors.Is(err, ErrLegacyPendingUnresolved) {
+		t.Fatalf("遗留 CAS 败须待核验（不冒领）: %v", err)
+	}
+	// (b) 处置：确认未执行 → release 释放键（digest 核对）→ 同键携当前版本重提成功
+	if err := svc.ReleaseClaim(ctx, "idem-legacy", updateDigest(cmd)); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	cmdOK := cmd
+	cmdOK.ExpectedVersion = 2
+	rc, replayed, err := svc.Update(ctx, cmdOK)
+	if err != nil || replayed {
+		t.Fatalf("release 后重提: %+v replayed=%v %v", rc, replayed, err)
+	}
+	if rc.DomainCommandID != m.MissionID+":revise:v3" {
+		t.Fatalf("重提回执: %+v", rc)
+	}
+	// (c) 新键 CAS 败（等值内容也不冒领——三审 #2 新库面）
+	cmdHijack := UpdateCmd{MissionID: m.MissionID, ExpectedVersion: 1,
+		IdempotencyKey: "idem-hijack", Contract: c2} // 内容恰为 v2，但 v2 非其所为
+	if _, _, err := svc.Update(ctx, cmdHijack); !errors.Is(err, mission.ErrVersionConflict) {
+		t.Fatalf("新键等值内容须冲突（不冒领）: %v", err)
+	}
+	if _, found, _ := svc.store.ReceiptByKey(ctx, CallerOwner, ScopeWorkspace, "idem-hijack"); found {
+		t.Fatal("新键冲突不得留回执")
 	}
 }

@@ -2937,6 +2937,7 @@ UPDATE missions SET contract_version = ?, status = ?, owner_agent_id = ?, object
 func (s *Store) UpdateMissionAtomic(ctx context.Context, cmd dispatch.UpdateCmd, dg, now, newReceiptID string) (dispatch.Receipt, bool, error) {
 	var out dispatch.Receipt
 	var replayed bool
+	preExisting := false // 三审 #2/#6：认领行是否早于本事务（并发孪生重驱动/旧版遗留）
 	err := s.identityWriteTx(ctx, func(q identityExec) error {
 		// —— 幂等键探查/认领 ——
 		row := q.QueryRowContext(ctx, `
@@ -2957,6 +2958,7 @@ SELECT receipt_id, caller_ref, scope, idempotency_key, request_id, request_diges
 			Reason:         cmd.Reason,
 			TargetRefs:     []string{cmd.MissionID},
 		}
+		preExisting = found // 三审 #2/#6：认领来源（新插入可回滚释放 / 既有行为遗留或孪生）
 		if found {
 			if ex.RequestDigest != dg {
 				return fmt.Errorf("%w: 键 %s 已绑定其他请求", dispatch.ErrIdempotencyConflict, cmd.IdempotencyKey)
@@ -3023,20 +3025,22 @@ VALUES (?, ?, ?, ?, ?, ?, '', 0, '', ?, '[]', ?, '')`,
 			return err
 		}
 		if !ok {
-			// 复审 #11 遗留恢复：v30 候选版可能留下"修订已提交、回执未完结"的
-			// pending 认领（升级后重驱动 CAS 必败）。版本恰 expected+1 且现行
-			// 内容与载荷**等值**（pending 行摘要绑定同一命令——CAS v→v+1 的修
-			// 改内容即本命令）= 该修订确已提交 → 完结回执；不等值不能证明，走
-			// 败因分类（回滚认领——原子面拒绝不占键）。
-			nowM, foundM, errM := missionByIDTx(ctx, q, cmd.MissionID)
-			if errM != nil {
-				return errM
-			}
-			if foundM && nowM.ContractVersion == cmd.ExpectedVersion+1 && mission.SameContent(nowM.Content, cmd.Contract) {
-				up = nowM
-			} else {
+			// 三审 #2/#6：CAS 败按认领来源分流——**新插入**认领（本事务）→
+			// 败因分类透传（version_conflict 等，事务回滚连认领一并撤销——不
+			// 占键，修正后重试）；**既有** pending（并发孪生重驱动或旧候选版遗
+			// 留）→ 版本与正文等值不可证明修订归属（v2 可能由他键提交——新库
+			// 冒领根因），返回待核验：携当前版本同键重试（确认未执行则正常执
+			// 行）或 release 处置。认领行保留（事务回滚不影响既有行）。
+			if !preExisting {
 				return classifyReviseRefusal(ctx, q, cmd.MissionID, cmd.ExpectedVersion, cur.OwnerAgentID)
 			}
+			var curVersion int
+			if err := q.QueryRowContext(ctx,
+				`SELECT contract_version FROM missions WHERE mission_id = ?`, cmd.MissionID).Scan(&curVersion); err == nil && curVersion != cmd.ExpectedVersion {
+				return fmt.Errorf("%w：键 %s 的认领早于本请求（当前 v%d，命令期望 v%d）——携当前版本重试或确认未执行后释放键",
+					dispatch.ErrLegacyPendingUnresolved, cmd.IdempotencyKey, curVersion, cmd.ExpectedVersion)
+			}
+			return classifyReviseRefusal(ctx, q, cmd.MissionID, cmd.ExpectedVersion, cur.OwnerAgentID)
 		}
 		// —— 回执完结（与修订同一事务提交——#3/#16） ——
 		out = claim
@@ -3357,6 +3361,54 @@ func verifyCreationGateTx(ctx context.Context, q identityExec, gate *mission.Cre
 	}
 	if rep := slot.EvaluateReadiness(specContent, grant); !rep.Ready {
 		return fmt.Errorf("%w: 授权准入不满足（缺 %s）", mission.ErrSlotIntentViolated, strings.Join(rep.Missing, "、"))
+	}
+	return nil
+}
+
+// verifyBindingGrantTx 任职授权事务内核对（三审 #3：建 Run 时钉版模板要求
+// vs 授权档案——与建单门/GrantByAgent 同源完整快照含 workspace_access）。
+func verifyBindingGrantTx(ctx context.Context, q identityExec, instanceID string, specVersion int, agentID string) error {
+	var specID string
+	err := q.QueryRowContext(ctx,
+		`SELECT slot_spec_id FROM slot_instances WHERE slot_instance_id = ?`, instanceID).Scan(&specID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w：任职实例不在册（%s）", missionrun.ErrOwnerNotActive, instanceID)
+	} else if err != nil {
+		return fmt.Errorf("sqlite: run grant instance probe: %w", err)
+	}
+	var content string
+	err = q.QueryRowContext(ctx,
+		`SELECT content_json FROM slot_specs WHERE slot_spec_id = ? AND version = ?`, specID, specVersion).Scan(&content)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w：职责谱系缺失（%s v%d）", missionrun.ErrOwnerNotActive, specID, specVersion)
+	} else if err != nil {
+		return fmt.Errorf("sqlite: run grant spec probe: %w", err)
+	}
+	var specContent slot.SpecContent
+	if err := json.Unmarshal([]byte(content), &specContent); err != nil {
+		return fmt.Errorf("sqlite: run grant spec unmarshal: %w", err)
+	}
+	var grant slot.AgentGrant
+	var skills, tools, contexts, caps, wsAccess string
+	err = q.QueryRowContext(ctx,
+		`SELECT skills, tools, context, runtime_capabilities, workspace_access FROM slot_agent_grants WHERE agent_id = ?`,
+		agentID).Scan(&skills, &tools, &contexts, &caps, &wsAccess)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("sqlite: run grant probe: %w", err)
+	}
+	if err == nil {
+		grant.Runtime.WorkspaceAccess = wsAccess
+		for _, u := range []struct {
+			raw string
+			out any
+		}{{skills, &grant.Skills}, {tools, &grant.Tools}, {contexts, &grant.Context}, {caps, &grant.Runtime.Capabilities}} {
+			if err := json.Unmarshal([]byte(u.raw), u.out); err != nil {
+				return fmt.Errorf("sqlite: run grant unmarshal: %w", err)
+			}
+		}
+	}
+	if rep := slot.EvaluateReadiness(specContent, grant); !rep.Ready {
+		return fmt.Errorf("%w：任职授权不满足（缺 %s）——撤权后旧清单不得执行", missionrun.ErrOwnerNotActive, strings.Join(rep.Missing, "、"))
 	}
 	return nil
 }
@@ -4193,6 +4245,21 @@ ON CONFLICT(caller_ref, scope, idempotency_key) DO UPDATE SET
 		}
 		return nil
 	})
+}
+
+// ClaimByKey 认领行查询（含 pending——三审 #6 处置入口只读面）。
+func (s *Store) ClaimByKey(ctx context.Context, callerRef, scope, key string) (dispatch.Receipt, bool, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT receipt_id FROM dispatch_receipts WHERE caller_ref = ? AND scope = ? AND idempotency_key = ?`,
+		callerRef, scope, key).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return dispatch.Receipt{}, false, nil
+	}
+	if err != nil {
+		return dispatch.Receipt{}, false, fmt.Errorf("sqlite: claim by key: %w", err)
+	}
+	return s.receiptByID(ctx, id)
 }
 
 // ReleaseKey 回滚未生效命令对键的认领（0.6.13 审校 #11：分步退化面的拒绝
@@ -5344,14 +5411,35 @@ func (s *Store) CreateRun(ctx context.Context, r missionrun.Run, maxRuns, manife
 			}
 		}
 		if r.BindingID != "" {
-			var bStatus, bAgent string
+			var bStatus, bAgent, bInstance string
+			var bVer int
 			if err := q.QueryRowContext(ctx,
-				`SELECT status, agent_id FROM slot_bindings WHERE binding_id = ?`, r.BindingID).Scan(&bStatus, &bAgent); err == nil {
+				`SELECT status, agent_id, slot_instance_id, slot_spec_version FROM slot_bindings WHERE binding_id = ?`, r.BindingID).
+				Scan(&bStatus, &bAgent, &bInstance, &bVer); err == nil {
 				if bStatus != "active" || bAgent != r.AgentID {
 					return fmt.Errorf("%w：所钉任职失效/换人（bd %s：%s/%s）", missionrun.ErrOwnerNotActive, r.BindingID, bStatus, bAgent)
 				}
+				// 三审 #3：任职授权在建行事务内核对——清单装配后撤回必需工具/工
+				// 作区授权，旧清单不得送达执行器（RFC §11.1 / AT-16 实际执行时
+				// 授权仍有效）。复用建单门同源判定（钉版模板要求 vs 授权档案）。
+				if err := verifyBindingGrantTx(ctx, q, bInstance, bVer, r.AgentID); err != nil {
+					return err
+				}
 			} else if !errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("sqlite: run binding gate probe: %w", err)
+			}
+		}
+		// 三审 #4：归属核对——交接承接不递增契约版本，清单装配与建行之间的
+		// owner 翻转须在此拦（旧负责人的清单不得领取新 Run）。
+		{
+			var curOwner string
+			if err := q.QueryRowContext(ctx,
+				`SELECT owner_agent_id FROM missions WHERE mission_id = ?`, r.MissionID).Scan(&curOwner); err == nil {
+				if curOwner != r.AgentID {
+					return fmt.Errorf("%w：任务归属已交接（执行者 %s，当前负责人 %s）——释放租约丢弃旧装配", missionrun.ErrOwnerNotActive, r.AgentID, curOwner)
+				}
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("sqlite: run owner probe: %w", err)
 			}
 		}
 		// 0.6.13 审校 #14 + 复审 #10：次数上限与版本漂移核对在建行事务内

@@ -159,6 +159,7 @@ type fakeLeases struct {
 	fenceOK    bool
 	conflict   bool
 	releaseLog *eventLog // 可选：释放序审计（0.6.6 审校 P1 停止序断言）
+	onCheck    func()    // 可选：围栏回调钩子（三审 #5——围栏期推进时钟/发停交错）
 }
 
 func (f *fakeLeases) Acquire(_ context.Context, _, _ string, _ int, _ map[string]int) (Lease, error) {
@@ -188,6 +189,9 @@ func (f *fakeLeases) Release(ctx context.Context, _ string) error {
 func (f *fakeLeases) CheckFence(ctx context.Context, _, _ string) (bool, string, error) {
 	if err := ctx.Err(); err != nil {
 		return false, "", err
+	}
+	if f.onCheck != nil {
+		f.onCheck() // 三审 #5：围栏期交错注入
 	}
 	if f.fenceOK {
 		return true, "", nil

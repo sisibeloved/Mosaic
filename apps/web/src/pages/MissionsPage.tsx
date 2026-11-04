@@ -85,6 +85,9 @@ export function MissionsPage() {
   const [conflictReload, setConflictReload] = useState(false);
   const [retryTick, setRetryTick] = useState(0);
   const detailSeq = useRef(0);
+  // 三审前端 P2（映射陈旧切续接）：create 撞 409 source_already_mapped 后保留
+  // 用户已录入的新增要求，仅取现行版本切换续接模式（不预填覆盖输入）。
+  const skipPrefillRef = useRef(false);
   const [budget, setBudget] = useState({ concurrency: "1", max_runs: "32", max_wall_clock_seconds: "86400", max_retries: "0", max_delegation_depth: "0" });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -151,6 +154,12 @@ export function MissionsPage() {
           constraints: d.constraints ?? [],
           delegation: { allowed: d.delegation?.allowed ?? [], max_depth: d.delegation?.max_depth ?? 0 },
         });
+        if (skipPrefillRef.current) {
+          // 409 切换路径：保留用户已录入的新增要求（仅取版本与基准）
+          skipPrefillRef.current = false;
+          setDetailState("idle");
+          return;
+        }
         setForm((f) => ({
           ...f,
           objective: d.objective ?? f.objective,
@@ -208,7 +217,8 @@ export function MissionsPage() {
       max_wall_clock_seconds: Number(budget.max_wall_clock_seconds),
       max_retries: Number(budget.max_retries), max_delegation_depth: Number(budget.max_delegation_depth),
     };
-    void act(async () => {
+    void (async () => {
+      const err = await act(async () => {
       const m = await api.createMission({
         objective: form.objective.trim(),
         scope: form.scope.trim(),
@@ -226,7 +236,14 @@ export function MissionsPage() {
       setSelected(m.mission_id);
       setFormOpen(false);
       setForm({ objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "", owner: "", reviewer: "", room: "", task: "" });
-    });
+      });
+      // 来源已被他处交办（列表陈旧）——保留录入切续接模式（重取映射与版本）
+      if (err?.code === "source_already_mapped") {
+        skipPrefillRef.current = true;
+        setRev((r) => r + 1);
+        setMsg("该任务卡已被交办——已切换为续接（追加要求）模式，请核对后重新提交");
+      }
+    })();
   };
 
   // 复审 #1/#2/#6：续接提交——目标就绪才可提交（加载/失败禁用）；基准
@@ -293,6 +310,11 @@ export function MissionsPage() {
 
       {formOpen && (
         <section className="flex flex-col gap-2 rounded-xl border border-border bg-surface p-3">
+          {detailState === "loading" && (
+            <p className="rounded-lg bg-surface-2 px-2.5 py-1.5 text-xs text-faint">
+              正在读取现行契约……契约字段暂不可编辑（防读取返回覆盖刚输入的文字），来源切换不受限。
+            </p>
+          )}
           {updateTarget && (
             <p className="rounded-lg bg-accent-soft px-2.5 py-1.5 text-xs text-accent">
               该任务卡已交办为 {updateTarget.missionID}（v{updateTarget.version}）——本次为<b>追加要求</b>
@@ -332,6 +354,7 @@ export function MissionsPage() {
             <input
               value={form.objective}
               onChange={(e) => setForm({ ...form, objective: e.target.value })}
+              disabled={detailState === "loading"}
               className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm outline-none focus:border-accent"
             />
           </label>
@@ -340,6 +363,7 @@ export function MissionsPage() {
             <input
               value={form.scope}
               onChange={(e) => setForm({ ...form, scope: e.target.value })}
+              disabled={detailState === "loading"}
               className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm outline-none focus:border-accent"
             />
           </label>
@@ -349,6 +373,7 @@ export function MissionsPage() {
               <textarea
                 value={form.acceptance}
                 onChange={(e) => setForm({ ...form, acceptance: e.target.value })}
+              disabled={detailState === "loading"}
                 rows={3}
                 className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
               />
@@ -358,6 +383,7 @@ export function MissionsPage() {
               <textarea
                 value={form.deliverables}
                 onChange={(e) => setForm({ ...form, deliverables: e.target.value })}
+              disabled={detailState === "loading"}
                 rows={3}
                 className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
               />
@@ -367,6 +393,7 @@ export function MissionsPage() {
               <textarea
                 value={form.sources}
                 onChange={(e) => setForm({ ...form, sources: e.target.value })}
+              disabled={detailState === "loading"}
                 rows={2}
                 className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
               />
@@ -376,6 +403,7 @@ export function MissionsPage() {
               <textarea
                 value={form.returns}
                 onChange={(e) => setForm({ ...form, returns: e.target.value })}
+              disabled={detailState === "loading"}
                 rows={2}
                 className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
               />
@@ -407,6 +435,7 @@ export function MissionsPage() {
               <select
                 value={form.owner}
                 onChange={(e) => setForm({ ...form, owner: e.target.value })}
+              disabled={detailState === "loading"}
                 className="rounded border border-border bg-surface-2 px-1.5 py-1 outline-none"
               >
                 <option value="">未指派（draft）</option>
@@ -422,6 +451,7 @@ export function MissionsPage() {
               <input
                 value={form.reviewer}
                 onChange={(e) => setForm({ ...form, reviewer: e.target.value })}
+              disabled={detailState === "loading"}
                 placeholder="Agent ID 或留空"
                 className="w-44 rounded border border-border bg-surface-2 px-1.5 py-1 outline-none"
               />

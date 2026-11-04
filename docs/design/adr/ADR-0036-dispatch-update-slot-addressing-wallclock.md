@@ -1,6 +1,6 @@
 # ADR-0036：0.6 域收口——网关续接、Slot 职责寻址与墙钟强制（0.6.13）
 
-- 状态：Accepted（2026-11-03，随 0.6.13 实施；v0.2 审校 / v0.3 复审修订）
+- 状态：Accepted（2026-11-03，随 0.6.13 实施；v0.2 审校 / v0.3 复审 / v0.4 三审修订）
 - 关联：[RFC-0018](../rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（§4.5——"任务型职责寻址使用 当前 scope → SlotInstance → active Binding → AgentID → 候选 Runtime。SlotSpec 只作版本化模板，同名模板在不同项目下可有多个实例；禁止跨项目猜选任职者。没有 active Binding 时返回待任职，不能自动激活一个 ready Binding"；§4.6——投递复核与"已提交后从 A 改为 B 走领域交接，不能只改路由缓存"；§10.3——`mission_update` 续接序列与 `route_stale`；§6.1——budget 五项"契约声明事实，运行时强制随 Scheduler 落"；AT-14/15/18）；[ADR-0024](ADR-0024-dispatch-first-slice.md)（网关首切片——create 路径）；[ADR-0028](ADR-0028-single-agent-execution.md)（Scheduler）；[ADR-0029](ADR-0029-mission-pause-resume-cancel.md)（停止面复用）；[ADR-0030](ADR-0030-run-crash-recovery.md)（迟到结果审计复用）；[ADR-0035](ADR-0035-mission-handover.md)（换人走交接——本件寻址不改在途归属）；[交付计划](../../plan/2026-08-25-delivery-plan.md) v2.69 盘点三项落差、负责人裁定"开 0.6.13"。
 
 ## 背景与问题
@@ -69,6 +69,12 @@ v2.69 阶段性验收盘点确认：0.6 出口的既定范围（AT-02/03/10/13�
 ## 修订记录
 
 - v0.1（2026-11-03）：首版（随 0.6.13 实施）。
+- v0.4（2026-11-04）：三审 6 项（4 P1 + 2 P2）+ 既有前端 2 项修复——四项设计修订：
+  1. **create 路径拒绝不释放认领（§2）**：并发孪生共享同一条 pending（同键同摘要即同一请求），单方释放会让异摘要请求冒用键建第二单并串单（复审 #8 引入的回归）。语义：拒绝后 pending 留存，同键同载荷重试重驱动（孪生胜者完结后重放其回执）；一致性由采纳原行 + 回执 route_id 真值 + upsert 自愈保证。Update 路径拒绝释放保留（认领排他 + upsert 自愈）。
+  2. **续接 CAS 败按认领来源分流（§1）**：**新插入**认领 → version_conflict 透传并回滚（连认领一并撤销——修正后重试；等值内容不冒领他人修订）；**既有** pending（并发孪生或旧候选版遗留）→ `legacy_pending_unresolved` 待核验（版本与正文等值不可证明归属——自动恢复分支删除）；处置入口：`POST /v1/dispatch/claims/{key}/release`（确认未执行后释放，digest 核对，已完结不可动）+ `ClaimByKey` 只读面；携当前版本同键重提在 release 后可用。
+  3. **CreateRun 事务内任职授权与归属核对（§3）**：授权——清单所钉任职的钉版模板要求 vs 授权档案（复用建单门同源判定，撤权后旧清单不送达执行器，AT-16）；归属——owner_agent_id 与执行者核对（交接承接不递增版本，旧负责人清单不得领取新 Run）。
+  4. **完成提交前停止仲裁下沉（§3）**：finalizeRun 在围栏通过后、终态写入前**重新**读取停止意图与行上期限（fresh now）——停止成立改按停止终理化（迟到正文只审计），残余窗口缩至判定与写入之间数行。
+  前端两项：契约字段在详情加载期间禁编辑（防读取返回覆盖刚输入文字）；create 撞 409 source_already_mapped 后保留录入切续接模式（仅取现行版本，不预填覆盖）。
 - v0.3（2026-11-03）：复审 13 项（5 P1 + 6 P2 + 2 P3）修复——五项设计修订：
   1. **建单事务门统一（§2）**：`CreationGate{Slot *SlotIntent, RequireOwnerActive bool}` 取代单一意图——显式 owner 网关交办携身份门（预检后退役/暂停不得落入新承诺，复审 #3）；slot 意图五核（+ 模板唯一性锚：SpecID 非空时 scope 实例集须仍恰为解析实例——长出兄弟实例即歧义拒建，复审 #7）；授权档案事务内快照**补 workspace_access**（漏读使合法 read_write 被当空值误拒，复审 #5）。
   2. **执行预算单快照（§3）**：预算（墙钟 + max_runs）取**清单钉住版本的契约层**（与执行输入同版本）；`CreateRun` 建行事务内核对——现行契约版本（漂移 `ErrContractDrift` 释放租约重新装配）与现行内容 max_runs（RefOf 后收紧即时生效，复审 #10）+ 执行者门（负责人 active + 所钉任职仍 active 未换人，`ErrOwnerNotActive`，复审 #4——暂停不自动解除任职不得启动）。

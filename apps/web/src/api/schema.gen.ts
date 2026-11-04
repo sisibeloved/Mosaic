@@ -1722,6 +1722,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/dispatch/claims/{idempotency_key}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 遗留认领处置——确认未执行后释放键（0.6.13 三审
+         * @description 仅限旧候选版（b59a395，未发布）遗留的 pending 认领：调用方已向用户
+         *     呈现"确认未执行"语义后释放幂等键（request_digest 须与认领行一致——
+         *     防误删他键）。同键同载荷可随后重提；已完结回执不可动（409）。
+         */
+        post: operations["releaseDispatchClaim"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/runtimes": {
         parameters: {
             query?: never;
@@ -3982,6 +4004,16 @@ export interface components {
             resolved_agent_id?: string;
             /** Format: date-time */
             expires_at: string;
+        };
+        /** @description 遗留认领释放请求（0.6.13 三审 */
+        DispatchClaimReleaseRequest: {
+            /** @description 认领行绑定的请求摘要（十六进制 SHA-256） */
+            request_digest: string;
+        };
+        /** @description 释放结果。 */
+        DispatchClaimReleaseResult: {
+            released: boolean;
+            idempotency_key: string;
         };
         /** @description 投递请求——执行决策存档的请求（不重发内容）；幂等键 (caller_ref, scope, idempotency_key) 全局唯一。 */
         DispatchRequest: {
@@ -8680,6 +8712,59 @@ export interface operations {
             };
             /** @description 回执不存在（receipt_not_found） */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 网关域未装配（dispatch_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    releaseDispatchClaim: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                idempotency_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchClaimReleaseRequest"];
+            };
+        };
+        responses: {
+            /** @description 已释放 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DispatchClaimReleaseResult"];
+                };
+            };
+            /** @description 认领不存在（claim_not_found——无 pending 行） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 已完结不可动（claim_finalized）或摘要不符（digest_mismatch） */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

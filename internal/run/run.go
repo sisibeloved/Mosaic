@@ -788,15 +788,26 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 			}
 			return r, nil
 		}
+		finalize := func(state, errText, block string) error {
+			err := s.finalizeRun(cleanupCtx, &r, lease, state, errText, block, "")
+			if so, ok := err.(*stopOverrideError); ok {
+				// 三审 #5：完成提交前的停止改判——正文回填缓冲通道交停止收尾
+				// 审计（只审计不发布），按停止终理化。
+				done <- res
+				if ferr := s.finalizeStopped(cleanupCtx, &r, lease, so.cause, done); ferr != nil {
+					return fmt.Errorf("%w：%v", ErrTerminalWrite, ferr)
+				}
+				return nil
+			}
+			return err
+		}
 		if res.err != nil {
-			err := s.finalizeRun(cleanupCtx, &r, lease, StateFailed, truncateS(res.err.Error(), 1000), "", "")
-			if err != nil {
+			if err := finalize(StateFailed, truncateS(res.err.Error(), 1000), ""); err != nil {
 				return r, fmt.Errorf("%w：%v（执行错误：%v）", ErrTerminalWrite, err, res.err)
 			}
 			return r, nil
 		}
-		err = s.finalizeRun(cleanupCtx, &r, lease, StateCompleted, "", truncateS(res.block, 8000), "")
-		if err != nil {
+		if err := finalize(StateCompleted, "", truncateS(res.block, 8000)); err != nil {
 			return r, fmt.Errorf("%w：%v", ErrTerminalWrite, err)
 		}
 		return r, nil
@@ -892,6 +903,15 @@ func (s *Service) HasUnfinished(ctx context.Context, missionID string) (bool, er
 	return false, nil
 }
 
+// stopOverrideError 完成提交前的停止改判（三审 #5：围栏通过后、终态写入前
+// 重新仲裁发现停止意图或期限已过——零写入返回，调用方改走 finalizeStopped，
+// 迟到正文只审计不发布）。
+type stopOverrideError struct{ cause string }
+
+func (e *stopOverrideError) Error() string {
+	return "run: 完成提交前停止改判（" + e.cause + "）"
+}
+
 // finalizeRun #4/#5：围栏核对 + 终态写入在同一存储事务内完成——核对不
 // 通过或写入失败，结果不落库（fence_rejected 审计或返回 ErrTerminalWrite
 // 给调用方，补偿面见调用方）。使用独立清理上下文（请求断开后不遗留）。
@@ -932,7 +952,23 @@ func (s *Service) finalizeRun(ctx context.Context, r *Run, lease Lease, state, e
 		return nil
 	}
 
-	// 围栏通过 → 终态写入（失败返回 ErrTerminalWrite 给调用方——#12）
+	// 围栏通过 → 终态写入（失败返回 ErrTerminalWrite 给调用方——#12）。
+	// 三审 #5：终态判定与提交同步——围栏检查期间监控发停（或此刻已过期限）
+	// 的窗口在此收口：写入前**重新**读取停止意图与行上期限（fresh now），停
+	// 止成立则改按停止终理化（迟到正文只审计）；残余窗口缩至判定与写入之间
+	// 的数行（期限判定用行上权威值，监控信号必然伴随其已过）。
+	{
+		now2 := s.now()
+		stopCause := ""
+		if cause, ok := s.stops.cause(r.RunID); ok && cause != "" {
+			stopCause = cause
+		} else if deadlinePassed(r.Deadline, now2) {
+			stopCause = CauseWallClockExceeded
+		}
+		if stopCause != "" && state == StateCompleted {
+			return &stopOverrideError{cause: stopCause} // 零写入——调用方改走停止终理化
+		}
+	}
 	r.State = state
 	r.ErrorText = errText
 	r.ResultBlock = resultBlock

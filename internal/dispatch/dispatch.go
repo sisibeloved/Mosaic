@@ -43,6 +43,12 @@ var (
 	ErrIdempotencyConflict = errors.New("dispatch: 幂等键冲突（同键异载荷）")
 	// ErrReceiptNotFound 回执不存在（不等于领域动作一定未发生）。
 	ErrReceiptNotFound = errors.New("dispatch: 回执不存在")
+	// ErrLegacyPendingUnresolved 旧候选版（b59a395）遗留 pending 认领且修订
+	// CAS 已败（三审 #2/#6：认领行早于本请求存在——修订归属不可凭版本与
+	// 正文等值证明，不自动冒领。处置：携带**当前**版本同键重试（确认未执行
+	// 则正常执行）；或确认未执行后经 /v1/dispatch/claims/{key}/release 释放
+	// 键另提。仅影响运行过未发布候选版的库）。
+	ErrLegacyPendingUnresolved = errors.New("dispatch: 旧版遗留认领待核验（修订归属不可自动证明）——携当前版本重试或确认未执行后释放键")
 	// ErrTargetNotActive 续接目标身份非 active（0.6.13 / ADR-0036 §1：续接指令
 	// 不发往已停身份——suspended/retiring/retired 须先恢复或换人）。
 	ErrTargetNotActive = errors.New("dispatch: 目标负责人非 active")
@@ -194,6 +200,9 @@ type Store interface {
 	// ReceiptByKey 幂等键查**已提交**回执（0.6.13 审校 #11：pending 认领是
 	// 事务内部事实，公开查询不可见——防"虚假已提交"）；未完结 ok=false。
 	ReceiptByKey(ctx context.Context, callerRef, scope, key string) (Receipt, bool, error)
+	// ClaimByKey 幂等键查认领行**含 pending**（三审 #6：遗留处置入口的只读面
+	//——digest 核对与状态分辨；不作回执语义）。
+	ClaimByKey(ctx context.Context, callerRef, scope, key string) (Receipt, bool, error)
 }
 
 // Service 网关服务。
@@ -492,10 +501,12 @@ func (s *Service) Dispatch(ctx context.Context, cmd DispatchCmd) (Receipt, bool,
 		claim.ReceiptID = existing.ReceiptID
 		claim.RequestID = existing.RequestID
 	}
-	// 拒绝即释放认领（复审 #8：确定失败的请求不占键——复核/预检/建单拒绝后
-	// 换新决策同键重投不被旧认领绑死；同摘要 pending 无领域事实，删除安全）。
+	// 三审 #1：create 路径拒绝**不释放**认领——并发孪生共享同一条 pending
+	//（同键同摘要即同一请求），单方释放会让异摘要请求冒用键建第二单并串單
+	//（复审 #8 引入的回归）。语义：拒绝后 pending 留存，同键同载荷重试重驱动
+	//（孪生胜者完结后直接重放其回执）；一致性由采纳原行 + 回执 route_id 真值
+	// + upsert 自愈保证。Update 路径的拒绝释放保留（认领排他 + upsert 自愈）。
 	fail := func(err error) (Receipt, bool, error) {
-		_ = s.store.ReleaseKey(ctx, CallerOwner, ScopeWorkspace, cmd.IdempotencyKey, d.RequestDigest)
 		return Receipt{}, false, err
 	}
 
@@ -647,6 +658,10 @@ func (s *Service) Update(ctx context.Context, cmd UpdateCmd) (Receipt, bool, err
 	if finalized {
 		return existing, true, nil
 	}
+	// firstClaim：本请求新插入认领（可安全释放）；false = 命中既有 pending
+	//（并发孪生或旧版遗留——三审 #2/#6 分流依据）。
+	firstClaim := existing.ReceiptID == ""
+
 	// #13 + 复审 #12：pending 采纳原行——receipt_id/request_id 沿用首认领
 	//（恢复重驱动与后续重放给出同一回执）；reason 空值（v30 旧列缺省）回落
 	// 本次命令值——摘要等值已证明同一请求（reason 在摘要内）。
@@ -690,19 +705,16 @@ func (s *Service) Update(ctx context.Context, cmd UpdateCmd) (Receipt, bool, err
 	// 修订：归属锚取服务端读值（网关非浏览器——读值即可信）；owner 不变。
 	up, err := s.missions.Revise(ctx, cmd.MissionID, cmd.ExpectedVersion, cur.OwnerAgentID, cur.OwnerAgentID, cmd.Contract)
 	if err != nil {
-		// 复审 #11（对齐原子面）：版本恰 expected+1 且现行内容与载荷等值 =
-		// 该命令的修订确已提交（认领后完结前中断/旧版残留）——完结回执而非
-		// 释放键（可能已提交的键不得删除）；不等值不能证明，走拒绝释放。
-		if errors.Is(err, mission.ErrVersionConflict) {
-			if now, found2, gerr := s.missions.Get(ctx, cmd.MissionID); gerr == nil && found2 &&
-				now.ContractVersion == cmd.ExpectedVersion+1 && mission.SameContent(now.Content, cmd.Contract) {
-				up = now
-			} else {
-				return fail(err)
-			}
-		} else {
-			return fail(err) // 领域拒绝透传（owner_mismatch/invalid_transition/invalid_mission）
+		// 三审 #2/#6：CAS 败按认领来源分流——本请求**新认领**（firstClaim）→
+		// version_conflict 透传并释放（无共享者，安全）；认领行**早于本请求**
+		// （遗留 pending——旧候选版残留）→ 待核验：版本与正文等值**不可**证明
+		// 修订归属（v2 可能由他键提交），不冒领——携当前版本同键重试（确认未
+		// 执行则正常执行）或 release 处置。自动恢复分支删除（新库冒领根因）。
+		if errors.Is(err, mission.ErrVersionConflict) && !firstClaim {
+			return Receipt{}, false, fmt.Errorf("%w：键 %s 的认领早于本请求（digest %s）——携当前版本重试或确认未执行后释放键",
+				ErrLegacyPendingUnresolved, cmd.IdempotencyKey, dg[:min(12, len(dg))])
 		}
+		return fail(err) // 领域拒绝透传（version_conflict/owner_mismatch/invalid_transition/invalid_mission）
 	}
 	out := claim
 	out.DomainCommandID = fmt.Sprintf("%s:revise:v%d", up.MissionID, up.ContractVersion)
@@ -714,6 +726,17 @@ func (s *Service) Update(ctx context.Context, cmd UpdateCmd) (Receipt, bool, err
 		return Receipt{}, false, err
 	}
 	return out, false, nil
+}
+
+// ReleaseClaim 遗留认领处置（三审 #6：确认未执行后释放键——仅限 pending
+// 同摘要行；已完结回执不可动）。调用方须已向用户呈现"确认未执行"语义。
+func (s *Service) ReleaseClaim(ctx context.Context, key, digest string) error {
+	return s.store.ReleaseKey(ctx, CallerOwner, ScopeWorkspace, key, digest)
+}
+
+// PendingClaim 认领行查询（含 pending——处置入口只读面）。
+func (s *Service) PendingClaim(ctx context.Context, key string) (Receipt, bool, error) {
+	return s.store.ClaimByKey(ctx, CallerOwner, ScopeWorkspace, key)
 }
 
 // ReceiptByKey 回执查询（get_dispatch_receipt）。

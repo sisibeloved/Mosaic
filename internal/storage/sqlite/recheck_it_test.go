@@ -265,28 +265,42 @@ func TestUpdateLegacyUpgradeIT(t *testing.T) {
 		return r
 	}
 
-	// (a) 修订已提交 + 认领未完结（b59a395 窗口）：恢复完结，reason 回落
+	// (a) 遗留 pending（v30 形态）+ 任务已前进 v2 → 原载荷重驱动 CAS 败 →
+	// 待核验（不冒领——等值不可证明归属，三审 #2/#6）
 	if _, err := store.CreateMission(ctx, mkRow("mi_lg_a", "原目标", 1), nil); err != nil {
 		t.Fatal(err)
 	}
-	c2 := fixContent("遗留恢复载荷")
+	c2 := fixContent("遗留载荷")
 	cmdA := dispatch.UpdateCmd{MissionID: "mi_lg_a", ExpectedVersion: 1,
 		IdempotencyKey: "idem_lg_a", RequestID: "req_a", Contract: c2, Reason: "任务卡追加"}
 	if err := seedLegacyClaim(store, "idem_lg_a", "dpr_lg_a", "dg_lg_a"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := store.ReviseMission(ctx, "mi_lg_a", 1, "ag_lg", mkRow("mi_lg_a", "遗留恢复载荷", 2)); err != nil || !ok {
+	if _, ok, err := store.ReviseMission(ctx, "mi_lg_a", 1, "ag_lg", mkRow("mi_lg_a", "遗留载荷", 2)); err != nil || !ok {
 		t.Fatalf("播种 v2: ok=%v %v", ok, err)
 	}
-	rcA, replayedA, errA := store.UpdateMissionAtomic(ctx, cmdA, "dg_lg_a", "2026-11-03T12:00:05Z", "dpr_new_a")
-	if errA != nil || replayedA {
-		t.Fatalf("遗留恢复 (a): %+v replayed=%v %v", rcA, replayedA, errA)
+	if _, _, err := store.UpdateMissionAtomic(ctx, cmdA, "dg_lg_a", "2026-11-03T12:00:05Z", "dpr_new_a"); !errors.Is(err, dispatch.ErrLegacyPendingUnresolved) {
+		t.Fatalf("遗留 CAS 败须待核验: %v", err)
 	}
-	if rcA.DomainCommandID != "mi_lg_a:revise:v2" || rcA.ReceiptID != "dpr_lg_a" || rcA.Reason != "任务卡追加" {
-		t.Fatalf("恢复回执 (a)（reason 回落 #12）: %+v", rcA)
+	// 处置：认领行可查（含 pending——ClaimByKey）→ 确认未执行 release → 同键携当前版本重提成功
+	claim, found, err := store.ClaimByKey(ctx, dispatch.CallerOwner, dispatch.ScopeWorkspace, "idem_lg_a")
+	if err != nil || !found || claim.DomainCommandID != "" || claim.RequestDigest != "dg_lg_a" {
+		t.Fatalf("认领查询: found=%v %+v %v", found, claim, err)
+	}
+	if err := store.ReleaseKey(ctx, dispatch.CallerOwner, dispatch.ScopeWorkspace, "idem_lg_a", "dg_lg_a"); err != nil {
+		t.Fatal(err)
+	}
+	cmdA2 := cmdA
+	cmdA2.ExpectedVersion = 2
+	rcA, replayedA, errA := store.UpdateMissionAtomic(ctx, cmdA2, "dg_lg_a2", "2026-11-03T12:00:06Z", "dpr_new_a2")
+	if errA != nil || replayedA {
+		t.Fatalf("release 后重提: %+v replayed=%v %v", rcA, replayedA, errA)
+	}
+	if rcA.DomainCommandID != "mi_lg_a:revise:v3" {
+		t.Fatalf("重提回执: %+v", rcA)
 	}
 
-	// (b) 认领后修订未执行（v1）→ 同键正确版本重试成功
+	// (b) 认领后修订未执行（v1）→ 同键正确版本重试直接成功（既有重驱动）
 	if _, err := store.CreateMission(ctx, mkRow("mi_lg_b", "原目标", 1), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -295,29 +309,24 @@ func TestUpdateLegacyUpgradeIT(t *testing.T) {
 	if err := seedLegacyClaim(store, "idem_lg_b", "dpr_lg_b", "dg_lg_b"); err != nil {
 		t.Fatal(err)
 	}
-	rcB, replayedB, errB := store.UpdateMissionAtomic(ctx, cmdB, "dg_lg_b", "2026-11-03T12:00:06Z", "dpr_new_b")
+	rcB, replayedB, errB := store.UpdateMissionAtomic(ctx, cmdB, "dg_lg_b", "2026-11-03T12:00:07Z", "dpr_new_b")
 	if errB != nil || replayedB {
-		t.Fatalf("遗留恢复 (b): %+v replayed=%v %v", rcB, replayedB, errB)
+		t.Fatalf("重驱动 (b): %+v replayed=%v %v", rcB, replayedB, errB)
 	}
 	if rcB.DomainCommandID != "mi_lg_b:revise:v2" || rcB.ReceiptID != "dpr_lg_b" {
-		t.Fatalf("恢复回执 (b): %+v", rcB)
+		t.Fatalf("重驱动回执 (b): %+v", rcB)
 	}
 
-	// (c) 版本恰 expected+1 但内容不等值（他人已改——不能证明）→ 冲突透传
-	if _, ok, err := store.ReviseMission(ctx, "mi_lg_a", 2, "ag_lg", mkRow("mi_lg_a", "他人载荷", 3)); err != nil || !ok {
-		t.Fatalf("播种 v3: ok=%v %v", ok, err)
-	}
-	cmdC := dispatch.UpdateCmd{MissionID: "mi_lg_a", ExpectedVersion: 2,
-		IdempotencyKey: "idem_lg_c", Contract: fixContent("与 v3 不等值载荷")}
-	if _, _, err := store.UpdateMissionAtomic(ctx, cmdC, "dg_lg_c", "2026-11-03T12:00:07Z", "dpr_new_c"); err == nil {
-		t.Fatal("内容不等值不得宣告成功")
-	} else if !errors.Is(err, mission.ErrVersionConflict) {
-		t.Fatalf("不等值须版本冲突透传: %v", err)
+	// (c) 新键等值内容（v2 由他方提交）→ version_conflict 且不留认领（不冒领）
+	cmdC := dispatch.UpdateCmd{MissionID: "mi_lg_a", ExpectedVersion: 1,
+		IdempotencyKey: "idem_lg_c", Contract: fixContent("遗留载荷")} // 内容恰为 v2
+	if _, _, err := store.UpdateMissionAtomic(ctx, cmdC, "dg_lg_c", "2026-11-03T12:00:08Z", "dpr_new_c"); !errors.Is(err, mission.ErrVersionConflict) {
+		t.Fatalf("新键等值内容须冲突（不冒领）: %v", err)
 	}
 	var nC int
 	store.db.QueryRow(`SELECT COUNT(*) FROM dispatch_receipts WHERE idempotency_key = 'idem_lg_c'`).Scan(&nC)
 	if nC != 0 {
-		t.Fatalf("未证明提交的拒绝不留认领（原子面回滚）: %d", nC)
+		t.Fatalf("新键冲突不留认领: %d", nC)
 	}
 }
 
@@ -362,4 +371,96 @@ func TestListMissionsTombstoneIT(t *testing.T) {
 		}
 	}
 	t.Fatal("摘要未找到来源行")
+}
+
+// TestCreateRunGrantGateIT 三审 #3：清单装配后撤回必需工具授权——建 Run 事务
+// 内任职授权核对拒启（旧清单不送达执行器）；补授权后放行。
+func TestCreateRunGrantGateIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	recheckAgent(t, store, "ag_grant")
+	spec := slot.SlotSpec{SlotSpecID: "slot.grant", Version: 1, SchemaVersion: 1,
+		SpecContent: slot.SpecContent{Name: "执行", Responsibility: "执行", Deliverables: []string{"产出"},
+			Tools: &slot.CapabilityList{Required: []string{"documents.read"}}},
+		CreatedAt: "2026-11-03T10:00:00Z"}
+	if _, err := store.CreateSpec(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateInstance(ctx, slot.SlotInstance{SlotInstanceID: "si_grant", SlotSpecID: "slot.grant",
+		Scope: "workspace", Title: "执行", KnowledgeNamespace: "kn_grant", CreatedFromVersion: 1,
+		CreatedAt: "2026-11-03T10:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateBinding(ctx, slot.Binding{BindingID: "bd_grant", AgentID: "ag_grant",
+		SlotInstanceID: "si_grant", SlotSpecVersion: 1, Scope: "workspace",
+		UpdatedAt: "2026-11-03T10:00:00Z", CreatedAt: "2026-11-03T10:00:00Z"}, slot.BindingActive, nil); err != nil {
+		t.Fatal(err)
+	}
+	m, err := store.CreateMission(ctx, func() mission.Mission {
+		r := missionRow(mission.StatusReady, "ag_grant")
+		r.MissionID = "mi_grant"
+		return r
+	}(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := func(id string) missionrun.Run {
+		return missionrun.Run{RunID: id, MissionID: m.MissionID, LeaseID: "lse_g", BindingID: "bd_grant",
+			AgentID: "ag_grant", State: missionrun.StatePending, RequestedAt: "t", UpdatedAt: "t"}
+	}
+	// 授权满足 → 放行（随即终态化腾出未终态位）
+	if err := store.PutGrant(ctx, slot.AgentGrant{AgentID: "ag_grant", Tools: []string{"documents.read"},
+		Runtime: slot.AgentGrantRuntime{Capabilities: []string{"execute"}, WorkspaceAccess: "read"}}); err != nil {
+		t.Fatal(err)
+	}
+	r0, err := store.CreateRun(ctx, mk("run_g0"), 0, 0)
+	if err != nil {
+		t.Fatalf("授权满足须放行: %v", err)
+	}
+	r0.State = missionrun.StateCompleted
+	if err := store.UpdateRun(ctx, r0, nil); err != nil {
+		t.Fatal(err)
+	}
+	// 撤权（身份/任职/版本均不变）→ 拒领旧清单
+	if err := store.PutGrant(ctx, slot.AgentGrant{AgentID: "ag_grant",
+		Runtime: slot.AgentGrantRuntime{Capabilities: []string{"execute"}, WorkspaceAccess: "read"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateRun(ctx, mk("run_g1"), 0, 0); !errors.Is(err, missionrun.ErrOwnerNotActive) {
+		t.Fatalf("撤权后须拒领: %v", err)
+	}
+}
+
+// TestCreateRunOwnerHandoverIT 三审 #4：清单装配与建行之间交接承接（owner 翻转
+// 不递增版本）——旧负责人清单不得领取新 Run。
+func TestCreateRunOwnerHandoverIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	recheckAgent(t, store, "ag_old")
+	recheckAgent(t, store, "ag_new")
+	m, err := store.CreateMission(ctx, func() mission.Mission {
+		r := missionRow(mission.StatusReady, "ag_old")
+		r.MissionID = "mi_ho"
+		return r
+	}(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 模拟交接承接：owner 翻转、版本不递增（0.6.12 语义）
+	if _, err := store.db.Exec(`UPDATE missions SET owner_agent_id = 'ag_new' WHERE mission_id = ?`, m.MissionID); err != nil {
+		t.Fatal(err)
+	}
+	r := missionrun.Run{RunID: "run_ho", MissionID: m.MissionID, LeaseID: "lse_h",
+		BindingID: "bd_h", AgentID: "ag_old", State: missionrun.StatePending, RequestedAt: "t", UpdatedAt: "t"}
+	if _, err := store.CreateRun(ctx, r, 0, 0); !errors.Is(err, missionrun.ErrOwnerNotActive) {
+		t.Fatalf("交接后旧负责人须拒领: %v", err)
+	}
+	// 新负责人放行
+	r2 := r
+	r2.RunID, r2.AgentID = "run_ho2", "ag_new"
+	if _, err := store.CreateRun(ctx, r2, 0, 0); err != nil {
+		t.Fatalf("新负责人须放行: %v", err)
+	}
 }

@@ -129,3 +129,50 @@ func TestBudgetFromManifestSnapshot(t *testing.T) {
 		t.Fatalf("上限按契约层拒绝（陈旧 99 不得生效）: %v", err)
 	}
 }
+
+// TestStopDuringFenceCheck 三审 #5：结果先于期限抵达，但围栏核对期间监控发停
+// （此刻期限已过）——终态写入前的重新仲裁改按停止终理化，正文不发布。
+func TestStopDuringFenceCheck(t *testing.T) {
+	missions := &fakeMissions{refs: map[string]MissionRef{}, status: map[string]string{}, waitingReason: map[string]string{}}
+	missions.refs["mi_fc"] = MissionRef{MissionID: "mi_fc", OwnerAgentID: "ag_x", WallClockSeconds: 60}
+	clock := &mutableClock{now: "2026-11-03T12:00:00.000000000Z"}
+	// 围栏回调内推进时钟越过期限（复现"围栏检查期间监控发停"交错）
+	leases := &fakeLeases{fenceOK: true, onCheck: func() { clock.Set("2026-11-03T12:01:30.000000000Z") }}
+	var n int
+	svc := New(NewMemStore(), missions,
+		fakeBindings{active: map[string]BindingFacts{"ag_x": {BindingID: "bd_x", AgentID: "ag_x"}}},
+		&fakeRuntimes{ready: RuntimeRef{RuntimeID: "rtx_t", EnvironmentID: "env_t"}},
+		leases,
+		fakeManifests{state: "assembled", layers: []ManifestLayer{
+			{Name: "contract", Content: map[string]any{"objective": "围栏期停止", "acceptance_criteria": []string{"a"}}},
+		}},
+		&fakeExecutor{block: "完成正文"},
+		WithNow(clock.Now),
+		WithNewRunID(func() string { n++; return "run_fc" + itoa(n) }),
+		WithSchedulerDisabled())
+	ctx := context.Background()
+
+	r, err := svc.ExecuteMission(ctx, MissionRef{MissionID: "mi_fc", OwnerAgentID: "ag_x"})
+	if err != nil {
+		t.Fatalf("执行: %v", err)
+	}
+	if r.State != StateCanceled {
+		t.Fatalf("围栏期发停须按停止终理化: %+v", r)
+	}
+	if r.ResultBlock != "" {
+		t.Fatalf("正文不得发布: %+v", r)
+	}
+	evs, _ := svc.store.RunEvents(ctx, r.RunID)
+	causeSeen := false
+	for _, e := range evs {
+		if e.EventType == EventCanceled && evStr(e.Payload, "cause") == CauseWallClockExceeded {
+			causeSeen = true
+		}
+	}
+	if !causeSeen {
+		t.Fatalf("停止事件须携 wall_clock_exceeded: %+v", evs)
+	}
+	if st := missions.status["mi_fc"]; st != "ready" {
+		t.Fatalf("停止后 Mission 回 ready: %v", st)
+	}
+}

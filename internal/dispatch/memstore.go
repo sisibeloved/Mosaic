@@ -65,6 +65,14 @@ func (m *MemStore) ReleaseKey(_ context.Context, callerRef, scope, key, digest s
 	return nil
 }
 
+// ClaimByKey 认领行查询（含 pending——三审 #6 处置入口只读面）。
+func (m *MemStore) ClaimByKey(_ context.Context, callerRef, scope, key string) (Receipt, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.receipts[callerRef+"|"+scope+"|"+key]
+	return r, ok, nil
+}
+
 // ReceiptByKey 幂等键查**已提交**回执（0.6.13 审校 #11：pending 认领是事务
 // 内部事实，公开查询不可见）；未完结 ok=false。
 func (m *MemStore) ReceiptByKey(_ context.Context, callerRef, scope, key string) (Receipt, bool, error) {
