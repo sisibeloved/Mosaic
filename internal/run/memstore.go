@@ -175,6 +175,19 @@ func (m *MemStore) AppendRunEvents(_ context.Context, runID string, events []Eve
 }
 
 // ListUnresolvedUnknown 未处置 unknown。
+// ListExpiredRunning 墙钟过期 running Run（0.6.13 / ADR-0036 §3）。
+func (m *MemStore) ListExpiredRunning(_ context.Context, now string) ([]Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []Run
+	for _, r := range m.runs {
+		if r.State == StateRunning && r.Deadline != "" && r.Deadline < now {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
 func (m *MemStore) ListUnresolvedUnknown(_ context.Context) ([]Run, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

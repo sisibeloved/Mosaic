@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- **0.6 域收口：网关续接、Slot 职责寻址与墙钟强制**（0.6 领域线第十四件 / ADR-0036，RFC-0018 §4.5/§6.1/§10.3，AT-14/15/18——v2.69 盘点三项落差收口）：**网关续接 `POST /v1/dispatch/update`**（= mission_update，§10.3）：幂等键先行（同键同载荷重放原回执 / 同键异载荷 409 / pending 恢复重驱动）→ 服务端复核（任务存在 + owner active——续接不发往已停身份）→ revise（CAS + 归属锚由网关以服务端读值填充，**owner 不变**——换人走交接）→ 回执（`domain_command_id = mission:<id>:revise:v<新版本>`）；领域拒绝原样透传（网关不吞并）；无 route 决策行（无寻址面，竞态防护即 CAS + 归属锚）。**Slot 职责寻址**（§4.5）：resolve 请求 += `slot_instance_id`（显式实例）或 `slot_spec_id`（模板——scope 内无实例 blocked `slot_no_instance` / 多实例歧义 blocked `slot_ambiguous` 禁止猜选 / 恰一实例继续）；寻址链 scope → SlotInstance → **active Binding** → AgentID（无 active 任职 blocked `slot_unassigned`——**不自动激活 ready Binding**）；解析结果写入决策存档的 owner（`selection_source=slot_binding`）；**投递复核**：决策后任职换人 → `route_stale` 重新解析（§4.6"不能只改路由缓存"）；与显式 `owner_agent_id` 互斥（并存 400——显式 Agent ≠ 责任已移交）。**墙钟强制**（§6.1 / AT-18）：Run 进入 running 时按执行开始契约的 `budget.max_wall_clock_seconds` 快照 `deadline`（migration v30：runs += deadline 列；修订不追改在途）；扫描过期 → 走既有停止面（run canceled + `cause=wall_clock_exceeded` 事件 + Mission 回 ready，迟到结果只审计）——停止面零新增机制；**max_runs 派发上限**一并落：已创建 Run 总数达上限不再派发（`budget_exhausted_hits` 诊断计数，任务停留 ready 不被静默吞）。
+  - **契约**：`DispatchUpdateRequest` schema + `DispatchResolveRequest` += slot 引用 + `SchedulerStatus` += `budget_exhausted_hits`；apigen/TS 再生成。
+  - **装配**：`dispatch.SlotLookups` 端口（app 直查 store——实例/active 任职存储事实）；`runMissionsAdapter.ListReady` 携 budget 快照（墙钟 + max_runs）。
+  - 验证：UT 续接幂等/复核/透传族 + 寻址五分支 + 换绑 stale + 墙钟到期停止（可变时钟 + 阻塞执行器）+ max_runs 上限；IT v30 新库/旧库升级 + deadline 落行与过期查询；API 续接全链 + slot 寻址；全量 vet/-race + it/st + SPA 绿；真机冒烟 13 项 ALL-PASS（v30 结构 + max_runs 上限实测 + 续接幂等 + 寻址/换绑 stale/互斥/无任职）。
+
 ## [0.6.12] - 2026-11-03
 
 ### Fixed

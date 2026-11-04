@@ -2392,13 +2392,54 @@ func (s *server) ResolveDispatch(w http.ResponseWriter, r *http.Request) {
 		Kind:         string(req.Kind),
 		RoomSource:   mission.RoomSource{RoomID: req.RoomSource.RoomId, TaskID: req.RoomSource.TaskId},
 		OwnerAgentID: derefStr(req.OwnerAgentId),
-		Contract:     missionContentOf(req.Budget, req.Constraints, req.Delegation, req.Objective, req.Scope, req.Reviewer, req.AcceptanceCriteria, req.DeliverableSpecs, req.SourceRefs, req.ReturnTargets),
+		// 0.6.13 / ADR-0036 §2：职责引用（与 owner 互斥——域内校验）
+		SlotInstanceID: derefStr(req.SlotInstanceId),
+		SlotSpecID:     derefStr(req.SlotSpecId),
+		Contract:       missionContentOf(req.Budget, req.Constraints, req.Delegation, req.Objective, req.Scope, req.Reviewer, req.AcceptanceCriteria, req.DeliverableSpecs, req.SourceRefs, req.ReturnTargets),
 	})
 	if err != nil {
 		writeDispatchError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, decisionView(d))
+}
+
+// UpdateDispatch 网关续接（0.6.13 / ADR-0036 §1，RFC-0018 §10.3 mission_update）：
+// 幂等键先行 → 服务端复核（owner active）→ revise（归属锚服务端读值，owner 不变）
+// → 回执。领域拒绝透传（version_conflict / owner_mismatch / invalid_transition /
+// invalid_mission / mission_not_found / agent_not_active）。
+func (s *server) UpdateDispatch(w http.ResponseWriter, r *http.Request) {
+	if s.dispatchUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	body, presence, ok := s.readMissionBody(w, r)
+	if !ok {
+		return
+	}
+	var req apigen.DispatchUpdateRequest
+	if !decodeMissionStrict(w, body, presence, &req) {
+		return
+	}
+	if !missionBudgetPresentStrict(w, presence, req.Budget) {
+		return
+	}
+	receipt, replayed, err := s.deps.Dispatch.Update(r.Context(), dispatch.UpdateCmd{
+		MissionID:       req.MissionId,
+		ExpectedVersion: int(req.ExpectedVersion),
+		IdempotencyKey:  req.IdempotencyKey,
+		RequestID:       derefStr(req.RequestId),
+		Reason:          derefStr(req.Reason),
+		Contract: missionContentOf(req.Budget, req.Constraints, req.Delegation, req.Objective, req.Scope,
+			req.Reviewer, req.AcceptanceCriteria, req.DeliverableSpecs, req.SourceRefs, req.ReturnTargets),
+	})
+	if err != nil {
+		writeDispatchError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, receiptView(receipt, replayed))
 }
 
 // DispatchRequest 复核投递（幂等 + 建契约 + 回执；replayed 标注重放）。
@@ -3715,8 +3756,9 @@ func (s *server) GetSchedulerStatus(w http.ResponseWriter, r *http.Request) {
 		ActiveRuns:          st["active_runs"].(int),
 		LastScanAt:          st["last_scan_at"].(string),
 		LastError:           st["last_error"].(string),
-		// 0.6.7 / RFC §11.5：未处置 unknown 计数
+		// 0.6.7 / RFC §11.5：未处置 unknown 计数；0.6.13：max_runs 命中计数
 		UnresolvedUnknownRuns: st["unresolved_unknown_runs"].(int),
+		BudgetExhaustedHits:   st["budget_exhausted_hits"].(int64),
 	})
 }
 
@@ -4000,6 +4042,9 @@ func writeDispatchError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 	case errors.Is(err, dispatch.ErrRouteNotFound):
 		writeError(w, http.StatusNotFound, "route_not_found", err.Error())
+	case errors.Is(err, dispatch.ErrTargetNotActive):
+		// 0.6.13 / ADR-0036 §1：续接目标非 active——续接不发往已停身份
+		writeError(w, http.StatusConflict, "agent_not_active", err.Error())
 	case errors.Is(err, dispatch.ErrRouteStale):
 		writeError(w, http.StatusConflict, "route_stale", err.Error())
 	case errors.Is(err, dispatch.ErrIdempotencyConflict):

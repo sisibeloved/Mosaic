@@ -263,6 +263,15 @@ func (g *gatedMissions) Create(ctx context.Context, owner string, c mission.Cont
 	return g.inner.Create(ctx, owner, c, src)
 }
 
+// Get / Revise 续接端口透传（0.6.13——并发门用例不经续接面）。
+func (g *gatedMissions) Get(ctx context.Context, id string) (mission.Mission, bool, error) {
+	return g.inner.Get(ctx, id)
+}
+
+func (g *gatedMissions) Revise(ctx context.Context, id string, v int, eo, o string, c mission.Content) (mission.Mission, error) {
+	return g.inner.Revise(ctx, id, v, eo, o, c)
+}
+
 func TestDispatchKeyClaimIsolation(t *testing.T) {
 	svc, mem := newFixture(t)
 	ctx := context.Background()

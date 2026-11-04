@@ -328,6 +328,8 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Agents:  missionAgentLookup{identitySvc},
 		Sources: roomTasks,
 		Mapped:  missionSvc.SourceMapped,
+		// 0.6.13 / ADR-0036 §2：职责寻址（store 直查）
+		Slots: dispatchSlotLookups{store: store},
 	}, dispatch.WithNow(clock))
 	// 执行上下文清单域（RFC-0018 §7.3 / ADR-0025，0.6.2）：确定性装配存档
 	// （digest 即身份——重建重放，状态变化追加）；任职事实（binding → 实例
@@ -922,9 +924,16 @@ func (a runMissionsAdapter) ListReady(ctx context.Context) ([]missionrun.Mission
 	}
 	var out []missionrun.MissionRef
 	for _, m := range list {
-		if m.Status == mission.StatusReady {
-			out = append(out, missionrun.MissionRef{MissionID: m.MissionID, OwnerAgentID: m.OwnerAgentID})
+		if m.Status != mission.StatusReady {
+			continue
 		}
+		ref := missionrun.MissionRef{MissionID: m.MissionID, OwnerAgentID: m.OwnerAgentID}
+		// 0.6.13 / ADR-0036 §3：budget 快照自契约全文取（摘要不含 budget）。
+		if full, ok, gerr := a.svc.Get(ctx, m.MissionID); gerr == nil && ok {
+			ref.WallClockSeconds = full.Budget.MaxWallClockSeconds
+			ref.MaxRuns = full.Budget.MaxRuns
+		}
+		out = append(out, ref)
 	}
 	return out, nil
 }
@@ -1348,6 +1357,49 @@ func (l missionAgentLookup) AgentStatus(ctx context.Context, agentID string) (st
 // 身份服务先于 mission 服务构造，承诺门不能反向持 mission.Service）。
 type missionLister interface {
 	ListMissions(ctx context.Context) ([]mission.Summary, error)
+}
+
+// dispatchSlotLookups dispatch.SlotLookups 的职责域适配（0.6.13 / ADR-0036 §2，
+// RFC-0018 §4.5：scope → SlotInstance → active Binding → AgentID）。store 直查
+// （实例/任职为存储事实；dispatch 不 import slot——依赖方向同 Agents/Sources）。
+type dispatchSlotLookups struct{ store slotReader }
+
+type slotReader interface {
+	InstanceByID(ctx context.Context, instanceID string) (slot.SlotInstance, bool, error)
+	ListInstances(ctx context.Context) ([]slot.SlotInstance, error)
+	ListBindings(ctx context.Context, instanceID string) ([]slot.Binding, error)
+}
+
+func (l dispatchSlotLookups) SlotInstanceExists(ctx context.Context, instanceID string) (bool, error) {
+	_, ok, err := l.store.InstanceByID(ctx, instanceID)
+	return ok, err
+}
+
+func (l dispatchSlotLookups) SlotInstancesOfSpec(ctx context.Context, specID string) ([]string, error) {
+	instances, err := l.store.ListInstances(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []string{}
+	for _, i := range instances {
+		if i.SlotSpecID == specID {
+			out = append(out, i.SlotInstanceID)
+		}
+	}
+	return out, nil
+}
+
+func (l dispatchSlotLookups) ActiveBindingAgent(ctx context.Context, instanceID string) (string, bool, error) {
+	bindings, err := l.store.ListBindings(ctx, instanceID)
+	if err != nil {
+		return "", false, err
+	}
+	for _, b := range bindings {
+		if b.Status == slot.BindingActive {
+			return b.AgentID, true, nil
+		}
+	}
+	return "", false, nil // 无 active 任职——不自动激活 ready Binding（§4.5）
 }
 
 // missionCommitments personalagent.CommitmentChecker 的 Mission 域实装（0.6.12 /

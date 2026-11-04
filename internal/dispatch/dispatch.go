@@ -41,6 +41,9 @@ var (
 	ErrIdempotencyConflict = errors.New("dispatch: 幂等键冲突（同键异载荷）")
 	// ErrReceiptNotFound 回执不存在（不等于领域动作一定未发生）。
 	ErrReceiptNotFound = errors.New("dispatch: 回执不存在")
+	// ErrTargetNotActive 续接目标身份非 active（0.6.13 / ADR-0036 §1：续接指令
+	// 不发往已停身份——suspended/retiring/retired 须先恢复或换人）。
+	ErrTargetNotActive = errors.New("dispatch: 目标负责人非 active")
 )
 
 // ResolveRequest 解析请求（RouteRequest 的 0.6.1 确定性子集）：房间来源 +
@@ -49,7 +52,12 @@ type ResolveRequest struct {
 	Kind         string             `json:"kind"`
 	RoomSource   mission.RoomSource `json:"room_source"`
 	OwnerAgentID string             `json:"owner_agent_id,omitempty"`
-	Contract     mission.Content    `json:"contract"`
+	// 职责引用（0.6.13 / ADR-0036 §2）：二选一，与 OwnerAgentID 互斥（并存
+	// 结构拒绝——显式 Agent ≠ 责任已移交，语义须先明确）。寻址结果写入
+	// OwnerAgentID（决策存档全文随 Request 落库——投递复核据此重查）。
+	SlotInstanceID string          `json:"slot_instance_id,omitempty"`
+	SlotSpecID     string          `json:"slot_spec_id,omitempty"`
+	Contract       mission.Content `json:"contract"`
 }
 
 // Decision 路由决策（RouteDecision 的 0.6.1 子集 + 请求存档）。
@@ -93,14 +101,42 @@ type Receipt struct {
 // Missions 领域服务端口（*mission.Service 实现；dispatch 编排不复制域逻辑）。
 type Missions interface {
 	Create(ctx context.Context, ownerAgentID string, c mission.Content, src *mission.RoomSource) (mission.Mission, error)
+	// Get / Revise 续接（0.6.13 / ADR-0036 §1 mission_update）：复核读现值 +
+	// CAS 修订（归属锚由网关以服务端读值填充——owner 不变）。
+	Get(ctx context.Context, missionID string) (mission.Mission, bool, error)
+	Revise(ctx context.Context, missionID string, expectedVersion int, expectedOwner, ownerAgentID string, c mission.Content) (mission.Mission, error)
 }
 
-// Lookups 复核端口（预检与复核同源）：owner 存在性 / 房间任务卡存在性 / 映射查询。
+// Lookups 复核端口（预检与复核同源）：owner 存在性 / 房间任务卡存在性 / 映射查询 /
+// 职责寻址（0.6.13）。Slots nil = slot 引用不可用（带 slot 的请求结构拒绝——宁拒）。
 type Lookups struct {
 	Agents  mission.AgentLookup
 	Sources mission.SourceLookup
 	Mapped  func(ctx context.Context, roomID, taskID string) (string, bool, error)
+	Slots   SlotLookups
 }
+
+// SlotLookups 职责寻址端口（0.6.13 / ADR-0036 §2；RFC-0018 §4.5：
+// scope → SlotInstance → active Binding → AgentID）。app 装配适配 slot 域
+// （依赖方向同 Agents/Sources——dispatch 不 import slot）。
+type SlotLookups interface {
+	// SlotInstanceExists 实例存在性。
+	SlotInstanceExists(ctx context.Context, instanceID string) (bool, error)
+	// SlotInstancesOfSpec scope 内该模板的实例集（空 = 无实例；>1 = 歧义）。
+	SlotInstancesOfSpec(ctx context.Context, specID string) ([]string, error)
+	// ActiveBindingAgent 实例的 active 任职 Agent（active=false = 无 active
+	// 任职——不自动激活 ready Binding，§4.5 明文）。
+	ActiveBindingAgent(ctx context.Context, instanceID string) (agentID string, active bool, err error)
+}
+
+// 寻址来源与 blocked 原因码（0.6.13）。
+const (
+	SelectionSlotBinding   = "slot_binding"
+	ReasonSlotNoInstance   = "slot_no_instance"
+	ReasonSlotAmbiguous    = "slot_ambiguous"
+	ReasonSlotUnassigned   = "slot_unassigned"
+	ReasonSlotInstanceGone = "slot_instance_not_found"
+)
 
 // Store 持久化端口（SQLite：migration v14；测试件：memstore）。
 type Store interface {
@@ -180,13 +216,45 @@ func (s *Service) Resolve(ctx context.Context, req ResolveRequest) (Decision, er
 	if req.Kind != KindCreateMission {
 		return Decision{}, fmt.Errorf("%w: kind 当前仅 create_mission（%s）", ErrInvalidRequest, req.Kind)
 	}
+	// 0.6.13 / ADR-0036 §2：职责寻址先行——解析结果作为 owner 进决策存档；
+	// 寻址失败是 blocked 决策（恒 200），端口缺失/互斥违反是结构错误（400）。
+	selection := "room_default"
+	if req.SlotInstanceID != "" || req.SlotSpecID != "" {
+		if req.OwnerAgentID != "" {
+			return Decision{}, fmt.Errorf("%w: owner_agent_id 与 slot 引用互斥（显式 Agent ≠ 责任已移交——语义须先明确）", ErrInvalidRequest)
+		}
+		if req.SlotInstanceID != "" && req.SlotSpecID != "" {
+			return Decision{}, fmt.Errorf("%w: slot_instance_id 与 slot_spec_id 二选一", ErrInvalidRequest)
+		}
+		if s.lookups.Slots == nil {
+			return Decision{}, fmt.Errorf("%w: 职责寻址端口未装配（slot 引用不可用）", ErrInvalidRequest)
+		}
+		agent, code, ok := s.resolveSlot(ctx, &req)
+		if !ok {
+			d := Decision{
+				RouteID: s.newRouteID(), DecisionVersion: 1, RequestDigest: digest(req),
+				Status: "blocked", SelectionSource: selection,
+				ReasonCode: code, ReasonSummary: "职责寻址不满足（" + code + "）",
+				TargetRefs: []string{}, Request: req,
+				ExpiresAt: expiryAfter(s.now(), DecisionTTL), CreatedAt: s.now(),
+			}
+			if err := s.store.SaveDecision(ctx, d); err != nil {
+				return Decision{}, err
+			}
+			return d, nil
+		}
+		req.OwnerAgentID = agent
+		selection = SelectionSlotBinding
+	} else if req.OwnerAgentID != "" {
+		selection = "explicit_owner"
+	}
 	now := s.now()
 	d := Decision{
 		RouteID:         s.newRouteID(),
 		DecisionVersion: 1,
 		RequestDigest:   digest(req),
 		Status:          "resolved",
-		SelectionSource: "room_default",
+		SelectionSource: selection,
 		TargetRefs:      []string{"room:" + req.RoomSource.RoomID + ":" + req.RoomSource.TaskID},
 		Request:         req,
 		ExpiresAt:       expiryAfter(now, DecisionTTL),
@@ -202,6 +270,41 @@ func (s *Service) Resolve(ctx context.Context, req ResolveRequest) (Decision, er
 		return Decision{}, err
 	}
 	return d, nil
+}
+
+// resolveSlot 职责寻址（§4.5）：显式实例或模板→scope 内唯一实例 → active 任职 →
+// Agent。无实例 / 多实例歧义 / 无 active 任职（不自动激活 ready Binding）各 blocked。
+func (s *Service) resolveSlot(ctx context.Context, req *ResolveRequest) (agent, reasonCode string, ok bool) {
+	instanceID := req.SlotInstanceID
+	if instanceID == "" {
+		instances, err := s.lookups.Slots.SlotInstancesOfSpec(ctx, req.SlotSpecID)
+		if err != nil {
+			return "", "slot_lookup_failed", false
+		}
+		switch len(instances) {
+		case 0:
+			return "", ReasonSlotNoInstance, false
+		case 1:
+			instanceID = instances[0]
+		default:
+			return "", ReasonSlotAmbiguous, false // 同名模板跨项目多实例——禁止猜选，须显式指实例
+		}
+	}
+	exists, err := s.lookups.Slots.SlotInstanceExists(ctx, instanceID)
+	if err != nil {
+		return "", "slot_lookup_failed", false
+	}
+	if !exists {
+		return "", ReasonSlotInstanceGone, false
+	}
+	a, active, err := s.lookups.Slots.ActiveBindingAgent(ctx, instanceID)
+	if err != nil {
+		return "", "slot_lookup_failed", false
+	}
+	if !active {
+		return "", ReasonSlotUnassigned, false // 待任职——不能自动激活 ready Binding
+	}
+	return a, "", true
 }
 
 // precheck 预检单源（Resolve 与 Dispatch 复核同源——目标变化即 stale）：
@@ -310,6 +413,21 @@ func (s *Service) Dispatch(ctx context.Context, cmd DispatchCmd) (Receipt, bool,
 	}
 	// pending 同摘要：本调用即认领持有者或恢复重驱动，继续
 
+	// 0.6.13 / ADR-0036 §2：slot 寻址决策的投递复核——任职换人即目标漂移
+	//（§4.6"不能只改路由缓存"）；显式 owner 路径复核不变（precheck）。
+	if d.Request.SlotInstanceID != "" || d.Request.SlotSpecID != "" {
+		if s.lookups.Slots == nil {
+			return Receipt{}, false, fmt.Errorf("%w: 职责寻址端口未装配（无法复核 slot 决策）", ErrRouteStale)
+		}
+		agent, code, ok := s.resolveSlot(ctx, &d.Request)
+		if !ok {
+			return Receipt{}, false, fmt.Errorf("%w: 职责复核不再满足（%s）——重新解析", ErrRouteStale, code)
+		}
+		if agent != d.Request.OwnerAgentID {
+			return Receipt{}, false, fmt.Errorf("%w: 实例任职已换人（%s → %s）——重新解析", ErrRouteStale, d.Request.OwnerAgentID, agent)
+		}
+	}
+
 	if code, summary, ok := s.precheck(ctx, d.Request); !ok {
 		// 映射被占（含崩溃窗口孤儿）单列可见恢复；其余状态变化 → 重新解析
 		if code == "source_already_mapped" {
@@ -330,6 +448,94 @@ func (s *Service) Dispatch(ctx context.Context, cmd DispatchCmd) (Receipt, bool,
 	out := claim
 	out.DomainCommandID = m.MissionID
 	out.ReturnRefs = d.Request.Contract.ReturnTargets
+	out.CommittedAt = s.now()
+	if err := s.store.FinalizeReceipt(ctx, out); err != nil {
+		return Receipt{}, false, err
+	}
+	return out, false, nil
+}
+
+// UpdateCmd 续接命令（§10.3 mission_update / ADR-0036 §1）：全量替换契约，
+// owner 不变（换人走交接 0.6.12 或修订命令面显式改）。
+type UpdateCmd struct {
+	MissionID       string
+	ExpectedVersion int
+	IdempotencyKey  string
+	RequestID       string
+	Contract        mission.Content
+	Reason          string
+}
+
+// updateDigest 续接命令摘要（幂等键绑定的请求身份——同键同摘要即同一请求）。
+func updateDigest(cmd UpdateCmd) string {
+	raw, _ := json.Marshal(struct {
+		UpdateCmd
+		Contract mission.Content `json:"contract"`
+	}{cmd, cmd.Contract})
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// Update 网关续接（§10.3 / ADR-0036 §1）：幂等先行（同 create 路径 ClaimKey 机制
+// ——同键同摘要重放原回执、同键异载荷冲突、pending 恢复重驱动）→ 服务端复核
+// （任务存在 + owner active）→ revise（CAS + 归属锚取服务端读值，owner 不变）
+// → 回执（domain_command_id = mission:<id>:revise:v<新版本>）。领域拒绝原样
+// 透传（版本冲突/归属锚/终态/冻结窗/契约非法——网关不吞并）。无 route 决策行
+// （无寻址面，竞态防护即 CAS + 归属锚）。
+func (s *Service) Update(ctx context.Context, cmd UpdateCmd) (Receipt, bool, error) {
+	if !idempotencyKeyPattern.MatchString(cmd.IdempotencyKey) {
+		return Receipt{}, false, fmt.Errorf("%w: idempotency_key 须 [A-Za-z0-9._:-]{1,128}", ErrInvalidRequest)
+	}
+	dg := updateDigest(cmd)
+	// 已完结回执先于一切复核（重试不受此后状态变化影响——同 create 次序）
+	if prior, found, err := s.store.ReceiptByKey(ctx, CallerOwner, ScopeWorkspace, cmd.IdempotencyKey); err != nil {
+		return Receipt{}, false, err
+	} else if found {
+		if prior.RequestDigest != dg {
+			return Receipt{}, false, fmt.Errorf("%w: 键 %s 已绑定其他请求", ErrIdempotencyConflict, cmd.IdempotencyKey)
+		}
+		if prior.DomainCommandID != "" {
+			return prior, true, nil
+		}
+		// pending 同摘要 → 恢复重驱动（落到下方认领与修订）
+	}
+	claim := Receipt{
+		ReceiptID:      s.newReceiptID(),
+		CallerRef:      CallerOwner,
+		Scope:          ScopeWorkspace,
+		IdempotencyKey: cmd.IdempotencyKey,
+		RequestID:      cmd.RequestID,
+		RequestDigest:  dg,
+		TargetRefs:     []string{cmd.MissionID},
+	}
+	if existing, conflict, finalized, err := s.store.ClaimKey(ctx, claim); err != nil {
+		return Receipt{}, false, err
+	} else if conflict {
+		return Receipt{}, false, fmt.Errorf("%w: 键 %s 已绑定其他请求", ErrIdempotencyConflict, cmd.IdempotencyKey)
+	} else if finalized {
+		return existing, true, nil
+	}
+	// 服务端复核：任务存在 + owner active（续接不发往已停身份）
+	cur, found, err := s.missions.Get(ctx, cmd.MissionID)
+	if err != nil {
+		return Receipt{}, false, err
+	}
+	if !found {
+		return Receipt{}, false, mission.ErrMissionNotFound
+	}
+	if s.lookups.Agents != nil {
+		if st, ok, aerr := s.lookups.Agents.AgentStatus(ctx, cur.OwnerAgentID); aerr == nil && ok && st != mission.AgentStatusActive {
+			return Receipt{}, false, fmt.Errorf("%w: 负责人 %s 非 active（%s）", ErrTargetNotActive, cur.OwnerAgentID, st)
+		}
+	}
+	// 修订：归属锚取服务端读值（网关非浏览器——读值即可信）；owner 不变。
+	up, err := s.missions.Revise(ctx, cmd.MissionID, cmd.ExpectedVersion, cur.OwnerAgentID, cur.OwnerAgentID, cmd.Contract)
+	if err != nil {
+		return Receipt{}, false, err // 领域拒绝透传（version_conflict/owner_mismatch/invalid_transition/invalid_mission）
+	}
+	out := claim
+	out.DomainCommandID = fmt.Sprintf("%s:revise:v%d", up.MissionID, up.ContractVersion)
+	out.ReturnRefs = up.Content.ReturnTargets
 	out.CommittedAt = s.now()
 	if err := s.store.FinalizeReceipt(ctx, out); err != nil {
 		return Receipt{}, false, err

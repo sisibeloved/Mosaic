@@ -594,6 +594,13 @@ var migrationV23 = []string{
 	"INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (23, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
 }
 
+// migrationV30（0.6.13 / ADR-0036）：墙钟强制——runs 增 deadline（进入 running
+// 时按执行开始契约快照；空 = 无墙钟，历史行兼容）。逐语句加列 + 登记。
+var migrationV30 = []string{
+	"ALTER TABLE runs ADD COLUMN deadline TEXT NOT NULL DEFAULT ''",
+	"INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (30, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+}
+
 // migrationV29（0.6.12 / ADR-0035）：责任交接——missions 增 pending_owner_agent_id
 // （在途交接承接人；空 = 无在途交接）。逐语句加列（重复容忍）+ 登记。
 var migrationV29 = []string{
@@ -770,6 +777,13 @@ func Open(path string) (*Store, error) {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
 			return nil, fmt.Errorf("sqlite: migration v29: %w", err)
+		}
+	}
+	// v30 迁移（0.6.13 / ADR-0036）：runs.deadline——逐语句，重复加列容忍
+	for _, stmt := range migrationV30 {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("sqlite: migration v30: %w", err)
 		}
 	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
@@ -4887,13 +4901,13 @@ UPDATE runtime_leases SET state = 'expired', updated_at = ?
 
 // ---- Mission 执行域（RFC-0018 §6/§10.2 / ADR-0028，0.6.5；v19 表）----
 
-const runScanColumns = `run_id, mission_id, attempt, lease_id, manifest_id, runtime_id, binding_id, agent_id, state, error_text, result_block, fence_token, generation, requested_at, started_at, finished_at, updated_at, resolution, resolution_note, resolved_at`
+const runScanColumns = `run_id, mission_id, attempt, lease_id, manifest_id, runtime_id, binding_id, agent_id, state, error_text, result_block, fence_token, generation, requested_at, started_at, finished_at, updated_at, deadline, resolution, resolution_note, resolved_at`
 
 func scanRunRow(row interface{ Scan(...any) error }) (missionrun.Run, error) {
 	var r missionrun.Run
 	if err := row.Scan(&r.RunID, &r.MissionID, &r.Attempt, &r.LeaseID, &r.ManifestID,
 		&r.RuntimeID, &r.BindingID, &r.AgentID, &r.State, &r.ErrorText, &r.ResultBlock,
-		&r.FenceToken, &r.Generation, &r.RequestedAt, &r.StartedAt, &r.FinishedAt, &r.UpdatedAt,
+		&r.FenceToken, &r.Generation, &r.RequestedAt, &r.StartedAt, &r.FinishedAt, &r.UpdatedAt, &r.Deadline,
 		&r.Resolution, &r.ResolutionNote, &r.ResolvedAt); err != nil {
 		return missionrun.Run{}, err
 	}
@@ -4944,11 +4958,11 @@ func (s *Store) CreateRun(ctx context.Context, r missionrun.Run) (missionrun.Run
 			return fmt.Errorf("sqlite: run mission probe: %w", merr)
 		}
 		if _, err := q.ExecContext(ctx, `
-INSERT INTO runs (run_id, mission_id, attempt, lease_id, manifest_id, runtime_id, binding_id, agent_id, state, error_text, result_block, fence_token, generation, requested_at, started_at, finished_at, updated_at, resolution, resolution_note, resolved_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO runs (run_id, mission_id, attempt, lease_id, manifest_id, runtime_id, binding_id, agent_id, state, error_text, result_block, fence_token, generation, requested_at, started_at, finished_at, updated_at, deadline, resolution, resolution_note, resolved_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.RunID, r.MissionID, r.Attempt, r.LeaseID, r.ManifestID, r.RuntimeID,
 			r.BindingID, r.AgentID, r.State, r.ErrorText, r.ResultBlock,
-			r.FenceToken, r.Generation, r.RequestedAt, r.StartedAt, r.FinishedAt, r.UpdatedAt,
+			r.FenceToken, r.Generation, r.RequestedAt, r.StartedAt, r.FinishedAt, r.UpdatedAt, r.Deadline,
 			r.Resolution, r.ResolutionNote, r.ResolvedAt); err != nil {
 			if isUniqueViolation(err) {
 				return fmt.Errorf("%w：%s", missionrun.ErrRunExists, r.MissionID)
@@ -5053,6 +5067,25 @@ INSERT INTO run_events (run_id, event_type, payload, occurred_at) VALUES (?, ?, 
 }
 
 // ListUnresolvedUnknown 未处置 unknown Run（诊断计数——RFC §11.5）。
+// ListExpiredRunning 墙钟过期 running Run（0.6.13 / ADR-0036 §3）。
+func (s *Store) ListExpiredRunning(ctx context.Context, now string) ([]missionrun.Run, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+runScanColumns+` FROM runs
+ WHERE state = 'running' AND deadline != '' AND deadline < ?`, now)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list expired running: %w", err)
+	}
+	defer rows.Close()
+	var out []missionrun.Run
+	for rows.Next() {
+		r, err := scanRunRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListUnresolvedUnknown(ctx context.Context) ([]missionrun.Run, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+runScanColumns+`
   FROM runs WHERE state = ? AND resolution = '' ORDER BY rowid`, missionrun.StateUnknown)
@@ -5075,11 +5108,11 @@ func (s *Store) ListUnresolvedUnknown(ctx context.Context) ([]missionrun.Run, er
 func (s *Store) UpdateRun(ctx context.Context, r missionrun.Run, events []missionrun.Event) error {
 	return s.identityWriteTx(ctx, func(q identityExec) error {
 		res, err := q.ExecContext(ctx, `
-UPDATE runs SET mission_id=?, attempt=?, lease_id=?, manifest_id=?, runtime_id=?, binding_id=?, agent_id=?, state=?, error_text=?, result_block=?, fence_token=?, generation=?, requested_at=?, started_at=?, finished_at=?, updated_at=?, resolution=?, resolution_note=?, resolved_at=?
+UPDATE runs SET mission_id=?, attempt=?, lease_id=?, manifest_id=?, runtime_id=?, binding_id=?, agent_id=?, state=?, error_text=?, result_block=?, fence_token=?, generation=?, requested_at=?, started_at=?, finished_at=?, updated_at=?, deadline=?, resolution=?, resolution_note=?, resolved_at=?
  WHERE run_id = ?`,
 			r.MissionID, r.Attempt, r.LeaseID, r.ManifestID, r.RuntimeID, r.BindingID,
 			r.AgentID, r.State, r.ErrorText, r.ResultBlock, r.FenceToken, r.Generation,
-			r.RequestedAt, r.StartedAt, r.FinishedAt, r.UpdatedAt,
+			r.RequestedAt, r.StartedAt, r.FinishedAt, r.UpdatedAt, r.Deadline,
 			r.Resolution, r.ResolutionNote, r.ResolvedAt, r.RunID)
 		if err != nil {
 			return fmt.Errorf("sqlite: update run: %w", err)

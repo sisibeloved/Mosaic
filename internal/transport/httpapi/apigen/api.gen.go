@@ -2683,18 +2683,53 @@ type DispatchResolveRequest struct {
 	DeliverableSpecs []string                   `json:"deliverable_specs"`
 	Kind             DispatchResolveRequestKind `json:"kind"`
 	Objective        string                     `json:"objective"`
-	OwnerAgentId     *string                    `json:"owner_agent_id,omitempty"`
-	ReturnTargets    *[]string                  `json:"return_targets,omitempty"`
-	Reviewer         *string                    `json:"reviewer,omitempty"`
+
+	// OwnerAgentId 显式负责人（与 slot 引用互斥——并存 400：显式 Agent ≠ 责任已移交，语义须先明确）
+	OwnerAgentId  *string   `json:"owner_agent_id,omitempty"`
+	ReturnTargets *[]string `json:"return_targets,omitempty"`
+	Reviewer      *string   `json:"reviewer,omitempty"`
 
 	// RoomSource 房间交办来源（ADR-0024 / 0.6.1）：(room_id, task_id) 全局唯一映射——同一任务卡至多交办一次（撞键 409 source_already_mapped）；映射为创建事实，修订不可改（换来源 = 新交办）。deleted_at（ADR-0033 / 0.6.10）为来源墓碑：房间删除时刻，null = 房间仍在——返回目标失效不重跑任务（AT-20），结果与映射保留。
 	RoomSource RoomSource `json:"room_source"`
 	Scope      string     `json:"scope"`
-	SourceRefs []string   `json:"source_refs"`
+
+	// SlotInstanceId 职责实例显式引用（0.6.13 / ADR-0036 §4.5：实例 → active 任职 → Agent；无 active 任职 blocked slot_unassigned——不自动激活 ready Binding）
+	SlotInstanceId *string `json:"slot_instance_id,omitempty"`
+
+	// SlotSpecId 职责模板引用（scope 内解析：无实例 slot_no_instance / 多实例 slot_ambiguous 禁止猜选——须显式指实例 / 恰一实例继续寻址）
+	SlotSpecId *string  `json:"slot_spec_id,omitempty"`
+	SourceRefs []string `json:"source_refs"`
 }
 
 // DispatchResolveRequestKind defines model for DispatchResolveRequest.Kind.
 type DispatchResolveRequestKind string
+
+// DispatchUpdateRequest 网关续接请求（RFC-0018 §10.3 mission_update / ADR-0036，0.6.13）：全量
+// 替换契约内容（owner 不变——换人走交接或修订命令面显式改）；幂等键
+// [A-Za-z0-9._:-]{1,128} 库级唯一（caller/scope 服务端推导）。
+type DispatchUpdateRequest struct {
+	AcceptanceCriteria []string `json:"acceptance_criteria"`
+
+	// Budget 预算（RFC-0018 §6.1：并发、总 Run 数、墙钟时长、重试与委派深度）——0.6.0 为契约声明事实，运行时强制随 0.6.5 Scheduler 落；缺省 {1, 32, 86400, 0, 0}（单 Agent、不重试、不委派起步）。
+	Budget      *MissionBudget `json:"budget,omitempty"`
+	Constraints *[]string      `json:"constraints,omitempty"`
+
+	// Delegation 委派策略；缺省语义 = 不允许委派（安全缺省）。
+	Delegation       *DelegationPolicy `json:"delegation,omitempty"`
+	DeliverableSpecs []string          `json:"deliverable_specs"`
+	ExpectedVersion  int               `json:"expected_version"`
+	IdempotencyKey   string            `json:"idempotency_key"`
+	MissionId        string            `json:"mission_id"`
+	Objective        string            `json:"objective"`
+
+	// Reason 续接说明（进回执）
+	Reason        *string   `json:"reason,omitempty"`
+	RequestId     *string   `json:"request_id,omitempty"`
+	ReturnTargets *[]string `json:"return_targets,omitempty"`
+	Reviewer      *string   `json:"reviewer,omitempty"`
+	Scope         string    `json:"scope"`
+	SourceRefs    []string  `json:"source_refs"`
+}
 
 // DocBlock 块模型（RFC-0014 §2.2；RFC-0016 增补元数据）：level 仅 heading（1..6，缺省导出按 2）、lang 仅 code（≤48 runes）；text 自带标记（# 前缀/fence）导出透传优先——存量数据零迁移。
 type DocBlock struct {
@@ -4236,6 +4271,9 @@ type SchedulerStatus struct {
 	// ActiveRuns 当前未终态 Run 数（恢复语义见 ADR）
 	ActiveRuns int `json:"active_runs"`
 
+	// BudgetExhaustedHits budget.max_runs 派发上限命中计数（0.6.13 / ADR-0036——任务停留 ready 不被静默吞，换预算须修订契约）
+	BudgetExhaustedHits int64 `json:"budget_exhausted_hits"`
+
 	// Enabled 周期扫描开关（装配注入）
 	Enabled bool `json:"enabled"`
 
@@ -5065,6 +5103,9 @@ type DispatchRequestJSONRequestBody = DispatchRequest
 // ResolveDispatchJSONRequestBody defines body for ResolveDispatch for application/json ContentType.
 type ResolveDispatchJSONRequestBody = DispatchResolveRequest
 
+// UpdateDispatchJSONRequestBody defines body for UpdateDispatch for application/json ContentType.
+type UpdateDispatchJSONRequestBody = DispatchUpdateRequest
+
 // CreateDocJSONRequestBody defines body for CreateDoc for application/json ContentType.
 type CreateDocJSONRequestBody = DocCommand
 
@@ -5226,6 +5267,9 @@ type ServerInterface interface {
 	// ResolveDispatch 网关解析（只预检不创建；0.6.1 / ADR-0024 首切片）
 	// (POST /v1/dispatch/resolve)
 	ResolveDispatch(w http.ResponseWriter, r *http.Request)
+	// UpdateDispatch 网关续接（mission_update——RFC-0018 §10.3 / ADR-0036，0.6.13）
+	// (POST /v1/dispatch/update)
+	UpdateDispatch(w http.ResponseWriter, r *http.Request)
 	// ListDocs 文档列表（RFC-0014 §2.8 文档主页）
 	// (GET /v1/docs)
 	ListDocs(w http.ResponseWriter, r *http.Request, params ListDocsParams)
@@ -5750,6 +5794,20 @@ func (siw *ServerInterfaceWrapper) ResolveDispatch(w http.ResponseWriter, r *htt
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ResolveDispatch(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateDispatch operation middleware
+func (siw *ServerInterfaceWrapper) UpdateDispatch(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateDispatch(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -9121,6 +9179,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/missions/{mission_id}/context-manifests", wrapper.BuildContextManifest)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/context-manifests/{manifest_id}", wrapper.GetContextManifest)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/dispatch/resolve", wrapper.ResolveDispatch)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/dispatch/update", wrapper.UpdateDispatch)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/dispatch/dispatch", wrapper.DispatchRequest)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/dispatch/receipts", wrapper.GetDispatchReceipt)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/runtimes", wrapper.ListRuntimes)

@@ -81,6 +81,9 @@ const (
 	// payload {outcome: ok|error, preview, generation, published:false, phase}。
 	// Run 行不变、结果不落、不发布。
 	EventLateResult = "late_result"
+	// CauseWallClockExceeded 墙钟到期停止原因（0.6.13 / ADR-0036 §3——进入
+	// stop_requested / canceled 事件 payload 的 cause）。
+	CauseWallClockExceeded = "wall_clock_exceeded"
 	// EventResolved unknown 处置事件（payload {outcome, note}）。
 	EventResolved = "resolved"
 )
@@ -109,6 +112,9 @@ var (
 	ErrRunAlreadyResolved = errors.New("run: Run 已处置")
 	// ErrInvalidResolution 处置结论/备注不合法。
 	ErrInvalidResolution = errors.New("run: 处置不合法")
+	// ErrBudgetExhausted 该 Mission 已创建 Run 总数达 budget.max_runs 上限
+	//（0.6.13 / ADR-0036 §3——不再派发，任务停留 ready，诊断面计数）。
+	ErrBudgetExhausted = errors.New("run: budget.max_runs 已用尽——不再派发")
 	// ErrResidueUnresolved 存在未处置 unknown 残留——再执行只发生在显式处置
 	// 后（ADR-0030 兑现的执行面围栏：waiting 挡调度列之外的兜底——旧库
 	// ready+残留收敛形态，0.6.7 发布前补齐）。
@@ -137,6 +143,10 @@ type Run struct {
 	StartedAt   string `json:"started_at"`
 	FinishedAt  string `json:"finished_at"`
 	UpdatedAt   string `json:"updated_at"`
+	// Deadline 墙钟期限（0.6.13 / ADR-0036 §3）：进入 running 时按执行开始
+	// 契约快照 started_at + budget.max_wall_clock_seconds；空 = 无墙钟。修订
+	// 不追改在途 Run 的 deadline（在途 Run 不静默换输入同族原则）。
+	Deadline string `json:"deadline"`
 	// 处置三列（0.6.7 / ADR-0030；非 unknown 恒空）：核验结论 / 备注 / 时刻。
 	Resolution     string `json:"resolution"`
 	ResolutionNote string `json:"resolution_note"`
@@ -199,6 +209,11 @@ type Missions interface {
 type MissionRef struct {
 	MissionID    string
 	OwnerAgentID string
+	// Budget 快照（0.6.13 / ADR-0036 §3，装配层自契约填入；0 = 未设/不限）：
+	// WallClockSeconds 随 Run 进入 running 落 deadline；MaxRuns 为该 Mission
+	// 已创建 Run 总数上限（达限不再派发——任务停留 ready，诊断面计数）。
+	WallClockSeconds int
+	MaxRuns          int
 }
 
 // Bindings owner 的 active Binding 解析（执行者事实）。
@@ -282,6 +297,9 @@ type Store interface {
 	AppendRunEvents(ctx context.Context, runID string, events []Event) error
 	// ListUnresolvedUnknown 未处置 unknown Run（诊断计数）。
 	ListUnresolvedUnknown(ctx context.Context) ([]Run, error)
+	// ListExpiredRunning 墙钟过期 running Run（0.6.13 / ADR-0036 §3：
+	// state=running 且 deadline 非空且 < now）。
+	ListExpiredRunning(ctx context.Context, now string) ([]Run, error)
 }
 
 // 选项。
@@ -322,6 +340,7 @@ type Service struct {
 	stopOnce      sync.Once
 	cleanupBudget time.Duration // 清理面上下文窗口（收尾时刻起算——0.6.6 审校 P1）
 	stopGrace     time.Duration // 停止后等执行器退出的有界窗口（0.6.6 审校 P1）
+	budgetBlocked atomic.Int64  // 0.6.13 / ADR-0036 §3：max_runs 派发上限命中计数（诊断面）
 }
 
 // stopEntry 注册表项：每 Run 独立取消上下文的 cancel 与停止原因。
@@ -441,6 +460,8 @@ func (s *Service) Status(ctx context.Context) (map[string]any, error) {
 		"active_runs": len(unfinished), "last_scan_at": lastScan, "last_error": lastErr,
 		// 0.6.7 / RFC §11.5：记录 unknown 数（处置后归零）
 		"unresolved_unknown_runs": len(unresolved),
+		// 0.6.13 / ADR-0036 §3：max_runs 上限命中计数（诊断面）
+		"budget_exhausted_hits": s.budgetBlocked.Load(),
 	}, nil
 }
 
@@ -457,7 +478,8 @@ func (s *Service) ScanOnce(ctx context.Context) {
 	for _, ref := range candidates {
 		if _, err := s.ExecuteMission(ctx, ref); err != nil {
 			switch {
-			case errors.Is(err, ErrSchedulerBusy), errors.Is(err, ErrNoExecutor):
+			case errors.Is(err, ErrSchedulerBusy), errors.Is(err, ErrNoExecutor),
+				errors.Is(err, ErrBudgetExhausted): // 0.6.13：上限命中是常态（诊断面计数），不入扫描错误
 			default:
 				lastErr = fmt.Sprintf("%s: %v", ref.MissionID, err)
 			}
@@ -467,6 +489,29 @@ func (s *Service) ScanOnce(ctx context.Context) {
 		s.lastError.Store(lastErr)
 	} else {
 		s.lastError.Store("")
+	}
+	s.enforceWallClock(ctx)
+}
+
+// enforceWallClock 墙钟强制（0.6.13 / ADR-0036 §3）：扫描过期 running Run →
+// 走既有停止面（SignalStopByMission → 在途 select 收 Stop → finalizeStopped：
+// run canceled + cause 事件 + Mission 回 ready；迟到结果只审计）。同 Mission
+// 多过期 Run 由 stops registry 幂等；已终态行不命中查询。
+func (s *Service) enforceWallClock(ctx context.Context) {
+	expired, err := s.store.ListExpiredRunning(ctx, s.now())
+	if err != nil {
+		s.lastError.Store("wallclock scan: " + err.Error())
+		return
+	}
+	seen := map[string]bool{}
+	for _, r := range expired {
+		if seen[r.MissionID] {
+			continue
+		}
+		seen[r.MissionID] = true
+		if _, err := s.SignalStopByMission(ctx, r.MissionID, CauseWallClockExceeded); err != nil {
+			s.lastError.Store("wallclock stop: " + err.Error())
+		}
 	}
 }
 
@@ -488,6 +533,14 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 				}
 				break
 			}
+		}
+	}
+	// 0.6.13 / ADR-0036 §3：max_runs 派发上限——已创建 Run 总数（终态含）达
+	// 契约上限即不再派发（任务停留 ready 不被静默吞，诊断面计数）。
+	if ref.MaxRuns > 0 {
+		if runs, err := s.store.ListRunsByMission(ctx, ref.MissionID); err == nil && len(runs) >= ref.MaxRuns {
+			s.budgetBlocked.Add(1)
+			return Run{}, fmt.Errorf("%w（mission %s：%d/%d）", ErrBudgetExhausted, ref.MissionID, len(runs), ref.MaxRuns)
 		}
 	}
 	binding, ok, err := s.bindings.ActiveOf(ctx, ref.OwnerAgentID)
@@ -571,6 +624,12 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 	r.State = StateRunning
 	r.StartedAt = now
 	r.UpdatedAt = now
+	// 0.6.13 / ADR-0036 §3：墙钟快照（执行开始契约的 max_wall_clock_seconds）。
+	if ref.WallClockSeconds > 0 {
+		if t, perr := time.Parse(time.RFC3339Nano, now); perr == nil {
+			r.Deadline = t.Add(time.Duration(ref.WallClockSeconds) * time.Second).UTC().Format(time.RFC3339Nano)
+		}
+	}
 	if err := s.store.UpdateRun(ctx, r, []Event{{
 		RunID: r.RunID, EventType: EventStarted, OccurredAt: now, Payload: map[string]any{},
 	}}); err != nil {

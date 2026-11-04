@@ -1652,6 +1652,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/dispatch/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 网关续接（mission_update——RFC-0018 §10.3 / ADR-0036，0.6.13）
+         * @description 已提交事项的范围变更走网关续接：幂等键先行（同键同载荷重放原回执、同键
+         *     异载荷 409）→ 服务端复核（任务存在、owner active）→ revise（CAS + 归属锚
+         *     由网关以服务端读值填充——owner 不变，换人走交接）→ 回执（domain_command_id
+         *     = mission:<id>:revise:v<新版本>）。领域拒绝（版本冲突 / 归属锚 / 终态 /
+         *     reviewing 冻结 / 在途交接冻结窗 / 契约非法）原样透传——网关不吞并。
+         *     无 route 决策行（无寻址面——竞态防护即 CAS + 归属锚，ADR-0036 §1）。
+         */
+        post: operations["updateDispatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/dispatch/dispatch": {
         parameters: {
             query?: never;
@@ -3877,6 +3902,29 @@ export interface components {
             deleted_at?: string | null;
         };
         /**
+         * @description 网关续接请求（RFC-0018 §10.3 mission_update / ADR-0036，0.6.13）：全量
+         *     替换契约内容（owner 不变——换人走交接或修订命令面显式改）；幂等键
+         *     [A-Za-z0-9._:-]{1,128} 库级唯一（caller/scope 服务端推导）。
+         */
+        DispatchUpdateRequest: {
+            mission_id: string;
+            expected_version: number;
+            idempotency_key: string;
+            request_id?: string;
+            /** @description 续接说明（进回执） */
+            reason?: string;
+            objective: string;
+            scope: string;
+            constraints?: string[];
+            acceptance_criteria: string[];
+            deliverable_specs: string[];
+            source_refs: string[];
+            return_targets?: string[];
+            reviewer?: string;
+            budget?: components["schemas"]["MissionBudget"];
+            delegation?: components["schemas"]["DelegationPolicy"];
+        };
+        /**
          * @description 网关解析请求（RFC-0018 §11.2.1 RouteRequest 的 0.6.1 确定性子集 /
          *     ADR-0024）：kind 当前仅 create_mission（房间交办）。caller_ref/scope
          *     由服务端从写门推导（owner/workspace），请求体不得自称。契约字段与
@@ -3886,7 +3934,12 @@ export interface components {
             /** @enum {string} */
             kind: "create_mission";
             room_source: components["schemas"]["RoomSource"];
+            /** @description 显式负责人（与 slot 引用互斥——并存 400：显式 Agent ≠ 责任已移交，语义须先明确） */
             owner_agent_id?: string;
+            /** @description 职责实例显式引用（0.6.13 / ADR-0036 §4.5：实例 → active 任职 → Agent；无 active 任职 blocked slot_unassigned——不自动激活 ready Binding） */
+            slot_instance_id?: string;
+            /** @description 职责模板引用（scope 内解析：无实例 slot_no_instance / 多实例 slot_ambiguous 禁止猜选——须显式指实例 / 恰一实例继续寻址） */
+            slot_spec_id?: string;
             objective: string;
             scope: string;
             constraints?: string[];
@@ -4357,6 +4410,11 @@ export interface components {
             last_error: string;
             /** @description 未处置 unknown Run 数（0.6.7——RFC §11.5 记录 unknown 数；处置后归零） */
             unresolved_unknown_runs: number;
+            /**
+             * Format: int64
+             * @description budget.max_runs 派发上限命中计数（0.6.13 / ADR-0036——任务停留 ready 不被静默吞，换预算须修订契约）
+             */
+            budget_exhausted_hits: number;
         };
         /** @description 预算（RFC-0018 §6.1：并发、总 Run 数、墙钟时长、重试与委派深度）——0.6.0 为契约声明事实，运行时强制随 0.6.5 Scheduler 落；缺省 {1, 32, 86400, 0, 0}（单 Agent、不重试、不委派起步）。 */
         MissionBudget: {
@@ -8453,6 +8511,69 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 网关域未装配（dispatch_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    updateDispatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已续接（或同键重放原回执——replayed 标注） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DispatchReceiptView"];
+                };
+            };
+            /** @description 请求不合法（invalid_request / invalid_mission） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 任务不存在（mission_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 幂等冲突（idempotency_conflict）/ 版本冲突（version_conflict）/ 归属锚（owner_mismatch）/ 状态族（invalid_transition）/ owner 非 active（agent_not_active） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             413: components["responses"]["TooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             /** @description 网关域未装配（dispatch_unavailable） */

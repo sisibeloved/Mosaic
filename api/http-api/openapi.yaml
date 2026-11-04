@@ -2718,6 +2718,52 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /v1/dispatch/update:
+    post:
+      operationId: updateDispatch
+      summary: 网关续接（mission_update——RFC-0018 §10.3 / ADR-0036，0.6.13）
+      description: |
+        已提交事项的范围变更走网关续接：幂等键先行（同键同载荷重放原回执、同键
+        异载荷 409）→ 服务端复核（任务存在、owner active）→ revise（CAS + 归属锚
+        由网关以服务端读值填充——owner 不变，换人走交接）→ 回执（domain_command_id
+        = mission:<id>:revise:v<新版本>）。领域拒绝（版本冲突 / 归属锚 / 终态 /
+        reviewing 冻结 / 在途交接冻结窗 / 契约非法）原样透传——网关不吞并。
+        无 route 决策行（无寻址面——竞态防护即 CAS + 归属锚，ADR-0036 §1）。
+      security: [{ OwnerToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DispatchUpdateRequest" }
+      responses:
+        "200":
+          description: 已续接（或同键重放原回执——replayed 标注）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DispatchReceiptView" }
+        "400":
+          description: 请求不合法（invalid_request / invalid_mission）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: 任务不存在（mission_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 幂等冲突（idempotency_conflict）/ 版本冲突（version_conflict）/ 归属锚（owner_mismatch）/ 状态族（invalid_transition）/ owner 非 active（agent_not_active）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503":
+          description: 网关域未装配（dispatch_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/dispatch/dispatch:
     post:
       operationId: dispatchRequest
@@ -5854,6 +5900,45 @@ components:
         room_id: { type: string, minLength: 1, maxLength: 64 }
         task_id: { type: string, pattern: "^tsk_[0-9A-Za-z_-]+$" }
         deleted_at: { type: string, format: date-time, nullable: true, description: 来源房间墓碑（null = 房间仍在） }
+    DispatchUpdateRequest:
+      type: object
+      required: [mission_id, expected_version, idempotency_key, objective, scope, acceptance_criteria, deliverable_specs, source_refs]
+      additionalProperties: false
+      description: |
+        网关续接请求（RFC-0018 §10.3 mission_update / ADR-0036，0.6.13）：全量
+        替换契约内容（owner 不变——换人走交接或修订命令面显式改）；幂等键
+        [A-Za-z0-9._:-]{1,128} 库级唯一（caller/scope 服务端推导）。
+      properties:
+        mission_id: { type: string, pattern: "^mi_[0-9A-Za-z_-]+$" }
+        expected_version: { type: integer, minimum: 1 }
+        idempotency_key: { type: string, pattern: "^[A-Za-z0-9._:-]{1,128}$" }
+        request_id: { type: string, maxLength: 128 }
+        reason: { type: string, maxLength: 280, description: 续接说明（进回执） }
+        objective: { type: string, minLength: 1, maxLength: 512 }
+        scope: { type: string, minLength: 1, maxLength: 512 }
+        constraints:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 256 }
+        acceptance_criteria:
+          type: array
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 256 }
+        deliverable_specs:
+          type: array
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 256 }
+        source_refs:
+          type: array
+          maxItems: 16
+          items: { type: string, pattern: "^[A-Za-z0-9/_.:#@-]{1,128}$" }
+        return_targets:
+          type: array
+          maxItems: 8
+          items: { type: string, maxLength: 128 }
+        reviewer: { type: string, maxLength: 64 }
+        budget: { $ref: "#/components/schemas/MissionBudget" }
+        delegation: { $ref: "#/components/schemas/DelegationPolicy" }
     DispatchResolveRequest:
       type: object
       required: [kind, room_source, objective, scope, acceptance_criteria, deliverable_specs, source_refs]
@@ -5866,7 +5951,9 @@ components:
       properties:
         kind: { type: string, enum: [create_mission] }
         room_source: { $ref: "#/components/schemas/RoomSource" }
-        owner_agent_id: { type: string, pattern: "^ag_[0-9A-Za-z_-]+$" }
+        owner_agent_id: { type: string, pattern: "^ag_[0-9A-Za-z_-]+$", description: "显式负责人（与 slot 引用互斥——并存 400：显式 Agent ≠ 责任已移交，语义须先明确）" }
+        slot_instance_id: { type: string, description: "职责实例显式引用（0.6.13 / ADR-0036 §4.5：实例 → active 任职 → Agent；无 active 任职 blocked slot_unassigned——不自动激活 ready Binding）" }
+        slot_spec_id: { type: string, description: "职责模板引用（scope 内解析：无实例 slot_no_instance / 多实例 slot_ambiguous 禁止猜选——须显式指实例 / 恰一实例继续寻址）" }
         objective: { type: string, minLength: 1, maxLength: 512 }
         scope: { type: string, minLength: 1, maxLength: 512 }
         constraints:
@@ -6261,7 +6348,7 @@ components:
         occurred_at: { type: string, format: date-time }
     SchedulerStatus:
       type: object
-      required: [enabled, scan_interval_seconds, scans, launched_runs, active_runs, last_scan_at, last_error, unresolved_unknown_runs]
+      required: [enabled, scan_interval_seconds, scans, launched_runs, active_runs, last_scan_at, last_error, unresolved_unknown_runs, budget_exhausted_hits]
       description: 调度器诊断面（ADR-0028 决策 2——全部事实在库，调度器自身无状态）。
       properties:
         enabled: { type: boolean, description: 周期扫描开关（装配注入） }
@@ -6272,6 +6359,7 @@ components:
         last_scan_at: { type: string, description: 最近一轮扫描时刻（未扫为空串） }
         last_error: { type: string, description: 最近一轮错误（无错误为空串） }
         unresolved_unknown_runs: { type: integer, description: 未处置 unknown Run 数（0.6.7——RFC §11.5 记录 unknown 数；处置后归零） }
+        budget_exhausted_hits: { type: integer, format: int64, description: budget.max_runs 派发上限命中计数（0.6.13 / ADR-0036——任务停留 ready 不被静默吞，换预算须修订契约） }
     MissionBudget:
       type: object
       required: [concurrency, max_runs, max_wall_clock_seconds, max_retries, max_delegation_depth]
