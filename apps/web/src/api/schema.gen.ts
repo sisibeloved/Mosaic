@@ -8791,6 +8791,15 @@ export interface operations {
                     "application/json": components["schemas"]["DispatchClaimView"];
                 };
             };
+            /** @description 配置 owner token 时缺失或不符（owner_token_required——五审 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description 认领不存在（claim_not_found） */
             404: {
                 headers: {

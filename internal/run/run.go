@@ -979,7 +979,9 @@ func (s *Service) finalizeRun(ctx context.Context, r *Run, lease Lease, state, e
 		} else if deadlinePassed(r.Deadline, now2) {
 			stopCause = CauseWallClockExceeded
 		}
-		if stopCause != "" && state == StateCompleted {
+		if stopCause != "" {
+			// 五审（既有 P1）：失败终态同样并入停止归档——停止意图在场时无论
+			// 成功正文还是错误结果一律按停止终理化（迟到只审计）。
 			return &stopOverrideError{cause: stopCause} // 零写入——调用方改走停止终理化
 		}
 	}
@@ -1004,7 +1006,9 @@ func (s *Service) finalizeRun(ctx context.Context, r *Run, lease Lease, state, e
 	}
 	*r = finalRun
 	_ = s.leases.Release(ctx, lease.LeaseID)
-	_ = s.missions.SetReadyFromRunning(ctx, r.MissionID, "run_"+state)
+	// 五审 #5：投影原因取**实际落库终态**（写锁内改判 canceled → run_canceled，
+	// 与 finalizeStopped 同因——Run 行、事件流、Mission 状态原因三者重建同一结果）。
+	_ = s.missions.SetReadyFromRunning(ctx, r.MissionID, "run_"+r.State)
 	return nil
 }
 

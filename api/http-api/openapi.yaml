@@ -2857,6 +2857,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DispatchClaimView" }
+        "401":
+          description: 配置 owner token 时缺失或不符（owner_token_required——五审 #6：完整摘要是处置凭据，读面同源保护）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: 认领不存在（claim_not_found）
           content:

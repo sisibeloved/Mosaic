@@ -669,3 +669,47 @@ func TestGetUnknownManifest(t *testing.T) {
 		t.Fatalf("未知清单期望 (nil,nil,false,nil)，得到 ok=%v err=%v", ok, err)
 	}
 }
+
+// TestReplayedManifestCarriesCurrentFingerprint 五审 #3：同 digest 命中存档重放
+// ——存档行不含授权指纹（历史清单无此列），重放以**本次实际授权**重算填写；
+// 先预览后运行、旧库存档清单的领取事务核对由此生效。
+func TestReplayedManifestCarriesCurrentFingerprint(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	// 首次装配（存档）
+	res1, err := f.svc.Build(ctx, "mi_1", "bd_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fpA := GrantFingerprint(fullGrant())
+	if res1.Manifest.GrantFingerprint != fpA {
+		t.Fatalf("首次装配须携指纹: %q", res1.Manifest.GrantFingerprint)
+	}
+	// 同状态重建 → 重放存档行（无指纹列）——须以本次授权回填
+	res2, err := f.svc.Build(ctx, "mi_1", "bd_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res2.Replayed {
+		t.Fatalf("同状态重建须命中存档重放")
+	}
+	if res2.Manifest.GrantFingerprint != fpA {
+		t.Fatalf("重放须以本次实际授权重算指纹（五审 #3）: %q", res2.Manifest.GrantFingerprint)
+	}
+	// 授权变化后重建：装配层随之变化（digest 变 → 新清单携新指纹）；若层未变
+	//（撤权不影响该装配内容）→ 命中重放且指纹为**新授权**（领取事务据此核对）。
+	f.grant.grant = slot.AgentGrant{AgentID: "ag_own",
+		Runtime: slot.AgentGrantRuntime{WorkspaceAccess: "read"}}
+	res3, err := f.svc.Build(ctx, "mi_1", "bd_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFP := GrantFingerprint(f.grant.grant)
+	if res3.Replayed {
+		if res3.Manifest.GrantFingerprint != wantFP {
+			t.Fatalf("重放指纹须为本次（新）授权: %q", res3.Manifest.GrantFingerprint)
+		}
+	} else if res3.Manifest.GrantFingerprint != wantFP {
+		t.Fatalf("新装配须携新授权指纹: %q", res3.Manifest.GrantFingerprint)
+	}
+}

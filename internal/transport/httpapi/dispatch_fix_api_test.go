@@ -8,10 +8,15 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/sisibeloved/Mosaic/internal/dispatch"
 	"github.com/sisibeloved/Mosaic/internal/mission"
+	"github.com/sisibeloved/Mosaic/internal/personalagent"
+	"github.com/sisibeloved/Mosaic/internal/room"
+	"github.com/sisibeloved/Mosaic/internal/transport/sse"
 )
 
 // TestUpdateDispatchValidation400 #17：expected_version 缺失/为 0、mission_id
@@ -210,5 +215,61 @@ func TestDispatchClaimViewAPI(t *testing.T) {
 	codeNF, nf := getJSONMap(t, ts.URL+"/v1/dispatch/claims/idem-none")
 	if codeNF != http.StatusNotFound || nf == nil {
 		t.Fatalf("未知键须 404: %d %v", codeNF, nf)
+	}
+}
+
+// TestDispatchClaimViewAuth 五审 #6：认领读面执行所声明的 owner token 校验
+// ——配置 token 时空/错 token 401，有效 token 200。
+func TestDispatchClaimViewAuth(t *testing.T) {
+	token := "tok-claims-auth"
+	roomTasks := fakeRoomTasks{tasks: map[[2]string]bool{{"r1", "tsk_a"}: true}}
+	store := room.NewMemStore()
+	svc := room.NewService(room.Config{
+		Store:  store,
+		Clock:  func() string { return "2026-11-04T12:00:00.000Z" },
+		NewID:  func(prefix string) string { return prefix + "_ca" },
+		Tenant: "ten_local",
+	})
+	var seq int64
+	ident := personalagent.New(personalagent.NewMemStore(), emptyIdentityRegistry{},
+		personalagent.WithNewAgentID(func() string { seq++; return "ag_ca" }),
+		personalagent.WithNow(func() string { return "2026-11-04T12:00:00.000Z" }))
+	lookups := missionIdentAgents{ident}
+	mSvc := mission.New(mission.NewMemStore(),
+		mission.WithNow(func() string { return "2026-11-04T12:00:00.000Z" }),
+		mission.WithNewMissionID(func() string { seq++; return "mi_ca" }),
+		mission.WithAgentLookup(lookups), mission.WithSourceLookup(roomTasks))
+	dSvc := dispatch.New(dispatch.NewMemStore(), mSvc, dispatch.Lookups{
+		Agents: lookups, Sources: roomTasks, Mapped: mSvc.SourceMapped,
+	}, dispatch.WithNow(func() string { return "2026-11-04T12:00:00.000Z" }),
+		dispatch.WithNewRouteID(func() string { seq++; return "rd_ca" }),
+		dispatch.WithNewReceiptID(func() string { seq++; return "dpr_ca" }))
+	ts := httptest.NewServer(New(Deps{
+		SVC: svc, Reader: store, Hub: sse.NewHub(),
+		Actor:    room.Actor{ParticipantID: "par_owner", Kind: "human"},
+		Missions: mSvc, Dispatch: dSvc, Identity: ident, OwnerToken: token,
+	}))
+	t.Cleanup(ts.Close)
+
+	get := func(tok string) int {
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/dispatch/claims/any-key", nil)
+		if tok != "" {
+			req.Header.Set("X-Owner-Token", tok)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	if c := get(""); c != http.StatusUnauthorized {
+		t.Fatalf("空 token 须 401: %d", c)
+	}
+	if c := get("wrong"); c != http.StatusUnauthorized {
+		t.Fatalf("错 token 须 401: %d", c)
+	}
+	if c := get(token); c != http.StatusNotFound { // 鉴权通过——键不存在 404
+		t.Fatalf("有效 token 须过鉴权（404=键不存在）: %d", c)
 	}
 }

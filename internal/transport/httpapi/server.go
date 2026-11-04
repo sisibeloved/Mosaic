@@ -2566,6 +2566,11 @@ func (s *server) GetDispatchClaim(w http.ResponseWriter, r *http.Request, idempo
 	if s.dispatchUnavailable(w) {
 		return
 	}
+	// 五审 #6：认领读面执行所声明的 owner token 校验（完整摘要是处置凭据——
+	// 与 release 同源保护；guardWrite(w, r, false) = 跨源门 + token 门）。
+	if !s.guardWrite(w, r, false) {
+		return
+	}
 	claim, found, err := s.deps.Dispatch.PendingClaim(r.Context(), idempotencyKey)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "dispatch_read_failed", err.Error())
@@ -3913,6 +3918,9 @@ func writeRunError(w http.ResponseWriter, err error) {
 	case errors.Is(err, missionrun.ErrContractDrift):
 		// 复审 #10：装配后契约被修订——释放租约重新装配（重试即新版本）
 		writeError(w, http.StatusConflict, "contract_drift", err.Error())
+	case errors.Is(err, missionrun.ErrGrantDrift):
+		// 五审 #7：授权快照漂移——与其他冲突一致的 409（重新装配后可执行）
+		writeError(w, http.StatusConflict, "grant_drift", err.Error())
 	case errors.Is(err, mosaicruntime.ErrLeaseConflictRuntime), errors.Is(err, mosaicruntime.ErrLeaseConflictWorkspace):
 		writeError(w, http.StatusConflict, "scheduler_busy", "资源被占（"+err.Error()+"）——下轮再试")
 	default:

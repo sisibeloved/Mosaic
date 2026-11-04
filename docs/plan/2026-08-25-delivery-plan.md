@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.74 |
+| 版本 | v2.75 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -205,6 +205,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.75 | 2026-11-04 | Mosaic 项目组 / ZCode | **0.6.13 五审修复（3 P1 + 4 P2 + 1 P3 + 既有 P1；ADR-0036 v0.6）**。前端预算字段级编辑跟踪（合并只覆盖编辑字段；面板状态与详情加载解耦）；重放清单以本次授权回填指纹（预览后撤权/旧库存档受检）；终态事务内核对 Mission 持久停止意图（人工暂停/取消——未到期完成也改判；事件组唯一替换 + 迟到审计 ≤400/携 generation + 投影原因取实际终态）；认领 GET 鉴权 401 + grant_drift 409 + 遗留指引统一。验证：UT/IT/API 新红面（重放指纹/控制意图裁决/审计规范/鉴权）+ vet/-race + it/st + SPA 绿 + 生成物幂等；真机冒烟 22+19 项复跑 ALL-PASS |
 | v2.74 | 2026-11-04 | Mosaic 项目组 / ZCode | **0.6.13 四审修复（4 P1 + 4 P2；ADR-0036 v0.5）**。前端冲突草稿合并与归属绑定（底稿合并显式输入/预算留现行/加载期预算禁编辑）；清单授权快照指纹（GrantFingerprint 随执行传递 + CreateRun 事务比对——可选撤销 ErrGrantDrift 重新装配降级）；UpdateRunTerminal 写锁后墙钟裁决（completed/failed 并入停止归档）；认领处置资格限定 update 类 + 单事务精准结果 + GET claims 只读面 + 遗留文案修正。验证：UT/IT/API 新红面（锁窗口裁决/指纹漂移三态/处置五态/认领视图）+ vet/-race + it/st + SPA 绿 + 生成物幂等；真机冒烟 22 项（含撤权双面）+ 上一版 19 项复跑 ALL-PASS |
 | v2.73 | 2026-11-04 | Mosaic 项目组 / ZCode | **0.6.13 三审修复（4 P1 + 2 P2 + 既有前端 2 P2；ADR-0036 v0.4）**。create 拒绝不释放认领（孪生共享——防同键串单）；续接 CAS 败按认领来源分流（新键冲突回滚不冒领 / 遗留待核验 + claims/release 处置端点 + ClaimByKey）；CreateRun 事务内核对任职授权与任务归属（撤权/交接后旧清单不得执行）；完成提交前停止仲裁下沉（围栏后重读停止与期限）。前端：加载期禁编辑、409 后保留录入切续接。验证：UT/IT/API 新红面 + vet/-race + it/st（触碰面）+ SPA 绿 + 生成物幂等；两版真机冒烟复跑 ALL-PASS（adapter 真机 IT 偶发与本改动无关，隔离复跑通过） |
 | v2.72 | 2026-11-04 | Mosaic 项目组 / ZCode | **0.6.13 复审修复（13 项：5 P1 + 6 P2 + 2 P3；ADR-0036 v0.3）**。建单事务门统一（CreationGate：显式 owner 身份门/模板唯一性锚/workspace_access 完整快照）；执行预算单快照（清单契约层 + CreateRun 事务内核对版本漂移/现行上限/执行者门——暂停启动 409 owner_not_active）；完成提交前停止/期限原子判定；投递认领一致性（采纳原行/拒绝释放/route_id 真值/upsert 自愈）；v30 遗留恢复（内容等值完结/不等值不宣告）+ reason 回落；前端续接模式重写（原子生效/代次/失败禁提/基准回传/冲突重载）；摘要墓碑。验证：UT/IT 新红面 + 全量 vet/-race + it/st + SPA 绿 + 生成物幂等；真机冒烟 8 项 + 上一版 19 项复跑 ALL-PASS |

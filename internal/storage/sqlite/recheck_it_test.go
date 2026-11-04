@@ -627,3 +627,62 @@ VALUES ('dpr_fn1', 'owner', 'workspace', 'key_fin', 'r', 'dg_fn', '', 0, 'mi_x:r
 		t.Fatalf("无行: out=%s %v", out, err)
 	}
 }
+
+// TestUpdateRunTerminalControlIntentIT 五审既有 P1：人工暂停/取消已持久化
+// （mission 行 paused/canceling）——终态事务内核对停止意图，未到期限的完成也
+// 改按 canceled、正文只审计；事件组唯一（无 completed/failed 残留）。
+func TestUpdateRunTerminalControlIntentIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	recheckAgent(t, store, "ag_ci")
+	m, err := store.CreateMission(ctx, func() mission.Mission {
+		r := missionRow(mission.StatusRunning, "ag_ci")
+		r.MissionID = "mi_ci"
+		return r
+	}(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := missionrun.Run{RunID: "run_ci", MissionID: m.MissionID, Attempt: 1, LeaseID: "lse_ci",
+		BindingID: "bd_ci", AgentID: "ag_ci", State: missionrun.StateRunning,
+		Generation: 7, RequestedAt: "t", StartedAt: "t", UpdatedAt: "t",
+		Deadline: "2030-01-01T00:00:00.000000000Z"} // 远未到期
+	if _, err := store.CreateRun(ctx, seed, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	// 人工暂停已生效（mission → paused；停止信号已送达的持久等价物）
+	if _, ok, err := store.PauseMission(ctx, m.MissionID, m.ContractVersion, "人工暂停", "2026-11-04T10:00:00Z"); err != nil || !ok {
+		t.Fatalf("暂停: ok=%v %v", ok, err)
+	}
+	r := seed
+	r.State, r.ResultBlock = missionrun.StateCompleted, "暂停后才返回的正文"
+	out, err := store.UpdateRunTerminal(ctx, r, []missionrun.Event{{
+		RunID: r.RunID, EventType: missionrun.EventCompleted, OccurredAt: "2026-11-04T10:00:01Z",
+		Payload: map[string]any{"late": false},
+	}}, func() string { return "2026-11-04T10:00:01Z" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != missionrun.StateCanceled || out.ResultBlock != "" {
+		t.Fatalf("人工停止后完成须改判 canceled: %+v", out)
+	}
+	evs, _ := store.RunEvents(ctx, "run_ci")
+	causeOK, stale := false, false
+	for _, e := range evs {
+		if e.EventType == missionrun.EventCanceled && e.Payload["cause"] == "paused" {
+			causeOK = true
+		}
+		if e.EventType == missionrun.EventCompleted || e.EventType == missionrun.EventFailed {
+			stale = true
+		}
+		if e.EventType == missionrun.EventLateResult {
+			if e.Payload["generation"] != float64(7) {
+				t.Fatalf("迟到审计须携 generation: %+v", e.Payload)
+			}
+		}
+	}
+	if !causeOK || stale {
+		t.Fatalf("事件组（cause=paused=%v，残留原终态=%v）: %+v", causeOK, stale, evs)
+	}
+}

@@ -715,7 +715,7 @@ func (s *Service) Update(ctx context.Context, cmd UpdateCmd) (Receipt, bool, err
 		// 修订归属（v2 可能由他键提交），不冒领——携当前版本同键重试（确认未
 		// 执行则正常执行）或 release 处置。自动恢复分支删除（新库冒领根因）。
 		if errors.Is(err, mission.ErrVersionConflict) && !firstClaim {
-			return Receipt{}, false, fmt.Errorf("%w：键 %s 的认领早于本请求（digest %s）——携当前版本重试或确认未执行后释放键",
+			return Receipt{}, false, fmt.Errorf("%w：键 %s 的认领早于本请求（digest %s）",
 				ErrLegacyPendingUnresolved, cmd.IdempotencyKey, dg[:min(12, len(dg))])
 		}
 		return fail(err) // 领域拒绝透传（version_conflict/owner_mismatch/invalid_transition/invalid_mission）

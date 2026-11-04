@@ -6,6 +6,7 @@ package run
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -209,9 +210,23 @@ func TestTerminalWriteArbitration(t *testing.T) {
 	for _, e := range evs {
 		if e.EventType == EventLateResult && evStr(e.Payload, "phase") == "terminal_write" {
 			lateSeen = true
+			// 五审 #4：preview ≤400 rune、携 generation、不发布
+			if n := len([]rune(fmt.Sprint(e.Payload["preview"]))); n > 400 {
+				t.Fatalf("迟到预览超限: %d", n)
+			}
+			if _, ok := e.Payload["generation"]; !ok {
+				t.Fatalf("迟到审计须携 generation: %+v", e.Payload)
+			}
+			if e.Payload["published"] != false {
+				t.Fatalf("迟到结果不得发布: %+v", e.Payload)
+			}
 		}
 		if e.EventType == EventCanceled && evStr(e.Payload, "cause") == CauseWallClockExceeded {
 			causeSeen = true
+		}
+		// 五审 #5：改判后不得残留原拟提交终态事件
+		if e.EventType == EventCompleted || e.EventType == EventFailed {
+			t.Fatalf("改判后不得追加原终态事件: %+v", e)
 		}
 	}
 	if !lateSeen || !causeSeen {

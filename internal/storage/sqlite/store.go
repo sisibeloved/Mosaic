@@ -3037,7 +3037,7 @@ VALUES (?, ?, ?, ?, ?, ?, '', 0, '', ?, '[]', ?, '')`,
 			var curVersion int
 			if err := q.QueryRowContext(ctx,
 				`SELECT contract_version FROM missions WHERE mission_id = ?`, cmd.MissionID).Scan(&curVersion); err == nil && curVersion != cmd.ExpectedVersion {
-				return fmt.Errorf("%w：键 %s 的认领早于本请求（当前 v%d，命令期望 v%d）——携当前版本重试或确认未执行后释放键",
+				return fmt.Errorf("%w：键 %s 的认领早于本请求（当前 v%d，命令期望 v%d）",
 					dispatch.ErrLegacyPendingUnresolved, cmd.IdempotencyKey, curVersion, cmd.ExpectedVersion)
 			}
 			return classifyReviseRefusal(ctx, q, cmd.MissionID, cmd.ExpectedVersion, cur.OwnerAgentID)
@@ -5634,34 +5634,61 @@ INSERT INTO run_events (run_id, event_type, payload, occurred_at) VALUES (?, ?, 
 	return r, nil
 }
 
-// UpdateRunTerminal 终态写入 + **写锁后**墙钟裁决（四审 #6）：identityWriteTx
-// 取得写锁后以 nowFn() 现行时刻核对行上 deadline——等待写锁期间期限已过/
-// 监控已发停的窗口在此收口：拟写 completed/failed 且期限已过 → 改按 canceled
-// （cause=wall_clock_exceeded）落终态，拟发布结果仅 late_result 审计；否则按
-// 入参落。返回实际落库 Run。
+// UpdateRunTerminal 终态写入 + **写锁后**停止裁决（四审 #6 + 五审 #4/#5 +
+// 既有 P1）：identityWriteTx 取得写锁后在事务内核对——
+//
+//	a) 行上 deadline 已过（nowFn 锁后取值——等待写锁期间期限越过）；
+//	b) Mission 持久停止意图（paused/canceling——人工暂停/取消已生效，存储层
+//	   可读的事实，不依赖进程内注册表时序）。
+//
+// 命中即改按 canceled 落终态（cause=wall_clock_exceeded | pause | canceling），
+// **替换**（非追加）原拟提交终态事件——唯一一组 stop_requested + canceled +
+// late_result（preview ≤400 rune、携 generation、published=false）；拟发布结果
+// 不落 ResultBlock。返回实际落库 Run（调用方据其生成 Mission 投影原因）。
 func (s *Store) UpdateRunTerminal(ctx context.Context, r missionrun.Run, events []missionrun.Event, nowFn func() string) (missionrun.Run, error) {
 	err := s.identityWriteTx(ctx, func(q identityExec) error {
-		if r.Deadline != "" && (r.State == missionrun.StateCompleted || r.State == missionrun.StateFailed) {
+		overrideCause := ""
+		if r.Deadline != "" {
 			nowRFC := nowFn() // 锁后取值（等待窗口内的期限越过在此判定）
 			nowT, perr := time.Parse(time.RFC3339Nano, nowRFC)
 			dl, derr := time.Parse(time.RFC3339Nano, r.Deadline)
 			if perr == nil && derr == nil && !nowT.Before(dl) {
-				outcome, preview := "ok", r.ResultBlock
-				if r.State == missionrun.StateFailed {
-					outcome, preview = "error", r.ErrorText
+				overrideCause = missionrun.CauseWallClockExceeded
+			}
+		}
+		if overrideCause == "" && (r.State == missionrun.StateCompleted || r.State == missionrun.StateFailed) {
+			// 人工停止意图（持久化在 mission 行——五审既有 P1：信号已送达但
+			// select 抢占失败/锁等待期送达的窗口由此收口）。
+			var mStatus string
+			if err := q.QueryRowContext(ctx,
+				`SELECT status FROM missions WHERE mission_id = ?`, r.MissionID).Scan(&mStatus); err == nil {
+				if mStatus == "paused" || mStatus == "canceling" {
+					overrideCause = mStatus
 				}
-				r.State = missionrun.StateCanceled
-				r.ErrorText = "墙钟到期（终态写入时判定）——迟到结果只审计"
-				r.ResultBlock = ""
-				r.FinishedAt, r.UpdatedAt = nowRFC, nowRFC
-				events = append([]missionrun.Event{
-					{RunID: r.RunID, EventType: missionrun.EventStopRequested, OccurredAt: nowRFC,
-						Payload: map[string]any{"cause": missionrun.CauseWallClockExceeded, "arbitrated_at_write": true}},
-					{RunID: r.RunID, EventType: missionrun.EventCanceled, OccurredAt: nowRFC,
-						Payload: map[string]any{"cause": missionrun.CauseWallClockExceeded}},
-					{RunID: r.RunID, EventType: missionrun.EventLateResult, OccurredAt: nowRFC,
-						Payload: map[string]any{"outcome": outcome, "preview": preview, "published": false, "phase": "terminal_write"}},
-				}, events...)
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("sqlite: terminal mission probe: %w", err)
+			}
+		}
+		if overrideCause != "" && (r.State == missionrun.StateCompleted || r.State == missionrun.StateFailed) {
+			outcome, preview := "ok", r.ResultBlock
+			if r.State == missionrun.StateFailed {
+				outcome, preview = "error", r.ErrorText
+			}
+			r.State = missionrun.StateCanceled
+			r.ErrorText = "停止意图在终态写入时判定（" + overrideCause + "）——迟到结果只审计"
+			r.ResultBlock = ""
+			nowRFC := nowFn()
+			r.FinishedAt, r.UpdatedAt = nowRFC, nowRFC
+			// 五审 #4/#5：替换原拟提交终态事件——改判后的唯一事件组（迟到审计
+			// 与 finalizeStopped 同规范：preview ≤400 rune、携 generation）。
+			events = []missionrun.Event{
+				{RunID: r.RunID, EventType: missionrun.EventStopRequested, OccurredAt: nowRFC,
+					Payload: map[string]any{"cause": overrideCause, "arbitrated_at_write": true}},
+				{RunID: r.RunID, EventType: missionrun.EventCanceled, OccurredAt: nowRFC,
+					Payload: map[string]any{"cause": overrideCause}},
+				{RunID: r.RunID, EventType: missionrun.EventLateResult, OccurredAt: nowRFC,
+					Payload: map[string]any{"outcome": outcome, "preview": truncateRunPreview(preview, 400),
+						"generation": r.Generation, "published": false, "phase": "terminal_write"}},
 			}
 		}
 		if _, err := q.ExecContext(ctx, `
@@ -5687,6 +5714,19 @@ INSERT INTO run_events (run_id, event_type, payload, occurred_at) VALUES (?, ?, 
 		return missionrun.Run{}, err
 	}
 	return r, nil
+}
+
+// truncateRunPreview 迟到结果预览截断（rune 计 ≤n——中文不半截；五审 #4：
+// 与 run 域 truncateS 同规范）。
+func truncateRunPreview(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
 
 // ResolveRun 条件处置（0.6.7 / ADR-0030）：state='unknown' AND resolution=” 才落

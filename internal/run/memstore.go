@@ -207,18 +207,20 @@ func (m *MemStore) UpdateRunTerminal(_ context.Context, r Run, events []Event, n
 					outcome, preview = "error", r.ErrorText
 				}
 				r.State = StateCanceled
-				r.ErrorText = "墙钟到期（终态写入时判定）——迟到结果只审计"
+				r.ErrorText = "停止意图在终态写入时判定（" + CauseWallClockExceeded + "）——迟到结果只审计"
 				r.ResultBlock = ""
 				fin := nowFn()
 				r.FinishedAt, r.UpdatedAt = fin, fin
-				events = append([]Event{
+				// 五审 #4/#5：替换（非追加）原终态事件；迟到审计携 generation。
+				events = []Event{
 					{RunID: r.RunID, EventType: EventStopRequested, OccurredAt: fin,
 						Payload: map[string]any{"cause": CauseWallClockExceeded, "arbitrated_at_write": true}},
 					{RunID: r.RunID, EventType: EventCanceled, OccurredAt: fin,
 						Payload: map[string]any{"cause": CauseWallClockExceeded}},
 					{RunID: r.RunID, EventType: EventLateResult, OccurredAt: fin,
-						Payload: map[string]any{"outcome": outcome, "preview": truncateS(preview, 400), "published": false, "phase": "terminal_write"}},
-				}, events...)
+						Payload: map[string]any{"outcome": outcome, "preview": truncateS(preview, 400),
+							"generation": r.Generation, "published": false, "phase": "terminal_write"}},
+				}
 			}
 		}
 	}

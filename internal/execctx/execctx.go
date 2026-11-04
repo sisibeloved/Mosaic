@@ -441,6 +441,10 @@ func (s *Service) Build(ctx context.Context, missionID, bindingID string) (Build
 				return BuildResult{}, fmt.Errorf("execctx: 重放查询失败：%w", gerr)
 			}
 			if ok {
+				// 五审 #3：存档行不含授权指纹（历史清单无此列）——重放以**本次
+				// 实际授权**重算指纹随清单交运行层（领取事务核对用它；先预览后
+				// 撤权、旧库存档清单同样受检）。digest/ManifestID/回执历史语义不变。
+				em.GrantFingerprint = GrantFingerprint(grant)
 				return BuildResult{Manifest: em, Receipt: er, Replayed: true}, nil
 			}
 			return BuildResult{}, fmt.Errorf("execctx: 撞键清单不可查（%s/%s）", missionID, manifest.Digest)

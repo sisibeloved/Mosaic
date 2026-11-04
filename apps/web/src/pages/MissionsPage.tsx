@@ -89,6 +89,9 @@ export function MissionsPage() {
   // **绑定引发 409 的 room/task**（四审 #2）；命中同一来源时以详情为底稿合并
   // 用户显式修改的字段（四审 #1：未编辑字段/预算留现行值），切换来源即丢弃。
   const pendingMergeRef = useRef<{ room: string; task: string } | null>(null);
+  // 五审 #1：预算按**字段**跟踪用户编辑——合并只覆盖编辑过的字段（展开面板
+  // 查看不得放宽其他上限）；面板展开状态不进详情加载依赖（五审 #2）。
+  const budgetEditedRef = useRef<Set<string>>(new Set());
   const [budget, setBudget] = useState({ concurrency: "1", max_runs: "32", max_wall_clock_seconds: "86400", max_retries: "0", max_delegation_depth: "0" });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -171,16 +174,24 @@ export function MissionsPage() {
             returns: f.returns.trim() || (d.return_targets ?? []).join("\n"),
             reviewer: f.reviewer.trim() || d.reviewer || "",
           }));
-          if (!budgetOpen) {
-            setBudget({
-              concurrency: String(d.budget?.concurrency ?? 1),
-              max_runs: String(d.budget?.max_runs ?? 32),
-              max_wall_clock_seconds: String(d.budget?.max_wall_clock_seconds ?? 86400),
-              max_retries: String(d.budget?.max_retries ?? 0),
-              max_delegation_depth: String(d.budget?.max_delegation_depth ?? 0),
-            });
-          }
-          setBudgetOpen(true);
+          // 五审 #1：以现行预算为底，仅覆盖用户**编辑过**的字段——只展开查看
+          // 或只改一个数值不再放宽其余上限。
+          const cur = {
+            concurrency: String(d.budget?.concurrency ?? 1),
+            max_runs: String(d.budget?.max_runs ?? 32),
+            max_wall_clock_seconds: String(d.budget?.max_wall_clock_seconds ?? 86400),
+            max_retries: String(d.budget?.max_retries ?? 0),
+            max_delegation_depth: String(d.budget?.max_delegation_depth ?? 0),
+          };
+          const edited = budgetEditedRef.current;
+          setBudget({
+            concurrency: edited.has("concurrency") ? budget.concurrency : cur.concurrency,
+            max_runs: edited.has("max_runs") ? budget.max_runs : cur.max_runs,
+            max_wall_clock_seconds: edited.has("max_wall_clock_seconds") ? budget.max_wall_clock_seconds : cur.max_wall_clock_seconds,
+            max_retries: edited.has("max_retries") ? budget.max_retries : cur.max_retries,
+            max_delegation_depth: edited.has("max_delegation_depth") ? budget.max_delegation_depth : cur.max_delegation_depth,
+          });
+          setBudgetOpen(true); // 显示合并结果（五审 #2：仅显示——不再触发详情重载）
           setDetailState("idle");
           return;
         }
@@ -205,6 +216,7 @@ export function MissionsPage() {
           max_retries: String(d.budget?.max_retries ?? 0),
           max_delegation_depth: String(d.budget?.max_delegation_depth ?? 0),
         });
+        budgetEditedRef.current = new Set(); // 预算整体换现行——编辑跟踪重置
         setBudgetOpen(true);
         setDetailState("idle");
       })
@@ -213,7 +225,7 @@ export function MissionsPage() {
         setDetailState("error"); // 复审 #1：读取失败禁用提交（目标不生效）
         setMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
       });
-  }, [formOpen, form.room, form.task, missions, retryTick, budgetOpen]);
+  }, [formOpen, form.room, form.task, missions, retryTick]);
 
   const act = async (fn: () => Promise<unknown>): Promise<ApiError | null> => {
     setBusy(true);
@@ -263,6 +275,7 @@ export function MissionsPage() {
       setSelected(m.mission_id);
       setFormOpen(false);
       setForm({ objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "", owner: "", reviewer: "", room: "", task: "" });
+      budgetEditedRef.current = new Set();
       });
       // 来源已被他处交办（列表陈旧）——保留录入切续接模式（重取映射与版本）
       if (err?.code === "source_already_mapped") {
@@ -308,6 +321,7 @@ export function MissionsPage() {
         setBaseContract(null);
         setConflictReload(false);
         setForm({ objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "", owner: "", reviewer: "", room: "", task: "" });
+      budgetEditedRef.current = new Set();
       });
       // 复审 #6：真并发冲突（他处已修订）→ 显式重新加载入口
       if (err?.code === "version_conflict") setConflictReload(true);
@@ -503,7 +517,10 @@ export function MissionsPage() {
                   <input
                     value={budget[k]}
                     disabled={detailState === "loading"}
-                    onChange={(e) => setBudget({ ...budget, [k]: e.target.value })}
+                    onChange={(e) => {
+                      budgetEditedRef.current.add(k);
+                      setBudget({ ...budget, [k]: e.target.value });
+                    }}
                     className="rounded border border-border bg-surface-2 px-1.5 py-1 font-mono text-xs outline-none"
                   />
                 </label>
