@@ -1295,13 +1295,19 @@ func (e RoomCommandCommandKind) Valid() bool {
 
 // Defines values for RouteDecisionViewSelectionSource.
 const (
-	RoomDefault RouteDecisionViewSelectionSource = "room_default"
+	ExplicitOwner RouteDecisionViewSelectionSource = "explicit_owner"
+	RoomDefault   RouteDecisionViewSelectionSource = "room_default"
+	SlotBinding   RouteDecisionViewSelectionSource = "slot_binding"
 )
 
 // Valid indicates whether the value is a known member of the RouteDecisionViewSelectionSource enum.
 func (e RouteDecisionViewSelectionSource) Valid() bool {
 	switch e {
+	case ExplicitOwner:
+		return true
 	case RoomDefault:
+		return true
+	case SlotBinding:
 		return true
 	default:
 		return false
@@ -2641,6 +2647,9 @@ type DispatchReceiptView struct {
 	DomainCommandId string `json:"domain_command_id"`
 	IdempotencyKey  string `json:"idempotency_key"`
 
+	// Reason 续接说明（0.6.13 审校 #16：mission_update 请求 reason 随回执持久化并读回；create 路径为空串）
+	Reason *string `json:"reason,omitempty"`
+
 	// ReceiptId dpr_ 前缀生成式
 	ReceiptId string `json:"receipt_id"`
 
@@ -3653,13 +3662,16 @@ type MissionRunViewState string
 
 // MissionSummary Mission 契约摘要。
 type MissionSummary struct {
-	ContractVersion int                  `json:"contract_version"`
-	CreatedAt       time.Time            `json:"created_at"`
-	MissionId       string               `json:"mission_id"`
-	Objective       string               `json:"objective"`
-	OwnerAgentId    string               `json:"owner_agent_id"`
-	Status          MissionSummaryStatus `json:"status"`
-	UpdatedAt       time.Time            `json:"updated_at"`
+	ContractVersion int       `json:"contract_version"`
+	CreatedAt       time.Time `json:"created_at"`
+	MissionId       string    `json:"mission_id"`
+	Objective       string    `json:"objective"`
+	OwnerAgentId    string    `json:"owner_agent_id"`
+
+	// RoomSource 房间交办来源（0.6.13 审校
+	RoomSource *RoomSource          `json:"room_source,omitempty"`
+	Status     MissionSummaryStatus `json:"status"`
+	UpdatedAt  time.Time            `json:"updated_at"`
 }
 
 // MissionSummaryStatus defines model for MissionSummary.Status.
@@ -4022,7 +4034,7 @@ type RouteDecisionView struct {
 	DecisionVersion int       `json:"decision_version"`
 	ExpiresAt       time.Time `json:"expires_at"`
 
-	// ReasonCode blocked 原因：room_not_found / task_not_found / source_already_mapped / agent_not_found / invalid_mission；resolved 为空串
+	// ReasonCode blocked 原因：room_not_found / task_not_found / source_already_mapped / agent_not_found / agent_not_active / source_unavailable / invalid_mission / slot_no_instance / slot_ambiguous / slot_unassigned / slot_instance_not_found / slot_lookup_failed / slot_grant_missing；resolved 为空串
 	ReasonCode string `json:"reason_code"`
 
 	// ReasonSummary 可理解说明（含已映射 mission_id 等恢复信息）
@@ -4031,10 +4043,16 @@ type RouteDecisionView struct {
 	// RequestDigest 解析请求规范化 JSON 的 SHA-256（十六进制）
 	RequestDigest string `json:"request_digest"`
 
+	// ResolvedAgentId 解析出的负责人 Agent（slot 寻址 = active 任职者；非 slot 寻址为空串）
+	ResolvedAgentId *string `json:"resolved_agent_id,omitempty"`
+
+	// ResolvedSlotInstanceId slot 寻址解析到的职责实例（0.6.13 审校 #9；模板引用解析结果也在此——投递复核按实例核对；非 slot 寻址为空串）
+	ResolvedSlotInstanceId *string `json:"resolved_slot_instance_id,omitempty"`
+
 	// RouteId rd_ 前缀生成式
 	RouteId string `json:"route_id"`
 
-	// SelectionSource 0.6.1 仅房间缺省路径（语义/续接随后续版本）
+	// SelectionSource 寻址来源：room_default 缺省 / explicit_owner 显式负责人 / slot_binding 职责任职（0.6.13 / ADR-0036 §2——解析结果见 resolved_* 引用）
 	SelectionSource RouteDecisionViewSelectionSource `json:"selection_source"`
 	Status          RouteDecisionViewStatus          `json:"status"`
 
@@ -4042,7 +4060,7 @@ type RouteDecisionView struct {
 	TargetRefs []string `json:"target_refs"`
 }
 
-// RouteDecisionViewSelectionSource 0.6.1 仅房间缺省路径（语义/续接随后续版本）
+// RouteDecisionViewSelectionSource 寻址来源：room_default 缺省 / explicit_owner 显式负责人 / slot_binding 职责任职（0.6.13 / ADR-0036 §2——解析结果见 resolved_* 引用）
 type RouteDecisionViewSelectionSource string
 
 // RouteDecisionViewStatus defines model for RouteDecisionView.Status.

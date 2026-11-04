@@ -107,10 +107,12 @@ var (
 	ErrReviewNotAuthorized = errors.New("mission: 验收权限不足")
 	// ErrUnsettledRuns 存在在途或未处置 unknown 的 Run（0.6.9 审校 #2：送验
 	// 事务内复核——待核验完成再放行）。
-	ErrUnsettledRuns = errors.New("mission: 存在未决 Run")
-	// ErrSourceAlreadyMapped 房间来源已被交办（ADR-0024：(room_id, task_id)
-	// 全局唯一映射——同一任务卡至多交办一次，撞键回显已映射 mission_id）。
+	ErrUnsettledRuns       = errors.New("mission: 存在未决 Run")
 	ErrSourceAlreadyMapped = errors.New("mission: 房间来源已被交办")
+	// ErrSlotIntentViolated 职责派发意图复核失败（0.6.13 审校 #2/#7：建单
+	// 事务内核对——实例不在册 / active 任职已换人 / 负责人身份非 active /
+	// 授权准入不满足；网关映射 route_stale 重新解析，不得用陈旧任职建单）。
+	ErrSlotIntentViolated = errors.New("mission: 职责派发意图复核失败（实例/任职/负责人已变化）")
 	// ErrAgentStatusUnavailable 身份状态查询端口未装配（0.6.12 / ADR-0035：交接
 	// 是责任转移的受控通道，承接人须 active——宁拒不放行）。
 	ErrAgentStatusUnavailable = errors.New("mission: 未装配身份状态查询（承接人校验不可用）")
@@ -172,7 +174,11 @@ type Mission struct {
 	PendingOwnerAgentID string `json:"pending_owner_agent_id"`
 	// PendingOfferID 在途交接发起标识（0.6.12 审校 #1：承接/婉拒/撤回请求绑定此锚
 	// ——撤回改派后 contract_version 不递增，旧请求须被拒而非处理新交接）。
-	PendingOfferID string      `json:"pending_offer_id"`
+	PendingOfferID string `json:"pending_offer_id"`
+	// SlotInstanceID 职责派发意图（0.6.13 审校 #1：slot 寻址派发的创建事实
+	// ——执行装配按该实例固定 Binding（同人双任职不串用），空 = 显式/无职责。
+	// 建单时经 CreateMissionSlot 事务内核对（审校 #2：任职/身份/授权漂移拒建）。
+	SlotInstanceID string      `json:"slot_instance_id"`
 	Requester      string      `json:"requester"`
 	RoomSource     *RoomSource `json:"room_source"` // 房间交办来源（非房间交办 null；创建事实）
 	Content
@@ -187,8 +193,11 @@ type Summary struct {
 	Status          string `json:"status"`
 	OwnerAgentID    string `json:"owner_agent_id"`
 	Objective       string `json:"objective"`
-	CreatedAt       string `json:"created_at"`
-	UpdatedAt       string `json:"updated_at"`
+	// RoomSource 房间交办来源（0.6.13 审校 #6：任务卡续接识别——已映射任务卡
+	// 经 /v1/dispatch/update 追加要求；非房间交办 nil）。
+	RoomSource *RoomSource `json:"room_source,omitempty"`
+	CreatedAt  string      `json:"created_at"`
+	UpdatedAt  string      `json:"updated_at"`
 }
 
 // Event mission_events 流事件（schema: MissionEvent）。
@@ -227,12 +236,27 @@ type RoomSource struct {
 	DeletedAt string `json:"deleted_at,omitempty"`
 }
 
+// SlotIntent 职责派发意图（0.6.13 审校 #1/#2 / ADR-0036 §2：slot 寻址决策的
+// 建单入参——解析所得实例 + 预期任职 Agent。AgentID 必须等于 owner（寻址
+// 结果即负责人）；存储事务内四核：实例在册 / active 任职 == AgentID /
+// agents.status == active / 授权准入满足（复用 slot 准入门）。不符 →
+// ErrSlotIntentViolated（回滚零副作用）。
+type SlotIntent struct {
+	InstanceID string
+	AgentID    string
+}
+
 // Store 持久化端口（SQLite 实现：internal/storage/sqlite；测试件：memstore）。
 // 一切写路径单事务 [校验→投影→版本行→事件]（BEGIN IMMEDIATE 全库约定）。
 type Store interface {
 	// CreateMission 投影 v1 + 不可变版本行 + created 事件（+ 可选房间来源
 	// 映射），单事务；来源撞键 → ErrSourceAlreadyMapped（携已映射 mission_id）。
 	CreateMission(ctx context.Context, m Mission, src *RoomSource) (Mission, error)
+	// CreateMissionSlot 带职责意图的建单（0.6.13 审校 #1/#2）：SlotInstanceID
+	// 随投影落列；slot 意图在**同一写事务**内核对（实例/任职/身份/授权——
+	// 审校 #2 换绑不得插进复核与建单之间）；不符 → ErrSlotIntentViolated 整体
+	// 回滚。SQLite 实装；memstore 记录意图（无 slot 域，仅核 AgentID == owner）。
+	CreateMissionSlot(ctx context.Context, m Mission, src *RoomSource, slot *SlotIntent) (Mission, error)
 	// MissionIDBySource 来源映射查询；未映射 ok=false。
 	MissionIDBySource(ctx context.Context, roomID, taskID string) (string, bool, error)
 	// Revise CAS 修订：contract_version 匹配、**当前 owner == expectedOwner**
@@ -372,10 +396,23 @@ func newOfferID() string {
 
 // Create 建契约（= create_mission，§11.2）：校验 → owner/来源存在性 →
 // 完备性判定（draft/ready）→ 投影 v1 + 版本行 + created 事件（+ 可选来源
-// 映射）单事务。
+// 映射）单事务。CreateWithSlot 的无职责路径（显式/缺省 owner）。
 func (s *Service) Create(ctx context.Context, ownerAgentID string, c Content, src *RoomSource) (Mission, error) {
+	return s.CreateWithSlot(ctx, ownerAgentID, c, src, nil)
+}
+
+// CreateWithSlot 带职责意图建契约（0.6.13 审校 #1/#2：网关 slot 寻址派发
+// 路径）——意图经存储事务内核对后随创建事实落 SlotInstanceID。
+func (s *Service) CreateWithSlot(ctx context.Context, ownerAgentID string, c Content, src *RoomSource, slot *SlotIntent) (Mission, error) {
 	if err := ValidateContent(c); err != nil {
 		return Mission{}, err
+	}
+	if slot != nil {
+		// 域级前置：意图自洽（预期任职 = 负责人；寻址结果即 owner）。任职/
+		// 身份/授权的时点核对在存储写事务内（漂移即回滚——审校 #2/#7）。
+		if slot.InstanceID == "" || slot.AgentID == "" || slot.AgentID != strings.TrimSpace(ownerAgentID) {
+			return Mission{}, fmt.Errorf("%w: 意图自洽性（instance=%q agent=%q owner=%q）", ErrSlotIntentViolated, slot.InstanceID, slot.AgentID, ownerAgentID)
+		}
 	}
 	if ownerAgentID != "" {
 		if err := s.checkOwner(ctx, ownerAgentID); err != nil {
@@ -401,7 +438,14 @@ func (s *Service) Create(ctx context.Context, ownerAgentID string, c Content, sr
 	if statusOf(m) == StatusReady {
 		m.Status = StatusReady
 	}
-	out, err := s.store.CreateMission(ctx, m, src)
+	var out Mission
+	var err error
+	if slot != nil {
+		m.SlotInstanceID = slot.InstanceID
+		out, err = s.store.CreateMissionSlot(ctx, m, src, slot)
+	} else {
+		out, err = s.store.CreateMission(ctx, m, src)
+	}
 	if err != nil {
 		return Mission{}, err
 	}
@@ -827,6 +871,31 @@ func (s *Service) Revise(ctx context.Context, missionID string, expectedVersion 
 	if !ok {
 		return Mission{}, ErrMissionNotFound
 	}
+	// 守卫与 next 构造单源（0.6.13 审校 #3：PrepareRevision——与网关原子续接
+	// 面共用；执行控制投影保持的权威核对仍在存储事务内，0.6.6 审校 P1）。
+	next, err := PrepareRevision(cur, expectedOwner, ownerAgentID, c, s.now())
+	if err != nil {
+		return Mission{}, err
+	}
+	out, ok2, err := s.store.ReviseMission(ctx, missionID, expectedVersion, expectedOwner, next)
+	if err != nil {
+		return Mission{}, err
+	}
+	if !ok2 {
+		return Mission{}, s.casOrOwnerOrTransition(ctx, missionID, expectedVersion, expectedOwner)
+	}
+	return out, nil
+}
+
+// PrepareRevision 修订的纯域构造（0.6.13 审校 #3：Service.Revise 与网关原子
+// 续接面（sqlite UpdateMissionAtomic）**单源**——守卫与 next 构造不得两处漂移）：
+// 契约校验 → 归属锚 → 终态/验收冻结/在途交接冻结守卫 → next（版本+1 / 归一化 /
+// 完备性重判 draft↔ready / 执行控制投影保持——running/paused/canceling/waiting
+// 中修订不回写调度列）。CAS 与事务内权威核对在存储面。
+func PrepareRevision(cur Mission, expectedOwner, ownerAgentID string, c Content, now string) (Mission, error) {
+	if err := ValidateContent(c); err != nil {
+		return Mission{}, err
+	}
 	if cur.OwnerAgentID != expectedOwner {
 		return Mission{}, fmt.Errorf("%w: 期望负责人 %q，当前 %q（承接可能已翻转归属——请刷新）",
 			ErrOwnerMismatch, expectedOwner, cur.OwnerAgentID)
@@ -851,25 +920,13 @@ func (s *Service) Revise(ctx context.Context, missionID string, expectedVersion 
 	next.OwnerAgentID = strings.TrimSpace(ownerAgentID)
 	next.Content = normalizeContent(c)
 	next.Status = statusOf(next)
-	// 0.6.6 / ADR-0029 决策 5：执行控制投影保持——running/paused/canceling
-	// 中修订不回写 draft/ready（在途 Run 不静默换输入；停止/完成后下一
-	// attempt 自然用新版本）。此处按旧读快照先行投影；权威保持在存储事务内
-	// （0.6.6 审校 P1：读到 ready 后暂停/取消落地不递增版本，CAS 版本面对该
-	// 交错放行——存储面以事务内现行状态覆盖本投影，防陈旧 ready 把
-	// paused/canceling 盖回调度列）。
+	// 0.6.6 / ADR-0029 决策 5：执行控制投影保持（存储事务内以现行状态再核）。
 	switch cur.Status {
 	case StatusRunning, StatusPaused, StatusCanceling, StatusWaiting:
 		next.Status = cur.Status
 	}
-	next.UpdatedAt = s.now()
-	out, ok2, err := s.store.ReviseMission(ctx, missionID, expectedVersion, expectedOwner, next)
-	if err != nil {
-		return Mission{}, err
-	}
-	if !ok2 {
-		return Mission{}, s.casOrOwnerOrTransition(ctx, missionID, expectedVersion, expectedOwner)
-	}
-	return out, nil
+	next.UpdatedAt = now
+	return next, nil
 }
 
 // Cancel 取消（= cancel_mission，0.6.0 单步版）——0.6.6 起取消为两段

@@ -43,6 +43,12 @@ func (f *fakeSlotLookups) ActiveBindingAgent(_ context.Context, id string) (stri
 	return a, ok, nil
 }
 
+// GrantAdmission 授权准入（0.6.13 审校 #7）：缺省放行（API 件不测撤权分支——
+// 域内 update_test 覆盖）。
+func (f *fakeSlotLookups) GrantAdmission(_ context.Context, _, _ string) (bool, []string, error) {
+	return true, nil, nil
+}
+
 // slotDispatchServer 装配 Slots 的 dispatch 测试件（寻址/续接共用）。
 func slotDispatchServer(t *testing.T, slots dispatch.SlotLookups) (*httptest.Server, *mission.Service) {
 	t.Helper()

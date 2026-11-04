@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1877,6 +1878,9 @@ func readinessView(res slot.ReadinessResult) apigen.ReadinessReportView {
 	}
 }
 
+// missionIDPattern 任务 ID 形制（续接入口校验——审校 #17）。
+var missionIDPattern = regexp.MustCompile(`^mi_[0-9A-Za-z_-]+$`)
+
 // ---- Mission 契约面（RFC-0018 §6.1 / ADR-0023，0.6.0；apigen.ServerInterface）----
 
 func (s *server) missionUnavailable(w http.ResponseWriter) bool {
@@ -1901,11 +1905,16 @@ func (s *server) ListMissions(w http.ResponseWriter, r *http.Request) {
 	for _, sum := range sums {
 		ts, _ := time.Parse(time.RFC3339, sum.CreatedAt)
 		us, _ := time.Parse(time.RFC3339, sum.UpdatedAt)
-		out = append(out, apigen.MissionSummary{
+		mv := apigen.MissionSummary{
 			MissionId: sum.MissionID, ContractVersion: sum.ContractVersion,
 			Status: apigen.MissionSummaryStatus(sum.Status), OwnerAgentId: sum.OwnerAgentID,
 			Objective: sum.Objective, CreatedAt: ts, UpdatedAt: us,
-		})
+		}
+		// 0.6.13 审校 #6：任务卡续接识别（已映射任务卡经 /v1/dispatch/update）。
+		if sum.RoomSource != nil {
+			mv.RoomSource = &apigen.RoomSource{RoomId: sum.RoomSource.RoomID, TaskId: sum.RoomSource.TaskID}
+		}
+		out = append(out, mv)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"missions": out})
 }
@@ -2426,6 +2435,24 @@ func (s *server) UpdateDispatch(w http.ResponseWriter, r *http.Request) {
 	if !missionBudgetPresentStrict(w, presence, req.Budget) {
 		return
 	}
+	// 0.6.13 审校 #17：字段约束校验（先于幂等认领——无效请求 400，修正后
+	// 重试不得被认领键绑死；与 DispatchUpdateRequest schema 同口径）。
+	if !missionIDPattern.MatchString(req.MissionId) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "mission_id 须形如 mi_*")
+		return
+	}
+	if req.ExpectedVersion < 1 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "expected_version ≥1（缺省解码为 0 视为缺失）")
+		return
+	}
+	if req.RequestId != nil && utf8.RuneCountInString(*req.RequestId) > 128 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "request_id ≤128 字")
+		return
+	}
+	if req.Reason != nil && utf8.RuneCountInString(*req.Reason) > 280 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "reason ≤280 字")
+		return
+	}
 	receipt, replayed, err := s.deps.Dispatch.Update(r.Context(), dispatch.UpdateCmd{
 		MissionID:       req.MissionId,
 		ExpectedVersion: int(req.ExpectedVersion),
@@ -2497,12 +2524,22 @@ func decisionView(d dispatch.Decision) apigen.RouteDecisionView {
 	if targets == nil {
 		targets = []string{}
 	}
-	return apigen.RouteDecisionView{
+	dv := apigen.RouteDecisionView{
 		RouteId: d.RouteID, DecisionVersion: d.DecisionVersion, RequestDigest: d.RequestDigest,
 		Status: apigen.RouteDecisionViewStatus(d.Status), SelectionSource: apigen.RouteDecisionViewSelectionSource(d.SelectionSource),
 		ReasonCode: d.ReasonCode, ReasonSummary: d.ReasonSummary,
 		TargetRefs: targets, ExpiresAt: exp,
 	}
+	// 0.6.13 审校 #9：解析事实引用（slot 寻址的实例/任职者——模板解析结果含实例）。
+	if d.ResolvedAgentID != "" {
+		ag := d.ResolvedAgentID
+		dv.ResolvedAgentId = &ag
+	}
+	if d.ResolvedInstanceID != "" {
+		inst := d.ResolvedInstanceID
+		dv.ResolvedSlotInstanceId = &inst
+	}
+	return dv
 }
 
 // receiptView dispatch.Receipt → apigen.DispatchReceiptView。
@@ -2516,12 +2553,18 @@ func receiptView(r dispatch.Receipt, replayed bool) apigen.DispatchReceiptView {
 	if returns == nil {
 		returns = []string{}
 	}
-	return apigen.DispatchReceiptView{
+	rv := apigen.DispatchReceiptView{
 		ReceiptId: r.ReceiptID, CallerRef: r.CallerRef, Scope: r.Scope,
 		IdempotencyKey: r.IdempotencyKey, RequestId: r.RequestID, RequestDigest: r.RequestDigest,
 		RouteId: r.RouteID, DecisionVersion: r.DecisionVersion, DomainCommandId: r.DomainCommandID,
 		TargetRefs: targets, ReturnRefs: returns, CommittedAt: ts, Replayed: replayed,
 	}
+	// 0.6.13 审校 #16：续接说明随回执读回（create 路径空串省略）。
+	if r.Reason != "" {
+		rs := r.Reason
+		rv.Reason = &rs
+	}
+	return rv
 }
 
 // writeDispatchError 网关域错误映射。
@@ -3789,6 +3832,9 @@ func writeRunError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "run_already_resolved", err.Error())
 	case errors.Is(err, missionrun.ErrMissionTerminal):
 		writeError(w, http.StatusConflict, "mission_terminal", err.Error())
+	case errors.Is(err, missionrun.ErrBudgetExhausted):
+		// 0.6.13 审校 #5：手动达限映射可识别 409（权威上限在 CreateRun 事务内）
+		writeError(w, http.StatusConflict, "budget_exhausted", err.Error())
 	case errors.Is(err, mosaicruntime.ErrLeaseConflictRuntime), errors.Is(err, mosaicruntime.ErrLeaseConflictWorkspace):
 		writeError(w, http.StatusConflict, "scheduler_busy", "资源被占（"+err.Error()+"）——下轮再试")
 	default:

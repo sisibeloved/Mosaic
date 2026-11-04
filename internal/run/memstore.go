@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // MemStore 内存实现。
@@ -30,12 +31,25 @@ func (m *MemStore) WithMissionStatus(f func(missionID string) (string, bool)) *M
 }
 
 // CreateRun 建行（每 Mission 至多一个未终态）+ attempt_requested 事件。
-func (m *MemStore) CreateRun(_ context.Context, r Run) (Run, error) {
+func (m *MemStore) CreateRun(_ context.Context, r Run, maxRuns int) (Run, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, e := range m.runs {
 		if e.MissionID == r.MissionID && (e.State == StatePending || e.State == StateRunning) {
 			return Run{}, ErrRunExists
+		}
+	}
+	// 0.6.13 审校 #14：次数上限核对在建行临界区内（与 SQLite 事务面同语义
+	//——并发孪生恰一胜者）。
+	if maxRuns > 0 {
+		used := 0
+		for _, e := range m.runs {
+			if e.MissionID == r.MissionID {
+				used++
+			}
+		}
+		if used >= maxRuns {
+			return Run{}, fmt.Errorf("%w（%s：%d/%d）", ErrBudgetExhausted, r.MissionID, used, maxRuns)
 		}
 	}
 	// 复审 R1：任务须仍是 ready（过期调度拒绝；状态源未装配 = 放行——简单件）
@@ -175,15 +189,26 @@ func (m *MemStore) AppendRunEvents(_ context.Context, runID string, events []Eve
 }
 
 // ListUnresolvedUnknown 未处置 unknown。
-// ListExpiredRunning 墙钟过期 running Run（0.6.13 / ADR-0036 §3）。
+// ListExpiredRunning 墙钟过期 running Run（0.6.13 / ADR-0036 §3；审校 #15：
+// 期限按**时刻**比较——RFC3339Nano 小数位数不定，字典序 .11Z < .1Z 会漏
+// 已过期行）。
 func (m *MemStore) ListExpiredRunning(_ context.Context, now string) ([]Run, error) {
+	nowT, err := time.Parse(time.RFC3339Nano, now)
+	if err != nil {
+		return nil, fmt.Errorf("run: expired scan (now): %w", err)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []Run
 	for _, r := range m.runs {
-		if r.State == StateRunning && r.Deadline != "" && r.Deadline < now {
-			out = append(out, r)
+		if r.State != StateRunning || r.Deadline == "" {
+			continue
 		}
+		dT, perr := time.Parse(time.RFC3339Nano, r.Deadline)
+		if perr != nil || !dT.Before(nowT) {
+			continue
+		}
+		out = append(out, r)
 	}
 	return out, nil
 }

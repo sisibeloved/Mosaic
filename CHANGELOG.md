@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **0.6.13 独立审校修复（17 项：5 P1 + 10 P2 + 2 P3，ADR-0036 v0.2）**：
+  - **续接原子化**：`dispatch.Update` 在 SQLite 上以**单写事务**完成认领 + 复核（事务内身份门——owner 在册且 active）+ 修订 + 回执（`UpdateMissionAtomic`；内存件分步退化 + 拒绝回滚补偿）——修订已生效而回执失败不再留下"同键重试 409"的裂口（审校 #3）；领域拒绝/身份门失败整体回滚**不占幂等键**，修正后同键重试成功（#11）；owner 状态读取失败即错、未指派/未在册/非 active 明确拒绝（#12）；恢复重驱动命中 pending 采纳**原回执行**——与重放同 receipt_id（#13）；`reason` 随回执持久化并读回、目标引用携修订后版本 `mission:<id>:v<n>`（#16）；入口字段校验 400 先于认领（#17）；公开回执查询只见已提交行（pending 不可见）。
+  - **Slot 派发链补强**：解析事实（实例 + 任职）作为决策事实另存、**原请求摘要**稳定——换绑后重解析同一请求同键可重放已提交回执（#10）；建单在**同一写事务**内核对实例/任职/身份/授权四项——换绑、暂停、撤权不得插进复核与建单之间（#2/#7，`CreateMissionSlot` + `mission.ErrSlotIntentViolated` → 409 route_stale）；解析所得实例落 `missions.slot_instance_id` 创建事实，执行装配按实例固定 Binding——**同人双任职不再串用**（#1，`Bindings.ActiveOfInstance`）；预检补 owner active 与授权准入（blocked `agent_not_active` / `slot_grant_missing`，#7）；契约对齐：`selection_source` 补 `slot_binding`/`explicit_owner`、reason_code 补 slot 族、决策回包携 `resolved_slot_instance_id`/`resolved_agent_id`（#9）。
+  - **执行预算收口**：墙钟监控改**独立 ticker** + 按 **RunID** 直达停止——不被同步执行器阻塞（审校 #4：阻塞执行器跨多个扫描周期 Run 仍 running），同 Mission 换发的新 Run 未到期不误伤；启动前经 `RefOf` 重读**权威预算**（手动与自动入口共用——#5/#8：手动两次 POST 达限 409 `budget_exhausted` + deadline 落快照；排队期修订收紧/放宽即时生效；预算查询失败中止派发）；`max_runs` 核对移入 `CreateRun` 建行事务（并发孪生恰一胜者，#14）；期限比较改**时刻**——RFC3339Nano 小数位数不定，字典序 `.11Z < .1Z` 会漏已过期行/选中未来行（双存储同修，#15）。
+  - **任务卡续接入口**（#6）：`MissionSummary` += `room_source`；已交办任务卡在 MissionsPage 表单切"追加要求"模式，经 `/v1/dispatch/update` 续接（稳定幂等键 + 现行契约预填），不再撞 createMission 的 409 `source_already_mapped`。
+  - 换绑回归补强：`TestDispatchSlotStaleRereresolve` 重写为未映射任务卡起步（先断言 resolved 再换绑验 409——原测试第二任务卡预先被占用，删除复核分支仍侥幸通过）。
+
 ### Added
 
 - **0.6 域收口：网关续接、Slot 职责寻址与墙钟强制**（0.6 领域线第十四件 / ADR-0036，RFC-0018 §4.5/§6.1/§10.3，AT-14/15/18——v2.69 盘点三项落差收口）：**网关续接 `POST /v1/dispatch/update`**（= mission_update，§10.3）：幂等键先行（同键同载荷重放原回执 / 同键异载荷 409 / pending 恢复重驱动）→ 服务端复核（任务存在 + owner active——续接不发往已停身份）→ revise（CAS + 归属锚由网关以服务端读值填充，**owner 不变**——换人走交接）→ 回执（`domain_command_id = mission:<id>:revise:v<新版本>`）；领域拒绝原样透传（网关不吞并）；无 route 决策行（无寻址面，竞态防护即 CAS + 归属锚）。**Slot 职责寻址**（§4.5）：resolve 请求 += `slot_instance_id`（显式实例）或 `slot_spec_id`（模板——scope 内无实例 blocked `slot_no_instance` / 多实例歧义 blocked `slot_ambiguous` 禁止猜选 / 恰一实例继续）；寻址链 scope → SlotInstance → **active Binding** → AgentID（无 active 任职 blocked `slot_unassigned`——**不自动激活 ready Binding**）；解析结果写入决策存档的 owner（`selection_source=slot_binding`）；**投递复核**：决策后任职换人 → `route_stale` 重新解析（§4.6"不能只改路由缓存"）；与显式 `owner_agent_id` 互斥（并存 400——显式 Agent ≠ 责任已移交）。**墙钟强制**（§6.1 / AT-18）：Run 进入 running 时按执行开始契约的 `budget.max_wall_clock_seconds` 快照 `deadline`（migration v30：runs += deadline 列；修订不追改在途）；扫描过期 → 走既有停止面（run canceled + `cause=wall_clock_exceeded` 事件 + Mission 回 ready，迟到结果只审计）——停止面零新增机制；**max_runs 派发上限**一并落：已创建 Run 总数达上限不再派发（`budget_exhausted_hits` 诊断计数，任务停留 ready 不被静默吞）。

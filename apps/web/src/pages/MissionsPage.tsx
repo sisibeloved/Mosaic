@@ -73,6 +73,11 @@ export function MissionsPage() {
     room: searchParams.get("room") ?? "", task: searchParams.get("task") ?? "",
   }));
   const [budgetOpen, setBudgetOpen] = useState(false);
+  // 0.6.13 审校 #6：已交办任务卡续接模式（/v1/dispatch/update）——命中映射的
+  // 来源不再走 createMission（撞 409 source_already_mapped）；updateKey 为本表单
+  // 会话稳定幂等键（同键同载荷重试重放，不产生二次修订）。
+  const [updateTarget, setUpdateTarget] = useState<{ missionID: string; version: number } | null>(null);
+  const [updateKey, setUpdateKey] = useState("");
   const [budget, setBudget] = useState({ concurrency: "1", max_runs: "32", max_wall_clock_seconds: "86400", max_retries: "0", max_delegation_depth: "0" });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -101,6 +106,53 @@ export function MissionsPage() {
     const id = searchParams.get("id");
     if (id) setSelected(id);
   }, [searchParams]);
+
+  // 0.6.13 审校 #6：来源命中既有映射 → 续接模式（RFC §10.3 任务卡追加要求）：
+  // 预填现行契约（全量替换语义——在当前版本上修改/追加），提交走网关续接
+  // （owner 不变）；未命中维持新建交办。
+  useEffect(() => {
+    const room = form.room.trim();
+    const task = form.task.trim();
+    if (!formOpen || !room || !task || !missions) {
+      setUpdateTarget(null);
+      return;
+    }
+    const hit = missions.find(
+      (m) => m.room_source?.room_id === room && m.room_source?.task_id === task,
+    );
+    if (!hit) {
+      setUpdateTarget(null);
+      return;
+    }
+    setUpdateTarget({ missionID: hit.mission_id, version: hit.contract_version });
+    setUpdateKey((k) => k || `web-update-${crypto.randomUUID()}`);
+    void api
+      .getMission(hit.mission_id)
+      .then((d) => {
+        setForm((f) => ({
+          ...f,
+          objective: d.objective ?? f.objective,
+          scope: d.scope ?? f.scope,
+          acceptance: (d.acceptance_criteria ?? []).join("\n"),
+          deliverables: (d.deliverable_specs ?? []).join("\n"),
+          sources: (d.source_refs ?? []).join("\n"),
+          returns: (d.return_targets ?? []).join("\n"),
+          reviewer: d.reviewer ?? "",
+          owner: d.owner_agent_id ?? "",
+        }));
+        setBudget({
+          concurrency: String(d.budget?.concurrency ?? 1),
+          max_runs: String(d.budget?.max_runs ?? 32),
+          max_wall_clock_seconds: String(d.budget?.max_wall_clock_seconds ?? 86400),
+          max_retries: String(d.budget?.max_retries ?? 0),
+          max_delegation_depth: String(d.budget?.max_delegation_depth ?? 0),
+        });
+        setBudgetOpen(true);
+      })
+      .catch(() => {
+        /* 读失败保持表单现状——提交时错误可见 */
+      });
+  }, [formOpen, form.room, form.task, missions]);
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -150,6 +202,38 @@ export function MissionsPage() {
     });
   };
 
+  // 0.6.13 审校 #6：续接提交（/v1/dispatch/update——owner 不变，全量替换契约；
+  // 稳定幂等键：失败修正后重试同键同载荷即重放，不二次修订）。
+  const submitUpdate = () => {
+    if (!updateTarget) return;
+    const b = {
+      concurrency: Number(budget.concurrency), max_runs: Number(budget.max_runs),
+      max_wall_clock_seconds: Number(budget.max_wall_clock_seconds),
+      max_retries: Number(budget.max_retries), max_delegation_depth: Number(budget.max_delegation_depth),
+    };
+    void act(async () => {
+      const rc = await api.updateDispatch({
+        mission_id: updateTarget.missionID,
+        expected_version: updateTarget.version,
+        idempotency_key: updateKey,
+        reason: "任务卡追加要求",
+        objective: form.objective.trim(),
+        scope: form.scope.trim(),
+        acceptance_criteria: splitLines(form.acceptance),
+        deliverable_specs: splitLines(form.deliverables),
+        source_refs: splitLines(form.sources),
+        ...(form.returns.trim() ? { return_targets: splitLines(form.returns) } : {}),
+        ...(form.reviewer.trim() ? { reviewer: form.reviewer.trim() } : {}),
+        budget: b,
+      });
+      setSelected(rc.domain_command_id.split(":")[0]);
+      setFormOpen(false);
+      setUpdateTarget(null);
+      setUpdateKey("");
+      setForm({ objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "", owner: "", reviewer: "", room: "", task: "" });
+    });
+  };
+
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4 px-4 py-6">
       <header className="flex items-center justify-between">
@@ -173,6 +257,12 @@ export function MissionsPage() {
 
       {formOpen && (
         <section className="flex flex-col gap-2 rounded-xl border border-border bg-surface p-3">
+          {updateTarget && (
+            <p className="rounded-lg bg-accent-soft px-2.5 py-1.5 text-xs text-accent">
+              该任务卡已交办为 {updateTarget.missionID}（v{updateTarget.version}）——本次为<b>追加要求</b>
+              （网关续接 mission_update：全量替换契约、负责人不变，换人走交接；同键重试幂等不二次修订）。
+            </p>
+          )}
           <label className="flex flex-col gap-1 text-xs">
             <span className="text-faint">目标（1–512 字）</span>
             <input
@@ -302,10 +392,10 @@ export function MissionsPage() {
             <button
               type="button"
               disabled={busy || !form.objective.trim() || !form.scope.trim()}
-              onClick={submitCreate}
+              onClick={updateTarget ? submitUpdate : submitCreate}
               className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast transition-opacity hover:opacity-90 disabled:opacity-40"
             >
-              {busy ? "提交中…" : "创建契约"}
+              {busy ? "提交中…" : updateTarget ? `追加要求（续接 v${updateTarget.version}）` : "创建契约"}
             </button>
           </div>
         </section>

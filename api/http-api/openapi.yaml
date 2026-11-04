@@ -5991,12 +5991,14 @@ components:
         decision_version: { type: integer, minimum: 1, description: 0.6.1 恒 1（重解析版本随续接域引入） }
         request_digest: { type: string, description: 解析请求规范化 JSON 的 SHA-256（十六进制） }
         status: { type: string, enum: [resolved, blocked] }
-        selection_source: { type: string, enum: [room_default], description: 0.6.1 仅房间缺省路径（语义/续接随后续版本） }
+        selection_source: { type: string, enum: [room_default, explicit_owner, slot_binding], description: "寻址来源：room_default 缺省 / explicit_owner 显式负责人 / slot_binding 职责任职（0.6.13 / ADR-0036 §2——解析结果见 resolved_* 引用）" }
         reason_code:
           type: string
-          description: "blocked 原因：room_not_found / task_not_found / source_already_mapped / agent_not_found / invalid_mission；resolved 为空串"
+          description: "blocked 原因：room_not_found / task_not_found / source_already_mapped / agent_not_found / agent_not_active / source_unavailable / invalid_mission / slot_no_instance / slot_ambiguous / slot_unassigned / slot_instance_not_found / slot_lookup_failed / slot_grant_missing；resolved 为空串"
         reason_summary: { type: string, description: 可理解说明（含已映射 mission_id 等恢复信息） }
         target_refs: { type: array, items: { type: string }, description: 目标引用（room:任务卡 → Mission） }
+        resolved_slot_instance_id: { type: string, description: "slot 寻址解析到的职责实例（0.6.13 审校 #9；模板引用解析结果也在此——投递复核按实例核对；非 slot 寻址为空串）" }
+        resolved_agent_id: { type: string, description: "解析出的负责人 Agent（slot 寻址 = active 任职者；非 slot 寻址为空串）" }
         expires_at: { type: string, format: date-time }
     DispatchRequest:
       type: object
@@ -6027,6 +6029,7 @@ components:
         target_refs: { type: array, items: { type: string } }
         return_refs: { type: array, items: { type: string } }
         committed_at: { type: string, format: date-time }
+        reason: { type: string, description: "续接说明（0.6.13 审校 #16：mission_update 请求 reason 随回执持久化并读回；create 路径为空串）" }
         replayed: { type: boolean, description: true = 幂等重放原回执（非新投递） }
     ContextManifestBuildRequest:
       type: object
@@ -6579,6 +6582,10 @@ components:
         status: { type: string, enum: [draft, ready, running, waiting, reviewing, paused, canceling, canceled, accepted] }
         owner_agent_id: { type: string }
         objective: { type: string }
+        room_source:
+          allOf:
+            - $ref: "#/components/schemas/RoomSource"
+          description: 房间交办来源（0.6.13 审校 #6：任务卡续接识别——已映射任务卡经 /v1/dispatch/update 追加要求；非房间交办 null）
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
     MissionEvent:

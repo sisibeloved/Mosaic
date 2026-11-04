@@ -41,10 +41,11 @@ func (f *statusAgents) setStatus(id, st string) {
 
 // fakeSlots SlotLookups 测试件：实例表 + 每实例 active 任职 Agent（可中途改绑）。
 type fakeSlots struct {
-	instances map[string]string   // instance → spec
-	active    map[string]string   // instance → agent（无键 = 无 active 任职）
-	exists    map[string]bool     // instance 存在性
-	specs     map[string][]string // spec → 实例集
+	instances    map[string]string   // instance → spec
+	active       map[string]string   // instance → agent（无键 = 无 active 任职）
+	exists       map[string]bool     // instance 存在性
+	specs        map[string][]string // spec → 实例集
+	grantMissing map[string][]string // instance → 授权缺失清单（0.6.13 审校 #7）
 }
 
 func (f *fakeSlots) SlotInstanceExists(_ context.Context, id string) (bool, error) {
@@ -58,6 +59,18 @@ func (f *fakeSlots) SlotInstancesOfSpec(_ context.Context, specID string) ([]str
 func (f *fakeSlots) ActiveBindingAgent(_ context.Context, instanceID string) (string, bool, error) {
 	a, ok := f.active[instanceID]
 	return a, ok, nil
+}
+
+// GrantAdmission 授权准入（0.6.13 审校 #7）：缺省放行；perInstance 配置缺失
+// 清单模拟撤权（必需工具/技能被撤销 → blocked/拒建）。
+func (f *fakeSlots) GrantAdmission(_ context.Context, instanceID, _ string) (bool, []string, error) {
+	if f.grantMissing == nil {
+		return true, nil, nil
+	}
+	if missing, ok := f.grantMissing[instanceID]; ok {
+		return false, missing, nil
+	}
+	return true, nil, nil
 }
 
 // newUpdateFixture 真 mission 服务 + dispatch + 可配身份状态 + slot 件。
@@ -180,7 +193,7 @@ func TestResolveSlotAddressing(t *testing.T) {
 	// 正常：实例 → active 任职 → Agent；owner 由寻址得出
 	d, err := svc.Resolve(ctx, slotReq())
 	if err != nil || d.Status != "resolved" || d.SelectionSource != "slot_binding" ||
-		d.Request.OwnerAgentID != "ag_b" || len(d.TargetRefs) == 0 {
+		d.ResolvedAgentID != "ag_b" || d.ResolvedInstanceID != "si_1" || d.Request.OwnerAgentID != "" || len(d.TargetRefs) == 0 {
 		t.Fatalf("slot 寻址: %+v %v", d, err)
 	}
 	// 无 active 任职（si_idle 有 ready Binding 也不自动激活——§4.5 明文）
@@ -229,10 +242,12 @@ func TestResolveSlotAddressing(t *testing.T) {
 	}
 }
 
-// TestDispatchSlotStaleRereresolve slot 决策投递复核（§4.6）：决策后任职换人 →
-// 投递 ErrRouteStale（重新解析，不改路由缓存）；未换 → 建契约 owner=任职 Agent。
+// TestDispatchSlotStaleRereresolve slot 决策投递复核（§4.6；0.6.13 审校重写：
+// 未映射任务卡起步——先断言决策 resolved，再换绑验证旧决策 route_stale；删除
+// 复核分支时本测试必须失败——此前版本第二张任务卡预先被占用，初次解析即
+// blocked，测试借 blocked 决策的拒投递侥幸通过）。
 func TestDispatchSlotStaleRereresolve(t *testing.T) {
-	svc, mSvc, _, _ := newUpdateFixture(t)
+	svc, _, _, _ := newUpdateFixture(t)
 	slots := &fakeSlots{
 		exists:    map[string]bool{"si_1": true},
 		instances: map[string]string{"si_1": "slot.a"},
@@ -242,26 +257,22 @@ func TestDispatchSlotStaleRereresolve(t *testing.T) {
 	svc.lookups.Slots = slots
 	ctx := context.Background()
 
+	// 未映射任务卡（tsk_b）→ resolved（断言决策面——非借 blocked 拒投递）
 	d, err := svc.Resolve(ctx, ResolveRequest{Kind: KindCreateMission, SlotInstanceID: "si_1",
-		RoomSource: mission.RoomSource{RoomID: "r1", TaskID: "tsk_a"}, Contract: contract()})
-	if err != nil || d.Status != "resolved" {
-		t.Fatalf("解析: %+v %v", d, err)
+		RoomSource: mission.RoomSource{RoomID: "r1", TaskID: "tsk_b"}, Contract: contract()})
+	if err != nil || d.Status != "resolved" || d.ResolvedAgentID != "ag_b" {
+		t.Fatalf("解析须 resolved 且任职 ag_b: %+v %v", d, err)
 	}
-	// 未换绑 → 投递成功，owner = 任职 Agent
+	// 未换绑 → 投递成功（建单 owner = 任职 Agent；slot 意图随建单）
 	rc, replayed, err := svc.Dispatch(ctx, DispatchCmd{RouteID: d.RouteID, IdempotencyKey: "idem-s1"})
 	if err != nil || replayed {
 		t.Fatalf("投递: %+v %v", rc, err)
 	}
-	m2, err := mSvc.Create(ctx, "ag_b", contract(), &mission.RoomSource{RoomID: "r1", TaskID: "tsk_b"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = m2
-	// 新决策 → 换绑（active 任职 Agent 变 ag_c）→ 投递 route_stale
+	// 新决策（tsk_a）→ 断言 resolved → 换绑（任职换 ag_c）→ 旧决策 409 stale
 	d2, err := svc.Resolve(ctx, ResolveRequest{Kind: KindCreateMission, SlotInstanceID: "si_1",
-		RoomSource: mission.RoomSource{RoomID: "r1", TaskID: "tsk_b"}, Contract: contract()})
-	if err != nil {
-		t.Fatal(err)
+		RoomSource: mission.RoomSource{RoomID: "r1", TaskID: "tsk_a"}, Contract: contract()})
+	if err != nil || d2.Status != "resolved" {
+		t.Fatalf("第二决策须 resolved: %+v %v", d2, err)
 	}
 	slots.active["si_1"] = "ag_c"
 	if _, _, err := svc.Dispatch(ctx, DispatchCmd{RouteID: d2.RouteID, IdempotencyKey: "idem-s2"}); !errors.Is(err, ErrRouteStale) {

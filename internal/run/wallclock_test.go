@@ -39,7 +39,7 @@ type wallFixture struct {
 
 func newWallFixture(t *testing.T) (wallFixture, *mutableClock, *stopRacingExec) {
 	t.Helper()
-	missions := &fakeMissions{status: map[string]string{}, waitingReason: map[string]string{}}
+	missions := &fakeMissions{refs: map[string]MissionRef{}, status: map[string]string{}, waitingReason: map[string]string{}}
 	leases := &fakeLeases{fenceOK: true}
 	exec := &stopRacingExec{started: make(chan struct{})}
 	clock := &mutableClock{now: "2026-11-03T12:00:00.000000000Z"}
@@ -65,6 +65,8 @@ func newWallFixture(t *testing.T) (wallFixture, *mutableClock, *stopRacingExec) 
 func TestWallClockEnforced(t *testing.T) {
 	f, clock, exec := newWallFixture(t)
 	ctx := context.Background()
+	// 0.6.13 审校 #8：权威快照经 RefOf——预算注册进 fake refs（直呼 ref 只是提示）
+	f.missions.refs["mi_w"] = MissionRef{MissionID: "mi_w", OwnerAgentID: "ag_x", WallClockSeconds: 60}
 	ref := MissionRef{MissionID: "mi_w", OwnerAgentID: "ag_x", WallClockSeconds: 60}
 
 	done := make(chan Run, 1)
@@ -147,6 +149,8 @@ func TestMaxRunsDispatchCap(t *testing.T) {
 	f := newFixture(t) // 同步执行器（Submit 即返回）
 	f.exec.block = "ok"
 	ctx := context.Background()
+	// 0.6.13 审校 #8：权威快照经 RefOf——上限注册进 fake refs
+	f.missions.refs["mi_m"] = MissionRef{MissionID: "mi_m", OwnerAgentID: "ag_x", MaxRuns: 2}
 	ref := MissionRef{MissionID: "mi_m", OwnerAgentID: "ag_x", MaxRuns: 2}
 	if _, err := f.svc.ExecuteMission(ctx, ref); err != nil {
 		t.Fatalf("第 1 次: %v", err)

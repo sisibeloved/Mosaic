@@ -1,6 +1,6 @@
 # ADR-0036：0.6 域收口——网关续接、Slot 职责寻址与墙钟强制（0.6.13）
 
-- 状态：Accepted（2026-11-03，随 0.6.13 实施）
+- 状态：Accepted（2026-11-03，随 0.6.13 实施；v0.2 审校修订）
 - 关联：[RFC-0018](../rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（§4.5——"任务型职责寻址使用 当前 scope → SlotInstance → active Binding → AgentID → 候选 Runtime。SlotSpec 只作版本化模板，同名模板在不同项目下可有多个实例；禁止跨项目猜选任职者。没有 active Binding 时返回待任职，不能自动激活一个 ready Binding"；§4.6——投递复核与"已提交后从 A 改为 B 走领域交接，不能只改路由缓存"；§10.3——`mission_update` 续接序列与 `route_stale`；§6.1——budget 五项"契约声明事实，运行时强制随 Scheduler 落"；AT-14/15/18）；[ADR-0024](ADR-0024-dispatch-first-slice.md)（网关首切片——create 路径）；[ADR-0028](ADR-0028-single-agent-execution.md)（Scheduler）；[ADR-0029](ADR-0029-mission-pause-resume-cancel.md)（停止面复用）；[ADR-0030](ADR-0030-run-crash-recovery.md)（迟到结果审计复用）；[ADR-0035](ADR-0035-mission-handover.md)（换人走交接——本件寻址不改在途归属）；[交付计划](../../plan/2026-08-25-delivery-plan.md) v2.69 盘点三项落差、负责人裁定"开 0.6.13"。
 
 ## 背景与问题
@@ -69,3 +69,8 @@ v2.69 阶段性验收盘点确认：0.6 出口的既定范围（AT-02/03/10/13�
 ## 修订记录
 
 - v0.1（2026-11-03）：首版（随 0.6.13 实施）。
+- v0.2（2026-11-03）：独立审校 17 项（5 P1 + 10 P2 + 2 P3，`v0.6.12..b59a395`）修复——四项设计修订：
+  1. **续接原子化（§1 重写）**：认领 + 复核（owner 在册且 active 的**事务内身份门**——暂停/未指派/读取失败皆拒）+ 修订 + 回执**同一写事务**（SQLite `UpdateMissionAtomic`；内存件退化为分步 + 拒绝回滚补偿 `ReleaseKey` + pending 采纳原行）。领域拒绝整体回滚**不占键**（修正后同键重试成功）；修订已生效而回执失败不再出现；恢复重驱动与重放同 receipt_id；`reason` 随回执持久化读回；目标引用携修订后版本（`mission:<id>:v<n>`）；入口字段校验 400 先于认领（mission_id 形制 / expected_version≥1 / request_id≤128 / reason≤280）。公开回执查询只见已提交行（pending 是事务内部事实）。
+  2. **派发意图落任务（§2 补强）**：解析所得实例 + 任职作为**决策事实另存**（`resolved_agent_id`/`resolved_instance_id`——原请求摘要稳定：换绑后重解析同键可重放，模板实例集漂移即 stale）；建单 `CreateMissionSlot` 在**同一写事务**四核（实例在册 / active 任职 == 预期 / 负责人 active / 授权准入 `EvaluateReadiness` 单源）——换绑/暂停/撤权不得插进复核与建单之间（`ErrSlotIntentViolated` → route_stale）；`missions.slot_instance_id` 为创建事实，执行装配按**实例**固定 Binding（同人双任职不串用；`Bindings.ActiveOfInstance`）。预检补 owner active 与授权准入（blocked `agent_not_active`/`slot_grant_missing`）。
+  3. **墙钟监控独立（§3 重写）**：独立 ticker goroutine（不随调度循环的同步执行器阻塞）+ **按 RunID 直达**停止注册表（不经 Mission 再扫描——同 Mission 新 Run 未到期不误伤）；期限比较改**时刻**（RFC3339Nano 小数位数不定，字典序 .11Z < .1Z 会漏已过期行）。
+  4. **预算权威面（§3 补强）**：`run.Missions.RefOf` 启动前重读现行契约（owner/意图/预算同一快照——手动与自动入口共用；枚举快照陈旧不再生效，预算查询失败中止当次派发）；`CreateRun` 建行事务内核对 max_runs（并发孪生恰一胜者；外层拒绝释放租约）；手动达限映射 409 `budget_exhausted`。任务卡续接入口：已映射来源在 MissionsPage 切"追加要求"模式走 `/v1/dispatch/update`（`MissionSummary.room_source` 识别）。migration v31（missions.slot_instance_id / dispatch_decisions 解析事实两列 / dispatch_receipts.reason）。

@@ -35,6 +35,20 @@ func (p epRunMissions) ListReady(ctx context.Context) ([]missionrun.MissionRef, 
 	}
 	return out, nil
 }
+
+// RefOf 权威快照（0.6.13 审校 #8）：owner/slot/预算自现行契约全文读。
+func (p epRunMissions) RefOf(ctx context.Context, id string) (missionrun.MissionRef, bool, error) {
+	full, ok, err := p.svc.Get(ctx, id)
+	if err != nil || !ok {
+		return missionrun.MissionRef{}, ok, err
+	}
+	return missionrun.MissionRef{
+		MissionID: full.MissionID, OwnerAgentID: full.OwnerAgentID,
+		SlotInstanceID:   full.SlotInstanceID,
+		WallClockSeconds: full.Budget.MaxWallClockSeconds, MaxRuns: full.Budget.MaxRuns,
+	}, true, nil
+}
+
 func (p epRunMissions) SetRunning(ctx context.Context, id string) (bool, error) {
 	return p.svc.MarkRunning(ctx, id)
 }
@@ -82,6 +96,10 @@ func (f epRunBindings) ActiveOf(_ context.Context, agentID string) (missionrun.B
 	if agentID == f.agentID {
 		return missionrun.BindingFacts{BindingID: "bd_ep", AgentID: agentID, SlotSpecID: "ss_ep"}, true, nil
 	}
+	return missionrun.BindingFacts{}, false, nil
+}
+
+func (f epRunBindings) ActiveOfInstance(_ context.Context, _ string) (missionrun.BindingFacts, bool, error) {
 	return missionrun.BindingFacts{}, false, nil
 }
 

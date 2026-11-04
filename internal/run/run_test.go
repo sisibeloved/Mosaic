@@ -15,13 +15,30 @@ type fakeMissions struct {
 	mu                sync.Mutex
 	ready             []MissionRef
 	status            map[string]string
-	waitingReason     map[string]string // 0.6.7：等待原因（waiting 态一等事实）
+	waitingReason     map[string]string     // 0.6.7：等待原因（waiting 态一等事实）
+	refs              map[string]MissionRef // 0.6.13 审校 #8：权威快照（未注册回落 ag_x 缺省）
 	setRuns           []string
 	finishCancelCalls int
 }
 
 func (f *fakeMissions) ListReady(_ context.Context) ([]MissionRef, error) {
 	return f.ready, nil
+}
+
+// RefOf 权威快照（0.6.13 审校 #8）：注册值优先；未注册回落缺省 owner（直呼
+// ExecuteMission 的既有测试面——预算/意图为 0 保持原语义）。
+func (f *fakeMissions) RefOf(_ context.Context, id string) (MissionRef, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r, ok := f.refs[id]; ok {
+		return r, true, nil
+	}
+	for _, r := range f.ready {
+		if r.MissionID == id {
+			return r, true, nil
+		}
+	}
+	return MissionRef{MissionID: id, OwnerAgentID: "ag_x"}, true, nil
 }
 
 func (f *fakeMissions) SetRunning(_ context.Context, id string) (bool, error) {
@@ -112,11 +129,21 @@ func (f *fakeMissions) ClearWaiting(_ context.Context, id string) error {
 	return nil
 }
 
-type fakeBindings struct{ active map[string]BindingFacts }
+type fakeBindings struct {
+	active map[string]BindingFacts
+	// byInstance 按实例固定任职（0.6.13 审校 #1：slot 意图装配面）。
+	byInstance map[string]BindingFacts
+}
 
 func (f fakeBindings) ActiveOf(_ context.Context, agentID string) (BindingFacts, bool, error) {
 	b, ok := f.active[agentID]
 	return b, ok, nil
+}
+
+// ActiveOfInstance 按职责实例解析 active 任职（0.6.13 审校 #1）。
+func (f fakeBindings) ActiveOfInstance(_ context.Context, instanceID string) (BindingFacts, bool, error) {
+	bf, ok := f.byInstance[instanceID]
+	return bf, ok, nil
 }
 
 type fakeRuntimes struct{ ready RuntimeRef }
@@ -193,7 +220,7 @@ func itoa(n int) string { return string(rune('0' + n)) }
 
 func newFixture(t *testing.T) fixture {
 	t.Helper()
-	missions := &fakeMissions{status: map[string]string{}, waitingReason: map[string]string{}}
+	missions := &fakeMissions{refs: map[string]MissionRef{}, status: map[string]string{}, waitingReason: map[string]string{}}
 	leases := &fakeLeases{fenceOK: true}
 	exec := &fakeExecutor{block: "执行结果正文"}
 	var n int
@@ -311,6 +338,7 @@ func TestResourceBusy(t *testing.T) {
 func TestNoExecutor(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
+	f.missions.refs["mi_a"] = MissionRef{MissionID: "mi_a", OwnerAgentID: "ag_none"}
 	if _, err := f.svc.ExecuteMission(ctx, MissionRef{MissionID: "mi_a", OwnerAgentID: "ag_none"}); !errors.Is(err, ErrNoExecutor) {
 		t.Fatalf("无任职: %v", err)
 	}
@@ -334,7 +362,7 @@ func TestRecoverNoAutoReschedule(t *testing.T) {
 	ctx := context.Background()
 	seeded := Run{RunID: "run_seed", MissionID: "mi_a", Attempt: 1,
 		LeaseID: "lse_seed", State: StateRunning, RequestedAt: "t", UpdatedAt: "t"}
-	if _, err := f.svc.store.CreateRun(ctx, seeded); err != nil {
+	if _, err := f.svc.store.CreateRun(ctx, seeded, 0); err != nil {
 		t.Fatalf("播种: %v", err)
 	}
 	f.missions.status["mi_a"] = "running"

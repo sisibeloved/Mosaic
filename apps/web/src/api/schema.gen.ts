@@ -3966,16 +3966,20 @@ export interface components {
             /** @enum {string} */
             status: "resolved" | "blocked";
             /**
-             * @description 0.6.1 仅房间缺省路径（语义/续接随后续版本）
+             * @description 寻址来源：room_default 缺省 / explicit_owner 显式负责人 / slot_binding 职责任职（0.6.13 / ADR-0036 §2——解析结果见 resolved_* 引用）
              * @enum {string}
              */
-            selection_source: "room_default";
-            /** @description blocked 原因：room_not_found / task_not_found / source_already_mapped / agent_not_found / invalid_mission；resolved 为空串 */
+            selection_source: "room_default" | "explicit_owner" | "slot_binding";
+            /** @description blocked 原因：room_not_found / task_not_found / source_already_mapped / agent_not_found / agent_not_active / source_unavailable / invalid_mission / slot_no_instance / slot_ambiguous / slot_unassigned / slot_instance_not_found / slot_lookup_failed / slot_grant_missing；resolved 为空串 */
             reason_code: string;
             /** @description 可理解说明（含已映射 mission_id 等恢复信息） */
             reason_summary: string;
             /** @description 目标引用（room:任务卡 → Mission） */
             target_refs: string[];
+            /** @description slot 寻址解析到的职责实例（0.6.13 审校 #9；模板引用解析结果也在此——投递复核按实例核对；非 slot 寻址为空串） */
+            resolved_slot_instance_id?: string;
+            /** @description 解析出的负责人 Agent（slot 寻址 = active 任职者；非 slot 寻址为空串） */
+            resolved_agent_id?: string;
             /** Format: date-time */
             expires_at: string;
         };
@@ -4010,6 +4014,8 @@ export interface components {
             return_refs: string[];
             /** Format: date-time */
             committed_at: string;
+            /** @description 续接说明（0.6.13 审校 #16：mission_update 请求 reason 随回执持久化并读回；create 路径为空串） */
+            reason?: string;
             /** @description true = 幂等重放原回执（非新投递） */
             replayed: boolean;
         };
@@ -4590,6 +4596,8 @@ export interface components {
             status: "draft" | "ready" | "running" | "waiting" | "reviewing" | "paused" | "canceling" | "canceled" | "accepted";
             owner_agent_id: string;
             objective: string;
+            /** @description 房间交办来源（0.6.13 审校 */
+            room_source?: components["schemas"]["RoomSource"];
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */

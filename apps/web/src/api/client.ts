@@ -589,6 +589,25 @@ export const api = {
   getDispatchReceipt(idempotencyKey: string): Promise<import("./schema.gen").components["schemas"]["DispatchReceiptView"]> {
     return request(`/v1/dispatch/receipts?idempotency_key=${encodeURIComponent(idempotencyKey)}`);
   },
+  /** 0.6.13 网关续接（RFC §10.3 mission_update / ADR-0036）：已交办任务卡追加
+   * 要求——全量替换契约（owner 不变，换人走交接）；幂等键同键同载荷重放原回执。 */
+  updateDispatch(req: {
+    mission_id: string;
+    expected_version: number;
+    idempotency_key: string;
+    request_id?: string;
+    reason?: string;
+    objective: string;
+    scope: string;
+    acceptance_criteria: string[];
+    deliverable_specs: string[];
+    source_refs: string[];
+    return_targets?: string[];
+    reviewer?: string;
+    budget?: { concurrency: number; max_runs: number; max_wall_clock_seconds: number; max_retries: number; max_delegation_depth: number };
+  }): Promise<import("./schema.gen").components["schemas"]["DispatchReceiptView"]> {
+    return post("/v1/dispatch/update", req);
+  },
   /** 0.6.0 Mission 契约列表（创建序摘要）。 */
   listMissions(): Promise<{ missions: MissionSummary[] }> {
     return request("/v1/missions");

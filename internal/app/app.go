@@ -324,7 +324,9 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		mission.WithSourceLookup(roomTasks))
 	// 网关首切片（ADR-0024 / 0.6.1）：确定性解析 → 复核投递 → 回执；
 	// caller/scope 服务端推导（owner/workspace），幂等键库级唯一。
-	dispatchSvc := dispatch.New(store, missionSvc, dispatch.Lookups{
+	// 0.6.13 审校 #3：续接原子面（认领+复核+修订+回执同一写事务）由 sqlite
+	// 实装直供——mission.Service 不识网关回执，经适配组合注入。
+	dispatchSvc := dispatch.New(store, dispatchMissionsAdapter{Service: missionSvc, atomic: store}, dispatch.Lookups{
 		Agents:  missionAgentLookup{identitySvc},
 		Sources: roomTasks,
 		Mapped:  missionSvc.SourceMapped,
@@ -927,15 +929,27 @@ func (a runMissionsAdapter) ListReady(ctx context.Context) ([]missionrun.Mission
 		if m.Status != mission.StatusReady {
 			continue
 		}
-		ref := missionrun.MissionRef{MissionID: m.MissionID, OwnerAgentID: m.OwnerAgentID}
-		// 0.6.13 / ADR-0036 §3：budget 快照自契约全文取（摘要不含 budget）。
-		if full, ok, gerr := a.svc.Get(ctx, m.MissionID); gerr == nil && ok {
-			ref.WallClockSeconds = full.Budget.MaxWallClockSeconds
-			ref.MaxRuns = full.Budget.MaxRuns
-		}
-		out = append(out, ref)
+		// 0.6.13 审校 #8：预算/owner/slot 意图不在枚举快照里传——启动前经
+		// RefOf 权威复核（枚举到启动之间修订收紧/放宽不再被旧值覆盖）。
+		out = append(out, missionrun.MissionRef{MissionID: m.MissionID, OwnerAgentID: m.OwnerAgentID})
 	}
 	return out, nil
+}
+
+// RefOf 单任务权威快照（0.6.13 审校 #8）：owner / slot 派发意图 / 预算自
+// 现行契约全文取（摘要不含 budget/意图）——手动与自动入口同一权威面。
+func (a runMissionsAdapter) RefOf(ctx context.Context, missionID string) (missionrun.MissionRef, bool, error) {
+	full, ok, err := a.svc.Get(ctx, missionID)
+	if err != nil || !ok {
+		return missionrun.MissionRef{}, ok, err
+	}
+	return missionrun.MissionRef{
+		MissionID:        full.MissionID,
+		OwnerAgentID:     full.OwnerAgentID,
+		SlotInstanceID:   full.SlotInstanceID,
+		WallClockSeconds: full.Budget.MaxWallClockSeconds,
+		MaxRuns:          full.Budget.MaxRuns,
+	}, true, nil
 }
 
 func (a runMissionsAdapter) SetRunning(ctx context.Context, missionID string) (bool, error) {
@@ -1012,6 +1026,29 @@ func (a runBindingsAdapter) ActiveOf(ctx context.Context, agentID string) (missi
 				}, true, nil
 			}
 		}
+	}
+	return missionrun.BindingFacts{}, false, nil
+}
+
+// ActiveOfInstance 按职责实例解析 active 任职（0.6.13 审校 #1：slot 意图
+// 任务的执行装配固定决策时的实例/任职——同人双任职不串用）。
+func (a runBindingsAdapter) ActiveOfInstance(ctx context.Context, instanceID string) (missionrun.BindingFacts, bool, error) {
+	bindings, err := a.slots.ListBindings(ctx, instanceID)
+	if err != nil {
+		return missionrun.BindingFacts{}, false, err
+	}
+	for _, b := range bindings {
+		if b.Status != slot.BindingActive {
+			continue
+		}
+		specID := ""
+		if inst, ok, ierr := a.slots.GetInstance(ctx, instanceID); ierr == nil && ok {
+			specID = inst.SlotSpecID
+		}
+		return missionrun.BindingFacts{
+			BindingID: b.BindingID, AgentID: b.AgentID,
+			RuntimeID: "", SlotSpecID: specID,
+		}, true, nil
 	}
 	return missionrun.BindingFacts{}, false, nil
 }
@@ -1368,6 +1405,8 @@ type slotReader interface {
 	InstanceByID(ctx context.Context, instanceID string) (slot.SlotInstance, bool, error)
 	ListInstances(ctx context.Context) ([]slot.SlotInstance, error)
 	ListBindings(ctx context.Context, instanceID string) ([]slot.Binding, error)
+	SpecByVersion(ctx context.Context, slotSpecID string, version int) (slot.SlotSpec, bool, error)
+	GrantByAgent(ctx context.Context, agentID string) (slot.AgentGrant, bool, error)
 }
 
 func (l dispatchSlotLookups) SlotInstanceExists(ctx context.Context, instanceID string) (bool, error) {
@@ -1400,6 +1439,59 @@ func (l dispatchSlotLookups) ActiveBindingAgent(ctx context.Context, instanceID 
 		}
 	}
 	return "", false, nil // 无 active 任职——不自动激活 ready Binding（§4.5）
+}
+
+// GrantAdmission 授权准入（0.6.13 审校 #7）：active 任职钉版职责要求 vs
+// 授权档案——slot 准入门单源（EvaluateReadiness 同源纯函数）；任职换人/无
+// 任职按准入不满足处理（调用方先经 ActiveBindingAgent 寻址）。查询失败
+// 向上传播（预检 blocked / 投递 route_stale，不吞）。
+func (l dispatchSlotLookups) GrantAdmission(ctx context.Context, instanceID, agentID string) (bool, []string, error) {
+	bindings, err := l.store.ListBindings(ctx, instanceID)
+	if err != nil {
+		return false, nil, err
+	}
+	var active *slot.Binding
+	for i, b := range bindings {
+		if b.Status == slot.BindingActive {
+			active = &bindings[i]
+			break
+		}
+	}
+	if active == nil || active.AgentID != agentID {
+		return false, []string{"active_binding"}, nil
+	}
+	inst, ok, err := l.store.InstanceByID(ctx, instanceID)
+	if err != nil {
+		return false, nil, err
+	}
+	if !ok {
+		return false, []string{"slot_instance"}, nil
+	}
+	spec, ok, err := l.store.SpecByVersion(ctx, inst.SlotSpecID, active.SlotSpecVersion)
+	if err != nil {
+		return false, nil, err
+	}
+	if !ok {
+		return false, []string{"slot_spec_version"}, nil
+	}
+	grant, _, err := l.store.GrantByAgent(ctx, agentID)
+	if err != nil {
+		return false, nil, err
+	}
+	rep := slot.EvaluateReadiness(spec.SpecContent, grant)
+	return rep.Ready, rep.Missing, nil
+}
+
+// dispatchMissionsAdapter dispatch.Missions 的生产装配（0.6.13 审校 #3）：
+// mission.Service 全量行为 + sqlite 原子续接面（UpdateMissionAtomic——认领/
+// 复核/修订/回执同一写事务；mission.Service 不识网关回执，经组合注入）。
+type dispatchMissionsAdapter struct {
+	*mission.Service
+	atomic *sqlite.Store
+}
+
+func (a dispatchMissionsAdapter) UpdateMissionAtomic(ctx context.Context, cmd dispatch.UpdateCmd, dg, now, newReceiptID string) (dispatch.Receipt, bool, error) {
+	return a.atomic.UpdateMissionAtomic(ctx, cmd, dg, now, newReceiptID)
 }
 
 // missionCommitments personalagent.CommitmentChecker 的 Mission 域实装（0.6.12 /

@@ -319,7 +319,8 @@ CREATE TABLE IF NOT EXISTS missions (
   objective        TEXT NOT NULL,
   content          TEXT NOT NULL,
   created_at       TEXT NOT NULL,
-  updated_at       TEXT NOT NULL
+  updated_at       TEXT NOT NULL,
+  slot_instance_id TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS mission_contract_versions (
   mission_id       TEXT NOT NULL,
@@ -365,6 +366,8 @@ CREATE TABLE IF NOT EXISTS dispatch_decisions (
   reason_summary   TEXT NOT NULL DEFAULT '',
   target_refs      TEXT NOT NULL DEFAULT '[]',
   request          TEXT NOT NULL,
+  resolved_agent_id    TEXT NOT NULL DEFAULT '',
+  resolved_instance_id TEXT NOT NULL DEFAULT '',
   expires_at       TEXT NOT NULL,
   created_at       TEXT NOT NULL
 );
@@ -380,6 +383,7 @@ CREATE TABLE IF NOT EXISTS dispatch_receipts (
   domain_command_id TEXT NOT NULL,
   target_refs      TEXT NOT NULL DEFAULT '[]',
   return_refs      TEXT NOT NULL DEFAULT '[]',
+  reason           TEXT NOT NULL DEFAULT '',
   committed_at     TEXT NOT NULL,
   UNIQUE (caller_ref, scope, idempotency_key)
 );
@@ -601,6 +605,19 @@ var migrationV30 = []string{
 	"INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (30, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
 }
 
+// migrationV31（0.6.13 审校 #1/#2/#3/#16）：职责派发意图与续接回执——
+// missions += slot_instance_id（slot 寻址派发的创建事实，执行装配按实例固定
+// 任职）；dispatch_decisions += resolved_agent_id/resolved_instance_id（解析
+// 事实另存——原请求摘要稳定，#10）；dispatch_receipts += reason（续接说明
+// 随回执持久化，#16）。逐语句加列（重复容忍）+ 登记。
+var migrationV31 = []string{
+	"ALTER TABLE missions ADD COLUMN slot_instance_id TEXT NOT NULL DEFAULT ''",
+	"ALTER TABLE dispatch_decisions ADD COLUMN resolved_agent_id TEXT NOT NULL DEFAULT ''",
+	"ALTER TABLE dispatch_decisions ADD COLUMN resolved_instance_id TEXT NOT NULL DEFAULT ''",
+	"ALTER TABLE dispatch_receipts ADD COLUMN reason TEXT NOT NULL DEFAULT ''",
+	"INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (31, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+}
+
 // migrationV29（0.6.12 / ADR-0035）：责任交接——missions 增 pending_owner_agent_id
 // （在途交接承接人；空 = 无在途交接）。逐语句加列（重复容忍）+ 登记。
 var migrationV29 = []string{
@@ -784,6 +801,13 @@ func Open(path string) (*Store, error) {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
 			return nil, fmt.Errorf("sqlite: migration v30: %w", err)
+		}
+	}
+	// v31 迁移（0.6.13 审校）：职责派发意图/解析事实/回执说明——逐语句，重复加列容忍
+	for _, stmt := range migrationV31 {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("sqlite: migration v31: %w", err)
 		}
 	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
@@ -2787,13 +2811,13 @@ SELECT agent_id, skills, tools, context, runtime_capabilities, workspace_access,
 // ---- Mission 契约域（RFC-0018 §3.1/§3.2/§6.1 / ADR-0023，0.6.0；v13 表，端口实现）----
 
 // missionCols missions 投影读取列。
-const missionCols = `mission_id, contract_version, status, owner_agent_id, requester, objective, content, created_at, updated_at, waiting_reason, review_package_id, review_round, pending_owner_agent_id, pending_offer_id`
+const missionCols = `mission_id, contract_version, status, owner_agent_id, requester, objective, content, created_at, updated_at, waiting_reason, review_package_id, review_round, pending_owner_agent_id, pending_offer_id, slot_instance_id`
 
 func scanMission(row interface{ Scan(...any) error }) (mission.Mission, error) {
 	var m mission.Mission
 	var content string
 	if err := row.Scan(&m.MissionID, &m.ContractVersion, &m.Status, &m.OwnerAgentID,
-		&m.Requester, &m.Objective, &content, &m.CreatedAt, &m.UpdatedAt, &m.WaitingReason, &m.ReviewPackageID, &m.ReviewRound, &m.PendingOwnerAgentID, &m.PendingOfferID); err != nil {
+		&m.Requester, &m.Objective, &content, &m.CreatedAt, &m.UpdatedAt, &m.WaitingReason, &m.ReviewPackageID, &m.ReviewRound, &m.PendingOwnerAgentID, &m.PendingOfferID, &m.SlotInstanceID); err != nil {
 		return mission.Mission{}, err
 	}
 	if err := json.Unmarshal([]byte(content), &m.Content); err != nil {
@@ -2835,55 +2859,9 @@ func (s *Store) ReviseMission(ctx context.Context, missionID string, expectedVer
 	}
 	ok := false // 事务内判定（不得事后按版本号推断——CAS 败者会被误判胜）
 	err = s.identityWriteTx(ctx, func(q identityExec) error {
-		var version int
-		var status, owner, pending string
-		err := q.QueryRowContext(ctx,
-			`SELECT contract_version, status, owner_agent_id, pending_owner_agent_id FROM missions WHERE mission_id = ?`, missionID).
-			Scan(&version, &status, &owner, &pending)
-		if errors.Is(err, sql.ErrNoRows) {
-			return mission.ErrMissionNotFound
-		}
-		if err != nil {
-			return fmt.Errorf("sqlite: revise probe: %w", err)
-		}
-		// 0.6.9：accepted 同终态拒修订；reviewing 基线冻结。0.6.12 / ADR-0035 §3：
-		// 在途交接冻结窗（事务内核对——服务层先读后并发 offer 落地也拦）；
-		// 审校 #2：归属锚——承接翻转 owner 不递增版本，携旧 owner 的修订拒。
-		if version != expectedVersion || owner != expectedOwner || status == mission.StatusCanceled ||
-			status == mission.StatusAccepted || status == mission.StatusReviewing || pending != "" {
-			return nil // ok=false：败因由服务层重读分辨
-		}
-		// 0.6.6 审校 P1：执行控制投影的事务内保持——next.Status 是服务层旧读
-		// 快照（读到 ready 后暂停/取消落地，控制命令不递增版本，CAS 版本面
-		// 放行），事务内以现行状态为准（running/paused/canceling 不被陈旧
-		// ready 盖回调度列）。
-		if status == mission.StatusRunning || status == mission.StatusPaused || status == mission.StatusCanceling || status == mission.StatusWaiting {
-			next.Status = status
-		}
-		if _, err := q.ExecContext(ctx, `
-UPDATE missions SET contract_version = ?, status = ?, owner_agent_id = ?, objective = ?, content = ?, updated_at = ?
- WHERE mission_id = ?`,
-			next.ContractVersion, next.Status, next.OwnerAgentID, next.Objective,
-			string(raw), next.UpdatedAt, missionID); err != nil {
-			return fmt.Errorf("sqlite: revise mission: %w", err)
-		}
-		if err := insertMissionVersion(ctx, q, next, string(raw)); err != nil {
-			return err
-		}
-		if err := appendMissionEvent(ctx, q, missionID, mission.EventContractRevised, map[string]string{
-			"from_version": strconv.Itoa(expectedVersion), "to_version": strconv.Itoa(next.ContractVersion),
-		}, next.UpdatedAt); err != nil {
-			return err
-		}
-		if status != next.Status {
-			if err := appendMissionEvent(ctx, q, missionID, mission.EventStatusChanged, map[string]string{
-				"from": status, "to": next.Status,
-			}, next.UpdatedAt); err != nil {
-				return err
-			}
-		}
-		ok = true
-		return nil
+		var err error
+		next, ok, err = reviseMissionTx(ctx, q, missionID, expectedVersion, expectedOwner, next, string(raw))
+		return err
 	})
 	if err != nil {
 		return mission.Mission{}, false, err
@@ -2892,6 +2870,221 @@ UPDATE missions SET contract_version = ?, status = ?, owner_agent_id = ?, object
 		return mission.Mission{}, false, nil
 	}
 	return next, true, nil
+}
+
+// reviseMissionTx 修订事务体（0.6.13 审校 #3 抽取：ReviseMission 与网关原子
+// 续接 UpdateMissionAtomic 共用——探版本/状态/归属锚/冻结窗 → 条件更新 →
+// 版本行 + 事件）。ok=false = 前置不符（调用方重读分辨）；next 返回事务内
+// 修正后的投影（执行控制状态保持）。
+func reviseMissionTx(ctx context.Context, q identityExec, missionID string, expectedVersion int, expectedOwner string, next mission.Mission, raw string) (mission.Mission, bool, error) {
+	var version int
+	var status, owner, pending string
+	err := q.QueryRowContext(ctx,
+		`SELECT contract_version, status, owner_agent_id, pending_owner_agent_id FROM missions WHERE mission_id = ?`, missionID).
+		Scan(&version, &status, &owner, &pending)
+	if errors.Is(err, sql.ErrNoRows) {
+		return mission.Mission{}, false, mission.ErrMissionNotFound
+	}
+	if err != nil {
+		return mission.Mission{}, false, fmt.Errorf("sqlite: revise probe: %w", err)
+	}
+	// 0.6.9：accepted 同终态拒修订；reviewing 基线冻结。0.6.12 / ADR-0035 §3：
+	// 在途交接冻结窗（事务内核对——服务层先读后并发 offer 落地也拦）；
+	// 审校 #2：归属锚——承接翻转 owner 不递增版本，携旧 owner 的修订拒。
+	if version != expectedVersion || owner != expectedOwner || status == mission.StatusCanceled ||
+		status == mission.StatusAccepted || status == mission.StatusReviewing || pending != "" {
+		return mission.Mission{}, false, nil // ok=false：败因由调用方重读分辨
+	}
+	// 0.6.6 审校 P1：执行控制投影的事务内保持——next.Status 是服务层旧读
+	// 快照（读到 ready 后暂停/取消落地，控制命令不递增版本，CAS 版本面
+	// 放行），事务内以现行状态为准（running/paused/canceling 不被陈旧
+	// ready 盖回调度列）。
+	if status == mission.StatusRunning || status == mission.StatusPaused || status == mission.StatusCanceling || status == mission.StatusWaiting {
+		next.Status = status
+	}
+	if _, err := q.ExecContext(ctx, `
+UPDATE missions SET contract_version = ?, status = ?, owner_agent_id = ?, objective = ?, content = ?, updated_at = ?
+ WHERE mission_id = ?`,
+		next.ContractVersion, next.Status, next.OwnerAgentID, next.Objective,
+		raw, next.UpdatedAt, missionID); err != nil {
+		return mission.Mission{}, false, fmt.Errorf("sqlite: revise mission: %w", err)
+	}
+	if err := insertMissionVersion(ctx, q, next, raw); err != nil {
+		return mission.Mission{}, false, err
+	}
+	if err := appendMissionEvent(ctx, q, missionID, mission.EventContractRevised, map[string]string{
+		"from_version": strconv.Itoa(expectedVersion), "to_version": strconv.Itoa(next.ContractVersion),
+	}, next.UpdatedAt); err != nil {
+		return mission.Mission{}, false, err
+	}
+	if status != next.Status {
+		if err := appendMissionEvent(ctx, q, missionID, mission.EventStatusChanged, map[string]string{
+			"from": status, "to": next.Status,
+		}, next.UpdatedAt); err != nil {
+			return mission.Mission{}, false, err
+		}
+	}
+	return next, true, nil
+}
+
+// UpdateMissionAtomic 网关续接的原子面（0.6.13 审校 #3/#11/#12/#13/#16，
+// dispatch.AtomicUpdater 实装）：**同一写事务**[幂等键探查/认领（reason 随行）
+// → 任务探查 → owner 在册且 active（事务内身份门）→ mission.PrepareRevision
+// 纯域构造 → reviseMissionTx（CAS/冻结窗/终态）→ 回执完结（receipt_id 沿用
+// pending 原行，target_refs 携修订后版本，reason 持久化）]。任一步失败整体
+// 回滚：领域拒绝不占键（修正后重试）、修订已生效而回执失败不再出现。回执
+// 幂等键异摘要 → dispatch.ErrIdempotencyConflict；同摘要已完结 → 原回执重放。
+func (s *Store) UpdateMissionAtomic(ctx context.Context, cmd dispatch.UpdateCmd, dg, now, newReceiptID string) (dispatch.Receipt, bool, error) {
+	var out dispatch.Receipt
+	var replayed bool
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		// —— 幂等键探查/认领 ——
+		row := q.QueryRowContext(ctx, `
+SELECT receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, reason, committed_at
+  FROM dispatch_receipts WHERE caller_ref = ? AND scope = ? AND idempotency_key = ?`,
+			dispatch.CallerOwner, dispatch.ScopeWorkspace, cmd.IdempotencyKey)
+		ex, found, err := scanReceipt(row)
+		if err != nil {
+			return fmt.Errorf("sqlite: atomic claim probe: %w", err)
+		}
+		claim := dispatch.Receipt{
+			ReceiptID:      newReceiptID,
+			CallerRef:      dispatch.CallerOwner,
+			Scope:          dispatch.ScopeWorkspace,
+			IdempotencyKey: cmd.IdempotencyKey,
+			RequestID:      cmd.RequestID,
+			RequestDigest:  dg,
+			Reason:         cmd.Reason,
+			TargetRefs:     []string{cmd.MissionID},
+		}
+		if found {
+			if ex.RequestDigest != dg {
+				return fmt.Errorf("%w: 键 %s 已绑定其他请求", dispatch.ErrIdempotencyConflict, cmd.IdempotencyKey)
+			}
+			if ex.DomainCommandID != "" {
+				out, replayed = ex, true // 同摘要已完结 → 重放原回执
+				return nil
+			}
+			// pending 同摘要 → 采纳原行（#13：receipt_id/request_id/reason 稳定）
+			claim.ReceiptID = ex.ReceiptID
+			claim.RequestID = ex.RequestID
+			claim.Reason = ex.Reason
+		} else {
+			targets, err := json.Marshal(claim.TargetRefs)
+			if err != nil {
+				return fmt.Errorf("sqlite: atomic claim targets marshal: %w", err)
+			}
+			if _, err := q.ExecContext(ctx, `
+INSERT INTO dispatch_receipts (receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, reason, committed_at)
+VALUES (?, ?, ?, ?, ?, ?, '', 0, '', ?, '[]', ?, '')`,
+				claim.ReceiptID, claim.CallerRef, claim.Scope, claim.IdempotencyKey,
+				claim.RequestID, claim.RequestDigest, string(targets), claim.Reason); err != nil {
+				return fmt.Errorf("sqlite: atomic claim key: %w", err)
+			}
+		}
+		// —— 任务探查 + 事务内身份门（#12：未指派/不在册/非 active 皆拒——回滚） ——
+		cur, found, err := missionByIDTx(ctx, q, cmd.MissionID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return mission.ErrMissionNotFound
+		}
+		if cur.OwnerAgentID == "" {
+			return fmt.Errorf("%w: 任务未指派负责人（%s）——先交办或交接", dispatch.ErrTargetNotActive, cmd.MissionID)
+		}
+		var status string
+		if err := q.QueryRowContext(ctx,
+			`SELECT status FROM agents WHERE agent_id = ?`, cur.OwnerAgentID).Scan(&status); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("%w: 负责人 %s 不在册", dispatch.ErrTargetNotActive, cur.OwnerAgentID)
+			}
+			return fmt.Errorf("sqlite: atomic agent probe: %w", err)
+		}
+		if status != mission.AgentStatusActive {
+			return fmt.Errorf("%w: 负责人 %s 非 active（%s）", dispatch.ErrTargetNotActive, cur.OwnerAgentID, status)
+		}
+		// —— 纯域构造 + 修订事务体（守卫单源 PrepareRevision） ——
+		next, err := mission.PrepareRevision(cur, cur.OwnerAgentID, cur.OwnerAgentID, cmd.Contract, now)
+		if err != nil {
+			return err
+		}
+		raw, err := json.Marshal(next.Content)
+		if err != nil {
+			return fmt.Errorf("sqlite: atomic content marshal: %w", err)
+		}
+		up, ok, err := reviseMissionTx(ctx, q, cmd.MissionID, cmd.ExpectedVersion, cur.OwnerAgentID, next, string(raw))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			// 败因分类（事务内重读——服务层 casOrOwnerOrTransition 同语义）
+			return classifyReviseRefusal(ctx, q, cmd.MissionID, cmd.ExpectedVersion, cur.OwnerAgentID)
+		}
+		// —— 回执完结（与修订同一事务提交——#3/#16） ——
+		out = claim
+		out.DomainCommandID = fmt.Sprintf("%s:revise:v%d", up.MissionID, up.ContractVersion)
+		out.TargetRefs = []string{"mission:" + up.MissionID + ":v" + strconv.Itoa(up.ContractVersion)}
+		out.ReturnRefs = up.Content.ReturnTargets
+		out.CommittedAt = now
+		targets, err := json.Marshal(out.TargetRefs)
+		if err != nil {
+			return fmt.Errorf("sqlite: atomic targets marshal: %w", err)
+		}
+		returns, err := json.Marshal(out.ReturnRefs)
+		if err != nil {
+			return fmt.Errorf("sqlite: atomic returns marshal: %w", err)
+		}
+		if _, err := q.ExecContext(ctx, `
+UPDATE dispatch_receipts SET request_id = ?, domain_command_id = ?, target_refs = ?, return_refs = ?, reason = ?, committed_at = ?
+ WHERE caller_ref = ? AND scope = ? AND idempotency_key = ?`,
+			out.RequestID, out.DomainCommandID, string(targets), string(returns), out.Reason, out.CommittedAt,
+			out.CallerRef, out.Scope, out.IdempotencyKey); err != nil {
+			return fmt.Errorf("sqlite: atomic finalize receipt: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return dispatch.Receipt{}, false, err
+	}
+	return out, replayed, nil
+}
+
+// classifyReviseRefusal 修订 CAS 败因分类（事务内重读：版本冲突/归属锚/
+// 终态或冻结窗/未知——与服务层 casOrOwnerOrTransition 同语义，原子面复用）。
+func classifyReviseRefusal(ctx context.Context, q identityExec, missionID string, expectedVersion int, expectedOwner string) error {
+	var version int
+	var status, owner, pending string
+	err := q.QueryRowContext(ctx,
+		`SELECT contract_version, status, owner_agent_id, pending_owner_agent_id FROM missions WHERE mission_id = ?`, missionID).
+		Scan(&version, &status, &owner, &pending)
+	if errors.Is(err, sql.ErrNoRows) {
+		return mission.ErrMissionNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("sqlite: revise refusal probe: %w", err)
+	}
+	if owner != expectedOwner {
+		return fmt.Errorf("%w: 期望负责人 %q，当前 %q", mission.ErrOwnerMismatch, expectedOwner, owner)
+	}
+	if version != expectedVersion {
+		return fmt.Errorf("%w: 期望 v%d，当前 v%d", mission.ErrVersionConflict, expectedVersion, version)
+	}
+	return fmt.Errorf("%w: 当前 %s（终态/验收冻结/交接冻结窗）", mission.ErrInvalidTransition, status)
+}
+
+// missionByIDTx 事务连接上的单查（identityWriteTx 临界区内——池连接与事务
+// 连接不得混用）。
+func missionByIDTx(ctx context.Context, q identityExec, missionID string) (mission.Mission, bool, error) {
+	row := q.QueryRowContext(ctx, `SELECT `+missionCols+` FROM missions WHERE mission_id = ?`, missionID)
+	m, err := scanMission(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return mission.Mission{}, false, nil
+	}
+	if err != nil {
+		return mission.Mission{}, false, fmt.Errorf("sqlite: mission by id (tx): %w", err)
+	}
+	return m, true, nil
 }
 
 // transitionMissionIf 通用控制转移（0.6.6 / ADR-0029）：单事务内探版本/状态
@@ -2980,13 +3173,28 @@ func (s *Store) FinishCancel(ctx context.Context, missionID, reason, occurredAt 
 
 // CreateMission 投影 v1 + 版本行 + created 事件（+ 可选来源映射），单事务；
 // 来源撞键 → ErrSourceAlreadyMapped（携已映射 mission_id——先查后插同临界
-// 区，并发交办串行化恰一胜者）。
+// 区，并发交办串行化恰一胜者）。无职责意图路径（slot=nil）。
 func (s *Store) CreateMission(ctx context.Context, m mission.Mission, src *mission.RoomSource) (mission.Mission, error) {
+	return s.CreateMissionSlot(ctx, m, src, nil)
+}
+
+// CreateMissionSlot 带职责意图建单（0.6.13 审校 #1/#2）：意图在**同一写事务**
+// 内四核（verifySlotIntentTx：实例在册 / active 任职 == 预期 Agent / 负责人
+// active / 授权准入）——换绑/暂停/撤权不得插进复核与建单之间；不符
+// ErrSlotIntentViolated 整体回滚（网关映射 route_stale）。SlotInstanceID 随
+// 投影落列（执行装配按实例固定 Binding——同人双任职不串用）。
+func (s *Store) CreateMissionSlot(ctx context.Context, m mission.Mission, src *mission.RoomSource, slotIntent *mission.SlotIntent) (mission.Mission, error) {
 	raw, err := json.Marshal(m.Content)
 	if err != nil {
 		return mission.Mission{}, fmt.Errorf("sqlite: mission content marshal: %w", err)
 	}
+	if slotIntent != nil {
+		m.SlotInstanceID = slotIntent.InstanceID // 创建事实（直呼存储面同服务语义）
+	}
 	err = s.identityWriteTx(ctx, func(q identityExec) error {
+		if err := verifySlotIntentTx(ctx, q, slotIntent); err != nil {
+			return err
+		}
 		if src != nil {
 			var existing string
 			err := q.QueryRowContext(ctx,
@@ -3004,9 +3212,9 @@ func (s *Store) CreateMission(ctx context.Context, m mission.Mission, src *missi
 			}
 		}
 		if _, err := q.ExecContext(ctx, `
-INSERT INTO missions (`+missionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO missions (`+missionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			m.MissionID, m.ContractVersion, m.Status, m.OwnerAgentID, m.Requester,
-			m.Objective, string(raw), m.CreatedAt, m.UpdatedAt, m.WaitingReason, m.ReviewPackageID, m.ReviewRound, m.PendingOwnerAgentID, m.PendingOfferID); err != nil {
+			m.Objective, string(raw), m.CreatedAt, m.UpdatedAt, m.WaitingReason, m.ReviewPackageID, m.ReviewRound, m.PendingOwnerAgentID, m.PendingOfferID, m.SlotInstanceID); err != nil {
 			return fmt.Errorf("sqlite: create mission: %w", err)
 		}
 		if err := insertMissionVersion(ctx, q, m, string(raw)); err != nil {
@@ -3024,6 +3232,82 @@ INSERT INTO missions (`+missionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
 		m.RoomSource = &rs
 	}
 	return m, nil
+}
+
+// verifySlotIntentTx 职责意图事务内四核（0.6.13 审校 #2/#7，RFC §4.5/§4.6）：
+// 实例在册 → active 任职 == 预期 Agent（换绑漂移拒）→ 负责人身份 active
+// （暂停身份不建单）→ 授权准入（任职钉版职责要求 vs 授权档案——复用 slot
+// 准入门判定 EvaluateReadiness，撤权后旧决策不得建单）。读取故障向上传播
+// （不吞——宁拒建单）。nil 意图直通（显式/缺省 owner 路径）。
+func verifySlotIntentTx(ctx context.Context, q identityExec, slotIntent *mission.SlotIntent) error {
+	if slotIntent == nil {
+		return nil
+	}
+	var specID string
+	err := q.QueryRowContext(ctx,
+		`SELECT slot_spec_id FROM slot_instances WHERE slot_instance_id = ?`, slotIntent.InstanceID).Scan(&specID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: 实例不在册（%s）", mission.ErrSlotIntentViolated, slotIntent.InstanceID)
+	} else if err != nil {
+		return fmt.Errorf("sqlite: slot intent instance probe: %w", err)
+	}
+	var bAgent string
+	var bVer int
+	err = q.QueryRowContext(ctx,
+		`SELECT agent_id, slot_spec_version FROM slot_bindings WHERE slot_instance_id = ? AND status = 'active'`,
+		slotIntent.InstanceID).Scan(&bAgent, &bVer)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: 实例无 active 任职（%s）", mission.ErrSlotIntentViolated, slotIntent.InstanceID)
+	} else if err != nil {
+		return fmt.Errorf("sqlite: slot intent binding probe: %w", err)
+	}
+	if bAgent != slotIntent.AgentID {
+		return fmt.Errorf("%w: 任职已换人（预期 %s，现 active %s）", mission.ErrSlotIntentViolated, slotIntent.AgentID, bAgent)
+	}
+	var status string
+	err = q.QueryRowContext(ctx, `SELECT status FROM agents WHERE agent_id = ?`, slotIntent.AgentID).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: 负责人不在册（%s）", mission.ErrSlotIntentViolated, slotIntent.AgentID)
+	} else if err != nil {
+		return fmt.Errorf("sqlite: slot intent agent probe: %w", err)
+	}
+	if status != mission.AgentStatusActive {
+		return fmt.Errorf("%w: 负责人非 active（%s：%s）", mission.ErrSlotIntentViolated, slotIntent.AgentID, status)
+	}
+	var content string
+	err = q.QueryRowContext(ctx,
+		`SELECT content_json FROM slot_specs WHERE slot_spec_id = ? AND version = ?`, specID, bVer).Scan(&content)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: 职责谱系缺失（%s v%d）", mission.ErrSlotIntentViolated, specID, bVer)
+	} else if err != nil {
+		return fmt.Errorf("sqlite: slot intent spec probe: %w", err)
+	}
+	var specContent slot.SpecContent
+	if err := json.Unmarshal([]byte(content), &specContent); err != nil {
+		return fmt.Errorf("sqlite: slot intent spec unmarshal: %w", err)
+	}
+	var grant slot.AgentGrant
+	var skills, tools, contexts, caps string
+	err = q.QueryRowContext(ctx,
+		`SELECT skills, tools, context, runtime_capabilities FROM slot_agent_grants WHERE agent_id = ?`,
+		slotIntent.AgentID).Scan(&skills, &tools, &contexts, &caps)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("sqlite: slot intent grant probe: %w", err)
+	}
+	if err == nil {
+		for _, u := range []struct {
+			raw string
+			out any
+		}{{skills, &grant.Skills}, {tools, &grant.Tools}, {contexts, &grant.Context}, {caps, &grant.Runtime.Capabilities}} {
+			if err := json.Unmarshal([]byte(u.raw), u.out); err != nil {
+				return fmt.Errorf("sqlite: slot intent grant unmarshal: %w", err)
+			}
+		}
+	}
+	if rep := slot.EvaluateReadiness(specContent, grant); !rep.Ready {
+		return fmt.Errorf("%w: 授权准入不满足（缺 %s）", mission.ErrSlotIntentViolated, strings.Join(rep.Missing, "、"))
+	}
+	return nil
 }
 
 // MissionIDBySource 来源映射查询；未映射 ok=false。
@@ -3072,9 +3356,12 @@ func (s *Store) MissionByID(ctx context.Context, missionID string) (mission.Miss
 
 // List 契约摘要（创建序）。
 func (s *Store) ListMissions(ctx context.Context) ([]mission.Summary, error) {
+	// 0.6.13 审校 #6：摘要携房间来源（任务卡续接识别）——LEFT JOIN 唯一映射。
 	rows, err := s.db.QueryContext(ctx, `
-SELECT mission_id, contract_version, status, owner_agent_id, objective, created_at, updated_at
-  FROM missions ORDER BY rowid`)
+SELECT m.mission_id, m.contract_version, m.status, m.owner_agent_id, m.objective, m.created_at, m.updated_at,
+       COALESCE(src.room_id, ''), COALESCE(src.task_id, '')
+  FROM missions m LEFT JOIN mission_sources src ON src.mission_id = m.mission_id
+ ORDER BY m.rowid`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: mission list: %w", err)
 	}
@@ -3082,9 +3369,13 @@ SELECT mission_id, contract_version, status, owner_agent_id, objective, created_
 	out := []mission.Summary{}
 	for rows.Next() {
 		var sum mission.Summary
+		var roomID, taskID string
 		if err := rows.Scan(&sum.MissionID, &sum.ContractVersion, &sum.Status,
-			&sum.OwnerAgentID, &sum.Objective, &sum.CreatedAt, &sum.UpdatedAt); err != nil {
+			&sum.OwnerAgentID, &sum.Objective, &sum.CreatedAt, &sum.UpdatedAt, &roomID, &taskID); err != nil {
 			return nil, fmt.Errorf("sqlite: scan mission summary: %w", err)
+		}
+		if roomID != "" {
+			sum.RoomSource = &mission.RoomSource{RoomID: roomID, TaskID: taskID}
 		}
 		out = append(out, sum)
 	}
@@ -3705,10 +3996,11 @@ func (s *Store) SaveDecision(ctx context.Context, d dispatch.Decision) error {
 	}
 	return s.identityWriteTx(ctx, func(q identityExec) error {
 		if _, err := q.ExecContext(ctx, `
-INSERT INTO dispatch_decisions (route_id, decision_version, request_digest, status, selection_source, reason_code, reason_summary, target_refs, request, expires_at, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO dispatch_decisions (route_id, decision_version, request_digest, status, selection_source, reason_code, reason_summary, target_refs, request, resolved_agent_id, resolved_instance_id, expires_at, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			d.RouteID, d.DecisionVersion, d.RequestDigest, d.Status, d.SelectionSource,
-			d.ReasonCode, d.ReasonSummary, string(targets), string(req), d.ExpiresAt, d.CreatedAt); err != nil {
+			d.ReasonCode, d.ReasonSummary, string(targets), string(req),
+			d.ResolvedAgentID, d.ResolvedInstanceID, d.ExpiresAt, d.CreatedAt); err != nil {
 			return fmt.Errorf("sqlite: save decision: %w", err)
 		}
 		return nil
@@ -3720,10 +4012,10 @@ func (s *Store) DecisionByID(ctx context.Context, routeID string) (dispatch.Deci
 	var d dispatch.Decision
 	var targets, req string
 	err := s.db.QueryRowContext(ctx, `
-SELECT route_id, decision_version, request_digest, status, selection_source, reason_code, reason_summary, target_refs, request, expires_at, created_at
+SELECT route_id, decision_version, request_digest, status, selection_source, reason_code, reason_summary, target_refs, request, resolved_agent_id, resolved_instance_id, expires_at, created_at
   FROM dispatch_decisions WHERE route_id = ?`, routeID).
 		Scan(&d.RouteID, &d.DecisionVersion, &d.RequestDigest, &d.Status, &d.SelectionSource,
-			&d.ReasonCode, &d.ReasonSummary, &targets, &req, &d.ExpiresAt, &d.CreatedAt)
+			&d.ReasonCode, &d.ReasonSummary, &targets, &req, &d.ResolvedAgentID, &d.ResolvedInstanceID, &d.ExpiresAt, &d.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return dispatch.Decision{}, false, nil
 	}
@@ -3744,7 +4036,7 @@ func scanReceipt(row interface{ Scan(...any) error }) (dispatch.Receipt, bool, e
 	var r dispatch.Receipt
 	var targets, returns string
 	err := row.Scan(&r.ReceiptID, &r.CallerRef, &r.Scope, &r.IdempotencyKey, &r.RequestID, &r.RequestDigest,
-		&r.RouteID, &r.DecisionVersion, &r.DomainCommandID, &targets, &returns, &r.CommittedAt)
+		&r.RouteID, &r.DecisionVersion, &r.DomainCommandID, &targets, &returns, &r.Reason, &r.CommittedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return dispatch.Receipt{}, false, nil
 	}
@@ -3773,7 +4065,7 @@ func (s *Store) ClaimKey(ctx context.Context, r dispatch.Receipt) (dispatch.Rece
 	conflict, finalized := false, false
 	err = s.identityWriteTx(ctx, func(q identityExec) error {
 		row := q.QueryRowContext(ctx, `
-SELECT receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, committed_at
+SELECT receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, reason, committed_at
   FROM dispatch_receipts WHERE caller_ref = ? AND scope = ? AND idempotency_key = ?`,
 			r.CallerRef, r.Scope, r.IdempotencyKey)
 		ex, found, err := scanReceipt(row)
@@ -3790,10 +4082,10 @@ SELECT receipt_id, caller_ref, scope, idempotency_key, request_id, request_diges
 			return nil
 		}
 		if _, err := q.ExecContext(ctx, `
-INSERT INTO dispatch_receipts (receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, committed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, '[]', '')`,
+INSERT INTO dispatch_receipts (receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, reason, committed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, '[]', ?, '')`,
 			r.ReceiptID, r.CallerRef, r.Scope, r.IdempotencyKey, r.RequestID, r.RequestDigest,
-			r.RouteID, r.DecisionVersion, string(targets)); err != nil {
+			r.RouteID, r.DecisionVersion, string(targets), r.Reason); err != nil {
 			return fmt.Errorf("sqlite: claim key: %w", err)
 		}
 		return nil
@@ -3812,10 +4104,14 @@ func (s *Store) FinalizeReceipt(ctx context.Context, r dispatch.Receipt) error {
 		return fmt.Errorf("sqlite: receipt returns marshal: %w", err)
 	}
 	return s.identityWriteTx(ctx, func(q identityExec) error {
+		targets, err := json.Marshal(r.TargetRefs)
+		if err != nil {
+			return fmt.Errorf("sqlite: receipt targets marshal: %w", err)
+		}
 		if _, err := q.ExecContext(ctx, `
-UPDATE dispatch_receipts SET request_id = ?, domain_command_id = ?, return_refs = ?, committed_at = ?
+UPDATE dispatch_receipts SET request_id = ?, domain_command_id = ?, target_refs = ?, return_refs = ?, reason = ?, committed_at = ?
  WHERE caller_ref = ? AND scope = ? AND idempotency_key = ?`,
-			r.RequestID, r.DomainCommandID, string(returns), r.CommittedAt,
+			r.RequestID, r.DomainCommandID, string(targets), string(returns), r.Reason, r.CommittedAt,
 			r.CallerRef, r.Scope, r.IdempotencyKey); err != nil {
 			return fmt.Errorf("sqlite: finalize receipt: %w", err)
 		}
@@ -3823,11 +4119,26 @@ UPDATE dispatch_receipts SET request_id = ?, domain_command_id = ?, return_refs 
 	})
 }
 
-// ReceiptByKey 幂等键查回执；未投递 ok=false。
+// ReleaseKey 回滚未生效命令对键的认领（0.6.13 审校 #11：分步退化面的拒绝
+// 补偿——只删同摘要 pending 行，不碰已完结回执；原子面经事务回滚天然满足）。
+func (s *Store) ReleaseKey(ctx context.Context, callerRef, scope, key, digest string) error {
+	return s.identityWriteTx(ctx, func(q identityExec) error {
+		if _, err := q.ExecContext(ctx, `
+DELETE FROM dispatch_receipts
+ WHERE caller_ref = ? AND scope = ? AND idempotency_key = ? AND request_digest = ? AND domain_command_id = ''`,
+			callerRef, scope, key, digest); err != nil {
+			return fmt.Errorf("sqlite: release key: %w", err)
+		}
+		return nil
+	})
+}
+
+// ReceiptByKey 幂等键查**已提交**回执（0.6.13 审校 #11：pending 认领是事务
+// 内部事实，公开查询不可见——防"虚假已提交回执"）；未完结 ok=false。
 func (s *Store) ReceiptByKey(ctx context.Context, callerRef, scope, key string) (dispatch.Receipt, bool, error) {
 	var id string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT receipt_id FROM dispatch_receipts WHERE caller_ref = ? AND scope = ? AND idempotency_key = ?`,
+		`SELECT receipt_id FROM dispatch_receipts WHERE caller_ref = ? AND scope = ? AND idempotency_key = ? AND domain_command_id != ''`,
 		callerRef, scope, key).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return dispatch.Receipt{}, false, nil
@@ -3842,10 +4153,10 @@ func (s *Store) receiptByID(ctx context.Context, receiptID string) (dispatch.Rec
 	var r dispatch.Receipt
 	var targets, returns string
 	err := s.db.QueryRowContext(ctx, `
-SELECT receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, committed_at
+SELECT receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, reason, committed_at
   FROM dispatch_receipts WHERE receipt_id = ?`, receiptID).
 		Scan(&r.ReceiptID, &r.CallerRef, &r.Scope, &r.IdempotencyKey, &r.RequestID, &r.RequestDigest,
-			&r.RouteID, &r.DecisionVersion, &r.DomainCommandID, &targets, &returns, &r.CommittedAt)
+			&r.RouteID, &r.DecisionVersion, &r.DomainCommandID, &targets, &returns, &r.Reason, &r.CommittedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return dispatch.Receipt{}, false, nil
 	}
@@ -4929,7 +5240,7 @@ func runEventPayloadJSON(payload map[string]any) (string, error) {
 // ErrRunExists）+ attempt_requested 事件同事务。复审 R1：写事务内核对任务
 // 仍是 ready——调度读列表与落 Run 之间送验/暂停/取消落地时，过期调度在此
 // 拒绝（ErrMissionNotReady，调用方释放租约）。
-func (s *Store) CreateRun(ctx context.Context, r missionrun.Run) (missionrun.Run, error) {
+func (s *Store) CreateRun(ctx context.Context, r missionrun.Run, maxRuns int) (missionrun.Run, error) {
 	err := s.identityWriteTx(ctx, func(q identityExec) error {
 		var existing string
 		perr := q.QueryRowContext(ctx,
@@ -4940,6 +5251,18 @@ func (s *Store) CreateRun(ctx context.Context, r missionrun.Run) (missionrun.Run
 		}
 		if !errors.Is(perr, sql.ErrNoRows) {
 			return fmt.Errorf("sqlite: run unfinished probe: %w", perr)
+		}
+		// 0.6.13 审校 #14：次数上限核对在建行事务内（权威面——外层预检与建行
+		// 分离时并发孪生可双过；计数查询故障中止不建）。
+		if maxRuns > 0 {
+			var used int
+			if err := q.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM runs WHERE mission_id = ?`, r.MissionID).Scan(&used); err != nil {
+				return fmt.Errorf("sqlite: run budget probe: %w", err)
+			}
+			if used >= maxRuns {
+				return fmt.Errorf("%w（%s：%d/%d）", missionrun.ErrBudgetExhausted, r.MissionID, used, maxRuns)
+			}
 		}
 		var maxAtt sql.NullInt64
 		if err := q.QueryRowContext(ctx,
@@ -5067,10 +5390,16 @@ INSERT INTO run_events (run_id, event_type, payload, occurred_at) VALUES (?, ?, 
 }
 
 // ListUnresolvedUnknown 未处置 unknown Run（诊断计数——RFC §11.5）。
-// ListExpiredRunning 墙钟过期 running Run（0.6.13 / ADR-0036 §3）。
+// ListExpiredRunning 墙钟过期 running Run（0.6.13 / ADR-0036 §3；审校 #15：
+// 期限按**时刻**比较——RFC3339Nano 小数位数不定，字典序 .11Z < .1Z 会漏
+// 已过期行/选中未来行；解析失败的病态行保守跳过不误停）。
 func (s *Store) ListExpiredRunning(ctx context.Context, now string) ([]missionrun.Run, error) {
+	nowT, err := time.Parse(time.RFC3339Nano, now)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list expired running (now): %w", err)
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+runScanColumns+` FROM runs
- WHERE state = 'running' AND deadline != '' AND deadline < ?`, now)
+ WHERE state = 'running' AND deadline != ''`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list expired running: %w", err)
 	}
@@ -5080,6 +5409,10 @@ func (s *Store) ListExpiredRunning(ctx context.Context, now string) ([]missionru
 		r, err := scanRunRow(rows)
 		if err != nil {
 			return nil, err
+		}
+		dT, perr := time.Parse(time.RFC3339Nano, r.Deadline)
+		if perr != nil || !dT.Before(nowT) {
+			continue
 		}
 		out = append(out, r)
 	}

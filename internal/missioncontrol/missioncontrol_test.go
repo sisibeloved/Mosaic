@@ -46,6 +46,20 @@ func (p ctlMissions) ListReady(ctx context.Context) ([]missionrun.MissionRef, er
 	}
 	return out, nil
 }
+
+// RefOf 权威快照（0.6.13 审校 #8）：owner/预算自现行契约全文读。
+func (p ctlMissions) RefOf(ctx context.Context, id string) (missionrun.MissionRef, bool, error) {
+	full, ok, err := p.svc.Get(ctx, id)
+	if err != nil || !ok {
+		return missionrun.MissionRef{}, ok, err
+	}
+	return missionrun.MissionRef{
+		MissionID: full.MissionID, OwnerAgentID: full.OwnerAgentID,
+		SlotInstanceID:   full.SlotInstanceID,
+		WallClockSeconds: full.Budget.MaxWallClockSeconds, MaxRuns: full.Budget.MaxRuns,
+	}, true, nil
+}
+
 func (p ctlMissions) SetRunning(ctx context.Context, id string) (bool, error) {
 	return p.svc.MarkRunning(ctx, id)
 }
@@ -90,6 +104,10 @@ func (ctlBindings) ActiveOf(_ context.Context, agentID string) (missionrun.Bindi
 	if agentID == "ag_ctl" {
 		return missionrun.BindingFacts{BindingID: "bd_ctl", AgentID: agentID}, true, nil
 	}
+	return missionrun.BindingFacts{}, false, nil
+}
+
+func (ctlBindings) ActiveOfInstance(_ context.Context, _ string) (missionrun.BindingFacts, bool, error) {
 	return missionrun.BindingFacts{}, false, nil
 }
 
@@ -300,7 +318,7 @@ func TestCancelTimeoutReturnsCanceling(t *testing.T) {
 		RunID: "run_orphan", MissionID: mi, Attempt: 1,
 		LeaseID: "lse_x", State: missionrun.StateRunning,
 		RequestedAt: "t", UpdatedAt: "t",
-	}); err != nil {
+	}, 0); err != nil {
 		t.Fatalf("播种孤儿 Run: %v", err)
 	}
 

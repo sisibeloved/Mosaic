@@ -53,9 +53,26 @@ func (m *MemStore) FinalizeReceipt(_ context.Context, r Receipt) error {
 	return nil
 }
 
+// ReleaseKey 回滚未生效命令对键的认领（0.6.13 审校 #11：领域拒绝释放 pending
+// 同摘要行——修正后可重试；只删 pending，不碰已完结回执）。
+func (m *MemStore) ReleaseKey(_ context.Context, callerRef, scope, key, digest string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := callerRef + "|" + scope + "|" + key
+	if ex, taken := m.receipts[k]; taken && ex.DomainCommandID == "" && ex.RequestDigest == digest {
+		delete(m.receipts, k)
+	}
+	return nil
+}
+
+// ReceiptByKey 幂等键查**已提交**回执（0.6.13 审校 #11：pending 认领是事务
+// 内部事实，公开查询不可见）；未完结 ok=false。
 func (m *MemStore) ReceiptByKey(_ context.Context, callerRef, scope, key string) (Receipt, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r, ok := m.receipts[callerRef+"|"+scope+"|"+key]
+	if ok && r.DomainCommandID == "" {
+		return Receipt{}, false, nil
+	}
 	return r, ok, nil
 }

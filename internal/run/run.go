@@ -186,6 +186,10 @@ type Executor interface {
 // Missions 契约面端口：ready 候选 + 状态投影 + 控制恢复分派（0.6.6）。
 type Missions interface {
 	ListReady(ctx context.Context) ([]MissionRef, error)
+	// RefOf 单任务权威快照（0.6.13 审校 #8：owner / slot 意图 / 预算自现行
+	// 契约读——枚举与手动入口的 ref 可能陈旧（修订收紧/放宽、交接换人），
+	// 启动前以此复核；查询失败中止当次派发，不用旧值启动）。
+	RefOf(ctx context.Context, missionID string) (MissionRef, bool, error)
 	// SetRunning ready → running；返回 changed（false = 状态不符——
 	// 审校 #7：canceled 后拒启动须校验实际修改）。
 	SetRunning(ctx context.Context, missionID string) (changed bool, err error)
@@ -209,9 +213,13 @@ type Missions interface {
 type MissionRef struct {
 	MissionID    string
 	OwnerAgentID string
-	// Budget 快照（0.6.13 / ADR-0036 §3，装配层自契约填入；0 = 未设/不限）：
+	// SlotInstanceID 职责派发意图（0.6.13 审校 #1：slot 寻址派发的创建事实
+	// ——执行装配按该实例固定 Binding（同人双任职不串用）；空 = 显式/无职责）。
+	SlotInstanceID string
+	// Budget 快照（0.6.13 / ADR-0036 §3，RefOf 权威读值；0 = 未设/不限）：
 	// WallClockSeconds 随 Run 进入 running 落 deadline；MaxRuns 为该 Mission
-	// 已创建 Run 总数上限（达限不再派发——任务停留 ready，诊断面计数）。
+	// 已创建 Run 总数上限（达限不再派发——任务停留 ready，诊断面计数；权威
+	// 核对在 CreateRun 建行事务内，审校 #14）。
 	WallClockSeconds int
 	MaxRuns          int
 }
@@ -219,6 +227,10 @@ type MissionRef struct {
 // Bindings owner 的 active Binding 解析（执行者事实）。
 type Bindings interface {
 	ActiveOf(ctx context.Context, agentID string) (BindingFacts, bool, error)
+	// ActiveOfInstance 按职责实例解析 active 任职（0.6.13 审校 #1：slot 意图
+	// 任务的执行装配固定当时的 Binding——同人双任职不串用；无 active 任职
+	// ok=false）。
+	ActiveOfInstance(ctx context.Context, instanceID string) (BindingFacts, bool, error)
 }
 
 // BindingFacts 执行者事实（与 execctx.BindingFacts 同构——域间不互相 import）。
@@ -277,7 +289,10 @@ type ManifestLayer struct {
 
 // Store 持久化端口。
 type Store interface {
-	CreateRun(ctx context.Context, r Run) (Run, error)
+	// CreateRun 建 Run 行（attempt/事件同事务；0.6.13 审校 #14：maxRuns>0 时
+	// 建行事务内核对已用次数——并发孪生恰一胜者，计数查询故障中止；超限
+	// ErrBudgetExhausted，外层据此释放租约）。
+	CreateRun(ctx context.Context, r Run, maxRuns int) (Run, error)
 	// UpdateRun 全行替换 + 事件同事务。
 	UpdateRun(ctx context.Context, r Run, events []Event) error
 	RunByID(ctx context.Context, runID string) (Run, bool, error)
@@ -310,6 +325,10 @@ func WithNewRunID(f func() string) Option     { return func(s *Service) { s.newR
 func WithSchedulerDisabled() Option           { return func(s *Service) { s.enabled = false } }
 func WithScanInterval(d time.Duration) Option { return func(s *Service) { s.scanInterval = d } }
 
+// WithWallClockInterval 墙钟监控独立 ticker 周期（0.6.13 审校 #4：监控面与
+// 调度扫描分离——不被同步执行器阻塞；测试注入亚秒级）。
+func WithWallClockInterval(d time.Duration) Option { return func(s *Service) { s.wallInterval = d } }
+
 // WithCleanupBudget 清理面窗口（测试注入——窗口自收尾时刻起算，见
 // cleanupContext；0.6.6 审校 P1）。
 func WithCleanupBudget(d time.Duration) Option { return func(s *Service) { s.cleanupBudget = d } }
@@ -331,6 +350,7 @@ type Service struct {
 	stops     *stopRegistry // 控制停止注册表（0.6.6 / ADR-0029）
 
 	scanInterval  time.Duration
+	wallInterval  time.Duration // 墙钟监控独立 ticker（审校 #4——默认随 scanInterval）
 	enabled       bool
 	scans         atomic.Int64
 	launched      atomic.Int64
@@ -402,6 +422,7 @@ func New(store Store, missions Missions, bindings Bindings, runtimes Runtimes,
 		newRunID:      func() string { return "run_" + randomSuffix() },
 		stops:         newStopRegistry(),
 		scanInterval:  5 * time.Second,
+		wallInterval:  5 * time.Second,
 		enabled:       true,
 		stopCh:        make(chan struct{}),
 		cleanupBudget: 30 * time.Second,
@@ -419,7 +440,9 @@ func randomSuffix() string {
 	return strconv.FormatInt(time.Now().UnixMilli(), 36) + hex.EncodeToString(b[:])
 }
 
-// Start 启动周期扫描。
+// Start 启动周期扫描 + 墙钟监控（0.6.13 审校 #4：**独立 ticker**——调度循环
+// 同步串行执行 ExecuteMission，阻塞执行器会连带卡住尾部的过期扫描；监控面
+// 与执行互不阻塞，按 RunID 直达停止）。
 func (s *Service) Start(ctx context.Context) {
 	if !s.enabled {
 		return
@@ -435,6 +458,20 @@ func (s *Service) Start(ctx context.Context) {
 				return
 			case <-ticker.C:
 				s.ScanOnce(ctx)
+			}
+		}
+	}()
+	go func() {
+		ticker := time.NewTicker(s.wallInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-s.stopCh:
+				return
+			case <-ticker.C:
+				s.enforceWallClock(ctx)
 			}
 		}
 	}()
@@ -493,25 +530,20 @@ func (s *Service) ScanOnce(ctx context.Context) {
 	s.enforceWallClock(ctx)
 }
 
-// enforceWallClock 墙钟强制（0.6.13 / ADR-0036 §3）：扫描过期 running Run →
-// 走既有停止面（SignalStopByMission → 在途 select 收 Stop → finalizeStopped：
-// run canceled + cause 事件 + Mission 回 ready；迟到结果只审计）。同 Mission
-// 多过期 Run 由 stops registry 幂等；已终态行不命中查询。
+// enforceWallClock 墙钟强制（0.6.13 / ADR-0036 §3；审校 #4 + 复核备注重写）：
+// 扫描过期 running Run → **按 RunID 直达**停止注册表（signal → 在途 select 收
+// 取消 → finalizeStopped：run canceled + cause 事件 + Mission 回 ready；迟到
+// 结果只审计）。不经 Mission 再扫描——同 Mission 换发的新 Run 未到期不可误伤
+// （审校"额外检查"指出的交错）；已终态 Run 注册表已注销（signal=false 自然
+// 幂等）。由独立 ticker 驱动（Start），不随执行器阻塞。
 func (s *Service) enforceWallClock(ctx context.Context) {
 	expired, err := s.store.ListExpiredRunning(ctx, s.now())
 	if err != nil {
 		s.lastError.Store("wallclock scan: " + err.Error())
 		return
 	}
-	seen := map[string]bool{}
 	for _, r := range expired {
-		if seen[r.MissionID] {
-			continue
-		}
-		seen[r.MissionID] = true
-		if _, err := s.SignalStopByMission(ctx, r.MissionID, CauseWallClockExceeded); err != nil {
-			s.lastError.Store("wallclock stop: " + err.Error())
-		}
+		s.stops.signal(r.RunID, CauseWallClockExceeded)
 	}
 }
 
@@ -521,34 +553,64 @@ func (s *Service) enforceWallClock(ctx context.Context) {
 //   - #5：清理面用独立 context（请求断开后终态/释放/投影不遗留）
 //   - #7：SetRunning 返回 changed——canceled 后拒启动（Run 置 failed）
 func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, error) {
+	// 0.6.13 审校 #8：权威快照复核——枚举/手动入口的 ref 可能陈旧（修订
+	// 收紧/放宽预算、交接换人），启动前一律重读现行契约（owner / slot 意图 /
+	// 预算同一快照）；查询失败**中止**当次派发（不用旧值启动）。
+	auth, found, err := s.missions.RefOf(ctx, ref.MissionID)
+	if err != nil {
+		return Run{}, fmt.Errorf("run: 权威快照复核失败（%s）：%w", ref.MissionID, err)
+	}
+	if !found {
+		return Run{}, fmt.Errorf("%w（%s）", ErrMissionNotFound, ref.MissionID)
+	}
+	ref = auth
 	// 执行面围栏（0.6.7 发布前补齐）：ready 形态下存在未处置 unknown 残留
 	// （resolution 空）即拒启动——"再执行只发生在显式处置后"的兜底。waiting
 	// 形态由调度列/条件投影自然拒（不在此拦，保持"手动触发 → Run failed 留
-	// 档"的既有语义）；旧库 ready+残留收敛形态是唯一入口洞。
-	if runs, err := s.store.ListRunsByMission(ctx, ref.MissionID); err == nil {
-		for _, r := range runs {
-			if r.State == StateUnknown && r.Resolution == "" {
-				if st, _, serr := s.missions.StatusOf(ctx, ref.MissionID); serr == nil && st == "ready" {
-					return Run{}, fmt.Errorf("%w（mission %s，run %s）", ErrResidueUnresolved, ref.MissionID, r.RunID)
-				}
-				break
+	// 档"的既有语义）；旧库 ready+残留收敛形态是唯一入口洞。查询失败中止
+	//（审校 #14：不吞——围栏不可知不启动）。
+	runs, err := s.store.ListRunsByMission(ctx, ref.MissionID)
+	if err != nil {
+		return Run{}, fmt.Errorf("run: 残留围栏读取失败（%s）：%w", ref.MissionID, err)
+	}
+	for _, r := range runs {
+		if r.State == StateUnknown && r.Resolution == "" {
+			if st, _, serr := s.missions.StatusOf(ctx, ref.MissionID); serr == nil && st == "ready" {
+				return Run{}, fmt.Errorf("%w（mission %s，run %s）", ErrResidueUnresolved, ref.MissionID, r.RunID)
 			}
+			break
 		}
 	}
 	// 0.6.13 / ADR-0036 §3：max_runs 派发上限——已创建 Run 总数（终态含）达
-	// 契约上限即不再派发（任务停留 ready 不被静默吞，诊断面计数）。
-	if ref.MaxRuns > 0 {
-		if runs, err := s.store.ListRunsByMission(ctx, ref.MissionID); err == nil && len(runs) >= ref.MaxRuns {
-			s.budgetBlocked.Add(1)
-			return Run{}, fmt.Errorf("%w（mission %s：%d/%d）", ErrBudgetExhausted, ref.MissionID, len(runs), ref.MaxRuns)
+	// 契约上限即不再派发（任务停留 ready 不被静默吞，诊断面计数）。快路径
+	// 省租约/清单；**权威核对在 CreateRun 建行事务内**（审校 #14：并发孪生
+	// 与计数查询故障都在事务面收敛）。
+	if ref.MaxRuns > 0 && len(runs) >= ref.MaxRuns {
+		s.budgetBlocked.Add(1)
+		return Run{}, fmt.Errorf("%w（mission %s：%d/%d）", ErrBudgetExhausted, ref.MissionID, len(runs), ref.MaxRuns)
+	}
+	// 执行者解析（0.6.13 审校 #1）：slot 意图任务按**实例**固定任职（同人双
+	// 任职不串用——决策时的职责即执行职责，任职换人/失效拒启动重新派发）；
+	// 显式/缺省 owner 保留原候选选择（首个 active 任职）。
+	var binding BindingFacts
+	if ref.SlotInstanceID != "" {
+		b, bok, berr := s.bindings.ActiveOfInstance(ctx, ref.SlotInstanceID)
+		if berr != nil {
+			return Run{}, fmt.Errorf("run: 职责任职解析失败（%s）：%w", ref.SlotInstanceID, berr)
 		}
-	}
-	binding, ok, err := s.bindings.ActiveOf(ctx, ref.OwnerAgentID)
-	if err != nil {
-		return Run{}, fmt.Errorf("run: 解析执行者失败：%w", err)
-	}
-	if !ok {
-		return Run{}, ErrNoExecutor
+		if !bok || b.AgentID != ref.OwnerAgentID {
+			return Run{}, fmt.Errorf("%w：slot %s 任职失效/换人（预期 %s）——重新派发", ErrNoExecutor, ref.SlotInstanceID, ref.OwnerAgentID)
+		}
+		binding = b
+	} else {
+		b, bok, berr := s.bindings.ActiveOf(ctx, ref.OwnerAgentID)
+		if berr != nil {
+			return Run{}, fmt.Errorf("run: 解析执行者失败：%w", berr)
+		}
+		if !bok {
+			return Run{}, ErrNoExecutor
+		}
+		binding = b
 	}
 	rt, ok, err := s.runtimes.FirstReady(ctx)
 	if err != nil {
@@ -584,9 +646,14 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 		Generation:  lease.Generation,
 		RequestedAt: now, UpdatedAt: now,
 	}
-	r, err = s.store.CreateRun(ctx, r)
+	r, err = s.store.CreateRun(ctx, r, ref.MaxRuns)
 	if err != nil {
 		_ = s.leases.Release(ctx, lease.LeaseID)
+		// 事务内权威上限命中（并发孪生败者——审校 #14）：计数并透传（手动
+		// 入口 409 budget_exhausted，调度面常态跳过）。
+		if errors.Is(err, ErrBudgetExhausted) {
+			s.budgetBlocked.Add(1)
+		}
 		return Run{}, err
 	}
 

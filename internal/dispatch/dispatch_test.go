@@ -257,6 +257,10 @@ type gatedMissions struct {
 	release chan struct{}
 }
 
+func (g *gatedMissions) CreateWithSlot(ctx context.Context, owner string, c mission.Content, src *mission.RoomSource, slot *mission.SlotIntent) (mission.Mission, error) {
+	return g.inner.CreateWithSlot(ctx, owner, c, src, slot)
+}
+
 func (g *gatedMissions) Create(ctx context.Context, owner string, c mission.Content, src *mission.RoomSource) (mission.Mission, error) {
 	g.entered <- struct{}{}
 	<-g.release
