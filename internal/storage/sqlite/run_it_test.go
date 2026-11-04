@@ -37,12 +37,12 @@ func TestRunStoreIT(t *testing.T) {
 	}
 
 	// 首建（服务层 attempt=0 传入，存储面 +1）
-	r, err := store.CreateRun(ctx, seedRun("run_a", "mi_it", 0, missionrun.StateRunning), 0, 0)
+	r, err := store.CreateRun(ctx, seedRun("run_a", "mi_it", 0, missionrun.StateRunning), 0, 0, "")
 	if err != nil || r.Attempt != 1 {
 		t.Fatalf("首建: %+v %v", r, err)
 	}
 	// 未终态互斥（部分唯一索引 + 先查兜底）
-	if _, err := store.CreateRun(ctx, seedRun("run_b", "mi_it", 0, missionrun.StatePending), 0, 0); !errors.Is(err, missionrun.ErrRunExists) {
+	if _, err := store.CreateRun(ctx, seedRun("run_b", "mi_it", 0, missionrun.StatePending), 0, 0, ""); !errors.Is(err, missionrun.ErrRunExists) {
 		t.Fatalf("未终态互斥: %v", err)
 	}
 	// 终态后可再建：attempt 2
@@ -54,7 +54,7 @@ func TestRunStoreIT(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("终态更新: %v", err)
 	}
-	r2, err := store.CreateRun(ctx, seedRun("run_c", "mi_it", 0, missionrun.StateRunning), 0, 0)
+	r2, err := store.CreateRun(ctx, seedRun("run_c", "mi_it", 0, missionrun.StateRunning), 0, 0, "")
 	if err != nil || r2.Attempt != 2 {
 		t.Fatalf("再建 attempt 2: %+v %v", r2, err)
 	}
@@ -109,7 +109,7 @@ func TestRunLegacyUpgradeIT(t *testing.T) {
 	if v19 != 1 {
 		t.Fatalf("升级后 v19 应登记: %d", v19)
 	}
-	if _, err := store.CreateRun(ctx, seedRun("run_l", "mi_l", 0, missionrun.StateRunning), 0, 0); err != nil {
+	if _, err := store.CreateRun(ctx, seedRun("run_l", "mi_l", 0, missionrun.StateRunning), 0, 0, ""); err != nil {
 		t.Fatalf("升级库建 Run: %v", err)
 	}
 }

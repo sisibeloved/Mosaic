@@ -3413,6 +3413,31 @@ func verifyBindingGrantTx(ctx context.Context, q identityExec, instanceID string
 	return nil
 }
 
+// grantByAgentTx 事务内授权档案读取（GrantByAgent 同构——池/事务连接不混用）。
+func (s *Store) grantByAgentTx(ctx context.Context, q identityExec, agentID string) (slot.AgentGrant, bool, error) {
+	var g slot.AgentGrant
+	var skills, tools, contexts, caps, ws string
+	err := q.QueryRowContext(ctx,
+		`SELECT skills, tools, context, runtime_capabilities, workspace_access FROM slot_agent_grants WHERE agent_id = ?`,
+		agentID).Scan(&skills, &tools, &contexts, &caps, &ws)
+	if errors.Is(err, sql.ErrNoRows) {
+		return slot.AgentGrant{}, false, nil
+	}
+	if err != nil {
+		return slot.AgentGrant{}, false, fmt.Errorf("sqlite: run grant fp probe: %w", err)
+	}
+	g.Runtime.WorkspaceAccess = ws
+	for _, u := range []struct {
+		raw string
+		out any
+	}{{skills, &g.Skills}, {tools, &g.Tools}, {contexts, &g.Context}, {caps, &g.Runtime.Capabilities}} {
+		if err := json.Unmarshal([]byte(u.raw), u.out); err != nil {
+			return slot.AgentGrant{}, false, fmt.Errorf("sqlite: run grant fp unmarshal: %w", err)
+		}
+	}
+	return g, true, nil
+}
+
 // verifyOwnerActiveTx 身份门事务内核对（复审 #3/#4 共用）：在册且 active。
 func verifyOwnerActiveTx(ctx context.Context, q identityExec, agentID string) error {
 	var status string
@@ -4260,6 +4285,77 @@ func (s *Store) ClaimByKey(ctx context.Context, callerRef, scope, key string) (d
 		return dispatch.Receipt{}, false, fmt.Errorf("sqlite: claim by key: %w", err)
 	}
 	return s.receiptByID(ctx, id)
+}
+
+// ReleaseClaim 遗留认领处置（四审 #4/#8）：**单一写事务**内判定资格并删除
+// ——只有 RowsAffected=1 才算释放；零行按事务内真值分辨（finalized /
+// not_found / digest_mismatch / not_releasable）。资格：pending + 同摘要 +
+// route_id 空（update 类认领——create 认领 route 非空，在途建单不可经公开
+// 入口释放，防同键建两单串回执）。
+func (s *Store) ReleaseClaim(ctx context.Context, callerRef, scope, key, digest string) (string, error) {
+	outcome := ""
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		var ex, route, dg, domain string
+		err := q.QueryRowContext(ctx, `
+SELECT receipt_id, request_digest, route_id, domain_command_id
+  FROM dispatch_receipts WHERE caller_ref = ? AND scope = ? AND idempotency_key = ?`,
+			callerRef, scope, key).Scan(&ex, &dg, &route, &domain)
+		if errors.Is(err, sql.ErrNoRows) {
+			outcome = "not_found"
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("sqlite: release claim probe: %w", err)
+		}
+		if domain != "" {
+			outcome = "finalized"
+			return nil
+		}
+		if dg != digest {
+			outcome = "digest_mismatch"
+			return nil
+		}
+		if route != "" {
+			outcome = "not_releasable" // create 认领（在途建单）——公开处置不可及
+			return nil
+		}
+		res, err := q.ExecContext(ctx, `
+DELETE FROM dispatch_receipts
+ WHERE caller_ref = ? AND scope = ? AND idempotency_key = ?
+   AND request_digest = ? AND domain_command_id = '' AND route_id = ''`,
+			callerRef, scope, key, digest)
+		if err != nil {
+			return fmt.Errorf("sqlite: release claim delete: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		if n == 1 {
+			outcome = "released"
+			return nil
+		}
+		// 判定与删除之间被并发完结/消费——事务内重读分辨
+		var d2, rt2 string
+		if err := q.QueryRowContext(ctx, `
+SELECT domain_command_id, route_id FROM dispatch_receipts
+ WHERE caller_ref = ? AND scope = ? AND idempotency_key = ?`,
+			callerRef, scope, key).Scan(&d2, &rt2); errors.Is(err, sql.ErrNoRows) {
+			outcome = "not_found"
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("sqlite: release claim reprobe: %w", err)
+		}
+		if d2 != "" {
+			outcome = "finalized"
+		} else if rt2 != "" {
+			outcome = "not_releasable"
+		} else {
+			outcome = "digest_mismatch"
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return outcome, nil
 }
 
 // ReleaseKey 回滚未生效命令对键的认领（0.6.13 审校 #11：分步退化面的拒绝
@@ -5383,7 +5479,7 @@ func runEventPayloadJSON(payload map[string]any) (string, error) {
 // ErrRunExists）+ attempt_requested 事件同事务。复审 R1：写事务内核对任务
 // 仍是 ready——调度读列表与落 Run 之间送验/暂停/取消落地时，过期调度在此
 // 拒绝（ErrMissionNotReady，调用方释放租约）。
-func (s *Store) CreateRun(ctx context.Context, r missionrun.Run, maxRuns, manifestContractVersion int) (missionrun.Run, error) {
+func (s *Store) CreateRun(ctx context.Context, r missionrun.Run, maxRuns, manifestContractVersion int, grantFingerprint string) (missionrun.Run, error) {
 	err := s.identityWriteTx(ctx, func(q identityExec) error {
 		var existing string
 		perr := q.QueryRowContext(ctx,
@@ -5424,6 +5520,17 @@ func (s *Store) CreateRun(ctx context.Context, r missionrun.Run, maxRuns, manife
 				// 授权仍有效）。复用建单门同源判定（钉版模板要求 vs 授权档案）。
 				if err := verifyBindingGrantTx(ctx, q, bInstance, bVer, r.AgentID); err != nil {
 					return err
+				}
+				// 四审 #3：授权快照指纹比对（RFC §11.4 撤权立即阻止新交付）——
+				// 可选上下文/工具撤销不改变必需判定，但清单内容（房间原文/工具
+				// 清单）已按装配时授权固化；指纹漂移即拒领，重新装配按剩余授权
+				// 降级。授权行缺席 = 测试播种容差跳过。
+				if grantFingerprint != "" {
+					if g, gok, gerr := s.grantByAgentTx(ctx, q, r.AgentID); gerr != nil {
+						return gerr
+					} else if gok && execctx.GrantFingerprint(g) != grantFingerprint {
+						return fmt.Errorf("%w：清单授权快照已漂移（bd %s）——释放租约重新装配", missionrun.ErrGrantDrift, r.BindingID)
+					}
 				}
 			} else if !errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("sqlite: run binding gate probe: %w", err)
@@ -5518,6 +5625,61 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 INSERT INTO run_events (run_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
 			r.RunID, missionrun.EventAttemptRequested, payload, r.RequestedAt); err != nil {
 			return fmt.Errorf("sqlite: insert run event: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return missionrun.Run{}, err
+	}
+	return r, nil
+}
+
+// UpdateRunTerminal 终态写入 + **写锁后**墙钟裁决（四审 #6）：identityWriteTx
+// 取得写锁后以 nowFn() 现行时刻核对行上 deadline——等待写锁期间期限已过/
+// 监控已发停的窗口在此收口：拟写 completed/failed 且期限已过 → 改按 canceled
+// （cause=wall_clock_exceeded）落终态，拟发布结果仅 late_result 审计；否则按
+// 入参落。返回实际落库 Run。
+func (s *Store) UpdateRunTerminal(ctx context.Context, r missionrun.Run, events []missionrun.Event, nowFn func() string) (missionrun.Run, error) {
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		if r.Deadline != "" && (r.State == missionrun.StateCompleted || r.State == missionrun.StateFailed) {
+			nowRFC := nowFn() // 锁后取值（等待窗口内的期限越过在此判定）
+			nowT, perr := time.Parse(time.RFC3339Nano, nowRFC)
+			dl, derr := time.Parse(time.RFC3339Nano, r.Deadline)
+			if perr == nil && derr == nil && !nowT.Before(dl) {
+				outcome, preview := "ok", r.ResultBlock
+				if r.State == missionrun.StateFailed {
+					outcome, preview = "error", r.ErrorText
+				}
+				r.State = missionrun.StateCanceled
+				r.ErrorText = "墙钟到期（终态写入时判定）——迟到结果只审计"
+				r.ResultBlock = ""
+				r.FinishedAt, r.UpdatedAt = nowRFC, nowRFC
+				events = append([]missionrun.Event{
+					{RunID: r.RunID, EventType: missionrun.EventStopRequested, OccurredAt: nowRFC,
+						Payload: map[string]any{"cause": missionrun.CauseWallClockExceeded, "arbitrated_at_write": true}},
+					{RunID: r.RunID, EventType: missionrun.EventCanceled, OccurredAt: nowRFC,
+						Payload: map[string]any{"cause": missionrun.CauseWallClockExceeded}},
+					{RunID: r.RunID, EventType: missionrun.EventLateResult, OccurredAt: nowRFC,
+						Payload: map[string]any{"outcome": outcome, "preview": preview, "published": false, "phase": "terminal_write"}},
+				}, events...)
+			}
+		}
+		if _, err := q.ExecContext(ctx, `
+UPDATE runs SET state = ?, error_text = ?, result_block = ?, finished_at = ?, updated_at = ?, deadline = ?
+ WHERE run_id = ?`,
+			r.State, r.ErrorText, r.ResultBlock, r.FinishedAt, r.UpdatedAt, r.Deadline, r.RunID); err != nil {
+			return fmt.Errorf("sqlite: update run terminal: %w", err)
+		}
+		for _, e := range events {
+			payload, err := runEventPayloadJSON(e.Payload)
+			if err != nil {
+				return err
+			}
+			if _, err := q.ExecContext(ctx, `
+INSERT INTO run_events (run_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+				e.RunID, e.EventType, payload, e.OccurredAt); err != nil {
+				return fmt.Errorf("sqlite: insert run event: %w", err)
+			}
 		}
 		return nil
 	})

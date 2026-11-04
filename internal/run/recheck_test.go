@@ -176,3 +176,58 @@ func TestStopDuringFenceCheck(t *testing.T) {
 		t.Fatalf("停止后 Mission 回 ready: %v", st)
 	}
 }
+
+// TestTerminalWriteArbitration 四审 #6：终态写入的**写锁后**墙钟裁决——
+// completed/failed 在落库时刻期限已过即改按 canceled（迟到结果只审计）。
+func TestTerminalWriteArbitration(t *testing.T) {
+	store := NewMemStore()
+	ctx := context.Background()
+	clock := &mutableClock{now: "2026-11-03T12:00:00.000000000Z"}
+	mk := func(id string) Run {
+		return Run{RunID: id, MissionID: "mi_ta", Attempt: 1, LeaseID: "lse_t",
+			State: StateRunning, RequestedAt: "t", UpdatedAt: "t",
+			Deadline: "2026-11-03T12:01:00.000000000Z"}
+	}
+	// 播种 running 行（终写前态）——同一 mission 不能同时在途，逐个终写
+	if _, err := store.CreateRun(ctx, mk("run_ta1"), 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	// 推进时钟越过期限（模拟终写取得写锁后的现行时刻）
+	clock.Set("2026-11-03T12:01:30.000000000Z")
+	// completed：落库时（nowFn——模拟锁后取值）已过期限 → canceled + 审计
+	r1 := mk("run_ta1")
+	r1.State, r1.ResultBlock = StateCompleted, "迟到正文"
+	out1, err := store.UpdateRunTerminal(ctx, r1, nil, clock.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out1.State != StateCanceled || out1.ResultBlock != "" {
+		t.Fatalf("期限后完成须改判 canceled: %+v", out1)
+	}
+	evs, _ := store.RunEvents(ctx, "run_ta1")
+	lateSeen, causeSeen := false, false
+	for _, e := range evs {
+		if e.EventType == EventLateResult && evStr(e.Payload, "phase") == "terminal_write" {
+			lateSeen = true
+		}
+		if e.EventType == EventCanceled && evStr(e.Payload, "cause") == CauseWallClockExceeded {
+			causeSeen = true
+		}
+	}
+	if !lateSeen || !causeSeen {
+		t.Fatalf("停止/审计事件: %+v", evs)
+	}
+	// failed 同并入（四审：错误结果在停止后按停止归档）
+	if _, err := store.CreateRun(ctx, mk("run_ta2"), 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	r2 := mk("run_ta2")
+	r2.State, r2.ErrorText = StateFailed, "执行错误"
+	out2, err := store.UpdateRunTerminal(ctx, r2, nil, clock.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out2.State != StateCanceled {
+		t.Fatalf("期限后失败须并入停止: %+v", out2)
+	}
+}

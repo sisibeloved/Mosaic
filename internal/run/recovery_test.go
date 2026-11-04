@@ -19,7 +19,7 @@ func seedRunning(t *testing.T, f fixture, runID string) {
 	if _, err := f.svc.store.CreateRun(context.Background(), Run{
 		RunID: runID, MissionID: "mi_a", Attempt: 1, LeaseID: "lse_seed",
 		State: StateRunning, Generation: 3, RequestedAt: "t", StartedAt: "t", UpdatedAt: "t",
-	}, 0, 0); err != nil {
+	}, 0, 0, ""); err != nil {
 		t.Fatalf("播种: %v", err)
 	}
 }

@@ -176,3 +176,39 @@ func TestReleaseDispatchClaimAPI(t *testing.T) {
 	}
 	r409.Body.Close()
 }
+
+// TestDispatchClaimViewAPI 四审 #7：认领只读面——已完结回执可见（state=
+// finalized，releasable=false）；未知键 404。pending/create 类语义在 IT 覆盖。
+func TestDispatchClaimViewAPI(t *testing.T) {
+	ts, mSvc := slotDispatchServer(t, nil)
+	ctx := context.Background()
+	ag := postSlot(t, ts.URL+"/v1/identity/agents", `{"display_name":"负责人"}`)
+	var agDoc struct {
+		AgentID string `json:"agent_id"`
+	}
+	_ = json.NewDecoder(ag.Body).Decode(&agDoc)
+	ag.Body.Close()
+	src := mission.RoomSource{RoomID: "r1", TaskID: "tsk_a"}
+	m, err := mSvc.Create(ctx, agDoc.AgentID, mission.Content{
+		Objective: "原目标", Scope: "s", AcceptanceCriteria: []string{"a"},
+		DeliverableSpecs: []string{"d"}, SourceRefs: []string{"r:1"},
+	}, &src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok := postSlot(t, ts.URL+"/v1/dispatch/update", `{"mission_id":"`+m.MissionID+`","expected_version":1,
+		"idempotency_key":"idem-view","objective":"追加","scope":"s",
+		"acceptance_criteria":["a"],"deliverable_specs":["d"],"source_refs":["r:1"]}`)
+	if ok.StatusCode != http.StatusOK {
+		t.Fatalf("续接: %d", ok.StatusCode)
+	}
+	ok.Body.Close()
+	codeView, resp := getJSONMap(t, ts.URL+"/v1/dispatch/claims/idem-view")
+	if codeView != http.StatusOK || resp["state"] != "finalized" || resp["releasable"] != false {
+		t.Fatalf("已完结认领视图: %d %v", codeView, resp)
+	}
+	codeNF, nf := getJSONMap(t, ts.URL+"/v1/dispatch/claims/idem-none")
+	if codeNF != http.StatusNotFound || nf == nil {
+		t.Fatalf("未知键须 404: %d %v", codeNF, nf)
+	}
+}

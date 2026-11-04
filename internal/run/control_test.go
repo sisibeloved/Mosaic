@@ -260,7 +260,7 @@ func TestRecoverDispatchByIntent(t *testing.T) {
 		ctx := context.Background()
 		seeded := Run{RunID: "run_seed", MissionID: "mi_a", Attempt: 1,
 			LeaseID: "lse_seed", State: StateRunning, RequestedAt: "t", UpdatedAt: "t"}
-		if _, err := f.svc.store.CreateRun(ctx, seeded, 0, 0); err != nil {
+		if _, err := f.svc.store.CreateRun(ctx, seeded, 0, 0, ""); err != nil {
 			t.Fatalf("播种: %v", err)
 		}
 		f.missions.status["mi_a"] = tc.intent

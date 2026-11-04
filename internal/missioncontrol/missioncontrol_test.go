@@ -318,7 +318,7 @@ func TestCancelTimeoutReturnsCanceling(t *testing.T) {
 		RunID: "run_orphan", MissionID: mi, Attempt: 1,
 		LeaseID: "lse_x", State: missionrun.StateRunning,
 		RequestedAt: "t", UpdatedAt: "t",
-	}, 0, 0); err != nil {
+	}, 0, 0, ""); err != nil {
 		t.Fatalf("播种孤儿 Run: %v", err)
 	}
 

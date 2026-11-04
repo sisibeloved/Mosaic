@@ -146,7 +146,7 @@ func TestRunCanceledTerminalIT(t *testing.T) {
 	defer store.Close()
 	ctx := context.Background()
 
-	r, err := store.CreateRun(ctx, seedRun("run_c1", "mi_it2", 0, missionrun.StateRunning), 0, 0)
+	r, err := store.CreateRun(ctx, seedRun("run_c1", "mi_it2", 0, missionrun.StateRunning), 0, 0, "")
 	if err != nil {
 		t.Fatalf("首建: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestRunCanceledTerminalIT(t *testing.T) {
 		t.Fatalf("canceled 不属未终态: %+v", unfinished)
 	}
 	// canceled 后可再建（互斥只锁 pending/running）
-	r2, err := store.CreateRun(ctx, seedRun("run_c2", "mi_it2", 0, missionrun.StateRunning), 0, 0)
+	r2, err := store.CreateRun(ctx, seedRun("run_c2", "mi_it2", 0, missionrun.StateRunning), 0, 0, "")
 	if err != nil || r2.Attempt != 2 {
 		t.Fatalf("canceled 后再建: %+v %v", r2, err)
 	}

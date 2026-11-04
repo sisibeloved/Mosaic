@@ -1722,6 +1722,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/dispatch/claims/{idempotency_key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 认领查询（0.6.13 四审
+         * @description 遗留待核验认领的 owner 可读面——提供 release 处置所需的完整
+         *     request_digest 与状态。state=pending 且 route_id 为空（update 类认领）
+         *     时 releasable=true；create 类认领（route_id 非空）不可经公开入口释放。
+         */
+        get: operations["getDispatchClaim"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/dispatch/claims/{idempotency_key}/release": {
         parameters: {
             query?: never;
@@ -1733,9 +1755,12 @@ export interface paths {
         put?: never;
         /**
          * 遗留认领处置——确认未执行后释放键（0.6.13 三审
-         * @description 仅限旧候选版（b59a395，未发布）遗留的 pending 认领：调用方已向用户
-         *     呈现"确认未执行"语义后释放幂等键（request_digest 须与认领行一致——
-         *     防误删他键）。同键同载荷可随后重提；已完结回执不可动（409）。
+         * @description 仅限 update 类 pending 认领（route_id 空——旧候选版 b59a395 遗留或
+         *     本版在途续接）：调用方已向用户呈现"确认未执行"语义后释放幂等键
+         *     （request_digest 须与认领行一致，可经 GET claims 取得）。create 类
+         *     认领（route_id 非空）在途建单不可释放（409 claim_not_releasable——
+         *     防同键建两单）；已完结回执不可动（409）。处置在单一写事务内判定，
+         *     仅实际删除成功才返回 released=true。
          */
         post: operations["releaseDispatchClaim"];
         delete?: never;
@@ -4004,6 +4029,22 @@ export interface components {
             resolved_agent_id?: string;
             /** Format: date-time */
             expires_at: string;
+        };
+        /** @description 认领行视图（0.6.13 四审 */
+        DispatchClaimView: {
+            receipt_id: string;
+            idempotency_key: string;
+            /** @description 认领行绑定的完整请求摘要（release 处置所需） */
+            request_digest: string;
+            request_id: string;
+            /** @description 空 = update 类认领；非空 = create 类（在途建单，不可释放） */
+            route_id: string;
+            /** @description 空 = pending；非空 = 已完结 */
+            domain_command_id: string;
+            /** @enum {string} */
+            state: "pending" | "finalized";
+            /** @description state=pending 且 route_id 空（update 类）——可经 release 处置 */
+            releasable: boolean;
         };
         /** @description 遗留认领释放请求（0.6.13 三审 */
         DispatchClaimReleaseRequest: {
@@ -8730,6 +8771,46 @@ export interface operations {
             };
         };
     };
+    getDispatchClaim: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                idempotency_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 认领 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DispatchClaimView"];
+                };
+            };
+            /** @description 认领不存在（claim_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 网关域未装配（dispatch_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     releaseDispatchClaim: {
         parameters: {
             query?: never;
@@ -8763,7 +8844,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description 已完结不可动（claim_finalized）或摘要不符（digest_mismatch） */
+            /** @description 已完结不可动（claim_finalized）/ 摘要不符（digest_mismatch）/ 建单认领在途（claim_not_releasable） */
             409: {
                 headers: {
                     [name: string]: unknown;

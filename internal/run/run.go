@@ -124,6 +124,10 @@ var (
 	// 契约被修订——释放租约重新装配，下一轮以新版本快照执行；预算与清单
 	// 不得混用两个版本）。
 	ErrContractDrift = errors.New("run: 契约版本漂移——释放租约重新装配")
+	// ErrGrantDrift 清单授权快照漂移（四审 #3 / RFC §11.4：装配后授权档案
+	// 变化（含可选上下文/工具撤销）——旧清单不得交付，释放租约重新装配按
+	// 剩余授权降级执行）。
+	ErrGrantDrift = errors.New("run: 授权快照漂移——释放租约重新装配")
 	// ErrResidueUnresolved 存在未处置 unknown 残留——再执行只发生在显式处置
 	// 后（ADR-0030 兑现的执行面围栏：waiting 挡调度列之外的兜底——旧库
 	// ready+残留收敛形态，0.6.7 发布前补齐）。
@@ -289,6 +293,9 @@ type Manifest struct {
 	// ContractVersion 清单钉住的契约版本（复审 #10：建行事务内核对现行版本
 	// ——漂移即释放租约重新装配；预算自该版本契约层取，同快照不混版本）。
 	ContractVersion int
+	// GrantFingerprint 装配时授权快照指纹（四审 #3：建 Run 事务内与当前
+	// 授权比对——可选撤销即漂移拒领，重新装配降级；空 = 测试件不核对）。
+	GrantFingerprint string
 	// Layers 内容块（审校 #1：执行输入取存档内容，非仅 ID）。
 	Layers []ManifestLayer
 }
@@ -306,9 +313,15 @@ type Store interface {
 	// 超限 ErrBudgetExhausted）；manifestContractVersion>0 时核对现行契约版本
 	//（漂移 ErrContractDrift——外层释放租约重新装配）；执行者门在建行事务
 	// 内核对（负责人 active + 所钉任职仍 active 且未换人——ErrOwnerNotActive）。
-	CreateRun(ctx context.Context, r Run, maxRuns, manifestContractVersion int) (Run, error)
+	CreateRun(ctx context.Context, r Run, maxRuns, manifestContractVersion int, grantFingerprint string) (Run, error)
 	// UpdateRun 全行替换 + 事件同事务。
 	UpdateRun(ctx context.Context, r Run, events []Event) error
+	// UpdateRunTerminal 终态写入 + **写锁后**墙钟裁决（四审 #6）：事务内以
+	// nowFn() 现行时刻（锁后取值——等待写锁期间期限已过的窗口在此收口）
+	// 核对行上 deadline——拟写 completed/failed 且期限已过 → 改按 canceled
+	//（cause=wall_clock_exceeded）落终态，结果仅 late_result 审计不发布；
+	// 否则按入参落。返回实际落库 Run（调用方以返回值为准）。
+	UpdateRunTerminal(ctx context.Context, r Run, events []Event, nowFn func() string) (Run, error)
 	RunByID(ctx context.Context, runID string) (Run, bool, error)
 	ListRunsByMission(ctx context.Context, missionID string) ([]Run, error)
 	ListUnfinished(ctx context.Context) ([]Run, error)
@@ -531,7 +544,8 @@ func (s *Service) ScanOnce(ctx context.Context) {
 			switch {
 			case errors.Is(err, ErrSchedulerBusy), errors.Is(err, ErrNoExecutor),
 				errors.Is(err, ErrBudgetExhausted),                                  // 0.6.13：上限命中是常态（诊断面计数），不入扫描错误
-				errors.Is(err, ErrOwnerNotActive), errors.Is(err, ErrContractDrift): // 复审 #4/#10：身份门/版本漂移——任务停留 ready，下轮重试
+				errors.Is(err, ErrOwnerNotActive), errors.Is(err, ErrContractDrift), // 复审 #4/#10：身份门/版本漂移——任务停留 ready，下轮重试
+				errors.Is(err, ErrGrantDrift): // 四审 #3：授权漂移——重新装配降级，下轮重试
 			default:
 				lastErr = fmt.Sprintf("%s: %v", ref.MissionID, err)
 			}
@@ -668,7 +682,7 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 		Generation:  lease.Generation,
 		RequestedAt: now, UpdatedAt: now,
 	}
-	r, err = s.store.CreateRun(ctx, r, mMaxRuns, manifest.ContractVersion)
+	r, err = s.store.CreateRun(ctx, r, mMaxRuns, manifest.ContractVersion, manifest.GrantFingerprint)
 	if err != nil {
 		_ = s.leases.Release(ctx, lease.LeaseID)
 		// 事务内权威上限命中（并发孪生败者——审校 #14）：计数并透传（手动
@@ -978,12 +992,17 @@ func (s *Service) finalizeRun(ctx context.Context, r *Run, lease Lease, state, e
 	if state == StateFailed {
 		eventType = EventFailed
 	}
-	if err := s.store.UpdateRun(ctx, *r, []Event{{
+	// 四审 #6：终态写入经 UpdateRunTerminal——**取得写锁后**以现行时刻核对
+	// 行上期限（等待写锁期间期限已过/监控已发停的窗口在此收口）；期限已过
+	// 改按 canceled 落库（迟到正文只审计），返回实际终态。
+	finalRun, err := s.store.UpdateRunTerminal(ctx, *r, []Event{{
 		RunID: r.RunID, EventType: eventType, OccurredAt: now,
 		Payload: map[string]any{"late": false},
-	}}); err != nil {
+	}}, s.now)
+	if err != nil {
 		return fmt.Errorf("终态写入失败：%w", err)
 	}
+	*r = finalRun
 	_ = s.leases.Release(ctx, lease.LeaseID)
 	_ = s.missions.SetReadyFromRunning(ctx, r.MissionID, "run_"+state)
 	return nil

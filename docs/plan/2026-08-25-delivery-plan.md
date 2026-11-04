@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.73 |
+| 版本 | v2.74 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -205,6 +205,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.74 | 2026-11-04 | Mosaic 项目组 / ZCode | **0.6.13 四审修复（4 P1 + 4 P2；ADR-0036 v0.5）**。前端冲突草稿合并与归属绑定（底稿合并显式输入/预算留现行/加载期预算禁编辑）；清单授权快照指纹（GrantFingerprint 随执行传递 + CreateRun 事务比对——可选撤销 ErrGrantDrift 重新装配降级）；UpdateRunTerminal 写锁后墙钟裁决（completed/failed 并入停止归档）；认领处置资格限定 update 类 + 单事务精准结果 + GET claims 只读面 + 遗留文案修正。验证：UT/IT/API 新红面（锁窗口裁决/指纹漂移三态/处置五态/认领视图）+ vet/-race + it/st + SPA 绿 + 生成物幂等；真机冒烟 22 项（含撤权双面）+ 上一版 19 项复跑 ALL-PASS |
 | v2.73 | 2026-11-04 | Mosaic 项目组 / ZCode | **0.6.13 三审修复（4 P1 + 2 P2 + 既有前端 2 P2；ADR-0036 v0.4）**。create 拒绝不释放认领（孪生共享——防同键串单）；续接 CAS 败按认领来源分流（新键冲突回滚不冒领 / 遗留待核验 + claims/release 处置端点 + ClaimByKey）；CreateRun 事务内核对任职授权与任务归属（撤权/交接后旧清单不得执行）；完成提交前停止仲裁下沉（围栏后重读停止与期限）。前端：加载期禁编辑、409 后保留录入切续接。验证：UT/IT/API 新红面 + vet/-race + it/st（触碰面）+ SPA 绿 + 生成物幂等；两版真机冒烟复跑 ALL-PASS（adapter 真机 IT 偶发与本改动无关，隔离复跑通过） |
 | v2.72 | 2026-11-04 | Mosaic 项目组 / ZCode | **0.6.13 复审修复（13 项：5 P1 + 6 P2 + 2 P3；ADR-0036 v0.3）**。建单事务门统一（CreationGate：显式 owner 身份门/模板唯一性锚/workspace_access 完整快照）；执行预算单快照（清单契约层 + CreateRun 事务内核对版本漂移/现行上限/执行者门——暂停启动 409 owner_not_active）；完成提交前停止/期限原子判定；投递认领一致性（采纳原行/拒绝释放/route_id 真值/upsert 自愈）；v30 遗留恢复（内容等值完结/不等值不宣告）+ reason 回落；前端续接模式重写（原子生效/代次/失败禁提/基准回传/冲突重载）；摘要墓碑。验证：UT/IT 新红面 + 全量 vet/-race + it/st + SPA 绿 + 生成物幂等；真机冒烟 8 项 + 上一版 19 项复跑 ALL-PASS |
 | v2.71 | 2026-11-03 | Mosaic 项目组 / ZCode | **0.6.13 独立审校修复（17 项：5 P1 + 10 P2 + 2 P3；ADR-0036 v0.2）**。续接原子化（认领+复核+修订+回执同一写事务——拒绝回滚不占键/pending 采纳原行/reason 入回执/字段校验 400）；Slot 派发链补强（原请求摘要稳定+解析事实另存/建单事务四核（实例/任职/身份/授权）/意图落任务按实例固定任职/预检 active+准入/契约对齐）；执行预算收口（墙钟独立监控按 RunID 直达/RefOf 权威快照——手动入口共用/CreateRun 事务内核对 max_runs/期限时刻比较）。任务卡续接入口（MissionSummary.room_source + MissionsPage 追加要求模式）；migration v31。验证：UT/IT/API 新红面（原子续接/监控独立性/手动预算/并发上限/小数秒/换绑 resolved 起步）+ 全量 vet/-race + it/st + SPA 绿 + 生成物幂等；真机冒烟 19 项两次 ALL-PASS |

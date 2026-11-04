@@ -85,9 +85,10 @@ export function MissionsPage() {
   const [conflictReload, setConflictReload] = useState(false);
   const [retryTick, setRetryTick] = useState(0);
   const detailSeq = useRef(0);
-  // 三审前端 P2（映射陈旧切续接）：create 撞 409 source_already_mapped 后保留
-  // 用户已录入的新增要求，仅取现行版本切换续接模式（不预填覆盖输入）。
-  const skipPrefillRef = useRef(false);
+  // 三审/四审前端（映射陈旧切续接）：create 撞 409 后保留用户录入——草稿
+  // **绑定引发 409 的 room/task**（四审 #2）；命中同一来源时以详情为底稿合并
+  // 用户显式修改的字段（四审 #1：未编辑字段/预算留现行值），切换来源即丢弃。
+  const pendingMergeRef = useRef<{ room: string; task: string } | null>(null);
   const [budget, setBudget] = useState({ concurrency: "1", max_runs: "32", max_wall_clock_seconds: "86400", max_retries: "0", max_delegation_depth: "0" });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -154,11 +155,37 @@ export function MissionsPage() {
           constraints: d.constraints ?? [],
           delegation: { allowed: d.delegation?.allowed ?? [], max_depth: d.delegation?.max_depth ?? 0 },
         });
-        if (skipPrefillRef.current) {
-          // 409 切换路径：保留用户已录入的新增要求（仅取版本与基准）
-          skipPrefillRef.current = false;
+        const pm = pendingMergeRef.current;
+        if (pm && pm.room === room && pm.task === task) {
+          // 409 合并路径（四审 #1）：以现行契约为**底稿**，仅合并用户显式输入
+          // 的字段（非空者）；预算未显式编辑（开关未开）留现行值——不清空
+          // 验收/交付、不放宽预算。合并结果回填表单供用户核对。
+          pendingMergeRef.current = null;
+          setForm((f) => ({
+            ...f,
+            objective: f.objective.trim() || d.objective || "",
+            scope: f.scope.trim() || d.scope || "",
+            acceptance: f.acceptance.trim() || (d.acceptance_criteria ?? []).join("\n"),
+            deliverables: f.deliverables.trim() || (d.deliverable_specs ?? []).join("\n"),
+            sources: f.sources.trim() || (d.source_refs ?? []).join("\n"),
+            returns: f.returns.trim() || (d.return_targets ?? []).join("\n"),
+            reviewer: f.reviewer.trim() || d.reviewer || "",
+          }));
+          if (!budgetOpen) {
+            setBudget({
+              concurrency: String(d.budget?.concurrency ?? 1),
+              max_runs: String(d.budget?.max_runs ?? 32),
+              max_wall_clock_seconds: String(d.budget?.max_wall_clock_seconds ?? 86400),
+              max_retries: String(d.budget?.max_retries ?? 0),
+              max_delegation_depth: String(d.budget?.max_delegation_depth ?? 0),
+            });
+          }
+          setBudgetOpen(true);
           setDetailState("idle");
           return;
+        }
+        if (pm) {
+          pendingMergeRef.current = null; // 来源已切换——丢弃旧卡保留标记（四审 #2）
         }
         setForm((f) => ({
           ...f,
@@ -186,7 +213,7 @@ export function MissionsPage() {
         setDetailState("error"); // 复审 #1：读取失败禁用提交（目标不生效）
         setMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
       });
-  }, [formOpen, form.room, form.task, missions, retryTick]);
+  }, [formOpen, form.room, form.task, missions, retryTick, budgetOpen]);
 
   const act = async (fn: () => Promise<unknown>): Promise<ApiError | null> => {
     setBusy(true);
@@ -239,9 +266,9 @@ export function MissionsPage() {
       });
       // 来源已被他处交办（列表陈旧）——保留录入切续接模式（重取映射与版本）
       if (err?.code === "source_already_mapped") {
-        skipPrefillRef.current = true;
+        pendingMergeRef.current = { room: form.room.trim(), task: form.task.trim() };
         setRev((r) => r + 1);
-        setMsg("该任务卡已被交办——已切换为续接（追加要求）模式，请核对后重新提交");
+        setMsg("该任务卡已被交办——正切换为续接模式：现行契约将与您已填写的字段合并（未填字段与预算留现行值），请核对后重新提交");
       }
     })();
   };
@@ -456,7 +483,7 @@ export function MissionsPage() {
                 className="w-44 rounded border border-border bg-surface-2 px-1.5 py-1 outline-none"
               />
             </label>
-            <button type="button" onClick={() => setBudgetOpen((o) => !o)} className="underline text-faint">
+            <button type="button" disabled={detailState === "loading"} onClick={() => setBudgetOpen((o) => !o)} className="underline text-faint disabled:opacity-40">
               {budgetOpen ? "收起预算" : "预算（缺省 1/32/一天/不重试/不委派）"}
             </button>
           </div>
@@ -475,6 +502,7 @@ export function MissionsPage() {
                   <span className="text-faint">{label}</span>
                   <input
                     value={budget[k]}
+                    disabled={detailState === "loading"}
                     onChange={(e) => setBudget({ ...budget, [k]: e.target.value })}
                     className="rounded border border-border bg-surface-2 px-1.5 py-1 font-mono text-xs outline-none"
                   />

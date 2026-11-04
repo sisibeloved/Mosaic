@@ -48,7 +48,7 @@ var (
 	// 正文等值证明，不自动冒领。处置：携带**当前**版本同键重试（确认未执行
 	// 则正常执行）；或确认未执行后经 /v1/dispatch/claims/{key}/release 释放
 	// 键另提。仅影响运行过未发布候选版的库）。
-	ErrLegacyPendingUnresolved = errors.New("dispatch: 旧版遗留认领待核验（修订归属不可自动证明）——携当前版本重试或确认未执行后释放键")
+	ErrLegacyPendingUnresolved = errors.New("dispatch: 旧版遗留认领待核验（修订归属不可自动证明）——经 GET /v1/dispatch/claims/{key} 核对摘要，确认未执行后 POST /v1/dispatch/claims/{key}/release 释放，再以更正载荷重提")
 	// ErrTargetNotActive 续接目标身份非 active（0.6.13 / ADR-0036 §1：续接指令
 	// 不发往已停身份——suspended/retiring/retired 须先恢复或换人）。
 	ErrTargetNotActive = errors.New("dispatch: 目标负责人非 active")
@@ -203,6 +203,10 @@ type Store interface {
 	// ClaimByKey 幂等键查认领行**含 pending**（三审 #6：遗留处置入口的只读面
 	//——digest 核对与状态分辨；不作回执语义）。
 	ClaimByKey(ctx context.Context, callerRef, scope, key string) (Receipt, bool, error)
+	// ReleaseClaim 遗留认领处置（四审 #4/#8：单一写事务判定+删除，仅
+	// RowsAffected=1 为释放；create 认领 route 非空不可释放）。返回 outcome：
+	// released | finalized | not_found | digest_mismatch | not_releasable。
+	ReleaseClaim(ctx context.Context, callerRef, scope, key, digest string) (string, error)
 }
 
 // Service 网关服务。
@@ -728,10 +732,11 @@ func (s *Service) Update(ctx context.Context, cmd UpdateCmd) (Receipt, bool, err
 	return out, false, nil
 }
 
-// ReleaseClaim 遗留认领处置（三审 #6：确认未执行后释放键——仅限 pending
-// 同摘要行；已完结回执不可动）。调用方须已向用户呈现"确认未执行"语义。
-func (s *Service) ReleaseClaim(ctx context.Context, key, digest string) error {
-	return s.store.ReleaseKey(ctx, CallerOwner, ScopeWorkspace, key, digest)
+// ReleaseClaim 遗留认领处置（三审 #6 + 四审 #4/#8：确认未执行后释放键——
+// 单一写事务判定+删除，仅 update 类认领（route 空）可释放；调用方须已向
+// 用户呈现"确认未执行"语义）。outcome 见 Store.ReleaseClaim。
+func (s *Service) ReleaseClaim(ctx context.Context, key, digest string) (string, error) {
+	return s.store.ReleaseClaim(ctx, CallerOwner, ScopeWorkspace, key, digest)
 }
 
 // PendingClaim 认领行查询（含 pending——处置入口只读面）。

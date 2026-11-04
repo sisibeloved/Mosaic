@@ -2522,8 +2522,10 @@ func (s *server) GetDispatchReceipt(w http.ResponseWriter, r *http.Request, para
 	writeJSON(w, http.StatusOK, receiptView(receipt, true))
 }
 
-// ReleaseDispatchClaim 遗留认领处置（三审 #6 / ADR-0036 v0.4）：确认未执行后
-// 释放旧候选版遗留 pending——digest 须与认领行一致；已完结不可动。
+// ReleaseDispatchClaim 遗留认领处置（三审 #6 + 四审 #4/#8）：单一写事务判定
+// + 删除——仅 update 类 pending（route 空）同摘要认领可释放；零行按事务内
+// 真值分辨（claim_finalized / claim_not_found / digest_mismatch /
+// claim_not_releasable——create 在途认领公开处置不可及，防同键建两单）。
 func (s *server) ReleaseDispatchClaim(w http.ResponseWriter, r *http.Request, idempotencyKey string) {
 	if s.dispatchUnavailable(w) {
 		return
@@ -2539,29 +2541,52 @@ func (s *server) ReleaseDispatchClaim(w http.ResponseWriter, r *http.Request, id
 		writeError(w, http.StatusBadRequest, "invalid_request", "请求体不合法："+err.Error())
 		return
 	}
-	// 认领行探查：pending 且同摘要才可释放（digest 不符=他键；已完结不可动）
-	prior, found, err := s.deps.Dispatch.PendingClaim(r.Context(), idempotencyKey)
+	outcome, err := s.deps.Dispatch.ReleaseClaim(r.Context(), idempotencyKey, req.RequestDigest)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "dispatch_write_failed", err.Error())
+		return
+	}
+	switch outcome {
+	case "released":
+		writeJSON(w, http.StatusOK, apigen.DispatchClaimReleaseResult{Released: true, IdempotencyKey: idempotencyKey})
+	case "finalized":
+		writeError(w, http.StatusConflict, "claim_finalized", "回执已完结——不可释放（按幂等键重放即可）")
+	case "digest_mismatch":
+		writeError(w, http.StatusConflict, "digest_mismatch", "request_digest 与认领行不一致")
+	case "not_releasable":
+		writeError(w, http.StatusConflict, "claim_not_releasable", "建单认领在途——公开处置不可及（等待其完结或重放）")
+	default:
+		writeError(w, http.StatusNotFound, "claim_not_found", "认领不存在（无 pending 行）")
+	}
+}
+
+// GetDispatchClaim 认领查询（四审 #7：遗留待核验认领的 owner 可读面——
+// 提供 release 所需完整摘要与状态；create 类认领标注不可释放）。
+func (s *server) GetDispatchClaim(w http.ResponseWriter, r *http.Request, idempotencyKey string) {
+	if s.dispatchUnavailable(w) {
+		return
+	}
+	claim, found, err := s.deps.Dispatch.PendingClaim(r.Context(), idempotencyKey)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "dispatch_read_failed", err.Error())
 		return
 	}
 	if !found {
-		writeError(w, http.StatusNotFound, "claim_not_found", "认领不存在（无 pending 行）")
+		writeError(w, http.StatusNotFound, "claim_not_found", "认领不存在")
 		return
 	}
-	if prior.DomainCommandID != "" {
-		writeError(w, http.StatusConflict, "claim_finalized", "回执已完结——不可释放（按幂等键重放即可）")
-		return
+	state := "pending"
+	if claim.DomainCommandID != "" {
+		state = "finalized"
 	}
-	if prior.RequestDigest != req.RequestDigest {
-		writeError(w, http.StatusConflict, "digest_mismatch", "request_digest 与认领行不一致")
-		return
-	}
-	if err := s.deps.Dispatch.ReleaseClaim(r.Context(), idempotencyKey, req.RequestDigest); err != nil {
-		writeError(w, http.StatusInternalServerError, "dispatch_write_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, apigen.DispatchClaimReleaseResult{Released: true, IdempotencyKey: idempotencyKey})
+	writeJSON(w, http.StatusOK, apigen.DispatchClaimView{
+		ReceiptId: claim.ReceiptID, IdempotencyKey: claim.IdempotencyKey,
+		RequestDigest: claim.RequestDigest, RequestId: claim.RequestID,
+		RouteId: claim.RouteID, DomainCommandId: claim.DomainCommandID,
+		State: apigen.DispatchClaimViewState(state),
+		// 仅 update 类（route 空）pending 可经 release 处置
+		Releasable: state == "pending" && claim.RouteID == "",
+	})
 }
 
 // decisionView dispatch.Decision → apigen.RouteDecisionView。

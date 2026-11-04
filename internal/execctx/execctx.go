@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"time"
 	"unicode/utf8"
@@ -202,19 +203,23 @@ type Watermark struct {
 
 // Manifest 执行上下文清单（存档装配内容——Runtime 消费对象）。
 type Manifest struct {
-	ManifestID      string      `json:"manifest_id"`
-	MissionID       string      `json:"mission_id"`
-	ContractVersion int         `json:"contract_version"`
-	BindingID       string      `json:"binding_id"`
-	AgentID         string      `json:"agent_id"`
-	State           string      `json:"state"`
-	ReasonCode      string      `json:"reason_code"`
-	Digest          string      `json:"digest"`
-	PolicyVersion   string      `json:"policy_version"`
-	Layers          []Layer     `json:"layers"`
-	Watermarks      []Watermark `json:"watermarks"`
-	TotalBytes      int         `json:"total_bytes"`
-	CreatedAt       string      `json:"created_at"`
+	ManifestID string `json:"manifest_id"`
+	// GrantFingerprint 装配时授权快照指纹（四审 #3：领取 Run 的写事务内与
+	// 当前授权比对——可选上下文/工具撤销即漂移，拒领旧清单重新装配降级；
+	// 不落库，运行链内存传递——重建清单自然重算）。
+	GrantFingerprint string      `json:"grant_fingerprint,omitempty"`
+	MissionID        string      `json:"mission_id"`
+	ContractVersion  int         `json:"contract_version"`
+	BindingID        string      `json:"binding_id"`
+	AgentID          string      `json:"agent_id"`
+	State            string      `json:"state"`
+	ReasonCode       string      `json:"reason_code"`
+	Digest           string      `json:"digest"`
+	PolicyVersion    string      `json:"policy_version"`
+	Layers           []Layer     `json:"layers"`
+	Watermarks       []Watermark `json:"watermarks"`
+	TotalBytes       int         `json:"total_bytes"`
+	CreatedAt        string      `json:"created_at"`
 }
 
 // AccountingEntry 回执交付账目条目——只记账不复制内容。
@@ -279,6 +284,30 @@ type Ports struct {
 	Bindings Bindings
 	Grants   Grants
 	Rooms    RoomReader
+}
+
+// GrantFingerprint 授权档案快照指纹（四审 #3 / RFC §11.4：领取 Run 时与
+// 当前授权比对——任何授权集变化（含可选上下文/工具撤销）即漂移）。清单序
+// 归一（排序后哈希——同集不同序不误报）。
+func GrantFingerprint(g slot.AgentGrant) string {
+	norm := func(xs []string) []string {
+		out := append([]string(nil), xs...)
+		sort.Strings(out)
+		return out
+	}
+	skillRefs := make([]string, len(g.Skills))
+	for i, sk := range g.Skills {
+		skillRefs[i] = sk.Ref + "@v" + strconv.Itoa(sk.Version)
+	}
+	raw, _ := json.Marshal(struct {
+		Skills    []string `json:"skills"`
+		Tools     []string `json:"tools"`
+		Context   []string `json:"context"`
+		Caps      []string `json:"caps"`
+		Workspace string   `json:"ws"`
+	}{norm(skillRefs), norm(g.Tools), norm(g.Context), norm(g.Runtime.Capabilities), g.Runtime.WorkspaceAccess})
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 // Store 持久化端口（SQLite 实现：internal/storage/sqlite；测试件：memstore）。
@@ -397,6 +426,7 @@ func (s *Service) Build(ctx context.Context, missionID, bindingID string) (Build
 		BindingID: facts.Binding.BindingID, AgentID: facts.Binding.AgentID,
 		State: state, ReasonCode: reason, PolicyVersion: PolicyVersion,
 		Layers: layers, Watermarks: watermarks, TotalBytes: totalBytes(layers), CreatedAt: now,
+		GrantFingerprint: GrantFingerprint(grant), // 四审 #3：授权快照指纹随清单
 	}
 	manifest.Digest = DigestOf(manifest)
 	receipt := Receipt{

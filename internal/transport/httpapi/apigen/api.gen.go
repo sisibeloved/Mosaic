@@ -321,6 +321,24 @@ func (e DelegationPolicyAllowed) Valid() bool {
 	}
 }
 
+// Defines values for DispatchClaimViewState.
+const (
+	DispatchClaimViewStateFinalized DispatchClaimViewState = "finalized"
+	DispatchClaimViewStatePending   DispatchClaimViewState = "pending"
+)
+
+// Valid indicates whether the value is a known member of the DispatchClaimViewState enum.
+func (e DispatchClaimViewState) Valid() bool {
+	switch e {
+	case DispatchClaimViewStateFinalized:
+		return true
+	case DispatchClaimViewStatePending:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DispatchResolveRequestKind.
 const (
 	CreateMission DispatchResolveRequestKind = "create_mission"
@@ -2645,6 +2663,28 @@ type DispatchClaimReleaseResult struct {
 	IdempotencyKey string `json:"idempotency_key"`
 	Released       bool   `json:"released"`
 }
+
+// DispatchClaimView 认领行视图（0.6.13 四审
+type DispatchClaimView struct {
+	// DomainCommandId 空 = pending；非空 = 已完结
+	DomainCommandId string `json:"domain_command_id"`
+	IdempotencyKey  string `json:"idempotency_key"`
+	ReceiptId       string `json:"receipt_id"`
+
+	// Releasable state=pending 且 route_id 空（update 类）——可经 release 处置
+	Releasable bool `json:"releasable"`
+
+	// RequestDigest 认领行绑定的完整请求摘要（release 处置所需）
+	RequestDigest string `json:"request_digest"`
+	RequestId     string `json:"request_id"`
+
+	// RouteId 空 = update 类认领；非空 = create 类（在途建单，不可释放）
+	RouteId string                 `json:"route_id"`
+	State   DispatchClaimViewState `json:"state"`
+}
+
+// DispatchClaimViewState defines model for DispatchClaimView.State.
+type DispatchClaimViewState string
 
 // DispatchReceiptView 投递回执（RFC-0018 §11.2.1 的 0.6.1 子集）：仅表示领域命令已提交
 // （domain_command_id = mission_id），后续执行状态经 Mission 查询——
@@ -5291,6 +5331,9 @@ type ServerInterface interface {
 	// GetDeliveryPackage 单个交付包（供 request_review 的 delivery_package_ref 寻址）
 	// (GET /v1/delivery-packages/{package_id})
 	GetDeliveryPackage(w http.ResponseWriter, r *http.Request, packageId string)
+	// GetDispatchClaim 认领查询（0.6.13 四审
+	// (GET /v1/dispatch/claims/{idempotency_key})
+	GetDispatchClaim(w http.ResponseWriter, r *http.Request, idempotencyKey string)
 	// ReleaseDispatchClaim 遗留认领处置——确认未执行后释放键（0.6.13 三审
 	// (POST /v1/dispatch/claims/{idempotency_key}/release)
 	ReleaseDispatchClaim(w http.ResponseWriter, r *http.Request, idempotencyKey string)
@@ -5769,6 +5812,32 @@ func (siw *ServerInterfaceWrapper) GetDeliveryPackage(w http.ResponseWriter, r *
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetDeliveryPackage(w, r, packageId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetDispatchClaim operation middleware
+func (siw *ServerInterfaceWrapper) GetDispatchClaim(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "idempotency_key" -------------
+	var idempotencyKey string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "idempotency_key", r.PathValue("idempotency_key"), &idempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "idempotency_key", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetDispatchClaim(w, r, idempotencyKey)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -9244,6 +9313,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/dispatch/update", wrapper.UpdateDispatch)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/dispatch/dispatch", wrapper.DispatchRequest)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/dispatch/receipts", wrapper.GetDispatchReceipt)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/dispatch/claims/{idempotency_key}", wrapper.GetDispatchClaim)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/dispatch/claims/{idempotency_key}/release", wrapper.ReleaseDispatchClaim)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/runtimes", wrapper.ListRuntimes)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/runtimes/sync", wrapper.SyncRuntimes)

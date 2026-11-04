@@ -31,9 +31,9 @@ func (m *MemStore) WithMissionStatus(f func(missionID string) (string, bool)) *M
 }
 
 // CreateRun 建行（每 Mission 至多一个未终态）+ attempt_requested 事件。
-// 复审 #4/#10：身份门与版本漂移核对为 SQLite 建行事务面（memstore 无身份/
-// 契约行——manifestContractVersion 不用，仅保接口同构）。
-func (m *MemStore) CreateRun(_ context.Context, r Run, maxRuns, manifestContractVersion int) (Run, error) {
+// 复审 #4/#10 + 四审 #3：身份门/版本漂移/授权指纹核对为 SQLite 建行事务面
+// （memstore 无身份/契约/授权行——后两参不用，仅保接口同构）。
+func (m *MemStore) CreateRun(_ context.Context, r Run, maxRuns, manifestContractVersion int, grantFingerprint string) (Run, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, e := range m.runs {
@@ -191,6 +191,44 @@ func (m *MemStore) AppendRunEvents(_ context.Context, runID string, events []Eve
 }
 
 // ListUnresolvedUnknown 未处置 unknown。
+// UpdateRunTerminal 终态写入 + 写锁后墙钟裁决（四审 #6；临界区内与 SQLite
+// 事务面同语义：期限已过改按 canceled 落终态，迟到正文只审计）。
+func (m *MemStore) UpdateRunTerminal(_ context.Context, r Run, events []Event, nowFn func() string) (Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.runs[r.RunID]; !ok {
+		return Run{}, ErrRunNotFound
+	}
+	if r.Deadline != "" && (r.State == StateCompleted || r.State == StateFailed) {
+		if nowT, err := time.Parse(time.RFC3339Nano, nowFn()); err == nil {
+			if dl, derr := time.Parse(time.RFC3339Nano, r.Deadline); derr == nil && !nowT.Before(dl) {
+				outcome, preview := "ok", r.ResultBlock
+				if r.State == StateFailed {
+					outcome, preview = "error", r.ErrorText
+				}
+				r.State = StateCanceled
+				r.ErrorText = "墙钟到期（终态写入时判定）——迟到结果只审计"
+				r.ResultBlock = ""
+				fin := nowFn()
+				r.FinishedAt, r.UpdatedAt = fin, fin
+				events = append([]Event{
+					{RunID: r.RunID, EventType: EventStopRequested, OccurredAt: fin,
+						Payload: map[string]any{"cause": CauseWallClockExceeded, "arbitrated_at_write": true}},
+					{RunID: r.RunID, EventType: EventCanceled, OccurredAt: fin,
+						Payload: map[string]any{"cause": CauseWallClockExceeded}},
+					{RunID: r.RunID, EventType: EventLateResult, OccurredAt: fin,
+						Payload: map[string]any{"outcome": outcome, "preview": truncateS(preview, 400), "published": false, "phase": "terminal_write"}},
+				}, events...)
+			}
+		}
+	}
+	m.runs[r.RunID] = r
+	for _, e := range events {
+		m.appendLocked(e)
+	}
+	return r, nil
+}
+
 // ListExpiredRunning 墙钟过期 running Run（0.6.13 / ADR-0036 §3；审校 #15：
 // 期限按**时刻**比较——RFC3339Nano 小数位数不定，字典序 .11Z < .1Z 会漏
 // 已过期行）。

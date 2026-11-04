@@ -126,7 +126,7 @@ func seedLegacy067(t *testing.T, f fixture, mi, runID, missionStatus string) {
 	ctx := context.Background()
 	r := Run{RunID: runID, MissionID: mi, Attempt: 1, LeaseID: "lse_" + runID,
 		State: StateRunning, RequestedAt: "t0", UpdatedAt: "t0"}
-	if _, err := f.svc.store.CreateRun(ctx, r, 0, 0); err != nil {
+	if _, err := f.svc.store.CreateRun(ctx, r, 0, 0, ""); err != nil {
 		t.Fatalf("播种: %v", err)
 	}
 	r.State = StateFailed
@@ -189,7 +189,7 @@ func seedRemoteUnknown(t *testing.T, f fixture, mi, runID string) {
 	ctx := context.Background()
 	r := Run{RunID: runID, MissionID: mi, Attempt: 1, LeaseID: "lse_" + runID,
 		State: StateRunning, RequestedAt: "t0", UpdatedAt: "t0"}
-	if _, err := f.svc.store.CreateRun(ctx, r, 0, 0); err != nil {
+	if _, err := f.svc.store.CreateRun(ctx, r, 0, 0, ""); err != nil {
 		t.Fatalf("播种: %v", err)
 	}
 	r.State = StateUnknown

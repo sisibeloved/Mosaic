@@ -9,8 +9,10 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/dispatch"
+	"github.com/sisibeloved/Mosaic/internal/execctx"
 	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/personalagent"
 	missionrun "github.com/sisibeloved/Mosaic/internal/run"
@@ -206,7 +208,7 @@ func TestCreateRunOwnerGateIT(t *testing.T) {
 			RequestedAt: "t", UpdatedAt: "t"}
 	}
 	// active + 在职 → 通过（随即终态化——后续用例不撞未终态探针）
-	first, err := store.CreateRun(ctx, mkRun("run_ok", "bd_run", "ag_run"), 0, 1)
+	first, err := store.CreateRun(ctx, mkRun("run_ok", "bd_run", "ag_run"), 0, 1, "")
 	if errors.Is(err, missionrun.ErrOwnerNotActive) {
 		t.Fatalf("active 负责人不得拒: %v", err)
 	} else if err != nil {
@@ -220,7 +222,7 @@ func TestCreateRunOwnerGateIT(t *testing.T) {
 	if _, _, err := store.TransitionAgent(ctx, "ag_run", []string{"active"}, "suspended", "复审", "2026-11-03T10:01:00Z"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateRun(ctx, mkRun("run_susp", "bd_run", "ag_run"), 0, 1); !errors.Is(err, missionrun.ErrOwnerNotActive) {
+	if _, err := store.CreateRun(ctx, mkRun("run_susp", "bd_run", "ag_run"), 0, 1, ""); !errors.Is(err, missionrun.ErrOwnerNotActive) {
 		t.Fatalf("暂停身份启动须拒: %v", err)
 	}
 	if _, _, err := store.TransitionAgent(ctx, "ag_run", []string{"suspended"}, "active", "恢复", "2026-11-03T10:02:00Z"); err != nil {
@@ -243,7 +245,7 @@ func TestCreateRunOwnerGateIT(t *testing.T) {
 		UpdatedAt: "2026-11-03T10:00:00Z", CreatedAt: "2026-11-03T10:00:00Z"}, slot.BindingActive, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateRun(ctx, mkRun("run_stale", "bd_runx", "ag_run"), 0, 1); !errors.Is(err, missionrun.ErrOwnerNotActive) {
+	if _, err := store.CreateRun(ctx, mkRun("run_stale", "bd_runx", "ag_run"), 0, 1, ""); !errors.Is(err, missionrun.ErrOwnerNotActive) {
 		t.Fatalf("所钉任职换人须拒: %v", err)
 	}
 }
@@ -414,7 +416,7 @@ func TestCreateRunGrantGateIT(t *testing.T) {
 		Runtime: slot.AgentGrantRuntime{Capabilities: []string{"execute"}, WorkspaceAccess: "read"}}); err != nil {
 		t.Fatal(err)
 	}
-	r0, err := store.CreateRun(ctx, mk("run_g0"), 0, 0)
+	r0, err := store.CreateRun(ctx, mk("run_g0"), 0, 0, "")
 	if err != nil {
 		t.Fatalf("授权满足须放行: %v", err)
 	}
@@ -427,7 +429,7 @@ func TestCreateRunGrantGateIT(t *testing.T) {
 		Runtime: slot.AgentGrantRuntime{Capabilities: []string{"execute"}, WorkspaceAccess: "read"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateRun(ctx, mk("run_g1"), 0, 0); !errors.Is(err, missionrun.ErrOwnerNotActive) {
+	if _, err := store.CreateRun(ctx, mk("run_g1"), 0, 0, ""); !errors.Is(err, missionrun.ErrOwnerNotActive) {
 		t.Fatalf("撤权后须拒领: %v", err)
 	}
 }
@@ -454,13 +456,174 @@ func TestCreateRunOwnerHandoverIT(t *testing.T) {
 	}
 	r := missionrun.Run{RunID: "run_ho", MissionID: m.MissionID, LeaseID: "lse_h",
 		BindingID: "bd_h", AgentID: "ag_old", State: missionrun.StatePending, RequestedAt: "t", UpdatedAt: "t"}
-	if _, err := store.CreateRun(ctx, r, 0, 0); !errors.Is(err, missionrun.ErrOwnerNotActive) {
+	if _, err := store.CreateRun(ctx, r, 0, 0, ""); !errors.Is(err, missionrun.ErrOwnerNotActive) {
 		t.Fatalf("交接后旧负责人须拒领: %v", err)
 	}
 	// 新负责人放行
 	r2 := r
 	r2.RunID, r2.AgentID = "run_ho2", "ag_new"
-	if _, err := store.CreateRun(ctx, r2, 0, 0); err != nil {
+	if _, err := store.CreateRun(ctx, r2, 0, 0, ""); err != nil {
 		t.Fatalf("新负责人须放行: %v", err)
+	}
+}
+
+// TestUpdateRunTerminalLockWindowIT 四审 #6：终态写入等待 SQLite 写锁期间
+// 期限越过——取得写锁后以现行时刻裁决（nowFn 锁后取值）：completed 改判
+// canceled，迟到正文只审计。
+func TestUpdateRunTerminalLockWindowIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	seed := missionrun.Run{RunID: "run_lw", MissionID: "mi_lw", Attempt: 1, LeaseID: "lse_lw",
+		State: missionrun.StateRunning, RequestedAt: "t", UpdatedAt: "t",
+		Deadline: "2026-11-03T12:01:00.000000000Z"}
+	if _, err := store.CreateRun(ctx, seed, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	// 另一连接持写锁（模拟并发写者）
+	conn, err := store.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	clockNow := "2026-11-03T12:00:30.000000000Z" // 锁前未过期
+	done := make(chan missionrun.Run, 1)
+	go func() {
+		r := seed
+		r.State, r.ResultBlock = missionrun.StateCompleted, "锁窗口内迟到正文"
+		out, err := store.UpdateRunTerminal(ctx, r, nil, func() string { return clockNow })
+		if err != nil {
+			t.Error(err)
+		}
+		done <- out
+	}()
+	time.Sleep(150 * time.Millisecond)          // 等终写阻塞在锁上
+	clockNow = "2026-11-03T12:01:30.000000000Z" // 等锁期间期限越过（锁后取值生效）
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	select {
+	case out := <-done:
+		if out.State != missionrun.StateCanceled || out.ResultBlock != "" {
+			t.Fatalf("锁后裁决须 canceled: %+v", out)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("终写未返回")
+	}
+	got, _, _ := store.RunByID(ctx, "run_lw")
+	if got.State != missionrun.StateCanceled || got.ResultBlock != "" {
+		t.Fatalf("落库终态: %+v", got)
+	}
+}
+
+// TestCreateRunGrantFingerprintIT 四审 #3：清单授权快照指纹——同授权放行、
+// 撤销可选上下文（必需项仍满足）即漂移拒领（重新装配降级）。
+func TestCreateRunGrantFingerprintIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	recheckAgent(t, store, "ag_fp")
+	spec := slot.SlotSpec{SlotSpecID: "slot.fp", Version: 1, SchemaVersion: 1,
+		SpecContent: slot.SpecContent{Name: "执行", Responsibility: "执行", Deliverables: []string{"产出"},
+			Tools:   &slot.CapabilityList{Required: []string{"net"}},
+			Context: &slot.CapabilityList{Optional: []string{"room.recent"}}},
+		CreatedAt: "2026-11-03T10:00:00Z"}
+	if _, err := store.CreateSpec(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateInstance(ctx, slot.SlotInstance{SlotInstanceID: "si_fp", SlotSpecID: "slot.fp",
+		Scope: "workspace", Title: "执行", KnowledgeNamespace: "kn_fp", CreatedFromVersion: 1,
+		CreatedAt: "2026-11-03T10:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateBinding(ctx, slot.Binding{BindingID: "bd_fp", AgentID: "ag_fp",
+		SlotInstanceID: "si_fp", SlotSpecVersion: 1, Scope: "workspace",
+		UpdatedAt: "2026-11-03T10:00:00Z", CreatedAt: "2026-11-03T10:00:00Z"}, slot.BindingActive, nil); err != nil {
+		t.Fatal(err)
+	}
+	m, err := store.CreateMission(ctx, func() mission.Mission {
+		r := missionRow(mission.StatusReady, "ag_fp")
+		r.MissionID = "mi_fp"
+		return r
+	}(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantA := slot.AgentGrant{AgentID: "ag_fp", Tools: []string{"net"}, Context: []string{"room.recent"},
+		Runtime: slot.AgentGrantRuntime{Capabilities: []string{"execute"}, WorkspaceAccess: "read"}}
+	if err := store.PutGrant(ctx, grantA); err != nil {
+		t.Fatal(err)
+	}
+	fpA := execctx.GrantFingerprint(grantA)
+	r0 := missionrun.Run{RunID: "run_fp0", MissionID: m.MissionID, LeaseID: "lse_f0", BindingID: "bd_fp",
+		AgentID: "ag_fp", State: missionrun.StatePending, RequestedAt: "t", UpdatedAt: "t"}
+	if _, err := store.CreateRun(ctx, r0, 0, 0, fpA); err != nil {
+		t.Fatalf("同授权须放行: %v", err)
+	}
+	r0.State = missionrun.StateCompleted
+	if err := store.UpdateRun(ctx, r0, nil); err != nil {
+		t.Fatal(err)
+	}
+	// 撤销可选上下文（必需仍满足——readiness 不变，指纹漂移）
+	grantB := slot.AgentGrant{AgentID: "ag_fp", Tools: []string{"net"},
+		Runtime: slot.AgentGrantRuntime{Capabilities: []string{"execute"}, WorkspaceAccess: "read"}}
+	if err := store.PutGrant(ctx, grantB); err != nil {
+		t.Fatal(err)
+	}
+	r1 := r0
+	r1.RunID, r1.LeaseID, r1.State = "run_fp1", "lse_f1", missionrun.StatePending
+	if _, err := store.CreateRun(ctx, r1, 0, 0, fpA); !errors.Is(err, missionrun.ErrGrantDrift) {
+		t.Fatalf("可选撤销须授权漂移拒领: %v", err)
+	}
+	// 按新授权重新装配（新指纹）放行
+	fpB := execctx.GrantFingerprint(grantB)
+	r2 := r0
+	r2.RunID, r2.LeaseID, r2.State = "run_fp2", "lse_f2", missionrun.StatePending
+	if _, err := store.CreateRun(ctx, r2, 0, 0, fpB); err != nil {
+		t.Fatalf("新装配须放行: %v", err)
+	}
+}
+
+// TestReleaseClaimOutcomesIT 四审 #4/#8：处置语义——create 认领（route 非空）
+// 不可释放；update pending 同摘要释放成功；摘要不符/已完结精确分辨。
+func TestReleaseClaimOutcomesIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	// create 类 pending（route 非空——在途建单）
+	if _, err := store.db.Exec(`
+INSERT INTO dispatch_receipts (receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, reason, committed_at)
+VALUES ('dpr_cr1', 'owner', 'workspace', 'key_create', 'r', 'dg_cr', 'rd_1', 1, '', '[]', '[]', '', '')`); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := store.ReleaseClaim(ctx, "owner", "workspace", "key_create", "dg_cr"); err != nil || out != "not_releasable" {
+		t.Fatalf("create 认领不可释放: out=%s %v", out, err)
+	}
+	// update 类 pending（route 空）——同摘要释放
+	if _, err := store.db.Exec(`
+INSERT INTO dispatch_receipts (receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, reason, committed_at)
+VALUES ('dpr_up1', 'owner', 'workspace', 'key_upd', 'r', 'dg_up', '', 0, '', '[]', '[]', '', '')`); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := store.ReleaseClaim(ctx, "owner", "workspace", "key_upd", "dg_wrong"); err != nil || out != "digest_mismatch" {
+		t.Fatalf("摘要不符: out=%s %v", out, err)
+	}
+	if out, err := store.ReleaseClaim(ctx, "owner", "workspace", "key_upd", "dg_up"); err != nil || out != "released" {
+		t.Fatalf("同摘要释放: out=%s %v", out, err)
+	}
+	// 已完结
+	if _, err := store.db.Exec(`
+INSERT INTO dispatch_receipts (receipt_id, caller_ref, scope, idempotency_key, request_id, request_digest, route_id, decision_version, domain_command_id, target_refs, return_refs, reason, committed_at)
+VALUES ('dpr_fn1', 'owner', 'workspace', 'key_fin', 'r', 'dg_fn', '', 0, 'mi_x:revise:v2', '[]', '[]', '', '2026-11-04T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := store.ReleaseClaim(ctx, "owner", "workspace", "key_fin", "dg_fn"); err != nil || out != "finalized" {
+		t.Fatalf("已完结不可动: out=%s %v", out, err)
+	}
+	if out, err := store.ReleaseClaim(ctx, "owner", "workspace", "key_none", "dg"); err != nil || out != "not_found" {
+		t.Fatalf("无行: out=%s %v", out, err)
 	}
 }

@@ -6,6 +6,15 @@
 
 ### Fixed
 
+- **0.6.13 四审修复（4 P1 + 4 P2，ADR-0036 v0.5）**：
+  - **冲突草稿合并（#1/#2/#5，前端）**：create 撞 409 后保留的用户草稿绑定引发冲突的 room/task（切换来源即丢弃——不再串入其他任务）；命中同源时以现行契约为底稿**合并**用户显式输入字段，未编辑字段与预算留现行值（不清空验收/交付、不放宽预算），合并结果回填供核对；预算开关与输入在详情加载期间禁编辑。
+  - **可选授权撤销仍交付（#3）**：execctx 装配计算授权快照指纹（GrantFingerprint）随清单传递，`CreateRun` 建行事务内与当前授权比对——可选上下文/工具撤销（必需判定不变）即 `ErrGrantDrift`（409 `grant_drift`）拒领，重新装配按剩余授权降级（RFC §11.4 撤权立即阻止新交付）。
+  - **release 可撤在途建单认领（#4）**：处置资格限定 update 类认领（route_id 空）——create 在途认领 409 `claim_not_releasable`，杜绝公开入口释放在途建单导致同键两单串回执。
+  - **写锁等待期停止被完成覆盖（#6）**：`UpdateRunTerminal` 在取得写锁后以现行时刻核对行上 deadline——completed/failed 改按 canceled 落终态、结果仅 late_result 审计（失败终态同样并入停止归档）。
+  - **遗留处置闭环（#7/#8）**：`GET /v1/dispatch/claims/{key}` 认领只读面（提供 release 所需完整摘要与状态）；`ReleaseClaim` 单一写事务判定+删除（仅 RowsAffected=1 为 released，零行按真值分辨 finalized/not_found/digest_mismatch——并发完结不再误报成功）；`legacy_pending_unresolved` 文案改为正确指引。
+
+### Fixed
+
 - **0.6.13 三审修复（4 P1 + 2 P2 + 既有前端 2 P2，ADR-0036 v0.4）**：
   - **同键并发串单（#1）**：create 路径拒绝不再释放认领——并发孪生共享同一条 pending，单方释放会让异摘要请求冒用键建第二单（A/B 均成功、重放互串）。拒绝后同键同载荷重试重驱动/重放胜者回执。
   - **新键冒领修订（#2）**：续接 CAS 败按认领来源分流——本请求新插入的认领 → version_conflict 回滚（内容恰与现行等值也不冒领他人修订，新库面关闭）；自动"等值恢复"分支删除。

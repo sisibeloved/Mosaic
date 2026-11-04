@@ -269,7 +269,7 @@ func TestRecoverCancelingWithoutUnfinished(t *testing.T) {
 	// 播种：Run 已 canceled 终态 + Mission 滞 canceling（收尾未兑现）
 	seeded := Run{RunID: "run_term", MissionID: "mi_a", Attempt: 1,
 		LeaseID: "lse_term", State: StateCanceled, RequestedAt: "t", UpdatedAt: "t"}
-	if _, err := f.svc.store.CreateRun(ctx, seeded, 0, 0); err != nil {
+	if _, err := f.svc.store.CreateRun(ctx, seeded, 0, 0, ""); err != nil {
 		t.Fatalf("播种: %v", err)
 	}
 	f.missions.status["mi_a"] = "canceling"

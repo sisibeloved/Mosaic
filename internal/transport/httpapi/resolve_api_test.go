@@ -26,7 +26,7 @@ func seedUnknownViaRecovery(t *testing.T, h *runHandles, mSvc *mission.Service, 
 	r, err := h.runStore.CreateRun(ctx, missionrun.Run{
 		RunID: "run_crash", MissionID: mi, Attempt: 1, LeaseID: "lse_ep",
 		State: missionrun.StateRunning, Generation: 1, RequestedAt: "t", StartedAt: "t", UpdatedAt: "t",
-	}, 0, 0)
+	}, 0, 0, "")
 	if err != nil {
 		t.Fatalf("播种: %v", err)
 	}

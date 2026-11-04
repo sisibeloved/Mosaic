@@ -109,8 +109,8 @@ func TestUpdateLegacyPendingRecovery(t *testing.T) {
 		t.Fatalf("遗留 CAS 败须待核验（不冒领）: %v", err)
 	}
 	// (b) 处置：确认未执行 → release 释放键（digest 核对）→ 同键携当前版本重提成功
-	if err := svc.ReleaseClaim(ctx, "idem-legacy", updateDigest(cmd)); err != nil {
-		t.Fatalf("release: %v", err)
+	if outcome, err := svc.ReleaseClaim(ctx, "idem-legacy", updateDigest(cmd)); err != nil || outcome != "released" {
+		t.Fatalf("release: outcome=%s %v", outcome, err)
 	}
 	cmdOK := cmd
 	cmdOK.ExpectedVersion = 2

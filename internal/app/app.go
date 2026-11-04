@@ -1140,6 +1140,8 @@ func (a runManifestsAdapter) Build(ctx context.Context, missionID, bindingID str
 		ReasonCode: res.Manifest.ReasonCode, Layers: layers,
 		// 复审 #10：清单钉住的契约版本随清单传递（建行事务内核对漂移）。
 		ContractVersion: res.Manifest.ContractVersion,
+		// 四审 #3：装配时授权快照指纹随清单传递（建行事务内与当前授权比对）。
+		GrantFingerprint: res.Manifest.GrantFingerprint,
 	}, nil
 }
 

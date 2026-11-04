@@ -73,6 +73,29 @@ func (m *MemStore) ClaimByKey(_ context.Context, callerRef, scope, key string) (
 	return r, ok, nil
 }
 
+// ReleaseClaim 遗留认领处置（四审 #4/#8：临界区内判定+删除——仅 update 类
+// （route 空）pending 同摘要可释放）。
+func (m *MemStore) ReleaseClaim(_ context.Context, callerRef, scope, key, digest string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := callerRef + "|" + scope + "|" + key
+	ex, taken := m.receipts[k]
+	if !taken {
+		return "not_found", nil
+	}
+	if ex.DomainCommandID != "" {
+		return "finalized", nil
+	}
+	if ex.RequestDigest != digest {
+		return "digest_mismatch", nil
+	}
+	if ex.RouteID != "" {
+		return "not_releasable", nil
+	}
+	delete(m.receipts, k)
+	return "released", nil
+}
+
 // ReceiptByKey 幂等键查**已提交**回执（0.6.13 审校 #11：pending 认领是事务
 // 内部事实，公开查询不可见）；未完结 ok=false。
 func (m *MemStore) ReceiptByKey(_ context.Context, callerRef, scope, key string) (Receipt, bool, error) {

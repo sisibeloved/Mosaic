@@ -1,6 +1,6 @@
 # ADR-0036：0.6 域收口——网关续接、Slot 职责寻址与墙钟强制（0.6.13）
 
-- 状态：Accepted（2026-11-03，随 0.6.13 实施；v0.2 审校 / v0.3 复审 / v0.4 三审修订）
+- 状态：Accepted（2026-11-03，随 0.6.13 实施；v0.2–v0.5 四轮审校修订）
 - 关联：[RFC-0018](../rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（§4.5——"任务型职责寻址使用 当前 scope → SlotInstance → active Binding → AgentID → 候选 Runtime。SlotSpec 只作版本化模板，同名模板在不同项目下可有多个实例；禁止跨项目猜选任职者。没有 active Binding 时返回待任职，不能自动激活一个 ready Binding"；§4.6——投递复核与"已提交后从 A 改为 B 走领域交接，不能只改路由缓存"；§10.3——`mission_update` 续接序列与 `route_stale`；§6.1——budget 五项"契约声明事实，运行时强制随 Scheduler 落"；AT-14/15/18）；[ADR-0024](ADR-0024-dispatch-first-slice.md)（网关首切片——create 路径）；[ADR-0028](ADR-0028-single-agent-execution.md)（Scheduler）；[ADR-0029](ADR-0029-mission-pause-resume-cancel.md)（停止面复用）；[ADR-0030](ADR-0030-run-crash-recovery.md)（迟到结果审计复用）；[ADR-0035](ADR-0035-mission-handover.md)（换人走交接——本件寻址不改在途归属）；[交付计划](../../plan/2026-08-25-delivery-plan.md) v2.69 盘点三项落差、负责人裁定"开 0.6.13"。
 
 ## 背景与问题
@@ -69,6 +69,11 @@ v2.69 阶段性验收盘点确认：0.6 出口的既定范围（AT-02/03/10/13�
 ## 修订记录
 
 - v0.1（2026-11-03）：首版（随 0.6.13 实施）。
+- v0.5（2026-11-04）：四审 8 项（4 P1 + 4 P2）修复——四项设计修订：
+  1. **冲突草稿合并与归属绑定（前端）**：create 撞 409 `source_already_mapped` 后保留的用户草稿**绑定引发 409 的 room/task**（页面级标志会被其他来源的详情消费串卡）；命中同一来源时以详情现行契约为**底稿合并**用户显式输入的字段（非空者），未编辑字段与预算留现行值——不清空验收/交付、不放宽 1 次/60 秒等预算；合并结果回填表单供核对。预算开关与输入在详情加载期间禁编辑（与契约字段同门）。
+  2. **清单授权快照指纹（§3 / RFC §11.4）**：execctx 装配时计算 `GrantFingerprint`（授权档案规范化哈希——集合序归一）随清单传递；`CreateRun` 建行事务内与**当前授权**比对——可选上下文/工具撤销（必需判定不变）即 `ErrGrantDrift` 拒领，释放租约重新装配按剩余授权降级。
+  3. **终态写入的写锁后裁决（§3）**：`UpdateRunTerminal`（双存储）在**取得写锁后**以 nowFn 现行时刻核对行上 deadline——等待写锁期间期限越过/监控已发停的窗口收口：completed/failed 改按 canceled（cause=wall_clock_exceeded）落终态，拟发布结果仅 late_result 审计；失败终态同样并入停止归档。
+  4. **认领处置资格与精准结果（§1）**：`ReleaseClaim` 单一写事务内判定+删除，仅 RowsAffected=1 为释放；零行按事务内真值分辨（finalized/not_found/digest_mismatch）。资格限定 **update 类认领（route_id 空）**——create 在途认领（route 非空）公开处置不可及（409 `claim_not_releasable`，防同键建两单串回执）。新增 `GET /v1/dispatch/claims/{key}` 只读面（四审 #7：提供 release 所需完整 request_digest 与状态）；`legacy_pending_unresolved` 文案改为正确指引（取摘要 → 确认未执行 → release → 更正载荷重提——不再指引必然摘要冲突的"改版本同键重试"）。
 - v0.4（2026-11-04）：三审 6 项（4 P1 + 2 P2）+ 既有前端 2 项修复——四项设计修订：
   1. **create 路径拒绝不释放认领（§2）**：并发孪生共享同一条 pending（同键同摘要即同一请求），单方释放会让异摘要请求冒用键建第二单并串单（复审 #8 引入的回归）。语义：拒绝后 pending 留存，同键同载荷重试重驱动（孪生胜者完结后重放其回执）；一致性由采纳原行 + 回执 route_id 真值 + upsert 自愈保证。Update 路径拒绝释放保留（认领排他 + upsert 自愈）。
   2. **续接 CAS 败按认领来源分流（§1）**：**新插入**认领 → version_conflict 透传并回滚（连认领一并撤销——修正后重试；等值内容不冒领他人修订）；**既有** pending（并发孪生或旧候选版遗留）→ `legacy_pending_unresolved` 待核验（版本与正文等值不可证明归属——自动恢复分支删除）；处置入口：`POST /v1/dispatch/claims/{key}/release`（确认未执行后释放，digest 核对，已完结不可动）+ `ClaimByKey` 只读面；携当前版本同键重提在 release 后可用。

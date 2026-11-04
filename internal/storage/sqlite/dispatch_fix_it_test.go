@@ -281,7 +281,7 @@ func TestListExpiredRunningFractionalIT(t *testing.T) {
 			ManifestID: "cmf_f", RuntimeID: "rtx_f", BindingID: "bd_f", AgentID: "ag_f",
 			State: missionrun.StateRunning, RequestedAt: "t", StartedAt: "t", UpdatedAt: "t",
 			Deadline: deadline}
-		if _, err := store.CreateRun(ctx, r, 0, 0); err != nil {
+		if _, err := store.CreateRun(ctx, r, 0, 0, ""); err != nil {
 			t.Fatal(err)
 		}
 	}

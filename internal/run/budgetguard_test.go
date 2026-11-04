@@ -95,7 +95,7 @@ func TestCreateRunBudgetCapConcurrent(t *testing.T) {
 	// 播种 1 次终态 Run（无在途——并发探针不拦）
 	seeded := Run{RunID: "run_used", MissionID: "mi_race", Attempt: 1, LeaseID: "lse_r",
 		State: StateCompleted, RequestedAt: "t", UpdatedAt: "t"}
-	if _, err := store.CreateRun(ctx, seeded, 0, 0); err != nil {
+	if _, err := store.CreateRun(ctx, seeded, 0, 0, ""); err != nil {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
@@ -107,7 +107,7 @@ func TestCreateRunBudgetCapConcurrent(t *testing.T) {
 			_, errs[i] = store.CreateRun(ctx, Run{
 				RunID: "run_twin" + itoa(i), MissionID: "mi_race", LeaseID: "lse_t" + itoa(i),
 				State: StatePending, RequestedAt: "t", UpdatedAt: "t",
-			}, 1, 0)
+			}, 1, 0, "")
 		}(i)
 	}
 	wg.Wait()
@@ -131,7 +131,7 @@ func TestListExpiredRunningFractional(t *testing.T) {
 	mk := func(id, missionID, deadline string) {
 		r := Run{RunID: id, MissionID: missionID, Attempt: 1, LeaseID: "lse_f",
 			State: StateRunning, RequestedAt: "t", UpdatedAt: "t", Deadline: deadline}
-		if _, err := store.CreateRun(ctx, r, 0, 0); err != nil {
+		if _, err := store.CreateRun(ctx, r, 0, 0, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
