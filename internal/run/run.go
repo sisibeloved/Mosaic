@@ -185,8 +185,12 @@ type ExecutionInput struct {
 	RuntimeID  string
 	ManifestID string
 	// Inline 执行语境——契约层内容块（目标/范围/验收标准/交付物/预算）
-	// + 近期消息窗（来源房 public 消息）+ 工具清单，由服务层从存档清单提取。
+	// Inline 执行语境——契约层内容块（契约/验收/近期消息——审校 #1：执行器须拿到实际任务正文，非仅清单 ID）。
 	Inline map[string]any
+	// PreDeliver 交付前复核钩子（七审 #3：授权快照指纹——执行器须在**实际
+	// 交付时点**（会话启动后、内容送出前）调用；非 nil 错误即放弃交付并把
+	// 错误作为执行结果上报——停止/错误仲裁照常适用）。
+	PreDeliver func() error
 }
 
 // Executor 执行面端口（阻塞至完成；app 注入 agent.Supervisor 适配）。
@@ -578,10 +582,12 @@ func (s *Service) enforceWallClock(ctx context.Context) {
 		s.lastError.Store("wallclock scan: " + err.Error())
 		return
 	}
+	// 七审 #7：信号路径**零持久写**——监控只取消进程内上下文（行上期限即权
+	// 停止事实——终态写事务核对；控制停止的持久标记在暂停/取消**事务内**写
+	// 入，见 sqlite transitionMissionIf）；两个 Run 同时超时不再被首条事件写
+	// 拖住第二个的取消。
 	for _, r := range expired {
-		if signalled, first := s.stops.signal(r.RunID, CauseWallClockExceeded); signalled && first {
-			s.persistStopSignal(ctx, r.RunID, CauseWallClockExceeded)
-		}
+		s.stops.signal(r.RunID, CauseWallClockExceeded)
 	}
 }
 
@@ -721,15 +727,21 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 	// ——执行不启动，Run 置 failed 携原因）
 	changed, err := s.missions.SetRunning(ctx, ref.MissionID)
 	if err != nil {
-		s.finalizeWithCleanup(func(cc context.Context) {
-			s.finalizeFailed(cc, &r, "Mission 状态投影失败: "+err.Error(), lease.LeaseID)
+		ferr := s.finalizeWithCleanup(func(cc context.Context) error {
+			return s.finalizeFailed(cc, &r, "Mission 状态投影失败: "+err.Error(), lease.LeaseID)
 		})
+		if ferr != nil {
+			return r, ferr
+		}
 		return r, nil
 	}
 	if !changed {
-		s.finalizeWithCleanup(func(cc context.Context) {
-			s.finalizeFailed(cc, &r, "Mission 已取消或不再 ready——执行不启动", lease.LeaseID)
+		ferr := s.finalizeWithCleanup(func(cc context.Context) error {
+			return s.finalizeFailed(cc, &r, "Mission 已取消或不再 ready——执行不启动", lease.LeaseID)
 		})
+		if ferr != nil {
+			return r, ferr
+		}
 		return r, nil
 	}
 
@@ -752,9 +764,12 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 	if err := s.store.UpdateRun(ctx, r, []Event{{
 		RunID: r.RunID, EventType: EventStarted, OccurredAt: now, Payload: map[string]any{},
 	}}); err != nil {
-		s.finalizeWithCleanup(func(cc context.Context) {
-			s.finalizeFailed(cc, &r, "run.started 落库失败: "+err.Error(), lease.LeaseID)
+		ferr := s.finalizeWithCleanup(func(cc context.Context) error {
+			return s.finalizeFailed(cc, &r, "run.started 落库失败: "+err.Error(), lease.LeaseID)
 		})
+		if ferr != nil {
+			return r, ferr
+		}
 		return r, nil
 	}
 
@@ -764,33 +779,38 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 		if ferr != nil {
 			why = "检查错误: " + ferr.Error()
 		}
-		s.finalizeWithCleanup(func(cc context.Context) {
-			s.finalizeFenceRejected(cc, &r, lease.LeaseID, why, "")
-		})
-		return r, nil
-	}
-
-	// 六审基线：交付前授权复核——建行后、输入交付前撤权的窗口（受控执行器
-	// 可观察到旧清单原文）。漂移则不交付（Run failed 留档 + 释放 + 回 ready，
-	// 重新装配按剩余授权降级）。
-	if manifest.GrantFingerprint != "" {
-		if gerr := s.store.VerifyGrantFingerprint(ctx, r.AgentID, r.BindingID, manifest.GrantFingerprint); gerr != nil {
-			s.finalizeWithCleanup(func(cc context.Context) {
-				s.finalizeFailed(cc, &r, "授权快照漂移（交付前复核）——重新装配: "+gerr.Error(), lease.LeaseID)
-			})
-			return r, nil
+		if uerr := s.finalizeWithCleanup(func(cc context.Context) error {
+			return s.finalizeFenceRejected(cc, &r, lease.LeaseID, why, "")
+		}); uerr != nil {
+			return r, uerr
 		}
+		return r, nil
 	}
 
 	// 提交执行（阻塞至完成；#1：Inline 携存档清单内容块——非仅 ID）。
 	// 被停止时放弃执行器 goroutine——其结果经缓冲通道丢弃（迟到结果不落，
 	// 围栏已随释放失效）。
+	// 七审 #3/#8：交付前授权复核挂**执行输入钩子**——goroutine 入口先核（执
+	// 行器未实现钩子时的底线），真实适配器在会话启动后、内容送出前再核（实
+	// 际交付时点）。失败经结果通道上报：停止意图在场（暂停/取消已信号）→
+	// Done 分支按停止终理化（canceled，#8）；否则 failed → 终态事务再仲裁
+	//（暂停映射 pause → canceled）。
+	preDeliver := func() error {
+		if manifest.GrantFingerprint == "" {
+			return nil
+		}
+		return s.store.VerifyGrantFingerprint(ctx, r.AgentID, r.BindingID, manifest.GrantFingerprint)
+	}
 	done := make(chan execResult, 1)
 	go func() {
+		if err := preDeliver(); err != nil {
+			done <- execResult{err: fmt.Errorf("授权快照漂移（交付前复核）——重新装配: %w", err)}
+			return
+		}
 		block, err := s.executor.Submit(runCtx, ExecutionInput{
 			RunID: r.RunID, MissionID: r.MissionID, AgentID: r.AgentID,
 			BindingID: r.BindingID, RuntimeID: r.RuntimeID, ManifestID: r.ManifestID,
-			Inline: manifestInline(manifest),
+			Inline: manifestInline(manifest), PreDeliver: preDeliver,
 		})
 		done <- execResult{block: block, err: err}
 	}()
@@ -876,11 +896,28 @@ func (s *Service) cleanupContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), s.cleanupBudget)
 }
 
-// finalizeWithCleanup 前置失败路径的清理面入口（窗口同自此刻起算）。
-func (s *Service) finalizeWithCleanup(f func(ctx context.Context)) {
+// finalizeWithCleanup 前置失败路径的清理面入口（窗口同自此刻起算）。七审
+// #9：f 的错误上抛——终态写入失败不得伪装成功（调用方返回 ErrTerminalWrite，
+// 手动入口 5xx 而非 201；Run 滞留 running 由恢复面收敛）。
+func (s *Service) finalizeWithCleanup(f func(ctx context.Context) error) error {
 	ctx, cancel := s.cleanupContext()
 	defer cancel()
-	f(ctx)
+	return f(ctx)
+}
+
+// hasPersistedStopMarker 该 Run 是否已有持久 stop_requested（七审 #10：
+// 终态事件组按存在性去重——恰一条停止审计）。
+func (s *Service) hasPersistedStopMarker(ctx context.Context, runID string) bool {
+	evs, err := s.store.RunEvents(ctx, runID)
+	if err != nil {
+		return false
+	}
+	for _, e := range evs {
+		if e.EventType == EventStopRequested {
+			return true
+		}
+	}
+	return false
 }
 
 // SignalStopByMission 控制停止信号（ADR-0029 决策 2/3）：对 Mission 全部
@@ -898,27 +935,11 @@ func (s *Service) SignalStopByMission(ctx context.Context, missionID, cause stri
 		if r.State != StatePending && r.State != StateRunning {
 			continue
 		}
-		if signalled, first := s.stops.signal(r.RunID, cause); signalled {
+		if signalled, _ := s.stops.signal(r.RunID, cause); signalled {
 			n++
-			if first {
-				s.persistStopSignal(ctx, r.RunID, cause)
-			}
 		}
 	}
 	return n, nil
-}
-
-// persistStopSignal 停止事实持久化到该 Run（六审 #2：首信号即写
-// stop_requested——Mission 此后恢复也不清除；终态写事务核对这条 **Run 自身**
-// 的停止事实，旧 Run 不得在"暂停→恢复"窗口后以完成发布正文）。写失败
-// best-effort（进程内取消已生效；审计面 lastError 可见）。
-func (s *Service) persistStopSignal(ctx context.Context, runID, cause string) {
-	if err := s.store.AppendRunEvents(ctx, runID, []Event{{
-		RunID: runID, EventType: EventStopRequested, OccurredAt: s.now(),
-		Payload: map[string]any{"cause": cause, "signalled": true},
-	}}); err != nil {
-		s.lastError.Store("persist stop signal: " + err.Error())
-	}
 }
 
 // Unsettled Mission 的在途（pending/running）与未处置 unknown Run 计数
@@ -1051,32 +1072,39 @@ func (s *Service) finalizeRun(ctx context.Context, r *Run, lease Lease, state, e
 
 // finalizeFailed 失败路径（Run failed + 租约释放 + Mission 回 ready）——
 // 使用独立上下文。
-func (s *Service) finalizeFailed(ctx context.Context, r *Run, errText, leaseID string) {
+func (s *Service) finalizeFailed(ctx context.Context, r *Run, errText, leaseID string) error {
 	now := s.now()
 	r.State = StateFailed
 	r.ErrorText = truncateS(errText, 1000)
 	r.FinishedAt = now
 	r.UpdatedAt = now
-	_ = s.store.UpdateRun(ctx, *r, []Event{{
+	if err := s.store.UpdateRun(ctx, *r, []Event{{
 		RunID: r.RunID, EventType: EventFailed, OccurredAt: now,
 		Payload: map[string]any{"error": r.ErrorText},
-	}})
+	}}); err != nil {
+		// 七审 #9：终态写失败上抛（租约/投影不重复施做——恢复面统一收尾）
+		return fmt.Errorf("%w：%v", ErrTerminalWrite, err)
+	}
 	_ = s.leases.Release(ctx, leaseID)
 	_ = s.missions.SetReadyFromRunning(ctx, r.MissionID, "run_failed")
+	return nil
 }
 
-func (s *Service) finalizeFenceRejected(ctx context.Context, r *Run, leaseID, reason, detail string) {
+func (s *Service) finalizeFenceRejected(ctx context.Context, r *Run, leaseID, reason, detail string) error {
 	now := s.now()
 	r.State = StateFailed
 	r.ErrorText = "提交前围栏复核失败（" + reason + "）——执行不启动"
 	r.FinishedAt = now
 	r.UpdatedAt = now
-	_ = s.store.UpdateRun(ctx, *r, []Event{{
+	if err := s.store.UpdateRun(ctx, *r, []Event{{
 		RunID: r.RunID, EventType: EventFenceRejected, OccurredAt: now,
 		Payload: map[string]any{"reason": reason, "phase": "pre_submit", "detail": detail},
-	}})
+	}}); err != nil {
+		return fmt.Errorf("%w：%v", ErrTerminalWrite, err) // 七审 #9：同上
+	}
 	_ = s.leases.Release(ctx, leaseID)
 	_ = s.missions.SetReadyFromRunning(ctx, r.MissionID, "fence_pre_submit")
+	return nil
 }
 
 // finalizeStopped 控制停止终理化（0.6.6 / ADR-0029 决策 2）：Run →
@@ -1098,10 +1126,16 @@ func (s *Service) finalizeStopped(ctx context.Context, r *Run, lease Lease, caus
 	r.FinishedAt = now
 	r.UpdatedAt = now
 	events := []Event{
-		{RunID: r.RunID, EventType: EventStopRequested, OccurredAt: now,
-			Payload: map[string]any{"cause": cause}},
 		{RunID: r.RunID, EventType: EventCanceled, OccurredAt: now,
 			Payload: map[string]any{"cause": cause}},
+	}
+	// 七审 #10：stop_requested 恰一条——暂停/取消事务已持久写入标记（或此前
+	// 已终理化）时不再追加（正常暂停不再产生两条审计）。
+	if !s.hasPersistedStopMarker(ctx, r.RunID) {
+		events = append([]Event{{
+			RunID: r.RunID, EventType: EventStopRequested, OccurredAt: now,
+			Payload: map[string]any{"cause": cause},
+		}}, events...)
 	}
 	if ferr != nil || !valid {
 		reason := fenceReason
@@ -1256,6 +1290,24 @@ func (s *Service) RecoverUnfinished(ctx context.Context) (int, error) {
 				n++
 			}
 			continue
+		}
+		// 七审 #6：Run 自身的持久停止标记（暂停/取消事务内写入——此后恢复/
+		// 重启不清除）→ 按停止兑现收尾（canceled + cause），Mission 回调度列；
+		// 不再误判 unknown/waiting。
+		if s.hasPersistedStopMarker(ctx, r.RunID) {
+			r.State = StateCanceled
+			r.ErrorText = "停止意图在重启前已持久（恢复面兑现）"
+			r.FinishedAt = now
+			r.UpdatedAt = now
+			if err := s.store.UpdateRun(ctx, r, []Event{
+				{RunID: r.RunID, EventType: EventCanceled, OccurredAt: now,
+					Payload: map[string]any{"recovery": true}},
+			}); err == nil {
+				_ = s.leases.Release(ctx, r.LeaseID)
+				_ = s.missions.SetReadyFromRunning(ctx, r.MissionID, "run_canceled")
+				n++
+				continue
+			}
 		}
 		// 0.6.7 / ADR-0030 决策 1/2：无停止意图的在途 Run → unknown（结果不可
 		// 判定——非 failed）+ 租约释放（进程已死）+ Mission → waiting

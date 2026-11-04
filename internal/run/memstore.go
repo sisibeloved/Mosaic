@@ -232,16 +232,29 @@ func (m *MemStore) UpdateRunTerminal(_ context.Context, r Run, events []Event, n
 		r.ResultBlock = ""
 		fin := nowFn()
 		r.FinishedAt, r.UpdatedAt = fin, fin
-		// 五审 #4/#5：替换（非追加）原终态事件；迟到审计携 generation。
-		events = []Event{
-			{RunID: r.RunID, EventType: EventStopRequested, OccurredAt: fin,
-				Payload: map[string]any{"cause": stopCause, "arbitrated_at_write": true}},
+		// 五审 #4/#5 + 七审 #10：替换（非追加）原终态事件；迟到审计携 generation；
+		// stop_requested 恰一条（既有持久标记不追加）。
+		hasMarker := false
+		for _, e := range m.events {
+			if e.RunID == r.RunID && e.EventType == EventStopRequested {
+				hasMarker = true
+				break
+			}
+		}
+		arb := []Event{
 			{RunID: r.RunID, EventType: EventCanceled, OccurredAt: fin,
 				Payload: map[string]any{"cause": stopCause}},
 			{RunID: r.RunID, EventType: EventLateResult, OccurredAt: fin,
 				Payload: map[string]any{"outcome": outcome, "preview": truncateS(preview, 400),
 					"generation": r.Generation, "published": false, "phase": "terminal_write"}},
 		}
+		if !hasMarker {
+			arb = append([]Event{{
+				RunID: r.RunID, EventType: EventStopRequested, OccurredAt: fin,
+				Payload: map[string]any{"cause": stopCause, "arbitrated_at_write": true},
+			}}, arb...)
+		}
+		events = arb
 	}
 	m.runs[r.RunID] = r
 	for _, e := range events {

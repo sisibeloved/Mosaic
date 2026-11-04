@@ -1,6 +1,6 @@
 # ADR-0036：0.6 域收口——网关续接、Slot 职责寻址与墙钟强制（0.6.13）
 
-- 状态：Accepted（2026-11-03，随 0.6.13 实施；v0.2–v0.7 六轮审校修订）
+- 状态：Accepted（2026-11-03，随 0.6.13 实施；v0.2–v0.8 七轮审校修订）
 - 关联：[RFC-0018](../rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（§4.5——"任务型职责寻址使用 当前 scope → SlotInstance → active Binding → AgentID → 候选 Runtime。SlotSpec 只作版本化模板，同名模板在不同项目下可有多个实例；禁止跨项目猜选任职者。没有 active Binding 时返回待任职，不能自动激活一个 ready Binding"；§4.6——投递复核与"已提交后从 A 改为 B 走领域交接，不能只改路由缓存"；§10.3——`mission_update` 续接序列与 `route_stale`；§6.1——budget 五项"契约声明事实，运行时强制随 Scheduler 落"；AT-14/15/18）；[ADR-0024](ADR-0024-dispatch-first-slice.md)（网关首切片——create 路径）；[ADR-0028](ADR-0028-single-agent-execution.md)（Scheduler）；[ADR-0029](ADR-0029-mission-pause-resume-cancel.md)（停止面复用）；[ADR-0030](ADR-0030-run-crash-recovery.md)（迟到结果审计复用）；[ADR-0035](ADR-0035-mission-handover.md)（换人走交接——本件寻址不改在途归属）；[交付计划](../../plan/2026-08-25-delivery-plan.md) v2.69 盘点三项落差、负责人裁定"开 0.6.13"。
 
 ## 背景与问题
@@ -69,6 +69,12 @@ v2.69 阶段性验收盘点确认：0.6 出口的既定范围（AT-02/03/10/13�
 ## 修订记录
 
 - v0.1（2026-11-03）：首版（随 0.6.13 实施）。
+- v0.8（2026-11-04）：七审 11 项（4 P1 + 6 P2 + 1 P3）+ 既有 P1 修复——五项设计修订：
+  1. **来源草稿边界（前端）**：仅**换卡**（上一来源非空）时丢弃上一卡的预算与契约草稿——首填来源不重置（先设预算再填卡不放宽）；换卡清契约草稿（A 卡预填值不得经 409 合并写进 B 卡）；映射列表未载（null）期间锁定全部契约字段（formLocked——列表到达触发的详情预填不覆盖加载期输入）。
+  2. **停止标记入控制事务（§3）**：暂停/取消的 Run 停止标记随 `PauseMission`/`MarkCanceling` **同一事务**写入（`stop_requested{cause=pause|cancel}`，NOT EXISTS 去重恰一条）；信号路径回归**零持久写**（监控只取消进程内上下文——两 Run 同时超时不被首条事件写拖住第二个的取消）；终态裁决组与 finalizeStopped 按存在性去重（恰一条停止审计）。
+  3. **交付时点复核（§3）**：授权快照复核挂 `ExecutionInput.PreDeliver` 钩子——goroutine 入口先核（执行器未实现钩子的底线），真实适配器在会话启动后、内容送出前**实际交付时点**再核；失败经结果通道上报（停止意图在场 → 停止终理化 canceled；否则 failed → 终态事务再仲裁）。
+  4. **恢复面核对 Run 停止标记（§3）**：RecoverUnfinished 对无 Mission 停止意图的在途 Run 先查自身持久标记——有则按停止兑现收尾（canceled + Mission 回 ready），不再误判 unknown/waiting（暂停→恢复→进程重启序列）。
+  5. **终写失败上抛（§3）**：finalizeFailed/finalizeFenceRejected 的 UpdateRun 错误上抛 `ErrTerminalWrite`——手动入口不再伪装 201（Run 滞留 running 由恢复面收敛）。执行会话按 **Run** 隔离（撤权重装配后不复用旧线程——任务连续性由 Inline 每次全量重递）。手动执行 409 说明补 budget_exhausted。
 - v0.7（2026-11-04）：六审 4 项（2 P1 + 1 P2 + 1 P3）+ 2 项基线修复——三项设计修订：
   1. **预算草稿绑定任务卡（前端）**：预算值与编辑集**归属 room/task**——切换来源即丢弃上一卡的编辑（共用集合会把 A 卡的 200 次上限写进 B 卡的续接合并）；新建请求在用户编辑过任何预算字段后即使收起面板也随请求发送（收起不得丢弃显式设置的限制）。
   2. **停止事实绑定 Run（§3）**：停止信号**首次送达**即把 stop_requested{cause, signalled} 持久写入该 Run 的事件流（resume 不清除——停止是 Run 级事实，恢复只允许新执行）；UpdateRunTerminal 事务内核对序：行上期限 → **Run 自身持久停止事实**（取其 cause）→ Mission 现行状态（映射为公开动作码 paused→pause / canceling→cancel——ADR-0029 约定，与 SignalStopByMission/finalizeStopped 同组常量）。"暂停→立即恢复→旧 Run 取得写锁"的窗口由此关闭。

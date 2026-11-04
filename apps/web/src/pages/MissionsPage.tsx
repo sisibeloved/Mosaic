@@ -85,6 +85,9 @@ export function MissionsPage() {
   const [conflictReload, setConflictReload] = useState(false);
   const [retryTick, setRetryTick] = useState(0);
   const detailSeq = useRef(0);
+  // 七审 #5：映射列表未载（null）期间锁定契约字段——列表到达触发详情预填
+  // 不得覆盖加载期输入（与详情 loading 同门）。
+  const formLocked = detailState !== "idle" || missions === null;
   // 三审/四审前端（映射陈旧切续接）：create 撞 409 后保留用户录入——草稿
   // **绑定引发 409 的 room/task**（四审 #2）；命中同一来源时以详情为底稿合并
   // 用户显式修改的字段（四审 #1：未编辑字段/预算留现行值），切换来源即丢弃。
@@ -130,11 +133,21 @@ export function MissionsPage() {
   useEffect(() => {
     const room = form.room.trim();
     const task = form.task.trim();
-    // 来源切换：预算草稿/编辑集归属上一卡——丢弃（六审 #1）
+    // 来源变化：仅**换卡**（上一来源非空）时丢弃上一卡的预算与契约草稿
+    //（七审 #1：首填来源不重置——先设预算再填卡不得放宽；#2：换卡清契约
+    // 草稿——A 卡预填值不得经 409 合并写进 B 卡）。
     if (lastSrcRef.current.room !== room || lastSrcRef.current.task !== task) {
+      const wasCard = lastSrcRef.current.room !== "" && lastSrcRef.current.task !== "";
       lastSrcRef.current = { room, task };
-      budgetEditedRef.current = new Set();
-      setBudget({ concurrency: "1", max_runs: "32", max_wall_clock_seconds: "86400", max_retries: "0", max_delegation_depth: "0" });
+      if (wasCard) {
+        budgetEditedRef.current = new Set();
+        setBudget({ concurrency: "1", max_runs: "32", max_wall_clock_seconds: "86400", max_retries: "0", max_delegation_depth: "0" });
+        setForm((f) => ({
+          ...f,
+          objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "",
+          reviewer: "", owner: "",
+        }));
+      }
     }
     if (!formOpen || !room || !task || !missions) {
       detailSeq.current++;
@@ -405,7 +418,7 @@ export function MissionsPage() {
             <input
               value={form.objective}
               onChange={(e) => setForm({ ...form, objective: e.target.value })}
-              disabled={detailState === "loading"}
+              disabled={formLocked}
               className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm outline-none focus:border-accent"
             />
           </label>
@@ -414,7 +427,7 @@ export function MissionsPage() {
             <input
               value={form.scope}
               onChange={(e) => setForm({ ...form, scope: e.target.value })}
-              disabled={detailState === "loading"}
+              disabled={formLocked}
               className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm outline-none focus:border-accent"
             />
           </label>
@@ -424,7 +437,7 @@ export function MissionsPage() {
               <textarea
                 value={form.acceptance}
                 onChange={(e) => setForm({ ...form, acceptance: e.target.value })}
-              disabled={detailState === "loading"}
+              disabled={formLocked}
                 rows={3}
                 className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
               />
@@ -434,7 +447,7 @@ export function MissionsPage() {
               <textarea
                 value={form.deliverables}
                 onChange={(e) => setForm({ ...form, deliverables: e.target.value })}
-              disabled={detailState === "loading"}
+              disabled={formLocked}
                 rows={3}
                 className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
               />
@@ -444,7 +457,7 @@ export function MissionsPage() {
               <textarea
                 value={form.sources}
                 onChange={(e) => setForm({ ...form, sources: e.target.value })}
-              disabled={detailState === "loading"}
+              disabled={formLocked}
                 rows={2}
                 className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
               />
@@ -454,7 +467,7 @@ export function MissionsPage() {
               <textarea
                 value={form.returns}
                 onChange={(e) => setForm({ ...form, returns: e.target.value })}
-              disabled={detailState === "loading"}
+              disabled={formLocked}
                 rows={2}
                 className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
               />
@@ -486,7 +499,7 @@ export function MissionsPage() {
               <select
                 value={form.owner}
                 onChange={(e) => setForm({ ...form, owner: e.target.value })}
-              disabled={detailState === "loading"}
+              disabled={formLocked}
                 className="rounded border border-border bg-surface-2 px-1.5 py-1 outline-none"
               >
                 <option value="">未指派（draft）</option>
@@ -502,12 +515,12 @@ export function MissionsPage() {
               <input
                 value={form.reviewer}
                 onChange={(e) => setForm({ ...form, reviewer: e.target.value })}
-              disabled={detailState === "loading"}
+              disabled={formLocked}
                 placeholder="Agent ID 或留空"
                 className="w-44 rounded border border-border bg-surface-2 px-1.5 py-1 outline-none"
               />
             </label>
-            <button type="button" disabled={detailState === "loading"} onClick={() => setBudgetOpen((o) => !o)} className="underline text-faint disabled:opacity-40">
+            <button type="button" disabled={formLocked} onClick={() => setBudgetOpen((o) => !o)} className="underline text-faint disabled:opacity-40">
               {budgetOpen ? "收起预算" : "预算（缺省 1/32/一天/不重试/不委派）"}
             </button>
           </div>
@@ -526,7 +539,7 @@ export function MissionsPage() {
                   <span className="text-faint">{label}</span>
                   <input
                     value={budget[k]}
-                    disabled={detailState === "loading"}
+                    disabled={formLocked}
                     onChange={(e) => {
                       budgetEditedRef.current.add(k);
                       setBudget({ ...budget, [k]: e.target.value });

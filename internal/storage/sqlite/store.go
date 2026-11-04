@@ -3138,6 +3138,28 @@ func (s *Store) transitionMissionIf(ctx context.Context, missionID string, expec
 		if _, err := q.ExecContext(ctx, setSQL, to, occurredAt, missionID); err != nil {
 			return fmt.Errorf("sqlite: control mission: %w", err)
 		}
+		// 七审 #4：暂停/取消的 Run 停止标记随**同一事务**写入（信号路径零持久
+		// 写——暂停落库与标记落库两段提交间的交错恢复窗口在此闭合；resume 不
+		// 清除，终态写事务/恢复面核对 Run 自身停止事实）。cause 用公开动作码。
+		if to == mission.StatusPaused || to == mission.StatusCanceling {
+			cause := "pause"
+			if to == mission.StatusCanceling {
+				cause = "cancel"
+			}
+			mp, merr := runEventPayloadJSON(map[string]any{"cause": cause, "persisted_in_tx": true})
+			if merr != nil {
+				return merr
+			}
+			if _, err := q.ExecContext(ctx, `
+INSERT INTO run_events (run_id, event_type, payload, occurred_at)
+SELECT run_id, 'stop_requested', ?, ? FROM runs
+ WHERE mission_id = ? AND state IN ('pending', 'running')
+   AND NOT EXISTS (SELECT 1 FROM run_events e
+                    WHERE e.run_id = runs.run_id AND e.event_type = 'stop_requested')`,
+				mp, occurredAt, missionID); err != nil {
+				return fmt.Errorf("sqlite: control stop markers: %w", err)
+			}
+		}
 		payload := map[string]string{"from": status, "to": to}
 		if reason != "" {
 			payload["reason"] = reason
@@ -5701,17 +5723,23 @@ func (s *Store) UpdateRunTerminal(ctx context.Context, r missionrun.Run, events 
 			r.ResultBlock = ""
 			nowRFC := nowFn()
 			r.FinishedAt, r.UpdatedAt = nowRFC, nowRFC
-			// 五审 #4/#5：替换原拟提交终态事件——改判后的唯一事件组（迟到审计
-			// 与 finalizeStopped 同规范：preview ≤400 rune、携 generation）。
-			events = []missionrun.Event{
-				{RunID: r.RunID, EventType: missionrun.EventStopRequested, OccurredAt: nowRFC,
-					Payload: map[string]any{"cause": overrideCause, "arbitrated_at_write": true}},
+			// 五审 #4/#5 + 七审 #10：替换原拟提交终态事件——改判后的唯一事件组
+			//（迟到审计同规范：preview ≤400 rune、携 generation）。stop_requested
+			// 恰一条：暂停/取消事务已持久标记时不再追加。
+			arbEvents := []missionrun.Event{
 				{RunID: r.RunID, EventType: missionrun.EventCanceled, OccurredAt: nowRFC,
 					Payload: map[string]any{"cause": overrideCause}},
 				{RunID: r.RunID, EventType: missionrun.EventLateResult, OccurredAt: nowRFC,
 					Payload: map[string]any{"outcome": outcome, "preview": truncateRunPreview(preview, 400),
 						"generation": r.Generation, "published": false, "phase": "terminal_write"}},
 			}
+			if !hasStopMarkerTx(ctx, q, r.RunID) {
+				arbEvents = append([]missionrun.Event{{
+					RunID: r.RunID, EventType: missionrun.EventStopRequested, OccurredAt: nowRFC,
+					Payload: map[string]any{"cause": overrideCause, "arbitrated_at_write": true},
+				}}, arbEvents...)
+			}
+			events = arbEvents
 		}
 		if _, err := q.ExecContext(ctx, `
 UPDATE runs SET state = ?, error_text = ?, result_block = ?, finished_at = ?, updated_at = ?, deadline = ?
@@ -5758,6 +5786,16 @@ func (s *Store) VerifyGrantFingerprint(ctx context.Context, agentID, bindingID, 
 		}
 		return nil
 	})
+}
+
+// hasStopMarkerTx 该 Run 已有持久 stop_requested（七审 #10：终态组去重依据）。
+func hasStopMarkerTx(ctx context.Context, q identityExec, runID string) bool {
+	var n int
+	if err := q.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM run_events WHERE run_id = ? AND event_type = 'stop_requested'`, runID).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
 }
 
 // truncateRunPreview 迟到结果预览截断（rune 计 ≤n——中文不半截；五审 #4：

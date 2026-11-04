@@ -9629,7 +9629,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Mission 非 ready（mission_not_ready——running/canceled/draft）、无可用任职/运行时（no_executor）、资源被占（scheduler_busy）、负责人非 active/任职失效（owner_not_active）、契约版本漂移（contract_drift——重新装配即新版本）或授权快照漂移（grant_drift——撤权后旧清单不交付，按现行授权重新装配后重试可降级执行；0.6.13 六审） */
+            /** @description Mission 非 ready（mission_not_ready——running/canceled/draft）、无可用任职/运行时（no_executor）、资源被占（scheduler_busy）、负责人非 active/任职失效（owner_not_active）、契约版本漂移（contract_drift——重新装配即新版本）授权快照漂移（grant_drift——撤权后旧清单不交付，按现行授权重新装配后重试可降级执行；0.6.13 六审）或预算上限已用尽（budget_exhausted——已创建 Run 总数达 budget.max_runs，须上调契约预算后重试；0.6.13 七审） */
             409: {
                 headers: {
                     [name: string]: unknown;

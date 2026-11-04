@@ -688,7 +688,7 @@ func TestUpdateRunTerminalControlIntentIT(t *testing.T) {
 }
 
 // TestPauseResumeTerminalIT 六审 #2：暂停→立即恢复——Run 自身的持久停止事实
-//（信号时写入 stop_requested，resume 不清除）使终态事务改判 canceled；cause
+// （信号时写入 stop_requested，resume 不清除）使终态事务改判 canceled；cause
 // 为公开动作码 pause（六审 #3——非 Mission 状态码 paused）。
 func TestPauseResumeTerminalIT(t *testing.T) {
 	store, _ := openTempStore(t)
@@ -710,15 +710,15 @@ func TestPauseResumeTerminalIT(t *testing.T) {
 	if _, err := store.CreateRun(ctx, seed, 0, 0, ""); err != nil {
 		t.Fatal(err)
 	}
-	// 暂停（持久停止意图 + 信号送达时写 Run 停止事实）→ 立即恢复（mission 回 ready）
+	// 暂停（七审 #4：Run 停止标记随暂停**同一事务**写入）→ 立即恢复（mission
+	// 回 ready——标记不清除）
 	if _, ok, err := store.PauseMission(ctx, m.MissionID, m.ContractVersion, "人工暂停", "2026-11-04T12:00:00Z"); err != nil || !ok {
 		t.Fatalf("暂停: ok=%v %v", ok, err)
 	}
-	if err := store.AppendRunEvents(ctx, "run_pr", []missionrun.Event{{
-		RunID: "run_pr", EventType: missionrun.EventStopRequested, OccurredAt: "2026-11-04T12:00:00Z",
-		Payload: map[string]any{"cause": "pause", "signalled": true},
-	}}); err != nil {
-		t.Fatal(err)
+	var nMarker int
+	store.db.QueryRow(`SELECT COUNT(*) FROM run_events WHERE run_id = 'run_pr' AND event_type = 'stop_requested'`).Scan(&nMarker)
+	if nMarker != 1 {
+		t.Fatalf("暂停事务须写入恰一条 Run 停止标记: %d", nMarker)
 	}
 	if _, ok, err := store.ResumeMission(ctx, m.MissionID, m.ContractVersion, "ready", "2026-11-04T12:00:01Z"); err != nil || !ok {
 		t.Fatalf("恢复: ok=%v %v", ok, err)
@@ -737,17 +737,20 @@ func TestPauseResumeTerminalIT(t *testing.T) {
 		t.Fatalf("恢复后旧 Run 完成须改判 canceled: %+v", out)
 	}
 	evs, _ := store.RunEvents(ctx, "run_pr")
-	causeOK := false
+	causeOK, stopCount := false, 0
 	for _, e := range evs {
 		if e.EventType == missionrun.EventCanceled && e.Payload["cause"] == "pause" {
 			causeOK = true // 动作码 pause（非状态码 paused——六审 #3）
+		}
+		if e.EventType == missionrun.EventStopRequested {
+			stopCount++ // 七审 #10：恰一条（暂停事务写入；终态组不追加）
 		}
 		if (e.EventType == missionrun.EventCompleted || e.EventType == missionrun.EventFailed) && e.Payload["late"] == false {
 			t.Fatalf("不得残留原终态事件: %+v", e)
 		}
 	}
-	if !causeOK {
-		t.Fatalf("canceled 事件 cause 须为 pause: %+v", evs)
+	if !causeOK || stopCount != 1 {
+		t.Fatalf("cause=pause=%v stop_requested 条数=%d: %+v", causeOK, stopCount, evs)
 	}
 }
 
@@ -778,5 +781,75 @@ func TestVerifyGrantFingerprintIT(t *testing.T) {
 	}
 	if err := store.VerifyGrantFingerprint(ctx, "ag_vf", "bd_vf", fpA); !errors.Is(err, missionrun.ErrGrantDrift) {
 		t.Fatalf("撤权后须拒付: %v", err)
+	}
+}
+
+// TestPauseTxStopMarkersIT 七审 #4/#10：暂停/取消事务为**全部在途 Run**写入
+// 停止标记（恰一条）；恢复/重启不清除；两次控制转移不重复写已完成 Run。
+func TestPauseTxStopMarkersIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	recheckAgent(t, store, "ag_pm")
+	m, err := store.CreateMission(ctx, func() mission.Mission {
+		r := missionRow(mission.StatusRunning, "ag_pm")
+		r.MissionID = "mi_pm"
+		return r
+	}(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 每 Mission 至多一个未终态 Run——两 Run 各归独立 Mission
+	for i, id := range []string{"run_pm1", "run_pm2"} {
+		mi, merr := store.CreateMission(ctx, func() mission.Mission {
+			r := missionRow(mission.StatusRunning, "ag_pm")
+			r.MissionID = "mi_pm_" + string(rune('0'+i+1))
+			return r
+		}(), nil)
+		if merr != nil {
+			t.Fatal(merr)
+		}
+		if _, err := store.CreateRun(ctx, missionrun.Run{RunID: id, MissionID: mi.MissionID,
+			Attempt: 1, LeaseID: "lse_" + id, BindingID: "bd_pm", AgentID: "ag_pm",
+			State: missionrun.StateRunning, RequestedAt: "t", UpdatedAt: "t"}, 0, 0, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 标的 Mission 改为 run_pm1 所属（暂停/取消作用于它）
+	m = func() mission.Mission {
+		r := missionRow(mission.StatusRunning, "ag_pm")
+		r.MissionID = "mi_pm_1"
+		return r
+	}()
+	// 暂停：两个在途 Run 各得一条标记（cause=pause）
+	if _, ok, err := store.PauseMission(ctx, m.MissionID, m.ContractVersion, "暂停", "2026-11-04T13:00:00Z"); err != nil || !ok {
+		t.Fatalf("暂停: ok=%v %v", ok, err)
+	}
+	// 每 Mission 恒至多一在途 Run（未终态约束）——标记写入面按 Mission 展开
+	{
+		var n int
+		store.db.QueryRow(`SELECT COUNT(*) FROM run_events WHERE run_id = 'run_pm1' AND event_type = 'stop_requested'`).Scan(&n)
+		if n != 1 {
+			t.Fatalf("run_pm1 停止标记须恰一: %d", n)
+		}
+	}
+	// 恢复不清除
+	if _, ok, err := store.ResumeMission(ctx, m.MissionID, m.ContractVersion, "ready", "2026-11-04T13:00:01Z"); err != nil || !ok {
+		t.Fatalf("恢复: ok=%v %v", ok, err)
+	}
+	var nAfter int
+	store.db.QueryRow(`SELECT COUNT(*) FROM run_events WHERE run_id = 'run_pm1' AND event_type = 'stop_requested'`).Scan(&nAfter)
+	if nAfter != 1 {
+		t.Fatalf("恢复不得清除标记: %d", nAfter)
+	}
+	// 再取消：仅仍在途的 Run（run_pm2 若已终态则不再写）——此处均在途 → 各再
+	// 一条？七审 #10 要求恰一条——取消对已有标记的 Run 不重复写（同因不叠加）。
+	if _, ok, err := store.MarkCanceling(ctx, m.MissionID, m.ContractVersion, "取消", "2026-11-04T13:00:02Z"); err != nil || !ok {
+		t.Fatalf("取消: ok=%v %v", ok, err)
+	}
+	var nCancel int
+	store.db.QueryRow(`SELECT COUNT(*) FROM run_events WHERE run_id = 'run_pm1' AND event_type = 'stop_requested'`).Scan(&nCancel)
+	if nCancel != 1 {
+		t.Fatalf("已有标记的 Run 不得重复写: %d", nCancel)
 	}
 }

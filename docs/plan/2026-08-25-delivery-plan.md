@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.76 |
+| 版本 | v2.77 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -205,6 +205,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.77 | 2026-11-04 | Mosaic 项目组 / ZCode | **0.6.13 七审修复（4 P1 + 6 P2 + 1 P3 + 既有 P1；ADR-0036 v0.8）**。前端来源草稿边界（仅换卡重置/换卡清草稿/列表加载锁 formLocked）；停止标记入暂停/取消事务（NOT EXISTS 去重恰一条；信号路径零持久写）；PreDeliver 交付时点授权复核（经结果通道仲裁——暂停在场 canceled）；恢复面核对 Run 停止标记（不再误判 unknown）；终写失败上抛 ErrTerminalWrite；执行会话按 Run 隔离（撤权后不复用旧线程）；runs 409 补 budget_exhausted。验证：IT（暂停事务标记/恢复兑现/终态去重）+ UT + vet/-race + it/st + SPA 绿 + 生成物幂等；真机冒烟 22+19 项复跑 ALL-PASS |
 | v2.76 | 2026-11-04 | Mosaic 项目组 / ZCode | **0.6.13 六审修复（2 P1 + 1 P2 + 1 P3 + 2 基线；ADR-0036 v0.7）**。前端预算草稿绑定任务卡（切换来源丢弃编辑；编辑过即使收起面板也随请求发送）；停止事实绑定 Run（首信号持久 stop_requested——resume 不清除；终态事务核对序：期限→Run 停止事实→Mission 状态映射动作码 pause/cancel）；交付前授权复核（提交执行器前指纹核对——建行后撤权不交付）；手动执行 409 说明补全。验证：IT（暂停恢复窗口/交付前复核/动作码）+ UT（首信号语义）+ vet/-race + it/st + SPA 绿 + 生成物幂等；真机冒烟 22+19 项复跑 ALL-PASS |
 | v2.75 | 2026-11-04 | Mosaic 项目组 / ZCode | **0.6.13 五审修复（3 P1 + 4 P2 + 1 P3 + 既有 P1；ADR-0036 v0.6）**。前端预算字段级编辑跟踪（合并只覆盖编辑字段；面板状态与详情加载解耦）；重放清单以本次授权回填指纹（预览后撤权/旧库存档受检）；终态事务内核对 Mission 持久停止意图（人工暂停/取消——未到期完成也改判；事件组唯一替换 + 迟到审计 ≤400/携 generation + 投影原因取实际终态）；认领 GET 鉴权 401 + grant_drift 409 + 遗留指引统一。验证：UT/IT/API 新红面（重放指纹/控制意图裁决/审计规范/鉴权）+ vet/-race + it/st + SPA 绿 + 生成物幂等；真机冒烟 22+19 项复跑 ALL-PASS |
 | v2.74 | 2026-11-04 | Mosaic 项目组 / ZCode | **0.6.13 四审修复（4 P1 + 4 P2；ADR-0036 v0.5）**。前端冲突草稿合并与归属绑定（底稿合并显式输入/预算留现行/加载期预算禁编辑）；清单授权快照指纹（GrantFingerprint 随执行传递 + CreateRun 事务比对——可选撤销 ErrGrantDrift 重新装配降级）；UpdateRunTerminal 写锁后墙钟裁决（completed/failed 并入停止归档）；认领处置资格限定 update 类 + 单事务精准结果 + GET claims 只读面 + 遗留文案修正。验证：UT/IT/API 新红面（锁窗口裁决/指纹漂移三态/处置五态/认领视图）+ vet/-race + it/st + SPA 绿 + 生成物幂等；真机冒烟 22 项（含撤权双面）+ 上一版 19 项复跑 ALL-PASS |
