@@ -208,10 +208,10 @@ func TestCreateMissionSlotIntentIT(t *testing.T) {
 		row.MissionID = id
 		return row
 	}
-	intent := &mission.SlotIntent{InstanceID: si, AgentID: "ag_slot"}
+	intent := &mission.SlotIntent{InstanceID: si, AgentID: "ag_slot", SpecID: "slot.fix1"}
 
 	// 成功：意图随创建事实落列（#1——执行装配按实例固定任职）
-	m, err := store.CreateMissionSlot(ctx, mk("mi_slot_ok"), nil, intent)
+	m, err := store.CreateMissionGated(ctx, mk("mi_slot_ok"), nil, &mission.CreationGate{Slot: intent})
 	if err != nil {
 		t.Fatalf("建单: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestCreateMissionSlotIntentIT(t *testing.T) {
 		slot.BindingActive, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateMissionSlot(ctx, mk("mi_slot_rebind"), nil, intent); !errors.Is(err, mission.ErrSlotIntentViolated) {
+	if _, err := store.CreateMissionGated(ctx, mk("mi_slot_rebind"), nil, &mission.CreationGate{Slot: intent}); !errors.Is(err, mission.ErrSlotIntentViolated) {
 		t.Fatalf("换绑后建单须拒: %v", err)
 	}
 	// 换回
@@ -243,11 +243,11 @@ func TestCreateMissionSlotIntentIT(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 暂停身份（#7：暂停不得建单）
+	// 暂停身份（#7：暂停不得建单——身份门统一 ErrOwnerGateViolated，复审 #3 重构）
 	if _, _, err := store.TransitionAgent(ctx, "ag_slot", []string{"active"}, "suspended", "审校", "2026-11-03T10:03:00Z"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateMissionSlot(ctx, mk("mi_slot_susp"), nil, intent); !errors.Is(err, mission.ErrSlotIntentViolated) {
+	if _, err := store.CreateMissionGated(ctx, mk("mi_slot_susp"), nil, &mission.CreationGate{Slot: intent}); !errors.Is(err, mission.ErrOwnerGateViolated) {
 		t.Fatalf("暂停身份建单须拒: %v", err)
 	}
 	if _, _, err := store.TransitionAgent(ctx, "ag_slot", []string{"suspended"}, "active", "恢复", "2026-11-03T10:04:00Z"); err != nil {
@@ -259,7 +259,7 @@ func TestCreateMissionSlotIntentIT(t *testing.T) {
 		Runtime: slot.AgentGrantRuntime{Capabilities: []string{"execute"}, WorkspaceAccess: "read"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateMissionSlot(ctx, mk("mi_slot_grant"), nil, intent); !errors.Is(err, mission.ErrSlotIntentViolated) {
+	if _, err := store.CreateMissionGated(ctx, mk("mi_slot_grant"), nil, &mission.CreationGate{Slot: intent}); !errors.Is(err, mission.ErrSlotIntentViolated) {
 		t.Fatalf("撤权后建单须拒: %v", err)
 	}
 	// 拒绝路径零残留（事务回滚）
@@ -281,7 +281,7 @@ func TestListExpiredRunningFractionalIT(t *testing.T) {
 			ManifestID: "cmf_f", RuntimeID: "rtx_f", BindingID: "bd_f", AgentID: "ag_f",
 			State: missionrun.StateRunning, RequestedAt: "t", StartedAt: "t", UpdatedAt: "t",
 			Deadline: deadline}
-		if _, err := store.CreateRun(ctx, r, 0); err != nil {
+		if _, err := store.CreateRun(ctx, r, 0, 0); err != nil {
 			t.Fatal(err)
 		}
 	}

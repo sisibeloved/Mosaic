@@ -31,7 +31,9 @@ func (m *MemStore) WithMissionStatus(f func(missionID string) (string, bool)) *M
 }
 
 // CreateRun 建行（每 Mission 至多一个未终态）+ attempt_requested 事件。
-func (m *MemStore) CreateRun(_ context.Context, r Run, maxRuns int) (Run, error) {
+// 复审 #4/#10：身份门与版本漂移核对为 SQLite 建行事务面（memstore 无身份/
+// 契约行——manifestContractVersion 不用，仅保接口同构）。
+func (m *MemStore) CreateRun(_ context.Context, r Run, maxRuns, manifestContractVersion int) (Run, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, e := range m.runs {

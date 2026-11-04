@@ -73,11 +73,18 @@ export function MissionsPage() {
     room: searchParams.get("room") ?? "", task: searchParams.get("task") ?? "",
   }));
   const [budgetOpen, setBudgetOpen] = useState(false);
-  // 0.6.13 审校 #6：已交办任务卡续接模式（/v1/dispatch/update）——命中映射的
-  // 来源不再走 createMission（撞 409 source_already_mapped）；updateKey 为本表单
-  // 会话稳定幂等键（同键同载荷重试重放，不产生二次修订）。
-  const [updateTarget, setUpdateTarget] = useState<{ missionID: string; version: number } | null>(null);
-  const [updateKey, setUpdateKey] = useState("");
+  // 0.6.13 审校 #6 + 复审 #1/#2/#6：已交办任务卡续接模式（/v1/dispatch/update）
+  // ——命中映射的来源不再走 createMission（撞 409 source_already_mapped）。
+  // 复审修订：目标 / 版本 / 完整草稿（含 constraints/delegation 基准）在详情
+  // 请求**成功后同请求原子生效**（列表可陈旧——版本以预填响应为准）；切换
+  // 来源作废旧请求（代次）；加载与失败期间禁用提交并提供重试；冲突提供显式
+  // 重新加载（不自动覆盖编辑中草稿）。
+  const [updateTarget, setUpdateTarget] = useState<{ missionID: string; version: number; key: string } | null>(null);
+  const [baseContract, setBaseContract] = useState<{ constraints: string[]; delegation: { allowed: string[]; max_depth: number } } | null>(null);
+  const [detailState, setDetailState] = useState<"idle" | "loading" | "error">("idle");
+  const [conflictReload, setConflictReload] = useState(false);
+  const [retryTick, setRetryTick] = useState(0);
+  const detailSeq = useRef(0);
   const [budget, setBudget] = useState({ concurrency: "1", max_runs: "32", max_wall_clock_seconds: "86400", max_retries: "0", max_delegation_depth: "0" });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -107,28 +114,43 @@ export function MissionsPage() {
     if (id) setSelected(id);
   }, [searchParams]);
 
-  // 0.6.13 审校 #6：来源命中既有映射 → 续接模式（RFC §10.3 任务卡追加要求）：
-  // 预填现行契约（全量替换语义——在当前版本上修改/追加），提交走网关续接
-  // （owner 不变）；未命中维持新建交办。
+  // 复审 #1/#6：来源命中既有映射 → 续接模式——详情成功后目标/版本/预填
+  // 原子生效；失败禁提（提交门在按钮与提交函数双重校验）；代次作废切换前
+  // 的在途响应（慢请求不得覆盖已切换的表单）。
   useEffect(() => {
     const room = form.room.trim();
     const task = form.task.trim();
     if (!formOpen || !room || !task || !missions) {
+      detailSeq.current++;
       setUpdateTarget(null);
+      setBaseContract(null);
+      setDetailState("idle");
       return;
     }
     const hit = missions.find(
       (m) => m.room_source?.room_id === room && m.room_source?.task_id === task,
     );
     if (!hit) {
+      detailSeq.current++;
       setUpdateTarget(null);
+      setBaseContract(null);
+      setDetailState("idle");
       return;
     }
-    setUpdateTarget({ missionID: hit.mission_id, version: hit.contract_version });
-    setUpdateKey((k) => k || `web-update-${crypto.randomUUID()}`);
+    const cur = ++detailSeq.current;
+    setDetailState("loading");
+    setUpdateTarget(null);
+    setBaseContract(null);
     void api
       .getMission(hit.mission_id)
       .then((d) => {
+        if (detailSeq.current !== cur) return; // 旧请求（来源已切换）——作废
+        setUpdateTarget({ missionID: hit.mission_id, version: d.contract_version, key: `web-update-${crypto.randomUUID()}` });
+        // 复审 #2：不可编辑字段以同版本契约为基准（全量替换不得清空）。
+        setBaseContract({
+          constraints: d.constraints ?? [],
+          delegation: { allowed: d.delegation?.allowed ?? [], max_depth: d.delegation?.max_depth ?? 0 },
+        });
         setForm((f) => ({
           ...f,
           objective: d.objective ?? f.objective,
@@ -148,20 +170,25 @@ export function MissionsPage() {
           max_delegation_depth: String(d.budget?.max_delegation_depth ?? 0),
         });
         setBudgetOpen(true);
+        setDetailState("idle");
       })
-      .catch(() => {
-        /* 读失败保持表单现状——提交时错误可见 */
+      .catch((e) => {
+        if (detailSeq.current !== cur) return;
+        setDetailState("error"); // 复审 #1：读取失败禁用提交（目标不生效）
+        setMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
       });
-  }, [formOpen, form.room, form.task, missions]);
+  }, [formOpen, form.room, form.task, missions, retryTick]);
 
-  const act = async (fn: () => Promise<unknown>) => {
+  const act = async (fn: () => Promise<unknown>): Promise<ApiError | null> => {
     setBusy(true);
     setMsg(null);
     try {
       await fn();
       setRev((r) => r + 1);
+      return null;
     } catch (e) {
       setMsg(e instanceof ApiError ? `${e.code}：${e.message}` : e instanceof Error ? e.message : String(e));
+      return e instanceof ApiError ? e : null;
     } finally {
       setBusy(false);
     }
@@ -202,36 +229,45 @@ export function MissionsPage() {
     });
   };
 
-  // 0.6.13 审校 #6：续接提交（/v1/dispatch/update——owner 不变，全量替换契约；
-  // 稳定幂等键：失败修正后重试同键同载荷即重放，不二次修订）。
+  // 复审 #1/#2/#6：续接提交——目标就绪才可提交（加载/失败禁用）；基准
+  // constraints/delegation 随载荷回传（全量替换不清空不可编辑字段）；版本
+  // 冲突提供显式重新加载（不自动覆盖编辑中草稿）；稳定幂等键随目标生成
+  //（同键同载荷重试重放，不二次修订）。
   const submitUpdate = () => {
-    if (!updateTarget) return;
+    if (!updateTarget || detailState !== "idle") return;
     const b = {
       concurrency: Number(budget.concurrency), max_runs: Number(budget.max_runs),
       max_wall_clock_seconds: Number(budget.max_wall_clock_seconds),
       max_retries: Number(budget.max_retries), max_delegation_depth: Number(budget.max_delegation_depth),
     };
-    void act(async () => {
-      const rc = await api.updateDispatch({
-        mission_id: updateTarget.missionID,
-        expected_version: updateTarget.version,
-        idempotency_key: updateKey,
-        reason: "任务卡追加要求",
-        objective: form.objective.trim(),
-        scope: form.scope.trim(),
-        acceptance_criteria: splitLines(form.acceptance),
-        deliverable_specs: splitLines(form.deliverables),
-        source_refs: splitLines(form.sources),
-        ...(form.returns.trim() ? { return_targets: splitLines(form.returns) } : {}),
-        ...(form.reviewer.trim() ? { reviewer: form.reviewer.trim() } : {}),
-        budget: b,
+    void (async () => {
+      const err = await act(async () => {
+        const rc = await api.updateDispatch({
+          mission_id: updateTarget.missionID,
+          expected_version: updateTarget.version,
+          idempotency_key: updateTarget.key,
+          reason: "任务卡追加要求",
+          objective: form.objective.trim(),
+          scope: form.scope.trim(),
+          acceptance_criteria: splitLines(form.acceptance),
+          deliverable_specs: splitLines(form.deliverables),
+          source_refs: splitLines(form.sources),
+          ...(form.returns.trim() ? { return_targets: splitLines(form.returns) } : {}),
+          constraints: baseContract?.constraints ?? [],
+          delegation: baseContract?.delegation ?? { allowed: [], max_depth: 0 },
+          ...(form.reviewer.trim() ? { reviewer: form.reviewer.trim() } : {}),
+          budget: b,
+        });
+        setSelected(rc.domain_command_id.split(":")[0]);
+        setFormOpen(false);
+        setUpdateTarget(null);
+        setBaseContract(null);
+        setConflictReload(false);
+        setForm({ objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "", owner: "", reviewer: "", room: "", task: "" });
       });
-      setSelected(rc.domain_command_id.split(":")[0]);
-      setFormOpen(false);
-      setUpdateTarget(null);
-      setUpdateKey("");
-      setForm({ objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "", owner: "", reviewer: "", room: "", task: "" });
-    });
+      // 复审 #6：真并发冲突（他处已修订）→ 显式重新加载入口
+      if (err?.code === "version_conflict") setConflictReload(true);
+    })();
   };
 
   return (
@@ -261,6 +297,34 @@ export function MissionsPage() {
             <p className="rounded-lg bg-accent-soft px-2.5 py-1.5 text-xs text-accent">
               该任务卡已交办为 {updateTarget.missionID}（v{updateTarget.version}）——本次为<b>追加要求</b>
               （网关续接 mission_update：全量替换契约、负责人不变，换人走交接；同键重试幂等不二次修订）。
+            </p>
+          )}
+          {formOpen && missions && form.room.trim() && form.task.trim() &&
+            missions.some((m) => m.room_source?.room_id === form.room.trim() && m.room_source?.task_id === form.task.trim()) &&
+            !updateTarget && detailState === "loading" && (
+              <p className="rounded-lg bg-surface-2 px-2.5 py-1.5 text-xs text-faint">读取现行契约…（提交待就绪）</p>
+            )}
+          {formOpen && detailState === "error" && (
+            <p className="flex items-center gap-2 rounded-lg bg-[color-mix(in_srgb,var(--danger)_10%,transparent)] px-2.5 py-1.5 text-xs text-danger">
+              契约读取失败——续接提交已禁用（防误写不完整契约）
+              <button type="button" onClick={() => setRetryTick((t) => t + 1)} className="underline">
+                重试
+              </button>
+            </p>
+          )}
+          {conflictReload && (
+            <p className="flex items-center gap-2 rounded-lg bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] px-2.5 py-1.5 text-xs text-warn">
+              提交与他处修订冲突（version_conflict）——重新加载最新契约后再追加（编辑中草稿将被预填覆盖）
+              <button
+                type="button"
+                onClick={() => {
+                  setConflictReload(false);
+                  setRetryTick((t) => t + 1);
+                }}
+                className="underline"
+              >
+                重新加载
+              </button>
             </p>
           )}
           <label className="flex flex-col gap-1 text-xs">
@@ -391,11 +455,19 @@ export function MissionsPage() {
           <div>
             <button
               type="button"
-              disabled={busy || !form.objective.trim() || !form.scope.trim()}
+              disabled={busy || !form.objective.trim() || !form.scope.trim() || detailState !== "idle"}
               onClick={updateTarget ? submitUpdate : submitCreate}
               className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast transition-opacity hover:opacity-90 disabled:opacity-40"
             >
-              {busy ? "提交中…" : updateTarget ? `追加要求（续接 v${updateTarget.version}）` : "创建契约"}
+              {busy
+                ? "提交中…"
+                : detailState === "loading"
+                  ? "读取契约…"
+                  : detailState === "error"
+                    ? "契约未就绪（重试读取）"
+                    : updateTarget
+                      ? `追加要求（续接 v${updateTarget.version}）`
+                      : "创建契约"}
             </button>
           </div>
         </section>

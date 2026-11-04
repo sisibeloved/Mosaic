@@ -6,6 +6,17 @@
 
 ### Fixed
 
+- **0.6.13 复审修复（13 项：5 P1 + 6 P2 + 2 P3，ADR-0036 v0.3）**：
+  - **建单事务门统一**（#3/#5/#7）：`CreationGate`（职责意图五核 + 模板唯一性锚 + `RequireOwnerActive` 身份门）——显式 owner 网关交办在建单事务内核对身份（预检后退役/暂停不得落入新承诺）；模板引用的建单核对该 scope 实例集仍恰为解析实例（长出兄弟实例即歧义拒建；显式实例路径不受限）；授权档案事务内快照补 `workspace_access`（合法 read_write 不再被当 none 误拒 409）。
+  - **执行预算单快照**（#4/#10）：预算取**清单钉住版本的契约层**（与执行输入同版本——RefOf 后修订收紧即时生效，不混用两版本）；`CreateRun` 建行事务内核对现行契约版本（漂移 409 `contract_drift` 释放租约重新装配）与现行 max_runs；执行者门核负责人 active + 所钉任职未失效/换人（暂停身份启动 409 `owner_not_active`，任务停留 ready）。
+  - **完成提交前终态判定**（#9）：结果分支写完成前按停止意图**或行上期限**原子决定去向——监控发停与围栏检查的交错不再漏网，过期正文只审计不发布。
+  - **投递认领一致性**（#8）：Dispatch 采纳 pending 原行标识、复核/预检/建单拒绝释放认领（不占键）、回执落实际成功 route_id 并 upsert 自愈——换绑拒绝后换路由同键重投的首次响应与重放/按键查询读到同一份。
+  - **v30 遗留恢复**（#11/#12）：运行过候选版 b59a395 的库升级后，遗留 pending 续接认领可恢复——版本恰 expected+1 且内容与载荷等值（SameContent）= 修订确已提交 → 完结回执；不等值冲突透传不宣告成功、不删除可能已提交的键；reason 空列回落命令值。
+  - **前端续接模式重写**（#1/#2/#6）：目标/版本/完整草稿（含 constraints/delegation 基准——全量替换不清空不可编辑字段）在详情请求成功后**同请求原子生效**；切换来源作废旧请求（代次）；加载/失败禁用提交并提供重试；版本基准 = 预填同一详情响应（列表陈旧不再反复 409）；真并发冲突提供显式重新加载。
+  - **摘要墓碑**（#13）：`ListMissions` 摘要与详情对房间来源给出同一 `deleted_at` 墓碑事实。
+
+### Fixed
+
 - **0.6.13 独立审校修复（17 项：5 P1 + 10 P2 + 2 P3，ADR-0036 v0.2）**：
   - **续接原子化**：`dispatch.Update` 在 SQLite 上以**单写事务**完成认领 + 复核（事务内身份门——owner 在册且 active）+ 修订 + 回执（`UpdateMissionAtomic`；内存件分步退化 + 拒绝回滚补偿）——修订已生效而回执失败不再留下"同键重试 409"的裂口（审校 #3）；领域拒绝/身份门失败整体回滚**不占幂等键**，修正后同键重试成功（#11）；owner 状态读取失败即错、未指派/未在册/非 active 明确拒绝（#12）；恢复重驱动命中 pending 采纳**原回执行**——与重放同 receipt_id（#13）；`reason` 随回执持久化并读回、目标引用携修订后版本 `mission:<id>:v<n>`（#16）；入口字段校验 400 先于认领（#17）；公开回执查询只见已提交行（pending 不可见）。
   - **Slot 派发链补强**：解析事实（实例 + 任职）作为决策事实另存、**原请求摘要**稳定——换绑后重解析同一请求同键可重放已提交回执（#10）；建单在**同一写事务**内核对实例/任职/身份/授权四项——换绑、暂停、撤权不得插进复核与建单之间（#2/#7，`CreateMissionSlot` + `mission.ErrSlotIntentViolated` → 409 route_stale）；解析所得实例落 `missions.slot_instance_id` 创建事实，执行装配按实例固定 Binding——**同人双任职不再串用**（#1，`Bindings.ActiveOfInstance`）；预检补 owner active 与授权准入（blocked `agent_not_active` / `slot_grant_missing`，#7）；契约对齐：`selection_source` 补 `slot_binding`/`explicit_owner`、reason_code 补 slot 族、决策回包携 `resolved_slot_instance_id`/`resolved_agent_id`（#9）。

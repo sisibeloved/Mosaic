@@ -1138,6 +1138,8 @@ func (a runManifestsAdapter) Build(ctx context.Context, missionID, bindingID str
 	return missionrun.Manifest{
 		ManifestID: res.Manifest.ManifestID, State: res.Manifest.State,
 		ReasonCode: res.Manifest.ReasonCode, Layers: layers,
+		// 复审 #10：清单钉住的契约版本随清单传递（建行事务内核对漂移）。
+		ContractVersion: res.Manifest.ContractVersion,
 	}, nil
 }
 

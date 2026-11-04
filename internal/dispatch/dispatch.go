@@ -112,9 +112,10 @@ type Receipt struct {
 // Missions 领域服务端口（*mission.Service 实现；dispatch 编排不复制域逻辑）。
 type Missions interface {
 	Create(ctx context.Context, ownerAgentID string, c mission.Content, src *mission.RoomSource) (mission.Mission, error)
-	// CreateWithSlot 带职责意图建单（0.6.13 审校 #1/#2）：意图随建单进同一写
-	// 事务核对（实例/任职/身份/授权漂移 → mission.ErrSlotIntentViolated）。
-	CreateWithSlot(ctx context.Context, ownerAgentID string, c mission.Content, src *mission.RoomSource, slot *mission.SlotIntent) (mission.Mission, error)
+	// CreateGated 带事务门建单（0.6.13 审校 #1/#2 + 复审 #3/#7）：职责意图五核
+	// 与模板唯一性锚、RequireOwnerActive 身份门随建单进同一写事务核对（漂移
+	// → mission.ErrSlotIntentViolated / ErrOwnerGateViolated → route_stale）。
+	CreateGated(ctx context.Context, ownerAgentID string, c mission.Content, src *mission.RoomSource, gate *mission.CreationGate) (mission.Mission, error)
 	// Get / Revise 续接（0.6.13 / ADR-0036 §1 mission_update）：复核读现值 +
 	// CAS 修订（归属锚由网关以服务端读值填充——owner 不变）。
 	Get(ctx context.Context, missionID string) (mission.Mission, bool, error)
@@ -485,7 +486,18 @@ func (s *Service) Dispatch(ctx context.Context, cmd DispatchCmd) (Receipt, bool,
 	if finalized {
 		return existing, true, nil // 同摘要已完结 → 重放（并发路径兜底）
 	}
-	// pending 同摘要：本调用即认领持有者或恢复重驱动，继续
+	// 复审 #8：pending 采纳原行——receipt_id/request_id 沿用首认领（换绑拒绝
+	// 后换路由重投的成功响应与重放/按键查询读到同一份持久化回执）。
+	if existing.ReceiptID != "" {
+		claim.ReceiptID = existing.ReceiptID
+		claim.RequestID = existing.RequestID
+	}
+	// 拒绝即释放认领（复审 #8：确定失败的请求不占键——复核/预检/建单拒绝后
+	// 换新决策同键重投不被旧认领绑死；同摘要 pending 无领域事实，删除安全）。
+	fail := func(err error) (Receipt, bool, error) {
+		_ = s.store.ReleaseKey(ctx, CallerOwner, ScopeWorkspace, cmd.IdempotencyKey, d.RequestDigest)
+		return Receipt{}, false, err
+	}
 
 	// 0.6.13 / ADR-0036 §2（审校 #2/#10 修订）：slot 寻址决策的投递复核——
 	// 重解析原始请求，任职与实例**双核对**决策事实（模板实例集漂移即 stale，
@@ -498,11 +510,11 @@ func (s *Service) Dispatch(ctx context.Context, cmd DispatchCmd) (Receipt, bool,
 		}
 		agent, instance, code, ok := s.resolveSlot(ctx, &d.Request)
 		if !ok {
-			return Receipt{}, false, fmt.Errorf("%w: 职责复核不再满足（%s）——重新解析", ErrRouteStale, code)
+			return fail(fmt.Errorf("%w: 职责复核不再满足（%s）——重新解析", ErrRouteStale, code))
 		}
 		if agent != d.ResolvedAgentID || instance != d.ResolvedInstanceID {
-			return Receipt{}, false, fmt.Errorf("%w: 解析事实已漂移（任职 %s→%s / 实例 %s→%s）——重新解析",
-				ErrRouteStale, d.ResolvedAgentID, agent, d.ResolvedInstanceID, instance)
+			return fail(fmt.Errorf("%w: 解析事实已漂移（任职 %s→%s / 实例 %s→%s）——重新解析",
+				ErrRouteStale, d.ResolvedAgentID, agent, d.ResolvedInstanceID, instance))
 		}
 	}
 
@@ -511,16 +523,20 @@ func (s *Service) Dispatch(ctx context.Context, cmd DispatchCmd) (Receipt, bool,
 		if code == "source_already_mapped" {
 			return Receipt{}, false, fmt.Errorf("%w: %s", mission.ErrSourceAlreadyMapped, summary)
 		}
-		return Receipt{}, false, fmt.Errorf("%w: 预检不再满足（%s：%s）", ErrRouteStale, code, summary)
+		return fail(fmt.Errorf("%w: 预检不再满足（%s：%s）", ErrRouteStale, code, summary))
 	}
-	// 建单：slot 寻址携意图进同一写事务（审校 #1/#2——任职/身份/授权漂移
-	// 由存储事务内核对，ErrSlotIntentViolated → route_stale 重新解析）。
+	// 建单：网关交办一律走事务门（复审 #3/#7）——slot 寻址携意图五核 + 模板
+	// 唯一性锚（SpecID = 原始模板引用）；显式 owner 交办携 RequireOwnerActive
+	// 身份门（预检后退役/暂停不得落入新承诺）。门拒绝 → route_stale 重新解析。
 	var m mission.Mission
 	if d.ResolvedInstanceID != "" {
-		m, err = s.missions.CreateWithSlot(ctx, d.ResolvedAgentID, d.Request.Contract, &d.Request.RoomSource,
-			&mission.SlotIntent{InstanceID: d.ResolvedInstanceID, AgentID: d.ResolvedAgentID})
+		m, err = s.missions.CreateGated(ctx, d.ResolvedAgentID, d.Request.Contract, &d.Request.RoomSource,
+			&mission.CreationGate{Slot: &mission.SlotIntent{
+				InstanceID: d.ResolvedInstanceID, AgentID: d.ResolvedAgentID, SpecID: d.Request.SlotSpecID,
+			}})
 	} else {
-		m, err = s.missions.Create(ctx, d.Request.OwnerAgentID, d.Request.Contract, &d.Request.RoomSource)
+		m, err = s.missions.CreateGated(ctx, d.Request.OwnerAgentID, d.Request.Contract, &d.Request.RoomSource,
+			&mission.CreationGate{RequireOwnerActive: d.Request.OwnerAgentID != ""})
 	}
 	if err != nil {
 		// 孪生已创建（pending 认领未完结的恢复重驱动）：完结回执后重放
@@ -529,10 +545,10 @@ func (s *Service) Dispatch(ctx context.Context, cmd DispatchCmd) (Receipt, bool,
 				return prior, true, nil
 			}
 		}
-		if errors.Is(err, mission.ErrSlotIntentViolated) {
-			return Receipt{}, false, fmt.Errorf("%w: %v", ErrRouteStale, err)
+		if errors.Is(err, mission.ErrSlotIntentViolated) || errors.Is(err, mission.ErrOwnerGateViolated) {
+			return fail(fmt.Errorf("%w: %v", ErrRouteStale, err))
 		}
-		return Receipt{}, false, err
+		return fail(err)
 	}
 	out := claim
 	out.DomainCommandID = m.MissionID
@@ -631,11 +647,15 @@ func (s *Service) Update(ctx context.Context, cmd UpdateCmd) (Receipt, bool, err
 	if finalized {
 		return existing, true, nil
 	}
-	// #13：pending 采纳原行——receipt_id/request_id 沿用首认领（恢复重驱动与
-	// 后续重放给出同一回执）。
+	// #13 + 复审 #12：pending 采纳原行——receipt_id/request_id 沿用首认领
+	//（恢复重驱动与后续重放给出同一回执）；reason 空值（v30 旧列缺省）回落
+	// 本次命令值——摘要等值已证明同一请求（reason 在摘要内）。
 	if existing.ReceiptID != "" {
 		claim.ReceiptID = existing.ReceiptID
 		claim.RequestID = existing.RequestID
+		if existing.Reason == "" {
+			claim.Reason = cmd.Reason
+		}
 	}
 	// 拒绝即回滚认领（#11：确定失败的请求不占键——修正后重试不再 409 幂等冲突）
 	fail := func(err error) (Receipt, bool, error) {
@@ -670,7 +690,19 @@ func (s *Service) Update(ctx context.Context, cmd UpdateCmd) (Receipt, bool, err
 	// 修订：归属锚取服务端读值（网关非浏览器——读值即可信）；owner 不变。
 	up, err := s.missions.Revise(ctx, cmd.MissionID, cmd.ExpectedVersion, cur.OwnerAgentID, cur.OwnerAgentID, cmd.Contract)
 	if err != nil {
-		return fail(err) // 领域拒绝透传（version_conflict/owner_mismatch/invalid_transition/invalid_mission）
+		// 复审 #11（对齐原子面）：版本恰 expected+1 且现行内容与载荷等值 =
+		// 该命令的修订确已提交（认领后完结前中断/旧版残留）——完结回执而非
+		// 释放键（可能已提交的键不得删除）；不等值不能证明，走拒绝释放。
+		if errors.Is(err, mission.ErrVersionConflict) {
+			if now, found2, gerr := s.missions.Get(ctx, cmd.MissionID); gerr == nil && found2 &&
+				now.ContractVersion == cmd.ExpectedVersion+1 && mission.SameContent(now.Content, cmd.Contract) {
+				up = now
+			} else {
+				return fail(err)
+			}
+		} else {
+			return fail(err) // 领域拒绝透传（owner_mismatch/invalid_transition/invalid_mission）
+		}
 	}
 	out := claim
 	out.DomainCommandID = fmt.Sprintf("%s:revise:v%d", up.MissionID, up.ContractVersion)

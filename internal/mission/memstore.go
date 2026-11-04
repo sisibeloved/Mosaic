@@ -28,11 +28,13 @@ func NewMemStore() *MemStore {
 	}
 }
 
-// CreateMissionSlot 带职责意图建单（0.6.13 审校 #1：记录 SlotInstanceID——
-// 执行装配按实例固定任职；内存件无 slot 域，意图核对仅域级自洽（AgentID ==
-// owner——任职/身份/授权时点核对为 SQLite 事务面，IT 覆盖）。
-func (m *MemStore) CreateMissionSlot(ctx context.Context, ms Mission, src *RoomSource, slot *SlotIntent) (Mission, error) {
-	if slot != nil {
+// CreateMissionGated 带事务门建单（0.6.13 审校 #1 + 复审 #3/#7：记录
+// SlotInstanceID——执行装配按实例固定任职；内存件无 slot/身份域，门核对仅
+// 域级自洽（AgentID == owner——任职/身份/授权/模板唯一性时点核对为 SQLite
+// 事务面，IT 覆盖）。
+func (m *MemStore) CreateMissionGated(ctx context.Context, ms Mission, src *RoomSource, gate *CreationGate) (Mission, error) {
+	if gate != nil && gate.Slot != nil {
+		slot := gate.Slot
 		if slot.InstanceID == "" || slot.AgentID == "" || slot.AgentID != ms.OwnerAgentID {
 			return Mission{}, fmt.Errorf("%w: 意图自洽性（instance=%q agent=%q owner=%q）", ErrSlotIntentViolated, slot.InstanceID, slot.AgentID, ms.OwnerAgentID)
 		}

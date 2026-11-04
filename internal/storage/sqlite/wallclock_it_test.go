@@ -28,7 +28,7 @@ func TestWallClockStoreIT(t *testing.T) {
 			FenceToken: "fnc_t", Generation: 1, RequestedAt: started, StartedAt: started,
 			UpdatedAt: started, Deadline: deadline,
 		}
-		if _, err := store.CreateRun(ctx, r, 0); err != nil {
+		if _, err := store.CreateRun(ctx, r, 0, 0); err != nil {
 			t.Fatalf("建 %s: %v", id, err)
 		}
 	}
@@ -85,7 +85,7 @@ func TestWallClockUpgradeIT(t *testing.T) {
 	r := missionrun.Run{RunID: "run_up_wc", MissionID: "mi_up", Attempt: 1, LeaseID: "l", ManifestID: "m",
 		RuntimeID: "r", BindingID: "b", AgentID: "a", State: missionrun.StateRunning,
 		FenceToken: "f", Generation: 1, RequestedAt: "t", Deadline: "2026-11-03T13:00:00Z"}
-	if _, err := store2.CreateRun(ctx, r, 0); err != nil {
+	if _, err := store2.CreateRun(ctx, r, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	expired, err := store2.ListExpiredRunning(ctx, "2026-11-03T14:00:00Z")

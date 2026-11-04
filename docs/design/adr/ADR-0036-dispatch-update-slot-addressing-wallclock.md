@@ -1,6 +1,6 @@
 # ADR-0036：0.6 域收口——网关续接、Slot 职责寻址与墙钟强制（0.6.13）
 
-- 状态：Accepted（2026-11-03，随 0.6.13 实施；v0.2 审校修订）
+- 状态：Accepted（2026-11-03，随 0.6.13 实施；v0.2 审校 / v0.3 复审修订）
 - 关联：[RFC-0018](../rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（§4.5——"任务型职责寻址使用 当前 scope → SlotInstance → active Binding → AgentID → 候选 Runtime。SlotSpec 只作版本化模板，同名模板在不同项目下可有多个实例；禁止跨项目猜选任职者。没有 active Binding 时返回待任职，不能自动激活一个 ready Binding"；§4.6——投递复核与"已提交后从 A 改为 B 走领域交接，不能只改路由缓存"；§10.3——`mission_update` 续接序列与 `route_stale`；§6.1——budget 五项"契约声明事实，运行时强制随 Scheduler 落"；AT-14/15/18）；[ADR-0024](ADR-0024-dispatch-first-slice.md)（网关首切片——create 路径）；[ADR-0028](ADR-0028-single-agent-execution.md)（Scheduler）；[ADR-0029](ADR-0029-mission-pause-resume-cancel.md)（停止面复用）；[ADR-0030](ADR-0030-run-crash-recovery.md)（迟到结果审计复用）；[ADR-0035](ADR-0035-mission-handover.md)（换人走交接——本件寻址不改在途归属）；[交付计划](../../plan/2026-08-25-delivery-plan.md) v2.69 盘点三项落差、负责人裁定"开 0.6.13"。
 
 ## 背景与问题
@@ -69,6 +69,12 @@ v2.69 阶段性验收盘点确认：0.6 出口的既定范围（AT-02/03/10/13�
 ## 修订记录
 
 - v0.1（2026-11-03）：首版（随 0.6.13 实施）。
+- v0.3（2026-11-03）：复审 13 项（5 P1 + 6 P2 + 2 P3）修复——五项设计修订：
+  1. **建单事务门统一（§2）**：`CreationGate{Slot *SlotIntent, RequireOwnerActive bool}` 取代单一意图——显式 owner 网关交办携身份门（预检后退役/暂停不得落入新承诺，复审 #3）；slot 意图五核（+ 模板唯一性锚：SpecID 非空时 scope 实例集须仍恰为解析实例——长出兄弟实例即歧义拒建，复审 #7）；授权档案事务内快照**补 workspace_access**（漏读使合法 read_write 被当空值误拒，复审 #5）。
+  2. **执行预算单快照（§3）**：预算（墙钟 + max_runs）取**清单钉住版本的契约层**（与执行输入同版本）；`CreateRun` 建行事务内核对——现行契约版本（漂移 `ErrContractDrift` 释放租约重新装配）与现行内容 max_runs（RefOf 后收紧即时生效，复审 #10）+ 执行者门（负责人 active + 所钉任职仍 active 未换人，`ErrOwnerNotActive`，复审 #4——暂停不自动解除任职不得启动）。
+  3. **完成提交前终态判定（§3）**：结果分支在写完成前按**停止意图或行上期限**原子决定去向（复审 #9——独立监控信号必然伴随 deadline 已过，按期限兜底不依赖注册表读取时序；过期正文只审计不发布）。
+  4. **投递认领一致性（§1/§2）**：Dispatch 采纳 pending 原行标识；复核/预检/建单拒绝**释放认领**（不占键）；FinalizeReceipt 写实际成功 route_id 并 upsert 自愈（复审 #8——换绑拒绝后换路由同键重投，首次响应与重放/按键查询同一份）。
+  5. **v30 遗留恢复（§1）**：升级库的遗留 pending 续接认领——版本恰 expected+1 且现行内容与载荷等值（SameContent，摘要绑定同一命令）= 修订确已提交 → 完结回执；不等值不能证明 → 冲突透传（原子面回滚不占键；不无条件删除可能已提交的键，复审 #11）；reason 空列回落命令值（复审 #12）。前端续接模式重写：目标/版本/草稿（含 constraints/delegation 基准）同请求原子生效、代次作废、失败禁提重试、冲突显式重载（复审 #1/#2/#6）；摘要与详情同墓碑（#13）。
 - v0.2（2026-11-03）：独立审校 17 项（5 P1 + 10 P2 + 2 P3，`v0.6.12..b59a395`）修复——四项设计修订：
   1. **续接原子化（§1 重写）**：认领 + 复核（owner 在册且 active 的**事务内身份门**——暂停/未指派/读取失败皆拒）+ 修订 + 回执**同一写事务**（SQLite `UpdateMissionAtomic`；内存件退化为分步 + 拒绝回滚补偿 `ReleaseKey` + pending 采纳原行）。领域拒绝整体回滚**不占键**（修正后同键重试成功）；修订已生效而回执失败不再出现；恢复重驱动与重放同 receipt_id；`reason` 随回执持久化读回；目标引用携修订后版本（`mission:<id>:v<n>`）；入口字段校验 400 先于认领（mission_id 形制 / expected_version≥1 / request_id≤128 / reason≤280）。公开回执查询只见已提交行（pending 是事务内部事实）。
   2. **派发意图落任务（§2 补强）**：解析所得实例 + 任职作为**决策事实另存**（`resolved_agent_id`/`resolved_instance_id`——原请求摘要稳定：换绑后重解析同键可重放，模板实例集漂移即 stale）；建单 `CreateMissionSlot` 在**同一写事务**四核（实例在册 / active 任职 == 预期 / 负责人 active / 授权准入 `EvaluateReadiness` 单源）——换绑/暂停/撤权不得插进复核与建单之间（`ErrSlotIntentViolated` → route_stale）；`missions.slot_instance_id` 为创建事实，执行装配按**实例**固定 Binding（同人双任职不串用；`Bindings.ActiveOfInstance`）。预检补 owner active 与授权准入（blocked `agent_not_active`/`slot_grant_missing`）。

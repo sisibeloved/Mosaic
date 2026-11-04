@@ -45,7 +45,7 @@ func TestMissionReviewStoreIT(t *testing.T) {
 		t.Fatal("版本不符送验应 ok=false")
 	}
 	// 审校 #2：未决 Run（在途/未处置 unknown）事务内拦送验
-	if _, err := store.CreateRun(ctx, seedRun("run_inflight", m.MissionID, 0, "running"), 0); err != nil {
+	if _, err := store.CreateRun(ctx, seedRun("run_inflight", m.MissionID, 0, "running"), 0, 0); err != nil {
 		t.Fatalf("播种在途 Run: %v", err)
 	}
 	if _, ok, err := store.RequestReview(ctx, m.MissionID, 1, "dlv_1", reviewEv(m.MissionID, `{}`, "t0")); err == nil || !errors.Is(err, mission.ErrUnsettledRuns) || ok {
@@ -206,12 +206,12 @@ func TestReviewRecheckR_IT(t *testing.T) {
 
 	// R1 反向顺序：送验先提交、Run 后落——CreateRun 事务内核对过期调度拒绝
 	store.RequestReview(ctx, "mi_rr", 1, "dlv_rr", reviewEv("mi_rr", `{}`, "t1"))
-	if _, err := store.CreateRun(ctx, seedRun("run_rr", "mi_rr", 0, "running"), 0); err == nil {
+	if _, err := store.CreateRun(ctx, seedRun("run_rr", "mi_rr", 0, "running"), 0, 0); err == nil {
 		t.Fatal("送验后的过期调度 CreateRun 须拒绝（事务内核核对任务状态）")
 	}
 	// 退回 → ready；在途 Run 存在 → 送验被事务内复核拒绝（正向顺序）
 	store.RecordReview(ctx, "mi_rr", 1, 1, mission.StatusReady, reviewEv("mi_rr", `{}`, "t2"), "dlv_rr")
-	store.CreateRun(ctx, seedRun("run_rr2", "mi_rr", 0, "running"), 0) // ready 时合法
+	store.CreateRun(ctx, seedRun("run_rr2", "mi_rr", 0, "running"), 0, 0) // ready 时合法
 	if _, ok, err := store.RequestReview(ctx, "mi_rr", 1, "dlv_rr2", reviewEv("mi_rr", `{}`, "t3")); err == nil && ok {
 		t.Fatal("在途 Run 未决时送验须拒绝")
 	}
@@ -223,7 +223,7 @@ func TestReviewRecheckR_IT(t *testing.T) {
 	if _, ok, err := store.RequestReview(ctx, "mi_rr", 1, "dlv_rr2", reviewEv("mi_rr", `{}`, "t5")); err != nil || !ok {
 		t.Fatalf("未决清零后送验: ok=%v err=%v", ok, err)
 	}
-	if _, err := store.CreateRun(ctx, seedRun("run_rr3", "mi_rr", 0, "running"), 0); err == nil {
+	if _, err := store.CreateRun(ctx, seedRun("run_rr3", "mi_rr", 0, "running"), 0, 0); err == nil {
 		t.Fatal("reviewing 下 CreateRun 须拒绝")
 	}
 	if _, ok, err := store.RecordReview(ctx, "mi_rr", 1, 2, mission.StatusAccepted, reviewEv("mi_rr", `{}`, "t6"), "dlv_rr2"); err != nil || !ok {
@@ -232,7 +232,7 @@ func TestReviewRecheckR_IT(t *testing.T) {
 	// R1 接受复查正例：reviewing + 未处置 unknown 残留（v22 升级形态——送验复核
 	// 之前的既有数据）→ 接受在事务内拒绝
 	mkMission(t, store, "mi_rr9", mission.StatusReady)
-	store.CreateRun(ctx, seedRun("run_rr9", "mi_rr9", 0, "unknown"), 0)
+	store.CreateRun(ctx, seedRun("run_rr9", "mi_rr9", 0, "unknown"), 0, 0)
 	store.db.Exec(`UPDATE missions SET status = 'reviewing', review_package_id = 'dlv_rr9', review_round = 1 WHERE mission_id = ?`, "mi_rr9")
 	if _, ok, err := store.RecordReview(ctx, "mi_rr9", 1, 1, mission.StatusAccepted, reviewEv("mi_rr9", `{}`, "t8"), "dlv_rr9"); err == nil && ok {
 		t.Fatal("未决 unknown 残留时接受须拒绝")
@@ -326,7 +326,7 @@ func TestTerminalWriteGuards_IT(t *testing.T) {
 	// 三审 #5：先在 ready 下成功建 Run（否则 CreateRun 被终态守卫拒——Run 不存在
 	// 的"通过"不算数），再转 accepted，断言处置被 ErrMissionTerminal 拒。
 	mkMission(t, store, "mi_term", mission.StatusReady)
-	if _, err := store.CreateRun(ctx, seedRun("run_term", "mi_term", 0, "unknown"), 0); err != nil {
+	if _, err := store.CreateRun(ctx, seedRun("run_term", "mi_term", 0, "unknown"), 0, 0); err != nil {
 		t.Fatalf("预置 Run（ready 期）: %v", err)
 	}
 	store.db.Exec(`UPDATE missions SET status = 'accepted' WHERE mission_id = ?`, "mi_term")

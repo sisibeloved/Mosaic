@@ -603,6 +603,8 @@ export const api = {
     deliverable_specs: string[];
     source_refs: string[];
     return_targets?: string[];
+    constraints?: string[];
+    delegation?: { allowed: string[]; max_depth: number };
     reviewer?: string;
     budget?: { concurrency: number; max_runs: number; max_wall_clock_seconds: number; max_retries: number; max_delegation_depth: number };
   }): Promise<import("./schema.gen").components["schemas"]["DispatchReceiptView"]> {

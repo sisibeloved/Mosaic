@@ -1910,9 +1910,14 @@ func (s *server) ListMissions(w http.ResponseWriter, r *http.Request) {
 			Status: apigen.MissionSummaryStatus(sum.Status), OwnerAgentId: sum.OwnerAgentID,
 			Objective: sum.Objective, CreatedAt: ts, UpdatedAt: us,
 		}
-		// 0.6.13 审校 #6：任务卡续接识别（已映射任务卡经 /v1/dispatch/update）。
+		// 0.6.13 审校 #6 + 复审 #13：任务卡续接识别 + 摘要与详情同一墓碑事实。
 		if sum.RoomSource != nil {
 			mv.RoomSource = &apigen.RoomSource{RoomId: sum.RoomSource.RoomID, TaskId: sum.RoomSource.TaskID}
+			if sum.RoomSource.DeletedAt != "" {
+				if ts, terr := time.Parse(time.RFC3339Nano, sum.RoomSource.DeletedAt); terr == nil {
+					mv.RoomSource.DeletedAt = &ts
+				}
+			}
 		}
 		out = append(out, mv)
 	}
@@ -3835,6 +3840,12 @@ func writeRunError(w http.ResponseWriter, err error) {
 	case errors.Is(err, missionrun.ErrBudgetExhausted):
 		// 0.6.13 审校 #5：手动达限映射可识别 409（权威上限在 CreateRun 事务内）
 		writeError(w, http.StatusConflict, "budget_exhausted", err.Error())
+	case errors.Is(err, missionrun.ErrOwnerNotActive):
+		// 复审 #4：领取 Run 的建行事务内身份门——暂停/退役/任职失效不启动
+		writeError(w, http.StatusConflict, "owner_not_active", err.Error())
+	case errors.Is(err, missionrun.ErrContractDrift):
+		// 复审 #10：装配后契约被修订——释放租约重新装配（重试即新版本）
+		writeError(w, http.StatusConflict, "contract_drift", err.Error())
 	case errors.Is(err, mosaicruntime.ErrLeaseConflictRuntime), errors.Is(err, mosaicruntime.ErrLeaseConflictWorkspace):
 		writeError(w, http.StatusConflict, "scheduler_busy", "资源被占（"+err.Error()+"）——下轮再试")
 	default:

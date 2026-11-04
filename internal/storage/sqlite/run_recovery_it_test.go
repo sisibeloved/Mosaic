@@ -30,7 +30,7 @@ func TestRunResolutionStoreIT(t *testing.T) {
 	}
 
 	// 播种 unknown 终态 Run（恢复语义——UpdateRun 全行含处置三列往返）
-	r, err := store.CreateRun(ctx, seedRun("run_u1", "mi_u", 0, missionrun.StateRunning), 0)
+	r, err := store.CreateRun(ctx, seedRun("run_u1", "mi_u", 0, missionrun.StateRunning), 0, 0)
 	if err != nil {
 		t.Fatalf("首建: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestRunResolutionStoreIT(t *testing.T) {
 	}
 
 	// 条件处置：非 unknown 行 ok=false；unknown 且未处置 → 落三列
-	r2, _ := store.CreateRun(ctx, seedRun("run_u2", "mi_u", 0, missionrun.StateRunning), 0)
+	r2, _ := store.CreateRun(ctx, seedRun("run_u2", "mi_u", 0, missionrun.StateRunning), 0, 0)
 	r2.State = missionrun.StateCompleted
 	r2.FinishedAt = "t"
 	_ = store.UpdateRun(ctx, r2, nil)
@@ -218,7 +218,7 @@ func TestLegacyResidueConvergedIT(t *testing.T) {
 	}
 	const mi = "mi_it_1"
 	// 旧库残留行 + 停止路径 canceled 行（不同文案，不得命中）
-	legacy, err := store.CreateRun(ctx, seedRun("run_lg", mi, 0, missionrun.StateRunning), 0)
+	legacy, err := store.CreateRun(ctx, seedRun("run_lg", mi, 0, missionrun.StateRunning), 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestLegacyResidueConvergedIT(t *testing.T) {
 	if err := store.UpdateRun(ctx, legacy, nil); err != nil {
 		t.Fatal(err)
 	}
-	stopped, err := store.CreateRun(ctx, seedRun("run_st", "mi_it_2", 0, missionrun.StateRunning), 0)
+	stopped, err := store.CreateRun(ctx, seedRun("run_st", "mi_it_2", 0, missionrun.StateRunning), 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

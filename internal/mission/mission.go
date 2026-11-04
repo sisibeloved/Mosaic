@@ -113,6 +113,9 @@ var (
 	// 事务内核对——实例不在册 / active 任职已换人 / 负责人身份非 active /
 	// 授权准入不满足；网关映射 route_stale 重新解析，不得用陈旧任职建单）。
 	ErrSlotIntentViolated = errors.New("mission: 职责派发意图复核失败（实例/任职/负责人已变化）")
+	// ErrOwnerGateViolated 负责人身份门复核失败（复审 #3：建单事务内 owner 非
+	// active——预检后退役/暂停不得落入新承诺；网关映射 route_stale 重新解析）。
+	ErrOwnerGateViolated = errors.New("mission: 负责人身份门复核失败（非 active）")
 	// ErrAgentStatusUnavailable 身份状态查询端口未装配（0.6.12 / ADR-0035：交接
 	// 是责任转移的受控通道，承接人须 active——宁拒不放行）。
 	ErrAgentStatusUnavailable = errors.New("mission: 未装配身份状态查询（承接人校验不可用）")
@@ -244,6 +247,33 @@ type RoomSource struct {
 type SlotIntent struct {
 	InstanceID string
 	AgentID    string
+	// SpecID 原始模板引用（复审 #7：空 = 显式实例路径；非空 = 模板解析路径
+	// ——建单事务内须复核该 scope 实例集**仍恰为** InstanceID 一者，模板长出
+	// 兄弟实例即歧义漂移，拒绝建单；显式实例路径不受兄弟实例数限制）。
+	SpecID string
+}
+
+// CreationGate 网关建单事务门（复审 #3/#7）：Slot 职责意图四核（首轮 #1/#2/#7）
+// + RequireOwnerActive——网关交办（显式 owner 或寻址所得）要求负责人在建单
+// **事务内**仍 active（预检后、建单前退役/暂停不得落入新承诺；域内直建契约
+// 不设此门——owner 是归属事实，任意生命周期可指派，行为能力由执行时点校验）。
+type CreationGate struct {
+	Slot               *SlotIntent
+	RequireOwnerActive bool
+}
+
+// SameContent 契约内容等值（归一化后逐字段；#11 遗留恢复判定：事务内现行
+// 内容与命令载荷等值 + 版本恰为 expected+1 即该命令的修订确已提交）。
+func SameContent(a, b Content) bool {
+	na, nb := normalizeContent(a), normalizeContent(b)
+	ab, bb := func() []byte {
+		x, _ := json.Marshal(na)
+		return x
+	}(), func() []byte {
+		y, _ := json.Marshal(nb)
+		return y
+	}()
+	return string(ab) == string(bb)
 }
 
 // Store 持久化端口（SQLite 实现：internal/storage/sqlite；测试件：memstore）。
@@ -252,11 +282,13 @@ type Store interface {
 	// CreateMission 投影 v1 + 不可变版本行 + created 事件（+ 可选房间来源
 	// 映射），单事务；来源撞键 → ErrSourceAlreadyMapped（携已映射 mission_id）。
 	CreateMission(ctx context.Context, m Mission, src *RoomSource) (Mission, error)
-	// CreateMissionSlot 带职责意图的建单（0.6.13 审校 #1/#2）：SlotInstanceID
-	// 随投影落列；slot 意图在**同一写事务**内核对（实例/任职/身份/授权——
-	// 审校 #2 换绑不得插进复核与建单之间）；不符 → ErrSlotIntentViolated 整体
-	// 回滚。SQLite 实装；memstore 记录意图（无 slot 域，仅核 AgentID == owner）。
-	CreateMissionSlot(ctx context.Context, m Mission, src *RoomSource, slot *SlotIntent) (Mission, error)
+	// CreateMissionGated 带事务门的建单（0.6.13 审校 #1/#2 + 复审 #3/#7）：
+	// SlotInstanceID 随投影落列；gate 的职责意图四核（实例/任职/身份/授权）
+	// 与模板唯一性锚、RequireOwnerActive 身份门在**同一写事务**内核对——
+	// 换绑/暂停/退役/撤权/模板长出兄弟实例不得插进复核与建单之间；不符 →
+	// ErrSlotIntentViolated / ErrOwnerGateViolated 整体回滚。SQLite 实装；
+	// memstore 记录意图（无 slot/身份域，仅域级自洽核对）。
+	CreateMissionGated(ctx context.Context, m Mission, src *RoomSource, gate *CreationGate) (Mission, error)
 	// MissionIDBySource 来源映射查询；未映射 ok=false。
 	MissionIDBySource(ctx context.Context, roomID, taskID string) (string, bool, error)
 	// Revise CAS 修订：contract_version 匹配、**当前 owner == expectedOwner**
@@ -398,18 +430,19 @@ func newOfferID() string {
 // 完备性判定（draft/ready）→ 投影 v1 + 版本行 + created 事件（+ 可选来源
 // 映射）单事务。CreateWithSlot 的无职责路径（显式/缺省 owner）。
 func (s *Service) Create(ctx context.Context, ownerAgentID string, c Content, src *RoomSource) (Mission, error) {
-	return s.CreateWithSlot(ctx, ownerAgentID, c, src, nil)
+	return s.CreateGated(ctx, ownerAgentID, c, src, nil)
 }
 
-// CreateWithSlot 带职责意图建契约（0.6.13 审校 #1/#2：网关 slot 寻址派发
-// 路径）——意图经存储事务内核对后随创建事实落 SlotInstanceID。
-func (s *Service) CreateWithSlot(ctx context.Context, ownerAgentID string, c Content, src *RoomSource, slot *SlotIntent) (Mission, error) {
+// CreateGated 带事务门建契约（0.6.13 审校 #1/#2 + 复审 #3/#7：网关派发
+// 路径）——门条件经存储事务内核对后随创建事实落 SlotInstanceID。
+func (s *Service) CreateGated(ctx context.Context, ownerAgentID string, c Content, src *RoomSource, gate *CreationGate) (Mission, error) {
 	if err := ValidateContent(c); err != nil {
 		return Mission{}, err
 	}
-	if slot != nil {
+	if gate != nil && gate.Slot != nil {
+		slot := gate.Slot
 		// 域级前置：意图自洽（预期任职 = 负责人；寻址结果即 owner）。任职/
-		// 身份/授权的时点核对在存储写事务内（漂移即回滚——审校 #2/#7）。
+		// 身份/授权/模板唯一性的时点核对在存储写事务内（漂移即回滚）。
 		if slot.InstanceID == "" || slot.AgentID == "" || slot.AgentID != strings.TrimSpace(ownerAgentID) {
 			return Mission{}, fmt.Errorf("%w: 意图自洽性（instance=%q agent=%q owner=%q）", ErrSlotIntentViolated, slot.InstanceID, slot.AgentID, ownerAgentID)
 		}
@@ -440,9 +473,11 @@ func (s *Service) CreateWithSlot(ctx context.Context, ownerAgentID string, c Con
 	}
 	var out Mission
 	var err error
-	if slot != nil {
-		m.SlotInstanceID = slot.InstanceID
-		out, err = s.store.CreateMissionSlot(ctx, m, src, slot)
+	if gate != nil && gate.Slot != nil {
+		m.SlotInstanceID = gate.Slot.InstanceID
+		out, err = s.store.CreateMissionGated(ctx, m, src, gate)
+	} else if gate != nil && gate.RequireOwnerActive {
+		out, err = s.store.CreateMissionGated(ctx, m, src, gate)
 	} else {
 		out, err = s.store.CreateMission(ctx, m, src)
 	}

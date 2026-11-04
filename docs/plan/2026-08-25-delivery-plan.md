@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.71 |
+| 版本 | v2.72 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -205,6 +205,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.72 | 2026-11-04 | Mosaic 项目组 / ZCode | **0.6.13 复审修复（13 项：5 P1 + 6 P2 + 2 P3；ADR-0036 v0.3）**。建单事务门统一（CreationGate：显式 owner 身份门/模板唯一性锚/workspace_access 完整快照）；执行预算单快照（清单契约层 + CreateRun 事务内核对版本漂移/现行上限/执行者门——暂停启动 409 owner_not_active）；完成提交前停止/期限原子判定；投递认领一致性（采纳原行/拒绝释放/route_id 真值/upsert 自愈）；v30 遗留恢复（内容等值完结/不等值不宣告）+ reason 回落；前端续接模式重写（原子生效/代次/失败禁提/基准回传/冲突重载）；摘要墓碑。验证：UT/IT 新红面 + 全量 vet/-race + it/st + SPA 绿 + 生成物幂等；真机冒烟 8 项 + 上一版 19 项复跑 ALL-PASS |
 | v2.71 | 2026-11-03 | Mosaic 项目组 / ZCode | **0.6.13 独立审校修复（17 项：5 P1 + 10 P2 + 2 P3；ADR-0036 v0.2）**。续接原子化（认领+复核+修订+回执同一写事务——拒绝回滚不占键/pending 采纳原行/reason 入回执/字段校验 400）；Slot 派发链补强（原请求摘要稳定+解析事实另存/建单事务四核（实例/任职/身份/授权）/意图落任务按实例固定任职/预检 active+准入/契约对齐）；执行预算收口（墙钟独立监控按 RunID 直达/RefOf 权威快照——手动入口共用/CreateRun 事务内核对 max_runs/期限时刻比较）。任务卡续接入口（MissionSummary.room_source + MissionsPage 追加要求模式）；migration v31。验证：UT/IT/API 新红面（原子续接/监控独立性/手动预算/并发上限/小数秒/换绑 resolved 起步）+ 全量 vet/-race + it/st + SPA 绿 + 生成物幂等；真机冒烟 19 项两次 ALL-PASS |
 | v2.70 | 2026-11-03 | Mosaic 项目组 / ZCode | **0.6.13 域收口实施（负责人指令："开 0.6.13"）——盘点三项落差全部补齐，设计先行 ADR-0036 + 测试先行红→绿**。网关续接 dispatch.Update（=mission_update §10.3：幂等键/复核 owner active/revise 归属锚服务端读值 owner 不变/回执；领域拒绝透传；无 route 行）；Slot 职责寻址（§4.5：实例/模板引用、五分支 blocked 族含不自动激活 ready 任职、slot_binding 决策存档、投递复核换绑 route_stale、与显式 owner 互斥 400）；墙钟强制（§6.1/AT-18：running 时快照 deadline（migration v30 runs += deadline）、扫描过期走既有停止面 cause=wall_clock_exceeded、max_runs 派发上限 + 诊断计数）。契约：DispatchUpdateRequest/resolve slot 引用/SchedulerStatus.budget_exhausted_hits → apigen/TS 再生成；装配 SlotLookups（store 直查）+ ListReady budget 快照。验证：UT（续接幂等复核族/寻址五分支/换绑 stale/墙钟停止可变时钟/上限）+ IT（v30 新旧库/deadline 过期查询）+ API 全链；全量 vet/-race + it/st + SPA 绿；真机冒烟 13 项 ALL-PASS（两次连续） |
 | v2.69 | 2026-11-03 | Mosaic 项目组 / ZCode | **0.6 领域阶段性验收盘点（负责人指令：领域整体视角补验收缺口）**。逐条核对领域出口：AT-01/02/03/07/10/13（既定范围）全兑现——其中 AT-03"共享知识保留"补验收断言 TestAT03KnowledgePreservedIT（退役后版本行/事件史/交付包/职责知识/授权档案全可读）；网关分步 AT-14/15/18 兑现确定性路径与幂等/代次面，**三项明确落差**：网关续接 mission_update（§10.3）、Slot 职责寻址接入（§4.5）、budget 墙钟运行时强制——处置去向（0.6.13 补齐 vs 随后续领域）待负责人裁定；性能基线标注为全局工作非 0.6 出口 |

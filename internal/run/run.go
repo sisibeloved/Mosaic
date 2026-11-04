@@ -22,6 +22,7 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -115,6 +116,14 @@ var (
 	// ErrBudgetExhausted 该 Mission 已创建 Run 总数达 budget.max_runs 上限
 	//（0.6.13 / ADR-0036 §3——不再派发，任务停留 ready，诊断面计数）。
 	ErrBudgetExhausted = errors.New("run: budget.max_runs 已用尽——不再派发")
+	// ErrOwnerNotActive 执行者身份门复核失败（复审 #4：领取 Run 的建行事务
+	// 内核对——负责人身份非 active（暂停/退役不自动解除任职）或装配所钉
+	// 任职已失效/换人；任务停留 ready，安全拒绝启动）。
+	ErrOwnerNotActive = errors.New("run: 执行者身份门复核失败（负责人非 active 或任职失效）")
+	// ErrContractDrift 装配清单与现行契约版本漂移（复审 #10：RefOf/装配后
+	// 契约被修订——释放租约重新装配，下一轮以新版本快照执行；预算与清单
+	// 不得混用两个版本）。
+	ErrContractDrift = errors.New("run: 契约版本漂移——释放租约重新装配")
 	// ErrResidueUnresolved 存在未处置 unknown 残留——再执行只发生在显式处置
 	// 后（ADR-0030 兑现的执行面围栏：waiting 挡调度列之外的兜底——旧库
 	// ready+残留收敛形态，0.6.7 发布前补齐）。
@@ -277,6 +286,9 @@ type Manifest struct {
 	ManifestID string
 	State      string
 	ReasonCode string
+	// ContractVersion 清单钉住的契约版本（复审 #10：建行事务内核对现行版本
+	// ——漂移即释放租约重新装配；预算自该版本契约层取，同快照不混版本）。
+	ContractVersion int
 	// Layers 内容块（审校 #1：执行输入取存档内容，非仅 ID）。
 	Layers []ManifestLayer
 }
@@ -289,10 +301,12 @@ type ManifestLayer struct {
 
 // Store 持久化端口。
 type Store interface {
-	// CreateRun 建 Run 行（attempt/事件同事务；0.6.13 审校 #14：maxRuns>0 时
-	// 建行事务内核对已用次数——并发孪生恰一胜者，计数查询故障中止；超限
-	// ErrBudgetExhausted，外层据此释放租约）。
-	CreateRun(ctx context.Context, r Run, maxRuns int) (Run, error)
+	// CreateRun 建 Run 行（attempt/事件同事务；0.6.13 审校 #14 + 复审 #4/#10：
+	// maxRuns>0 时建行事务内核对已用次数（并发孪生恰一胜者，查询故障中止，
+	// 超限 ErrBudgetExhausted）；manifestContractVersion>0 时核对现行契约版本
+	//（漂移 ErrContractDrift——外层释放租约重新装配）；执行者门在建行事务
+	// 内核对（负责人 active + 所钉任职仍 active 且未换人——ErrOwnerNotActive）。
+	CreateRun(ctx context.Context, r Run, maxRuns, manifestContractVersion int) (Run, error)
 	// UpdateRun 全行替换 + 事件同事务。
 	UpdateRun(ctx context.Context, r Run, events []Event) error
 	RunByID(ctx context.Context, runID string) (Run, bool, error)
@@ -516,7 +530,8 @@ func (s *Service) ScanOnce(ctx context.Context) {
 		if _, err := s.ExecuteMission(ctx, ref); err != nil {
 			switch {
 			case errors.Is(err, ErrSchedulerBusy), errors.Is(err, ErrNoExecutor),
-				errors.Is(err, ErrBudgetExhausted): // 0.6.13：上限命中是常态（诊断面计数），不入扫描错误
+				errors.Is(err, ErrBudgetExhausted),                                  // 0.6.13：上限命中是常态（诊断面计数），不入扫描错误
+				errors.Is(err, ErrOwnerNotActive), errors.Is(err, ErrContractDrift): // 复审 #4/#10：身份门/版本漂移——任务停留 ready，下轮重试
 			default:
 				lastErr = fmt.Sprintf("%s: %v", ref.MissionID, err)
 			}
@@ -636,6 +651,13 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 		_ = s.leases.Release(ctx, lease.LeaseID)
 		return Run{}, fmt.Errorf("%w：%s", ErrManifestBlocked, manifest.ReasonCode)
 	}
+	// 复审 #10：预算单快照——自清单钉住版本的**契约层**取（墙钟 + max_runs），
+	// 与执行输入同一版本；RefOf 的预算仅作快路径参考（漂移由 CreateRun 事务
+	// 核对收敛：版本漂移释放租约重新装配，次数以现行契约为准）。
+	mWallClock, mMaxRuns := budgetOfManifest(manifest)
+	if mMaxRuns == 0 {
+		mMaxRuns = ref.MaxRuns // 清单契约层缺省（测试件）回落 RefOf 快照
+	}
 
 	r := Run{
 		RunID: s.newRunID(), MissionID: ref.MissionID,
@@ -646,11 +668,12 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 		Generation:  lease.Generation,
 		RequestedAt: now, UpdatedAt: now,
 	}
-	r, err = s.store.CreateRun(ctx, r, ref.MaxRuns)
+	r, err = s.store.CreateRun(ctx, r, mMaxRuns, manifest.ContractVersion)
 	if err != nil {
 		_ = s.leases.Release(ctx, lease.LeaseID)
 		// 事务内权威上限命中（并发孪生败者——审校 #14）：计数并透传（手动
-		// 入口 409 budget_exhausted，调度面常态跳过）。
+		// 入口 409 budget_exhausted，调度面常态跳过）。复审 #4/#10：身份门/
+		// 版本漂移——任务停留 ready，释放租约后重试/重装配。
 		if errors.Is(err, ErrBudgetExhausted) {
 			s.budgetBlocked.Add(1)
 		}
@@ -691,10 +714,16 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 	r.State = StateRunning
 	r.StartedAt = now
 	r.UpdatedAt = now
-	// 0.6.13 / ADR-0036 §3：墙钟快照（执行开始契约的 max_wall_clock_seconds）。
-	if ref.WallClockSeconds > 0 {
+	// 0.6.13 / ADR-0036 §3 + 复审 #10：墙钟快照取**清单契约层**的
+	// max_wall_clock_seconds（与执行输入同一版本——RefOf 后修订撤回的长期限
+	// 不得沿用；清单缺省回落 RefOf 快照）。
+	wallClock := mWallClock
+	if wallClock == 0 {
+		wallClock = ref.WallClockSeconds
+	}
+	if wallClock > 0 {
 		if t, perr := time.Parse(time.RFC3339Nano, now); perr == nil {
-			r.Deadline = t.Add(time.Duration(ref.WallClockSeconds) * time.Second).UTC().Format(time.RFC3339Nano)
+			r.Deadline = t.Add(time.Duration(wallClock) * time.Second).UTC().Format(time.RFC3339Nano)
 		}
 	}
 	if err := s.store.UpdateRun(ctx, r, []Event{{
@@ -737,16 +766,24 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 		// 清理面上下文自此刻起算（0.6.6 审校 P1——窗口不再覆盖执行时长）。
 		cleanupCtx, cleanupCancel := s.cleanupContext()
 		defer cleanupCancel()
-		// 停止与执行结果同时就绪的 select 竞态（0.6.10 复审 #1/#2）：停止意图
-		// 在场时无论成功正文还是取消错误一律按停止终理化——迟到正文只审计
-		// 不发布（AT-12"旧结果只审计"）；ok 仅表示已注册（register 的 cause
-		// 为空串）——signal 过（非空 cause）才是已停止意图，纯执行结果/错误
-		// 不误判。已取出的结果放回缓冲通道（恰容量 1，必不阻塞）交
-		// finalizeStopped 等待并审计、释放恰一次——不留空通道让收尾白等
-		// stopGrace（租约滞留到 TTL）。
+		// 停止与执行结果同时就绪的 select 竞态（0.6.10 复审 #1/#2 + 0.6.13 复审
+		// #9）：终态判定在**完成提交前**原子进行——停止意图在场，或期限已过
+		//（独立监控的墙钟信号必然伴随行上 deadline 已过——按期限判定不依赖
+		// 注册表读取时序，结果分支读取与围栏检查之间发停不再漏网），一律按
+		// 停止终理化：迟到正文只审计不发布（AT-12）。ok 仅表示已注册
+		//（register 的 cause 为空串）——signal 过（非空 cause）才是已停止意图，
+		// 纯执行结果/错误不误判。已取出的结果放回缓冲通道（恰容量 1，必不
+		// 阻塞）交 finalizeStopped 等待并审计、释放恰一次——不留空通道让收尾
+		// 白等 stopGrace（租约滞留到 TTL）。
+		stopCause := ""
 		if cause, ok := s.stops.cause(r.RunID); ok && cause != "" {
+			stopCause = cause
+		} else if deadlinePassed(r.Deadline, s.now()) {
+			stopCause = CauseWallClockExceeded
+		}
+		if stopCause != "" {
 			done <- res
-			if err := s.finalizeStopped(cleanupCtx, &r, lease, cause, done); err != nil {
+			if err := s.finalizeStopped(cleanupCtx, &r, lease, stopCause, done); err != nil {
 				return r, fmt.Errorf("%w：%v", ErrTerminalWrite, err)
 			}
 			return r, nil
@@ -1217,6 +1254,56 @@ func (s *Service) RunEventsByRun(ctx context.Context, runID string) ([]Event, bo
 	}
 	evs, err := s.store.RunEvents(ctx, runID)
 	return evs, true, err
+}
+
+// deadlinePassed 期限判定（复审 #9：完成提交前的原子终态判定用——行上
+// deadline 已过即视为墙钟停止成立，不依赖停止注册表的读取时序）。
+func deadlinePassed(deadline, nowRFC string) bool {
+	if deadline == "" {
+		return false
+	}
+	dl, err1 := time.Parse(time.RFC3339Nano, deadline)
+	now, err2 := time.Parse(time.RFC3339Nano, nowRFC)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return !now.Before(dl)
+}
+
+// budgetOfManifest 清单契约层预算（复审 #10：墙钟 + max_runs 与执行输入同
+// 一版本快照——契约层嵌 Mission 全量，budget 键在层内容中）。
+func budgetOfManifest(m Manifest) (wallClockSeconds, maxRuns int) {
+	for _, l := range m.Layers {
+		if l.Name != "contract" || l.Content == nil {
+			continue
+		}
+		raw, ok := l.Content["budget"]
+		if !ok {
+			return 0, 0
+		}
+		b, ok := raw.(map[string]any)
+		if !ok {
+			return 0, 0
+		}
+		return toInt(b["max_wall_clock_seconds"]), toInt(b["max_runs"])
+	}
+	return 0, 0
+}
+
+// toInt 层内容数值（JSON 往返为 float64；测试件可能放 int/int64）。
+func toInt(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
+	}
+	return 0
 }
 
 // truncateS 上限按 rune 计（0.6.7 发布前补齐：按字节截中文既提前丢内容
