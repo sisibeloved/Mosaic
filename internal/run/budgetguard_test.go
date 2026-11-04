@@ -145,3 +145,40 @@ func TestListExpiredRunningFractional(t *testing.T) {
 		t.Fatalf("时刻比较须恰命中已过期行: %+v", got)
 	}
 }
+
+// TestExecuteMissionSlotInstanceBinding #1（run 面）：slot 意图任务按**实例**固定
+// 任职——执行 Run 的 BindingID 取该实例的 active 任职（同人双任职不串用）；
+// 任职换人/失效 → ErrNoExecutor 语义拒绝（任务停留 ready 重新派发）。
+func TestExecuteMissionSlotInstanceBinding(t *testing.T) {
+	missions := &fakeMissions{refs: map[string]MissionRef{}, status: map[string]string{}, waitingReason: map[string]string{}}
+	missions.refs["mi_sb"] = MissionRef{MissionID: "mi_sb", OwnerAgentID: "ag_x", SlotInstanceID: "si_rev"}
+	bindings := fakeBindings{
+		active:     map[string]BindingFacts{"ag_x": {BindingID: "bd_ed", AgentID: "ag_x", SlotSpecID: "slot.edit"}},
+		byInstance: map[string]BindingFacts{"si_rev": {BindingID: "bd_rev", AgentID: "ag_x", SlotSpecID: "slot.review"}},
+	}
+	var n int
+	svc := New(NewMemStore(), missions, bindings,
+		&fakeRuntimes{ready: RuntimeRef{RuntimeID: "rtx_t", EnvironmentID: "env_t"}},
+		&fakeLeases{fenceOK: true},
+		fakeManifests{state: "assembled", layers: []ManifestLayer{
+			{Name: "contract", Content: map[string]any{"objective": "审校职责", "acceptance_criteria": []string{"a"}}},
+		}},
+		&fakeExecutor{block: "ok"},
+		WithNow(func() string { return "2026-11-03T12:00:00.000000000Z" }),
+		WithNewRunID(func() string { n++; return "run_sb" + itoa(n) }),
+		WithSchedulerDisabled())
+	ctx := context.Background()
+	r1, err := svc.ExecuteMission(ctx, MissionRef{MissionID: "mi_sb", OwnerAgentID: "ag_x"})
+	if err != nil {
+		t.Fatalf("slot 意图执行: %v", err)
+	}
+	if r1.BindingID != "bd_rev" {
+		t.Fatalf("须按实例固定任职（审校 #1——不得取同人首个 active 串用）: %+v", r1)
+	}
+	// 换绑（实例任职换人）→ 拒启动；显式路径的同人另一任职不顶替
+	missions.refs["mi_sb2"] = MissionRef{MissionID: "mi_sb2", OwnerAgentID: "ag_x", SlotInstanceID: "si_rev"}
+	bindings.byInstance["si_rev"] = BindingFacts{BindingID: "bd_rev2", AgentID: "ag_other"}
+	if _, err := svc.ExecuteMission(ctx, MissionRef{MissionID: "mi_sb2", OwnerAgentID: "ag_x"}); !errors.Is(err, ErrNoExecutor) {
+		t.Fatalf("任职换人须 ErrNoExecutor 拒启动: %v", err)
+	}
+}
