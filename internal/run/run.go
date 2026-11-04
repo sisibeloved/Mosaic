@@ -342,6 +342,9 @@ type Store interface {
 	// ListExpiredRunning 墙钟过期 running Run（0.6.13 / ADR-0036 §3：
 	// state=running 且 deadline 非空且 < now）。
 	ListExpiredRunning(ctx context.Context, now string) ([]Run, error)
+	// VerifyGrantFingerprint 交付前授权复核（六审基线：Run 建行后、输入交付前
+	// 撤权——旧清单不得送达执行器；指纹不符 ErrGrantDrift。memstore 恒过）。
+	VerifyGrantFingerprint(ctx context.Context, agentID, bindingID, fingerprint string) error
 }
 
 // 选项。
@@ -419,17 +422,21 @@ func (r *stopRegistry) unregister(runID string) {
 }
 
 // signal 记录 cause 并取消；runID 未注册（已终理化/未知）返回 false。
-func (r *stopRegistry) signal(runID, cause string) bool {
+// first=true 表示本 Run 的首次信号（六审 #2：调用方据此把停止事实持久化到
+// 该 Run 的事件流——resume 不清除，终态写事务据核对，防"暂停→恢复→旧 Run
+// 完成发布"窗口）。
+func (r *stopRegistry) signal(runID, cause string) (signalled, first bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	e, ok := r.m[runID]
 	if !ok {
-		return false
+		return false, false
 	}
+	first = e.cause == ""
 	e.cause = cause
 	r.m[runID] = e
 	e.cancel()
-	return true
+	return true, first
 }
 
 func (r *stopRegistry) cause(runID string) (string, bool) {
@@ -572,7 +579,9 @@ func (s *Service) enforceWallClock(ctx context.Context) {
 		return
 	}
 	for _, r := range expired {
-		s.stops.signal(r.RunID, CauseWallClockExceeded)
+		if signalled, first := s.stops.signal(r.RunID, CauseWallClockExceeded); signalled && first {
+			s.persistStopSignal(ctx, r.RunID, CauseWallClockExceeded)
+		}
 	}
 }
 
@@ -761,6 +770,18 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 		return r, nil
 	}
 
+	// 六审基线：交付前授权复核——建行后、输入交付前撤权的窗口（受控执行器
+	// 可观察到旧清单原文）。漂移则不交付（Run failed 留档 + 释放 + 回 ready，
+	// 重新装配按剩余授权降级）。
+	if manifest.GrantFingerprint != "" {
+		if gerr := s.store.VerifyGrantFingerprint(ctx, r.AgentID, r.BindingID, manifest.GrantFingerprint); gerr != nil {
+			s.finalizeWithCleanup(func(cc context.Context) {
+				s.finalizeFailed(cc, &r, "授权快照漂移（交付前复核）——重新装配: "+gerr.Error(), lease.LeaseID)
+			})
+			return r, nil
+		}
+	}
+
 	// 提交执行（阻塞至完成；#1：Inline 携存档清单内容块——非仅 ID）。
 	// 被停止时放弃执行器 goroutine——其结果经缓冲通道丢弃（迟到结果不落，
 	// 围栏已随释放失效）。
@@ -877,11 +898,27 @@ func (s *Service) SignalStopByMission(ctx context.Context, missionID, cause stri
 		if r.State != StatePending && r.State != StateRunning {
 			continue
 		}
-		if s.stops.signal(r.RunID, cause) {
+		if signalled, first := s.stops.signal(r.RunID, cause); signalled {
 			n++
+			if first {
+				s.persistStopSignal(ctx, r.RunID, cause)
+			}
 		}
 	}
 	return n, nil
+}
+
+// persistStopSignal 停止事实持久化到该 Run（六审 #2：首信号即写
+// stop_requested——Mission 此后恢复也不清除；终态写事务核对这条 **Run 自身**
+// 的停止事实，旧 Run 不得在"暂停→恢复"窗口后以完成发布正文）。写失败
+// best-effort（进程内取消已生效；审计面 lastError 可见）。
+func (s *Service) persistStopSignal(ctx context.Context, runID, cause string) {
+	if err := s.store.AppendRunEvents(ctx, runID, []Event{{
+		RunID: runID, EventType: EventStopRequested, OccurredAt: s.now(),
+		Payload: map[string]any{"cause": cause, "signalled": true},
+	}}); err != nil {
+		s.lastError.Store("persist stop signal: " + err.Error())
+	}
 }
 
 // Unsettled Mission 的在途（pending/running）与未处置 unknown Run 计数

@@ -5657,13 +5657,35 @@ func (s *Store) UpdateRunTerminal(ctx context.Context, r missionrun.Run, events 
 			}
 		}
 		if overrideCause == "" && (r.State == missionrun.StateCompleted || r.State == missionrun.StateFailed) {
+			// 六审 #2：Run **自身**的持久停止事实（信号送达时写入——resume 不
+			// 清除）：暂停→立即恢复的窗口后旧 Run 不得以完成发布正文。
+			var sigPayload string
+			if err := q.QueryRowContext(ctx,
+				`SELECT payload FROM run_events WHERE run_id = ? AND event_type = 'stop_requested' ORDER BY seq DESC LIMIT 1`,
+				r.RunID).Scan(&sigPayload); err == nil {
+				var parsed struct {
+					Cause string `json:"cause"`
+				}
+				if json.Unmarshal([]byte(sigPayload), &parsed) == nil && parsed.Cause != "" {
+					overrideCause = parsed.Cause
+				}
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("sqlite: terminal stop signal probe: %w", err)
+			}
+		}
+		if overrideCause == "" && (r.State == missionrun.StateCompleted || r.State == missionrun.StateFailed) {
 			// 人工停止意图（持久化在 mission 行——五审既有 P1：信号已送达但
-			// select 抢占失败/锁等待期送达的窗口由此收口）。
+			// select 抢占失败/锁等待期送达的窗口由此收口）。六审 #3：状态码映射
+			// 为公开动作码（paused→pause / canceling→cancel——ADR-0029 约定，
+			// 与 SignalStopByMission/finalizeStopped 同组常量）。
 			var mStatus string
 			if err := q.QueryRowContext(ctx,
 				`SELECT status FROM missions WHERE mission_id = ?`, r.MissionID).Scan(&mStatus); err == nil {
-				if mStatus == "paused" || mStatus == "canceling" {
-					overrideCause = mStatus
+				switch mStatus {
+				case "paused":
+					overrideCause = "pause"
+				case "canceling":
+					overrideCause = "cancel"
 				}
 			} else if !errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("sqlite: terminal mission probe: %w", err)
@@ -5714,6 +5736,28 @@ INSERT INTO run_events (run_id, event_type, payload, occurred_at) VALUES (?, ?, 
 		return missionrun.Run{}, err
 	}
 	return r, nil
+}
+
+// VerifyGrantFingerprint 交付前授权复核（六审基线：Run 建行后、输入交付前
+// 撤权——旧清单不得送达执行器）。指纹为空/授权行缺席（测试容差）恒过；
+// 不符 ErrGrantDrift（调用方不交付并重新装配）。
+func (s *Store) VerifyGrantFingerprint(ctx context.Context, agentID, bindingID, fingerprint string) error {
+	if fingerprint == "" {
+		return nil
+	}
+	return s.identityWriteTx(ctx, func(q identityExec) error {
+		g, gok, err := s.grantByAgentTx(ctx, q, agentID)
+		if err != nil {
+			return err
+		}
+		if !gok {
+			return nil
+		}
+		if execctx.GrantFingerprint(g) != fingerprint {
+			return fmt.Errorf("%w：交付前复核（bd %s）——重新装配", missionrun.ErrGrantDrift, bindingID)
+		}
+		return nil
+	})
 }
 
 // truncateRunPreview 迟到结果预览截断（rune 计 ≤n——中文不半截；五审 #4：

@@ -670,8 +670,8 @@ func TestUpdateRunTerminalControlIntentIT(t *testing.T) {
 	evs, _ := store.RunEvents(ctx, "run_ci")
 	causeOK, stale := false, false
 	for _, e := range evs {
-		if e.EventType == missionrun.EventCanceled && e.Payload["cause"] == "paused" {
-			causeOK = true
+		if e.EventType == missionrun.EventCanceled && e.Payload["cause"] == "pause" {
+			causeOK = true // 六审 #3：公开动作码 pause（非状态码 paused）
 		}
 		if e.EventType == missionrun.EventCompleted || e.EventType == missionrun.EventFailed {
 			stale = true
@@ -684,5 +684,99 @@ func TestUpdateRunTerminalControlIntentIT(t *testing.T) {
 	}
 	if !causeOK || stale {
 		t.Fatalf("事件组（cause=paused=%v，残留原终态=%v）: %+v", causeOK, stale, evs)
+	}
+}
+
+// TestPauseResumeTerminalIT 六审 #2：暂停→立即恢复——Run 自身的持久停止事实
+//（信号时写入 stop_requested，resume 不清除）使终态事务改判 canceled；cause
+// 为公开动作码 pause（六审 #3——非 Mission 状态码 paused）。
+func TestPauseResumeTerminalIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	recheckAgent(t, store, "ag_pr")
+	m, err := store.CreateMission(ctx, func() mission.Mission {
+		r := missionRow(mission.StatusRunning, "ag_pr")
+		r.MissionID = "mi_pr"
+		return r
+	}(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := missionrun.Run{RunID: "run_pr", MissionID: m.MissionID, Attempt: 1, LeaseID: "lse_pr",
+		BindingID: "bd_pr", AgentID: "ag_pr", State: missionrun.StateRunning,
+		Generation: 3, RequestedAt: "t", StartedAt: "t", UpdatedAt: "t",
+		Deadline: "2030-01-01T00:00:00.000000000Z"}
+	if _, err := store.CreateRun(ctx, seed, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	// 暂停（持久停止意图 + 信号送达时写 Run 停止事实）→ 立即恢复（mission 回 ready）
+	if _, ok, err := store.PauseMission(ctx, m.MissionID, m.ContractVersion, "人工暂停", "2026-11-04T12:00:00Z"); err != nil || !ok {
+		t.Fatalf("暂停: ok=%v %v", ok, err)
+	}
+	if err := store.AppendRunEvents(ctx, "run_pr", []missionrun.Event{{
+		RunID: "run_pr", EventType: missionrun.EventStopRequested, OccurredAt: "2026-11-04T12:00:00Z",
+		Payload: map[string]any{"cause": "pause", "signalled": true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.ResumeMission(ctx, m.MissionID, m.ContractVersion, "ready", "2026-11-04T12:00:01Z"); err != nil || !ok {
+		t.Fatalf("恢复: ok=%v %v", ok, err)
+	}
+	// 旧 Run 此后才到达终态写入——即便 mission 已回 ready，Run 自身停止事实生效
+	r := seed
+	r.State, r.ResultBlock = missionrun.StateCompleted, "暂停窗口内返回的 720 字正文……"
+	out, err := store.UpdateRunTerminal(ctx, r, []missionrun.Event{{
+		RunID: r.RunID, EventType: missionrun.EventCompleted, OccurredAt: "2026-11-04T12:00:02Z",
+		Payload: map[string]any{"late": false},
+	}}, func() string { return "2026-11-04T12:00:02Z" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != missionrun.StateCanceled || out.ResultBlock != "" {
+		t.Fatalf("恢复后旧 Run 完成须改判 canceled: %+v", out)
+	}
+	evs, _ := store.RunEvents(ctx, "run_pr")
+	causeOK := false
+	for _, e := range evs {
+		if e.EventType == missionrun.EventCanceled && e.Payload["cause"] == "pause" {
+			causeOK = true // 动作码 pause（非状态码 paused——六审 #3）
+		}
+		if (e.EventType == missionrun.EventCompleted || e.EventType == missionrun.EventFailed) && e.Payload["late"] == false {
+			t.Fatalf("不得残留原终态事件: %+v", e)
+		}
+	}
+	if !causeOK {
+		t.Fatalf("canceled 事件 cause 须为 pause: %+v", evs)
+	}
+}
+
+// TestVerifyGrantFingerprintIT 六审基线：Run 建行后、交付前撤权——交付前复核
+// 拒绝（ErrGrantDrift）；同授权恒过；指纹空恒过（测试容差）。
+func TestVerifyGrantFingerprintIT(t *testing.T) {
+	store, _ := openTempStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	recheckAgent(t, store, "ag_vf")
+	gA := slot.AgentGrant{AgentID: "ag_vf", Tools: []string{"net"}, Context: []string{"room.recent"},
+		Runtime: slot.AgentGrantRuntime{Capabilities: []string{"execute"}, WorkspaceAccess: "read"}}
+	if err := store.PutGrant(ctx, gA); err != nil {
+		t.Fatal(err)
+	}
+	fpA := execctx.GrantFingerprint(gA)
+	if err := store.VerifyGrantFingerprint(ctx, "ag_vf", "bd_vf", fpA); err != nil {
+		t.Fatalf("同授权须过: %v", err)
+	}
+	if err := store.VerifyGrantFingerprint(ctx, "ag_vf", "bd_vf", ""); err != nil {
+		t.Fatalf("空指纹（测试容差）须过: %v", err)
+	}
+	// 交付前撤权（撤可选上下文）→ 漂移拒付
+	gB := slot.AgentGrant{AgentID: "ag_vf", Tools: []string{"net"},
+		Runtime: slot.AgentGrantRuntime{Capabilities: []string{"execute"}, WorkspaceAccess: "read"}}
+	if err := store.PutGrant(ctx, gB); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.VerifyGrantFingerprint(ctx, "ag_vf", "bd_vf", fpA); !errors.Is(err, missionrun.ErrGrantDrift) {
+		t.Fatalf("撤权后须拒付: %v", err)
 	}
 }

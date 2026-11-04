@@ -191,6 +191,11 @@ func (m *MemStore) AppendRunEvents(_ context.Context, runID string, events []Eve
 }
 
 // ListUnresolvedUnknown 未处置 unknown。
+// VerifyGrantFingerprint memstore 无授权域——恒过（SQLite 事务面覆盖）。
+func (m *MemStore) VerifyGrantFingerprint(context.Context, string, string, string) error {
+	return nil
+}
+
 // UpdateRunTerminal 终态写入 + 写锁后墙钟裁决（四审 #6；临界区内与 SQLite
 // 事务面同语义：期限已过改按 canceled 落终态，迟到正文只审计）。
 func (m *MemStore) UpdateRunTerminal(_ context.Context, r Run, events []Event, nowFn func() string) (Run, error) {
@@ -199,29 +204,43 @@ func (m *MemStore) UpdateRunTerminal(_ context.Context, r Run, events []Event, n
 	if _, ok := m.runs[r.RunID]; !ok {
 		return Run{}, ErrRunNotFound
 	}
-	if r.Deadline != "" && (r.State == StateCompleted || r.State == StateFailed) {
+	stopCause := ""
+	if r.Deadline != "" {
 		if nowT, err := time.Parse(time.RFC3339Nano, nowFn()); err == nil {
 			if dl, derr := time.Parse(time.RFC3339Nano, r.Deadline); derr == nil && !nowT.Before(dl) {
-				outcome, preview := "ok", r.ResultBlock
-				if r.State == StateFailed {
-					outcome, preview = "error", r.ErrorText
-				}
-				r.State = StateCanceled
-				r.ErrorText = "停止意图在终态写入时判定（" + CauseWallClockExceeded + "）——迟到结果只审计"
-				r.ResultBlock = ""
-				fin := nowFn()
-				r.FinishedAt, r.UpdatedAt = fin, fin
-				// 五审 #4/#5：替换（非追加）原终态事件；迟到审计携 generation。
-				events = []Event{
-					{RunID: r.RunID, EventType: EventStopRequested, OccurredAt: fin,
-						Payload: map[string]any{"cause": CauseWallClockExceeded, "arbitrated_at_write": true}},
-					{RunID: r.RunID, EventType: EventCanceled, OccurredAt: fin,
-						Payload: map[string]any{"cause": CauseWallClockExceeded}},
-					{RunID: r.RunID, EventType: EventLateResult, OccurredAt: fin,
-						Payload: map[string]any{"outcome": outcome, "preview": truncateS(preview, 400),
-							"generation": r.Generation, "published": false, "phase": "terminal_write"}},
+				stopCause = CauseWallClockExceeded
+			}
+		}
+	}
+	if stopCause == "" && (r.State == StateCompleted || r.State == StateFailed) {
+		// 六审 #2：Run 自身的持久停止事实（信号时写入——resume 不清除）。
+		for _, e := range m.events {
+			if e.RunID == r.RunID && e.EventType == EventStopRequested {
+				if c, ok := e.Payload["cause"].(string); ok && c != "" {
+					stopCause = c
 				}
 			}
+		}
+	}
+	if stopCause != "" && (r.State == StateCompleted || r.State == StateFailed) {
+		outcome, preview := "ok", r.ResultBlock
+		if r.State == StateFailed {
+			outcome, preview = "error", r.ErrorText
+		}
+		r.State = StateCanceled
+		r.ErrorText = "停止意图在终态写入时判定（" + stopCause + "）——迟到结果只审计"
+		r.ResultBlock = ""
+		fin := nowFn()
+		r.FinishedAt, r.UpdatedAt = fin, fin
+		// 五审 #4/#5：替换（非追加）原终态事件；迟到审计携 generation。
+		events = []Event{
+			{RunID: r.RunID, EventType: EventStopRequested, OccurredAt: fin,
+				Payload: map[string]any{"cause": stopCause, "arbitrated_at_write": true}},
+			{RunID: r.RunID, EventType: EventCanceled, OccurredAt: fin,
+				Payload: map[string]any{"cause": stopCause}},
+			{RunID: r.RunID, EventType: EventLateResult, OccurredAt: fin,
+				Payload: map[string]any{"outcome": outcome, "preview": truncateS(preview, 400),
+					"generation": r.Generation, "published": false, "phase": "terminal_write"}},
 		}
 	}
 	m.runs[r.RunID] = r

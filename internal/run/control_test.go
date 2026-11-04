@@ -301,8 +301,11 @@ func TestStopRegistryCause(t *testing.T) {
 	reg := newStopRegistry()
 	cause := ""
 	reg.register("run_x", func() { cause = "fired" })
-	if ok := reg.signal("run_x", "cancel"); !ok {
-		t.Fatal("信号须命中")
+	if signalled, first := reg.signal("run_x", "cancel"); !signalled || !first {
+		t.Fatal("首信号须命中且 first=true")
+	}
+	if signalled, first := reg.signal("run_x", "cancel"); !signalled || first {
+		t.Fatal("重复信号命中但 first=false")
 	}
 	if c, ok := reg.cause("run_x"); !ok || c != "cancel" {
 		t.Fatalf("cause: %q %v", c, ok)
@@ -311,7 +314,7 @@ func TestStopRegistryCause(t *testing.T) {
 		t.Fatal("cancel 须被调用")
 	}
 	reg.unregister("run_x")
-	if ok := reg.signal("run_x", "pause"); ok {
+	if signalled, _ := reg.signal("run_x", "pause"); signalled {
 		t.Fatal("注销后信号不得命中")
 	}
 	if _, ok := reg.cause("run_missing"); ok {

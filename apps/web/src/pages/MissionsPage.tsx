@@ -92,6 +92,9 @@ export function MissionsPage() {
   // 五审 #1：预算按**字段**跟踪用户编辑——合并只覆盖编辑过的字段（展开面板
   // 查看不得放宽其他上限）；面板展开状态不进详情加载依赖（五审 #2）。
   const budgetEditedRef = useRef<Set<string>>(new Set());
+  // 六审 #1：预算草稿与编辑集**绑定 room/task**——切换来源即丢弃上一卡的
+  // 编辑（共用集合会把 A 卡的 200 次写进 B 卡的续接合并）。
+  const lastSrcRef = useRef<{ room: string; task: string }>({ room: "", task: "" });
   const [budget, setBudget] = useState({ concurrency: "1", max_runs: "32", max_wall_clock_seconds: "86400", max_retries: "0", max_delegation_depth: "0" });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -127,6 +130,12 @@ export function MissionsPage() {
   useEffect(() => {
     const room = form.room.trim();
     const task = form.task.trim();
+    // 来源切换：预算草稿/编辑集归属上一卡——丢弃（六审 #1）
+    if (lastSrcRef.current.room !== room || lastSrcRef.current.task !== task) {
+      lastSrcRef.current = { room, task };
+      budgetEditedRef.current = new Set();
+      setBudget({ concurrency: "1", max_runs: "32", max_wall_clock_seconds: "86400", max_retries: "0", max_delegation_depth: "0" });
+    }
     if (!formOpen || !room || !task || !missions) {
       detailSeq.current++;
       setUpdateTarget(null);
@@ -270,7 +279,8 @@ export function MissionsPage() {
         source_refs: splitLines(form.sources),
         ...(form.returns.trim() ? { return_targets: splitLines(form.returns) } : {}),
         ...(form.reviewer.trim() ? { reviewer: form.reviewer.trim() } : {}),
-        ...(budgetOpen ? { budget: b } : {}),
+        // 六审基线：用户编辑过预算（即使收起面板）——显式设置不得被缺省覆盖
+        ...(budgetOpen || budgetEditedRef.current.size > 0 ? { budget: b } : {}),
       });
       setSelected(m.mission_id);
       setFormOpen(false);

@@ -1,6 +1,6 @@
 # ADR-0036：0.6 域收口——网关续接、Slot 职责寻址与墙钟强制（0.6.13）
 
-- 状态：Accepted（2026-11-03，随 0.6.13 实施；v0.2–v0.6 五轮审校修订）
+- 状态：Accepted（2026-11-03，随 0.6.13 实施；v0.2–v0.7 六轮审校修订）
 - 关联：[RFC-0018](../rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（§4.5——"任务型职责寻址使用 当前 scope → SlotInstance → active Binding → AgentID → 候选 Runtime。SlotSpec 只作版本化模板，同名模板在不同项目下可有多个实例；禁止跨项目猜选任职者。没有 active Binding 时返回待任职，不能自动激活一个 ready Binding"；§4.6——投递复核与"已提交后从 A 改为 B 走领域交接，不能只改路由缓存"；§10.3——`mission_update` 续接序列与 `route_stale`；§6.1——budget 五项"契约声明事实，运行时强制随 Scheduler 落"；AT-14/15/18）；[ADR-0024](ADR-0024-dispatch-first-slice.md)（网关首切片——create 路径）；[ADR-0028](ADR-0028-single-agent-execution.md)（Scheduler）；[ADR-0029](ADR-0029-mission-pause-resume-cancel.md)（停止面复用）；[ADR-0030](ADR-0030-run-crash-recovery.md)（迟到结果审计复用）；[ADR-0035](ADR-0035-mission-handover.md)（换人走交接——本件寻址不改在途归属）；[交付计划](../../plan/2026-08-25-delivery-plan.md) v2.69 盘点三项落差、负责人裁定"开 0.6.13"。
 
 ## 背景与问题
@@ -69,6 +69,10 @@ v2.69 阶段性验收盘点确认：0.6 出口的既定范围（AT-02/03/10/13�
 ## 修订记录
 
 - v0.1（2026-11-03）：首版（随 0.6.13 实施）。
+- v0.7（2026-11-04）：六审 4 项（2 P1 + 1 P2 + 1 P3）+ 2 项基线修复——三项设计修订：
+  1. **预算草稿绑定任务卡（前端）**：预算值与编辑集**归属 room/task**——切换来源即丢弃上一卡的编辑（共用集合会把 A 卡的 200 次上限写进 B 卡的续接合并）；新建请求在用户编辑过任何预算字段后即使收起面板也随请求发送（收起不得丢弃显式设置的限制）。
+  2. **停止事实绑定 Run（§3）**：停止信号**首次送达**即把 stop_requested{cause, signalled} 持久写入该 Run 的事件流（resume 不清除——停止是 Run 级事实，恢复只允许新执行）；UpdateRunTerminal 事务内核对序：行上期限 → **Run 自身持久停止事实**（取其 cause）→ Mission 现行状态（映射为公开动作码 paused→pause / canceling→cancel——ADR-0029 约定，与 SignalStopByMission/finalizeStopped 同组常量）。"暂停→立即恢复→旧 Run 取得写锁"的窗口由此关闭。
+  3. **交付前授权复核（§3，基线 P1）**：ExecuteMission 在提交执行器**之前**复核授权快照指纹（`VerifyGrantFingerprint`——Run 建行后、输入交付前撤权的窗口）：漂移则不交付（Run failed 留档 + 释放 + 回 ready，重新装配按剩余授权降级）。手动执行 API 的 409 说明补 grant_drift/contract_drift/owner_not_active 语义。
 - v0.6（2026-11-04）：五审 8 项（3 P1 + 4 P2 + 1 P3）+ 既有 P1 修复——四项设计修订：
   1. **预算字段级编辑跟踪（前端）**：按预算字段记录用户编辑过的值——冲突合并以现行预算为底仅覆盖编辑字段（只展开查看或只改一个数值不再放宽其余上限）；面板展开状态移出详情加载依赖（展开/收起只改显示，不再触发重载覆盖草稿）。
   2. **重放清单的授权回填（§3）**：同 digest 命中存档重放时以**本次实际授权**重算填写 GrantFingerprint 交运行层（存档行无此列——先预览后运行、旧库存档清单的领取事务核对由此生效；digest/ManifestID/回执历史语义不变）。
