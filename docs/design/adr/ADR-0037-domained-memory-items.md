@@ -1,6 +1,6 @@
 # ADR-0037：0.7.0 分域 MemoryItem——五命名空间记忆基石（0.7.0）
 
-- 状态：Accepted（2026-11-04，随 0.7.0 实施；v0.2 一轮审校修订）
+- 状态：Accepted（2026-11-04，随 0.7.0 实施；v0.2–v0.3 两轮审校修订）
 - 关联：[RFC-0018](../rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（§7.1 数据分层与归属——"增加 Agent、Workspace、Goal/Mission 和职责实例的记忆域；原 Room 记忆不自动变成 Agent 私有记忆；跨域复制须记录授权与来源"；§7.2 MemoryItem 拟定字段；§7.4 MemoryBackend 端口；AT-04）；[RFC-0007](2026-08-25-rfc-0007-context-memory.md)（§7.4 原 Memory 归房间——胶囊/记忆编辑保持房间事件流事实）；[交付计划](../../plan/2026-08-25-delivery-plan.md) 0.7 领域表（0.7.0 唯一交付特性：分域 MemoryItem——Agent、Room、Workspace、Mission、Slot 命名空间）。
 
 ## 背景与问题
@@ -73,6 +73,7 @@ SQLite migration **v32**：`memory_items` 表（全字段列 + `(namespace, scop
 
 ## 审校修订记录
 
+- v0.3（2026-11-05）：二审 1 项 P2（一审 #2 修法的闭包残留）——**创建等待期间切换筛选被旧列表覆盖**：写入成功回调直接调 `reload()` 携带提交时闭包的旧 ns/scopeFilter。改为只发 `refreshTick` 信号，由依赖当前 `ns`/`scopeFilter`/`refreshTick` 的列表 effect 以**当次渲染**条件重查（无独立 reload 函数）。
 - v0.2（2026-11-05）：一审 4 项（1 P1 + 3 P2）修复——
   1. **空数组规范化（#1 P1）**：`source_refs` 省略/空数组三层统一——域 Create 规范化非 nil（JSON `[]` 不出 `null`）；sqlite 读回 null 列兼容（v32 首版已落 null 行统一空数组）；契约视图 nil 兜底；SPA 显示 `?? []` 兜底。
   2. **创建后刷新口径（#2 P2，前端）**：刷新统一走**当前浏览条件**（`reload` 单源——tab + 过滤输入）——写入表单的 namespace/scope 不改写列表口径。

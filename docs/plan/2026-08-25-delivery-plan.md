@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.85 |
+| 版本 | v2.86 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -205,6 +205,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.86 | 2026-11-05 | Mosaic 项目组 / ZCode | **0.7.0 二审修复（1 P2；ADR-0037 v0.3）**。一审 #2 修法闭包残留：写入成功回调 reload 携带提交时旧条件——改 refreshTick 信号 + 列表 effect 依赖（ns/scopeFilter/refreshTick）以当次渲染条件重查（独立 reload 函数移除）。验证：SPA 构建 + 冒烟复跑 |
 | v2.85 | 2026-11-05 | Mosaic 项目组 / ZCode | **0.7.0 一审修复（1 P1 + 3 P2；ADR-0037 v0.2）**。source_refs 三层空数组规范化（null 列读回兼容——记忆页崩溃面关闭）+ 创建后刷新走当前浏览条件（reload 单源）+ 续页代次/在途限制（跨域混入与重复追加关闭）+ 游标域内定位（双存储——外域 ID 一律空页）。验证：回归 UT/IT（含 null 兼容与外域游标）+ vet/-race（三包）+ it 受影响面 + SPA + 冒烟 19 项复跑 ALL-PASS |
 | v2.84 | 2026-11-04 | Mosaic 项目组 / ZCode | **0.7.0 分域记忆基石开工实施（负责人指令："开工0.7.0"；ADR-0037 Accepted）——MemoryItem 五命名空间（agent/room/workspace/mission/slot）+ 锚存在性门 + 读写三端点 + migration v32 + SPA /memory 记忆页**。表结构一次带全 §7.2 拟定字段（策展/召回列预留——0.7.1/0.7.2 递进免迁移）；房间胶囊保持房间事件流权威。验证：UT/IT/httpapi UT + vet/-race + it/st + SPA + 生成物幂等 + 真机冒烟 19 项 ALL-PASS |
 | v2.83 | 2026-11-04 | Mosaic 项目组 / ZCode | **定版 v0.6.13（负责人指令："发布"）——0.6 域收口：网关续接、Slot 职责寻址与墙钟强制（0.6 领域线第十四件·域收口收官）**。CHANGELOG [Unreleased]（Added 域收口主功能 + Fixed 十二轮审校）定版 **[0.6.13] - 2026-11-04**（Added 前置、十二段 Fixed 合并一节），保留空 [Unreleased]；README 当前版本推进 v0.6.13、路线图 0.6 系列标注 **0.6.0–0.6.13 已交付——0.6 领域线收官**；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.6.13 + GitHub Release 发布说明与 Windows 产物（于 tag 的干净 worktree 重建）；CI 三平台绿基线（2ed3a5e 已验，定版提交复验） |

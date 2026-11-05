@@ -39,6 +39,8 @@ export function MemoryPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
   // 一审 #3：在途续页限制（同游标不重复发）。
   const [loadingMore, setLoadingMore] = useState(false);
+  // 二审：写入成功后的刷新信号（effect 依赖——以当前浏览条件重查）。
+  const [refreshTick, setRefreshTick] = useState(0);
   const seq = useRef(0);
   // 写入表单
   const [formOpen, setFormOpen] = useState(false);
@@ -57,14 +59,11 @@ export function MemoryPage() {
     sensitivity: "normal" as "normal" | "sensitive",
   }));
 
-  // 列表加载（tab/scope 变化重载；代次作废在途响应）。
+  // 列表加载（tab/scope 变化与写入成功后重载；代次作废在途响应）。
+  // 一审 #2 + 二审：刷新统一走**当前浏览条件**——写入成功只进 refreshTick，
+  // 由本 effect 以**当次渲染**的 ns/scopeFilter 重查（提交等待期间切换
+  // tab/筛选，成功回调不携带旧闭包条件覆盖新列表）。
   useEffect(() => {
-    reload();
-  }, [ns, scopeFilter]);
-
-  // 一审 #2：刷新统一走**当前浏览条件**（tab + 过滤输入）——写入表单的
-  // namespace/scope 不改写列表口径（Agent 标签下不显示工作区记忆）。
-  const reload = () => {
     const cur = ++seq.current;
     setItems(null);
     setListErr(null);
@@ -80,7 +79,7 @@ export function MemoryPage() {
         if (seq.current !== cur) return;
         setListErr(e instanceof Error ? e.message : String(e));
       });
-  };
+  }, [ns, scopeFilter, refreshTick]);
 
   // 一审 #3：代次检查 + 在途限制——切域后迟到响应不追加（越域混入），
   // 同游标在途期间不重复发（重复追加）。
@@ -134,9 +133,9 @@ export function MemoryPage() {
         setFormOpen(false);
         setForm((f) => ({ ...f, title: "", content: "", sources: "", observed_at: nowRFC3339(), valid_from: "", valid_to: "" }));
         setMsg("记忆已写入");
-        // 一审 #2：刷新走**当前浏览条件**（reload 单源）——表单命名空间与
-        // 当前标签不一致时，列表仍保持用户正在看的口径。
-        reload();
+        // 一审 #2 + 二审：只发刷新信号——由列表 effect 以**当次渲染**的
+        // 浏览条件重查（提交等待期间切换 tab/筛选不被旧闭包条件覆盖）。
+        setRefreshTick((t) => t + 1);
       } catch (e) {
         setMsg(e instanceof Error ? e.message : String(e));
       } finally {
