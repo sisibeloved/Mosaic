@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- **0.7.0 分域记忆基石：MemoryItem 五命名空间**（0.7 领域线第一件 / ADR-0037，RFC-0018 §7.1/§7.2）：每条记忆归属恰一命名空间（`agent` / `room` / `workspace` / `mission` / `slot`）并锚定归属对象（agent_id / room_id / workspace 恒 `default`——单工作区事实 / mission_id / slot_instance_id）——**锚对象不存在写入即拒**（409 `memory_scope_not_found`，app 装配组合四域存在性闭包）。类型（`semantic` / `episodic` / `procedural`）与权限域正交；来源引用（≤16 条）、时效（observed_at + valid_from/to——"何时知道"与"何时有效"分记）、敏感度（normal/sensitive——0.7.5 Bundle 脱敏消费）与置信度落字段；**表结构一次带全 §7.2 拟定字段**（status/visibility/supersedes/derived_from/edit_history/extractor_version 列预留——策展状态机随 0.7.1、授权过滤与 FTS 召回随 0.7.2，写入面 0.7.0 固定 status=active、visibility=namespace）。
+  - **读写面**：`POST /v1/memory/items`（owner 写门 + 严格拒收未知字段）、`GET /v1/memory/items?namespace=…`（**namespace 必填隔离**——跨域列表不存在，越域内容与存在性不泄漏；scope/kind/status 过滤，status 缺省 active；创建序降序 + `next_cursor` 游标）、`GET /v1/memory/items/{id}`（未知 404）。SQLite migration **v32**（memory_items + 双索引；幂等重放）；房间收束胶囊（RFC-0007）保持房间事件流权威，`room` 命名空间为显式写入的派生记忆（不经胶囊复制）。
+  - **SPA**：`/memory` 记忆页（五命名空间 tab + 归属锚过滤 + 记忆卡列表/详情展开 + 显式写入表单——workspace 锚锁定 default、来源按行拆分、时效区间可选）。
+  - 验证：域 UT（校验矩阵/锚矩阵/默认填充/列表隔离与游标）+ sqlite IT（v32 结构/CRUD/游标/幂等重开）+ httpapi UT（写门/域校验/锚门/隔离/单查/未装配 503）+ vet/-race + it/st + SPA + 生成物幂等；真机冒烟 19 项 ALL-PASS（五域写入/拒收面/隔离游标/写门）。
+
 ## [0.6.13] - 2026-11-04
 
 ### Added

@@ -786,6 +786,159 @@ func (e LifecycleTransitionRequestAction) Valid() bool {
 	}
 }
 
+// Defines values for MemoryItemCreateRequestKind.
+const (
+	MemoryItemCreateRequestKindEpisodic   MemoryItemCreateRequestKind = "episodic"
+	MemoryItemCreateRequestKindProcedural MemoryItemCreateRequestKind = "procedural"
+	MemoryItemCreateRequestKindSemantic   MemoryItemCreateRequestKind = "semantic"
+)
+
+// Valid indicates whether the value is a known member of the MemoryItemCreateRequestKind enum.
+func (e MemoryItemCreateRequestKind) Valid() bool {
+	switch e {
+	case MemoryItemCreateRequestKindEpisodic:
+		return true
+	case MemoryItemCreateRequestKindProcedural:
+		return true
+	case MemoryItemCreateRequestKindSemantic:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MemoryItemCreateRequestNamespace.
+const (
+	MemoryItemCreateRequestNamespaceAgent     MemoryItemCreateRequestNamespace = "agent"
+	MemoryItemCreateRequestNamespaceMission   MemoryItemCreateRequestNamespace = "mission"
+	MemoryItemCreateRequestNamespaceRoom      MemoryItemCreateRequestNamespace = "room"
+	MemoryItemCreateRequestNamespaceSlot      MemoryItemCreateRequestNamespace = "slot"
+	MemoryItemCreateRequestNamespaceWorkspace MemoryItemCreateRequestNamespace = "workspace"
+)
+
+// Valid indicates whether the value is a known member of the MemoryItemCreateRequestNamespace enum.
+func (e MemoryItemCreateRequestNamespace) Valid() bool {
+	switch e {
+	case MemoryItemCreateRequestNamespaceAgent:
+		return true
+	case MemoryItemCreateRequestNamespaceMission:
+		return true
+	case MemoryItemCreateRequestNamespaceRoom:
+		return true
+	case MemoryItemCreateRequestNamespaceSlot:
+		return true
+	case MemoryItemCreateRequestNamespaceWorkspace:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MemoryItemCreateRequestSensitivity.
+const (
+	MemoryItemCreateRequestSensitivityNormal    MemoryItemCreateRequestSensitivity = "normal"
+	MemoryItemCreateRequestSensitivitySensitive MemoryItemCreateRequestSensitivity = "sensitive"
+)
+
+// Valid indicates whether the value is a known member of the MemoryItemCreateRequestSensitivity enum.
+func (e MemoryItemCreateRequestSensitivity) Valid() bool {
+	switch e {
+	case MemoryItemCreateRequestSensitivityNormal:
+		return true
+	case MemoryItemCreateRequestSensitivitySensitive:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MemoryItemViewKind.
+const (
+	MemoryItemViewKindEpisodic   MemoryItemViewKind = "episodic"
+	MemoryItemViewKindProcedural MemoryItemViewKind = "procedural"
+	MemoryItemViewKindSemantic   MemoryItemViewKind = "semantic"
+)
+
+// Valid indicates whether the value is a known member of the MemoryItemViewKind enum.
+func (e MemoryItemViewKind) Valid() bool {
+	switch e {
+	case MemoryItemViewKindEpisodic:
+		return true
+	case MemoryItemViewKindProcedural:
+		return true
+	case MemoryItemViewKindSemantic:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MemoryItemViewNamespace.
+const (
+	MemoryItemViewNamespaceAgent     MemoryItemViewNamespace = "agent"
+	MemoryItemViewNamespaceMission   MemoryItemViewNamespace = "mission"
+	MemoryItemViewNamespaceRoom      MemoryItemViewNamespace = "room"
+	MemoryItemViewNamespaceSlot      MemoryItemViewNamespace = "slot"
+	MemoryItemViewNamespaceWorkspace MemoryItemViewNamespace = "workspace"
+)
+
+// Valid indicates whether the value is a known member of the MemoryItemViewNamespace enum.
+func (e MemoryItemViewNamespace) Valid() bool {
+	switch e {
+	case MemoryItemViewNamespaceAgent:
+		return true
+	case MemoryItemViewNamespaceMission:
+		return true
+	case MemoryItemViewNamespaceRoom:
+		return true
+	case MemoryItemViewNamespaceSlot:
+		return true
+	case MemoryItemViewNamespaceWorkspace:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MemoryItemViewSensitivity.
+const (
+	MemoryItemViewSensitivityNormal    MemoryItemViewSensitivity = "normal"
+	MemoryItemViewSensitivitySensitive MemoryItemViewSensitivity = "sensitive"
+)
+
+// Valid indicates whether the value is a known member of the MemoryItemViewSensitivity enum.
+func (e MemoryItemViewSensitivity) Valid() bool {
+	switch e {
+	case MemoryItemViewSensitivityNormal:
+		return true
+	case MemoryItemViewSensitivitySensitive:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MemoryItemViewStatus.
+const (
+	MemoryItemViewStatusActive     MemoryItemViewStatus = "active"
+	MemoryItemViewStatusProposed   MemoryItemViewStatus = "proposed"
+	MemoryItemViewStatusSuperseded MemoryItemViewStatus = "superseded"
+)
+
+// Valid indicates whether the value is a known member of the MemoryItemViewStatus enum.
+func (e MemoryItemViewStatus) Valid() bool {
+	switch e {
+	case MemoryItemViewStatusActive:
+		return true
+	case MemoryItemViewStatusProposed:
+		return true
+	case MemoryItemViewStatusSuperseded:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for MemoryViewCapsulesClosureType.
 const (
 	MemoryViewCapsulesClosureTypeBoundedDisagreement MemoryViewCapsulesClosureType = "bounded_disagreement"
@@ -2118,6 +2271,75 @@ func (e RunHarnessExecutableUpdate202JSONResponseBodyStatus) Valid() bool {
 	}
 }
 
+// Defines values for ListMemoryItemsParamsNamespace.
+const (
+	ListMemoryItemsParamsNamespaceAgent     ListMemoryItemsParamsNamespace = "agent"
+	ListMemoryItemsParamsNamespaceMission   ListMemoryItemsParamsNamespace = "mission"
+	ListMemoryItemsParamsNamespaceRoom      ListMemoryItemsParamsNamespace = "room"
+	ListMemoryItemsParamsNamespaceSlot      ListMemoryItemsParamsNamespace = "slot"
+	ListMemoryItemsParamsNamespaceWorkspace ListMemoryItemsParamsNamespace = "workspace"
+)
+
+// Valid indicates whether the value is a known member of the ListMemoryItemsParamsNamespace enum.
+func (e ListMemoryItemsParamsNamespace) Valid() bool {
+	switch e {
+	case ListMemoryItemsParamsNamespaceAgent:
+		return true
+	case ListMemoryItemsParamsNamespaceMission:
+		return true
+	case ListMemoryItemsParamsNamespaceRoom:
+		return true
+	case ListMemoryItemsParamsNamespaceSlot:
+		return true
+	case ListMemoryItemsParamsNamespaceWorkspace:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListMemoryItemsParamsKind.
+const (
+	ListMemoryItemsParamsKindEpisodic   ListMemoryItemsParamsKind = "episodic"
+	ListMemoryItemsParamsKindProcedural ListMemoryItemsParamsKind = "procedural"
+	ListMemoryItemsParamsKindSemantic   ListMemoryItemsParamsKind = "semantic"
+)
+
+// Valid indicates whether the value is a known member of the ListMemoryItemsParamsKind enum.
+func (e ListMemoryItemsParamsKind) Valid() bool {
+	switch e {
+	case ListMemoryItemsParamsKindEpisodic:
+		return true
+	case ListMemoryItemsParamsKindProcedural:
+		return true
+	case ListMemoryItemsParamsKindSemantic:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListMemoryItemsParamsStatus.
+const (
+	ListMemoryItemsParamsStatusActive     ListMemoryItemsParamsStatus = "active"
+	ListMemoryItemsParamsStatusProposed   ListMemoryItemsParamsStatus = "proposed"
+	ListMemoryItemsParamsStatusSuperseded ListMemoryItemsParamsStatus = "superseded"
+)
+
+// Valid indicates whether the value is a known member of the ListMemoryItemsParamsStatus enum.
+func (e ListMemoryItemsParamsStatus) Valid() bool {
+	switch e {
+	case ListMemoryItemsParamsStatusActive:
+		return true
+	case ListMemoryItemsParamsStatusProposed:
+		return true
+	case ListMemoryItemsParamsStatusSuperseded:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ListRuntimeLeasesParamsState.
 const (
 	ListRuntimeLeasesParamsStateActive   ListRuntimeLeasesParamsState = "active"
@@ -3417,6 +3639,101 @@ type ManualExecutableRequest struct {
 	Runtime string  `json:"runtime"`
 	Version *string `json:"version,omitempty"`
 }
+
+// MemoryItemCreateRequest 分域记忆写入请求（0.7.0）：显式写入面——策展候选（proposed）与模型抽取随 0.7.1。
+type MemoryItemCreateRequest struct {
+	Confidence *float32                         `json:"confidence,omitempty"`
+	Content    string                           `json:"content"`
+	Kind       MemoryItemCreateRequestKind      `json:"kind"`
+	Namespace  MemoryItemCreateRequestNamespace `json:"namespace"`
+
+	// ObservedAt RFC3339
+	ObservedAt  string                              `json:"observed_at"`
+	ScopeId     string                              `json:"scope_id"`
+	Sensitivity *MemoryItemCreateRequestSensitivity `json:"sensitivity,omitempty"`
+	SourceRefs  *[]string                           `json:"source_refs,omitempty"`
+	Title       string                              `json:"title"`
+
+	// ValidFrom RFC3339；可选
+	ValidFrom *string `json:"valid_from,omitempty"`
+
+	// ValidTo RFC3339；可选——须晚于 valid_from
+	ValidTo *string `json:"valid_to,omitempty"`
+}
+
+// MemoryItemCreateRequestKind defines model for MemoryItemCreateRequest.Kind.
+type MemoryItemCreateRequestKind string
+
+// MemoryItemCreateRequestNamespace defines model for MemoryItemCreateRequest.Namespace.
+type MemoryItemCreateRequestNamespace string
+
+// MemoryItemCreateRequestSensitivity defines model for MemoryItemCreateRequest.Sensitivity.
+type MemoryItemCreateRequestSensitivity string
+
+// MemoryItemListView 分域记忆列表（创建序降序 + 游标）。
+type MemoryItemListView struct {
+	Items []MemoryItemView `json:"items"`
+
+	// NextCursor 还有更多时给本页末条 memory_id——直传作下一页 before；无更多缺省
+	NextCursor *string `json:"next_cursor,omitempty"`
+}
+
+// MemoryItemView 分域记忆项视图（RFC-0018 §7.2 / ADR-0037）。0.7.0：version 恒 1、
+// status 恒 active、visibility 恒 namespace、supersedes 空——策展与
+// 修订语义随 0.7.1 启用（表结构已带全字段）。
+type MemoryItemView struct {
+	// Confidence 人工显式写入默认 1.0
+	Confidence float32 `json:"confidence"`
+	Content    string  `json:"content"`
+	CreatedAt  string  `json:"created_at"`
+
+	// Kind 类型与权限域正交（RFC §7.1）
+	Kind MemoryItemViewKind `json:"kind"`
+
+	// MemoryId mem_ 前缀生成式
+	MemoryId  string                  `json:"memory_id"`
+	Namespace MemoryItemViewNamespace `json:"namespace"`
+
+	// ObservedAt 何时知道（RFC3339）
+	ObservedAt string `json:"observed_at"`
+
+	// ScopeId 归属锚——agent_id / room_id / workspace 固定 default / mission_id / slot_instance_id
+	ScopeId string `json:"scope_id"`
+
+	// Sensitivity sensitive 随 0.7.5 Bundle 脱敏消费
+	Sensitivity MemoryItemViewSensitivity `json:"sensitivity"`
+
+	// SourceRefs 来源引用——事件/文档版本/显式操作（§7.2 可追溯纪律）
+	SourceRefs []string             `json:"source_refs"`
+	Status     MemoryItemViewStatus `json:"status"`
+
+	// Supersedes 0.7.0 空——纠错链随 0.7.1
+	Supersedes []string `json:"supersedes"`
+	Title      string   `json:"title"`
+	UpdatedAt  string   `json:"updated_at"`
+
+	// ValidFrom 何时有效——起（RFC3339；空 = 不限）
+	ValidFrom *string `json:"valid_from,omitempty"`
+
+	// ValidTo 何时有效——止（RFC3339；空 = 不限）
+	ValidTo *string `json:"valid_to,omitempty"`
+	Version int     `json:"version"`
+
+	// Visibility 0.7.0 恒 namespace（域内可见）
+	Visibility string `json:"visibility"`
+}
+
+// MemoryItemViewKind 类型与权限域正交（RFC §7.1）
+type MemoryItemViewKind string
+
+// MemoryItemViewNamespace defines model for MemoryItemView.Namespace.
+type MemoryItemViewNamespace string
+
+// MemoryItemViewSensitivity sensitive 随 0.7.5 Bundle 脱敏消费
+type MemoryItemViewSensitivity string
+
+// MemoryItemViewStatus defines model for MemoryItemView.Status.
+type MemoryItemViewStatus string
 
 // MemoryView 记忆查看面（GET /v1/rooms/{id}/memory）：编辑后胶囊 + 策展条目 + 容量水位。
 type MemoryView struct {
@@ -5109,6 +5426,25 @@ type EnableHarnessExecutable200JSONResponseBodyEnabled bool
 // RunHarnessExecutableUpdate202JSONResponseBodyStatus defines parameters for RunHarnessExecutableUpdate.
 type RunHarnessExecutableUpdate202JSONResponseBodyStatus string
 
+// ListMemoryItemsParams defines parameters for ListMemoryItems.
+type ListMemoryItemsParams struct {
+	Namespace ListMemoryItemsParamsNamespace `form:"namespace" json:"namespace"`
+	ScopeId   *string                        `form:"scope_id,omitempty" json:"scope_id,omitempty"`
+	Kind      *ListMemoryItemsParamsKind     `form:"kind,omitempty" json:"kind,omitempty"`
+	Status    *ListMemoryItemsParamsStatus   `form:"status,omitempty" json:"status,omitempty"`
+	Limit     *int                           `form:"limit,omitempty" json:"limit,omitempty"`
+	Before    *string                        `form:"before,omitempty" json:"before,omitempty"`
+}
+
+// ListMemoryItemsParamsNamespace defines parameters for ListMemoryItems.
+type ListMemoryItemsParamsNamespace string
+
+// ListMemoryItemsParamsKind defines parameters for ListMemoryItems.
+type ListMemoryItemsParamsKind string
+
+// ListMemoryItemsParamsStatus defines parameters for ListMemoryItems.
+type ListMemoryItemsParamsStatus string
+
 // UploadRoomAttachmentMultipartBody defines parameters for UploadRoomAttachment.
 type UploadRoomAttachmentMultipartBody struct {
 	File openapi_types.File `json:"file"`
@@ -5223,6 +5559,9 @@ type CreateIdentityAgentJSONRequestBody = ManualAgentRequest
 
 // TransitionAgentLifecycleJSONRequestBody defines body for TransitionAgentLifecycle for application/json ContentType.
 type TransitionAgentLifecycleJSONRequestBody = LifecycleTransitionRequest
+
+// CreateMemoryItemJSONRequestBody defines body for CreateMemoryItem for application/json ContentType.
+type CreateMemoryItemJSONRequestBody = MemoryItemCreateRequest
 
 // ResolveMissionRunJSONRequestBody defines body for ResolveMissionRun for application/json ContentType.
 type ResolveMissionRunJSONRequestBody = RunResolve
@@ -5481,6 +5820,15 @@ type ServerInterface interface {
 	// TransitionAgentLifecycle Agent 生命周期转移（0.5.1 / ADR-0018）
 	// (POST /v1/identity/agents/{agent_id}/lifecycle)
 	TransitionAgentLifecycle(w http.ResponseWriter, r *http.Request, agentId string)
+	// ListMemoryItems 分域记忆列表（0.7.0 / ADR-0037）
+	// (GET /v1/memory/items)
+	ListMemoryItems(w http.ResponseWriter, r *http.Request, params ListMemoryItemsParams)
+	// CreateMemoryItem 写入分域记忆项（0.7.0 / ADR-0037）
+	// (POST /v1/memory/items)
+	CreateMemoryItem(w http.ResponseWriter, r *http.Request)
+	// GetMemoryItem 记忆项单查（0.7.0 / ADR-0037）
+	// (GET /v1/memory/items/{memory_id})
+	GetMemoryItem(w http.ResponseWriter, r *http.Request, memoryId string)
 	// GetRun Run 详情
 	// (GET /v1/mission-runs/{run_id})
 	GetRun(w http.ResponseWriter, r *http.Request, runId string)
@@ -7057,6 +7405,144 @@ func (siw *ServerInterfaceWrapper) TransitionAgentLifecycle(w http.ResponseWrite
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.TransitionAgentLifecycle(w, r, agentId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMemoryItems operation middleware
+func (siw *ServerInterfaceWrapper) ListMemoryItems(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListMemoryItemsParams
+
+	// ------------- Required query parameter "namespace" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "namespace", r.URL.Query(), &params.Namespace, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "namespace"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "namespace", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "scope_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "scope_id", r.URL.Query(), &params.ScopeId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "scope_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "scope_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "kind" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "kind", r.URL.Query(), &params.Kind, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "kind"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "kind", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", r.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "status"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "status", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "before" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "before", r.URL.Query(), &params.Before, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "before"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "before", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMemoryItems(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateMemoryItem operation middleware
+func (siw *ServerInterfaceWrapper) CreateMemoryItem(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateMemoryItem(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetMemoryItem operation middleware
+func (siw *ServerInterfaceWrapper) GetMemoryItem(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "memory_id" -------------
+	var memoryId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "memory_id", r.PathValue("memory_id"), &memoryId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "memory_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMemoryItem(w, r, memoryId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -9356,6 +9842,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables/{id}/update-check", wrapper.GetHarnessExecutableUpdateCheck)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/update", wrapper.RunHarnessExecutableUpdate)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables/{id}/update/stream", wrapper.GetHarnessExecutableUpdateStream)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/memory/items", wrapper.ListMemoryItems)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/memory/items", wrapper.CreateMemoryItem)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/memory/items/{memory_id}", wrapper.GetMemoryItem)
 
 	return m
 }

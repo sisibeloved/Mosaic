@@ -31,6 +31,7 @@ import (
 
 	"github.com/sisibeloved/Mosaic/internal/delivery"
 	"github.com/sisibeloved/Mosaic/internal/harness"
+	"github.com/sisibeloved/Mosaic/internal/memory"
 	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/missionreturn"
 	"github.com/sisibeloved/Mosaic/internal/monitor"
@@ -152,6 +153,8 @@ type Deps struct {
 	// Diagnostics 自诊断 bundle 构造器（M4-0）：nil = 诊断端点 404。
 	// 内容纪律：不含凭据/环境变量（OQ-20）——版本/运行时/数据面统计/注册表状态/日志尾。
 	Diagnostics func() (map[string]any, error)
+	// MemorySVC 分域记忆服务（0.7.0 / ADR-0037）：nil = 记忆端点 503（测试装配）。
+	MemorySVC *memory.Service
 	// ShellOpenURL 桌面壳系统浏览器打开面（手工注册路由 POST /v1/shell/open-external，
 	// 非 apigen 契约）：nil = 端点不注册（服务端形态）。WebView 不处理 window.open，
 	// SPA 的外链兜底经此请壳调系统浏览器；回调纪律见 shell.go。

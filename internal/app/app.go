@@ -43,6 +43,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/execctx"
 	"github.com/sisibeloved/Mosaic/internal/extdocs"
 	"github.com/sisibeloved/Mosaic/internal/harness"
+	"github.com/sisibeloved/Mosaic/internal/memory"
 	"github.com/sisibeloved/Mosaic/internal/mission"
 	"github.com/sisibeloved/Mosaic/internal/missioncontrol"
 	"github.com/sisibeloved/Mosaic/internal/missionreturn"
@@ -333,6 +334,26 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		// 0.6.13 / ADR-0036 §2：职责寻址（store 直查）
 		Slots: dispatchSlotLookups{store: store},
 	}, dispatch.WithNow(clock))
+	// 分域记忆基石（RFC-0018 §7.1/§7.2 / ADR-0037，0.7.0）：MemoryItem 归属
+	// 恰一命名空间并锚定归属对象——锚存在性经 Anchors 闭包组合各域查询
+	//（memory 不 import 各域，依赖方向同 dispatchSlotLookups 模式）。
+	memorySvc := memory.NewService(store, memory.Anchors{
+		AgentExists: func(ctx context.Context, id string) (bool, error) {
+			_, ok, err := identitySvc.AgentByID(ctx, id)
+			return ok, err
+		},
+		RoomExists: func(ctx context.Context, id string) (bool, error) {
+			return store.RoomExists(ctx, id)
+		},
+		MissionExists: func(ctx context.Context, id string) (bool, error) {
+			_, ok, err := store.MissionByID(ctx, id)
+			return ok, err
+		},
+		SlotInstanceExists: func(ctx context.Context, id string) (bool, error) {
+			_, ok, err := store.InstanceByID(ctx, id)
+			return ok, err
+		},
+	}, clock)
 	// 执行上下文清单域（RFC-0018 §7.3 / ADR-0025，0.6.2）：确定性装配存档
 	// （digest 即身份——重建重放，状态变化追加）；任职事实（binding → 实例
 	// → 钉版本模板行）与房间事件经端口适配注入。readiness 经 ADR-0022
@@ -473,6 +494,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Backups:          backupMgr,
 		Attachments:      attachStore,
 		Settings:         settingsStore,
+		MemorySVC:        memorySvc,
 		Monitors:         monitorMgr,
 		DocSVC:           docSvc,
 		DocReader:        store, // doc:{id} 频道 SSE 追平读路径

@@ -336,6 +336,18 @@ export function AppShell() {
                   <span className="truncate text-sm">任务</span>
                 </NavLink>
                 <NavLink
+                  to="/memory"
+                  title="记忆（分域 MemoryItem——五命名空间，0.7.0）"
+                  className={({ isActive }) =>
+                    `flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors ${
+                      isActive ? "bg-surface-3" : "hover:bg-surface-2"
+                    }`
+                  }
+                >
+                  <IconMemory />
+                  <span className="truncate text-sm">记忆</span>
+                </NavLink>
+                <NavLink
                   to="/runtimes"
                   title="运行环境（本地 Environment / Runtime——发现/探测/准备，0.6.3）"
                   className={({ isActive }) =>
@@ -526,6 +538,15 @@ function IconTarget() {
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
       <circle cx="8" cy="8" r="5.5" />
       <circle cx="8" cy="8" r="2.5" />
+    </svg>
+  );
+}
+
+function IconMemory() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <rect x="2.5" y="2.5" width="11" height="11" rx="2" />
+      <path d="M5 8h6M8 5v6" />
     </svg>
   );
 }

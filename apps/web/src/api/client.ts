@@ -614,6 +614,31 @@ export const api = {
   listMissions(): Promise<{ missions: MissionSummary[] }> {
     return request("/v1/missions");
   },
+  /** 0.7.0 分域记忆列表（namespace 必填隔离；创建序降序 + 游标）。 */
+  listMemoryItems(params: {
+    namespace: "agent" | "room" | "workspace" | "mission" | "slot";
+    scope_id?: string;
+    kind?: "semantic" | "episodic" | "procedural";
+    status?: "active" | "proposed" | "superseded";
+    limit?: number;
+    before?: string;
+  }): Promise<import("./schema.gen").components["schemas"]["MemoryItemListView"]> {
+    const q = new URLSearchParams({ namespace: params.namespace });
+    if (params.scope_id) q.set("scope_id", params.scope_id);
+    if (params.kind) q.set("kind", params.kind);
+    if (params.status) q.set("status", params.status);
+    if (params.limit) q.set("limit", String(params.limit));
+    if (params.before) q.set("before", params.before);
+    return request(`/v1/memory/items?${q.toString()}`);
+  },
+  /** 0.7.0 写入分域记忆项（显式写入面——人工记忆操作或系统事实记录）。 */
+  createMemoryItem(req: import("./schema.gen").components["schemas"]["MemoryItemCreateRequest"]): Promise<import("./schema.gen").components["schemas"]["MemoryItemView"]> {
+    return post("/v1/memory/items", req);
+  },
+  /** 0.7.0 记忆项单查。 */
+  getMemoryItem(memoryID: string): Promise<import("./schema.gen").components["schemas"]["MemoryItemView"]> {
+    return request(`/v1/memory/items/${encodeURIComponent(memoryID)}`);
+  },
   /** 0.6.0 创建契约（完备 → ready；缺失 → draft）。 */
   createMission(req: MissionCreateRequest): Promise<MissionView> {
     return post("/v1/missions", req);

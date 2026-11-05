@@ -10,6 +10,7 @@
 //                      v1.72 个人中心并入，不含任何房间态）
 // v1.74：/contacts 退役——联系人收敛进侧栏私聊组（在席 Agent 即私聊入口）。
 import { MissionsPage } from "../pages/MissionsPage";
+import { MemoryPage } from "../pages/MemoryPage";
 import { RuntimesPage } from "../pages/RuntimesPage";
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppShell } from "./AppShell";
@@ -30,6 +31,7 @@ export const router = createBrowserRouter([
       { path: "/docs", element: <DocsHomePage /> },
       { path: "/docs/:docId", element: <DocEditorPage /> },
       { path: "/missions", element: <MissionsPage /> },
+      { path: "/memory", element: <MemoryPage /> },
       { path: "/runtimes", element: <RuntimesPage /> },
       { path: "/settings", element: <SettingsPage /> },
       { path: "*", element: <Navigate to="/" replace /> },

@@ -2547,6 +2547,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/memory/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 分域记忆列表（0.7.0 / ADR-0037）
+         * @description 按命名空间必填隔离（跨域列表不存在——越域内容与存在性不泄漏）；
+         *     scope_id / kind / status 可选过滤；创建序降序（新记忆在前），
+         *     before 游标分页。0.7.0 列表只含 status=active 与 proposed/superseded
+         *     显式请求两种口径（默认 active——与 0.7.1 召回语义衔接）。
+         */
+        get: operations["listMemoryItems"];
+        put?: never;
+        /**
+         * 写入分域记忆项（0.7.0 / ADR-0037）
+         * @description 分域 MemoryItem（RFC-0018 §7.1/§7.2）：每条记忆归属恰一命名空间
+         *     （agent / room / workspace / mission / slot）并锚定归属对象。0.7.0 为
+         *     显式写入面（人工记忆操作或系统事实记录）——status 固定 active、
+         *     visibility 固定 namespace（策展状态机随 0.7.1，授权过滤随 0.7.2）。
+         *     锚对象不存在 409 memory_scope_not_found；workspace 命名空间锚恒
+         *     default（单工作区事实）。
+         */
+        post: operations["createMemoryItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/memory/items/{memory_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 记忆项单查（0.7.0 / ADR-0037） */
+        get: operations["getMemoryItem"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4029,6 +4078,76 @@ export interface components {
             resolved_agent_id?: string;
             /** Format: date-time */
             expires_at: string;
+        };
+        /**
+         * @description 分域记忆项视图（RFC-0018 §7.2 / ADR-0037）。0.7.0：version 恒 1、
+         *     status 恒 active、visibility 恒 namespace、supersedes 空——策展与
+         *     修订语义随 0.7.1 启用（表结构已带全字段）。
+         */
+        MemoryItemView: {
+            /** @description mem_ 前缀生成式 */
+            memory_id: string;
+            version: number;
+            /** @enum {string} */
+            namespace: "agent" | "room" | "workspace" | "mission" | "slot";
+            /** @description 归属锚——agent_id / room_id / workspace 固定 default / mission_id / slot_instance_id */
+            scope_id: string;
+            /**
+             * @description 类型与权限域正交（RFC §7.1）
+             * @enum {string}
+             */
+            kind: "semantic" | "episodic" | "procedural";
+            title: string;
+            content: string;
+            /** @description 来源引用——事件/文档版本/显式操作（§7.2 可追溯纪律） */
+            source_refs: string[];
+            /** @description 何时知道（RFC3339） */
+            observed_at: string;
+            /** @description 何时有效——起（RFC3339；空 = 不限） */
+            valid_from?: string | null;
+            /** @description 何时有效——止（RFC3339；空 = 不限） */
+            valid_to?: string | null;
+            /** @description 人工显式写入默认 1.0 */
+            confidence: number;
+            /** @enum {string} */
+            status: "active" | "proposed" | "superseded";
+            /** @description 0.7.0 恒 namespace（域内可见） */
+            visibility: string;
+            /**
+             * @description sensitive 随 0.7.5 Bundle 脱敏消费
+             * @enum {string}
+             */
+            sensitivity: "normal" | "sensitive";
+            /** @description 0.7.0 空——纠错链随 0.7.1 */
+            supersedes: string[];
+            created_at: string;
+            updated_at: string;
+        };
+        /** @description 分域记忆写入请求（0.7.0）：显式写入面——策展候选（proposed）与模型抽取随 0.7.1。 */
+        MemoryItemCreateRequest: {
+            /** @enum {string} */
+            namespace: "agent" | "room" | "workspace" | "mission" | "slot";
+            scope_id: string;
+            /** @enum {string} */
+            kind: "semantic" | "episodic" | "procedural";
+            title: string;
+            content: string;
+            source_refs?: string[];
+            /** @description RFC3339 */
+            observed_at: string;
+            /** @description RFC3339；可选 */
+            valid_from?: string;
+            /** @description RFC3339；可选——须晚于 valid_from */
+            valid_to?: string;
+            confidence?: number;
+            /** @enum {string} */
+            sensitivity?: "normal" | "sensitive";
+        };
+        /** @description 分域记忆列表（创建序降序 + 游标）。 */
+        MemoryItemListView: {
+            items: components["schemas"]["MemoryItemView"][];
+            /** @description 还有更多时给本页末条 memory_id——直传作下一页 before；无更多缺省 */
+            next_cursor?: string;
         };
         /** @description 认领行视图（0.6.13 四审 */
         DispatchClaimView: {
@@ -10625,6 +10744,142 @@ export interface operations {
                 };
             };
             503: components["responses"]["HarnessUnavailable"];
+        };
+    };
+    listMemoryItems: {
+        parameters: {
+            query: {
+                namespace: "agent" | "room" | "workspace" | "mission" | "slot";
+                scope_id?: string;
+                kind?: "semantic" | "episodic" | "procedural";
+                status?: "active" | "proposed" | "superseded";
+                limit?: number;
+                before?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 记忆列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemListView"];
+                };
+            };
+            /** @description namespace 缺失或参数不合法（invalid_request） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 记忆域未装配（memory_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createMemoryItem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryItemCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemView"];
+                };
+            };
+            /** @description 字段格式/枚举/长度/时间序不合法（invalid_request） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 归属锚对象不存在（memory_scope_not_found） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 记忆域未装配（memory_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getMemoryItem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 记忆项 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemView"];
+                };
+            };
+            /** @description 记忆不存在（memory_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 记忆域未装配（memory_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
 }

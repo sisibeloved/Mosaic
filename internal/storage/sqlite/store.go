@@ -618,6 +618,38 @@ var migrationV31 = []string{
 	"INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (31, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
 }
 
+// migrationV32（0.7.0 / ADR-0037）：分域记忆——memory_items 表（§7.2 拟定字段
+// 一次带全：策展/召回/Bundle 字段列预留，0.7.0 写入面只开放稳定子集）。
+// 幂等 DDL。
+const migrationV32 = `
+CREATE TABLE IF NOT EXISTS memory_items (
+  memory_id        TEXT PRIMARY KEY,
+  version          INTEGER NOT NULL DEFAULT 1,
+  namespace        TEXT NOT NULL,
+  scope_id         TEXT NOT NULL,
+  kind             TEXT NOT NULL,
+  title            TEXT NOT NULL,
+  content          TEXT NOT NULL,
+  source_refs      TEXT NOT NULL DEFAULT '[]',
+  observed_at      TEXT NOT NULL,
+  valid_from       TEXT NOT NULL DEFAULT '',
+  valid_to         TEXT NOT NULL DEFAULT '',
+  confidence       REAL NOT NULL DEFAULT 1.0,
+  status           TEXT NOT NULL DEFAULT 'active',
+  visibility       TEXT NOT NULL DEFAULT 'namespace',
+  sensitivity      TEXT NOT NULL DEFAULT 'normal',
+  supersedes       TEXT NOT NULL DEFAULT '[]',
+  derived_from     TEXT NOT NULL DEFAULT '',
+  edit_history     TEXT NOT NULL DEFAULT '[]',
+  extractor_version TEXT NOT NULL DEFAULT 'manual',
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory_items(namespace, scope_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_items(namespace, status);
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (32, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+`
+
 // migrationV29（0.6.12 / ADR-0035）：责任交接——missions 增 pending_owner_agent_id
 // （在途交接承接人；空 = 无在途交接）。逐语句加列（重复容忍）+ 登记。
 var migrationV29 = []string{
@@ -809,6 +841,11 @@ func Open(path string) (*Store, error) {
 			db.Close()
 			return nil, fmt.Errorf("sqlite: migration v31: %w", err)
 		}
+	}
+	// v32 迁移（0.7.0 / ADR-0037）：memory_items——幂等 DDL
+	if _, err := db.Exec(migrationV32); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("sqlite: migration v32: %w", err)
 	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
