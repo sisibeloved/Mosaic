@@ -1,6 +1,6 @@
 # ADR-0038：0.7.1 记忆策展与纠错——接受、修订、否决与 superseded（0.7.1）
 
-- 状态：Accepted（2026-11-05，随 0.7.1 实施）
+- 状态：Accepted（2026-11-05，随 0.7.1 实施；v0.2 一轮审校修订）
 - 关联：[RFC-0018](../rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（§7.2 MemoryItem 与策展——"抽取 → 候选 proposed → 验证来源、去重、冲突检查 → accepted；高可信明确指令可按预设政策自动接受"、"新旧矛盾不只按写入时间覆盖：区分纠错、事实随时间变化与并存异议；人工纠错具有明确版本记录；过期、撤回和 superseded 项不默认参与当前召回，历史查询仍能解释当时依据"）；[ADR-0037](ADR-0037-domained-memory-items.md)（0.7.0 基石——status/supersedes/edit_history 预留列本件直接启用，**零迁移**）；[交付计划](../../plan/2026-08-25-delivery-plan.md) 0.7 领域表（0.7.1 唯一交付特性：记忆策展与纠错：来源、时效、接受、修订与 superseded）。
 
 ## 背景与问题
@@ -60,6 +60,15 @@
 ### 7. 测试与验证
 
 域 UT（状态机全矩阵 × 初始态、CAS、edit_history 恰一条/次、过期口径含边界 valid_to==now）、sqlite IT（CAS 并发、supersede 事务原子性——中间态不可见）、httpapi UT（四端点语义 + 写门 + 错误族）、SPA 构建、真机冒烟（proposed→accept/reject、revise 版本链、supersede 双动作、过期口径切换）、全量 vet/-race + it/st + 生成物幂等。
+
+## 审校修订记录
+
+- v0.2（2026-11-05）：一审 5 项（2 P1 + 3 P2）修复——
+  1. **快照绑定 + 状态基准 CAS（#1 P1）**：Revise/Supersede 读快照后先核对请求版本与快照一致（不等 CAS——"读到旧值却以新版本号过检"的窗口关闭）；CAS 从纯版本升级为**版本 + 状态双基准**（`WHERE version=? AND status=?`）——并发撤回产生的同名版本不再让旧修订复活终结条目。
+  2. **接受不被并发修订撤销（#2 P1）**：accept 维持不递增版本约定，双基准 CAS 使"proposed v1 接受成 active v1 后，基于 proposed 快照的陈旧修订"被拒（同名版本状态已变）；Accept 的 CAS 失败重读一次——已被并发接受则幂等收敛。
+  3. **include_expired 编码（#3 P2，前端）**：API 客户端补 `include_expired` → URL 查询参数（此前勾选无效）。
+  4. **时间语义一致（#4 P2）**：写入/修订/替代三时间字段**统一 UTC 规范化**（Parse→UTC Z 后缀——与 julianday 过滤同语义）；旧数据（如 `+15:00` 偏移使 julianday 返回 NULL）**保守包含**不误隐（宁多显不漏显）。
+  5. **替代保留敏感度（#5 P2，前端）**：替代表单预填原 sensitivity 并**恒携带**（不默认降级 normal）；修订表单同开放敏感度修改。
 
 ## 后果
 

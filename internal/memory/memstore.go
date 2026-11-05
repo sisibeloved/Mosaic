@@ -36,15 +36,16 @@ func (m *MemStore) ItemByID(_ context.Context, memoryID string) (Item, bool, err
 	return it, ok, nil
 }
 
-// UpdateItem CAS 原位替换（version 不符 ok=false）。
-func (m *MemStore) UpdateItem(_ context.Context, memoryID string, expectedVersion int, next Item) (Item, bool, error) {
+// UpdateItem CAS 原位替换（**版本 + 状态**双基准——一审 #2；任一不符
+// ok=false）。
+func (m *MemStore) UpdateItem(_ context.Context, memoryID string, expectedVersion int, expectedStatus Status, next Item) (Item, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i := range m.items {
 		if m.items[i].MemoryID != memoryID {
 			continue
 		}
-		if m.items[i].Version != expectedVersion {
+		if m.items[i].Version != expectedVersion || m.items[i].Status != expectedStatus {
 			return Item{}, false, nil
 		}
 		m.items[i] = next
@@ -56,7 +57,7 @@ func (m *MemStore) UpdateItem(_ context.Context, memoryID string, expectedVersio
 
 // SupersedeItem 双动作（内存件分步 + 失败回滚补偿——0.6.13 续接原子面同
 // 模式；事务语义由调用方域层保证：CAS 失败整体不落）。
-func (m *MemStore) SupersedeItem(ctx context.Context, oldID string, expectedVersion int, oldNext, replacement Item) (Item, Item, bool, error) {
+func (m *MemStore) SupersedeItem(_ context.Context, oldID string, expectedVersion int, expectedStatus Status, oldNext, replacement Item) (Item, Item, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	idx := -1
@@ -66,7 +67,7 @@ func (m *MemStore) SupersedeItem(ctx context.Context, oldID string, expectedVers
 			break
 		}
 	}
-	if idx < 0 || m.items[idx].Version != expectedVersion {
+	if idx < 0 || m.items[idx].Version != expectedVersion || m.items[idx].Status != expectedStatus {
 		return Item{}, Item{}, false, nil
 	}
 	m.items[idx] = oldNext

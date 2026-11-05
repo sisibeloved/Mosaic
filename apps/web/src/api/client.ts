@@ -622,6 +622,7 @@ export const api = {
     status?: "active" | "proposed" | "superseded";
     limit?: number;
     before?: string;
+    include_expired?: boolean;
   }): Promise<import("./schema.gen").components["schemas"]["MemoryItemListView"]> {
     const q = new URLSearchParams({ namespace: params.namespace });
     if (params.scope_id) q.set("scope_id", params.scope_id);
@@ -629,6 +630,7 @@ export const api = {
     if (params.status) q.set("status", params.status);
     if (params.limit) q.set("limit", String(params.limit));
     if (params.before) q.set("before", params.before);
+    if (params.include_expired) q.set("include_expired", "true");
     return request(`/v1/memory/items?${q.toString()}`);
   },
   /** 0.7.0 写入分域记忆项（显式写入面——人工记忆操作或系统事实记录）。 */

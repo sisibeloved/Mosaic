@@ -68,7 +68,7 @@ export function MemoryPage() {
   }));
   // 0.7.1 策展编辑（修订/替代——目标条目 + 模式）
   const [editing, setEditing] = useState<{ mode: "revise" | "supersede"; item: MemoryItemView } | null>(null);
-  const [editForm, setEditForm] = useState(() => ({ title: "", content: "", valid_from: "", valid_to: "", note: "" }));
+  const [editForm, setEditForm] = useState(() => ({ title: "", content: "", valid_from: "", valid_to: "", note: "", sensitivity: "normal" as "normal" | "sensitive" }));
   // 一审 #3：在途续页限制；二审：写入成功刷新信号。
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
@@ -203,6 +203,7 @@ export function MemoryPage() {
             content: editForm.content,
             ...(editForm.valid_from !== editing.item.valid_from ? { valid_from: editForm.valid_from } : {}),
             ...(editForm.valid_to !== editing.item.valid_to ? { valid_to: editForm.valid_to } : {}),
+            ...(editForm.sensitivity !== editing.item.sensitivity ? { sensitivity: editForm.sensitivity } : {}),
             ...(editForm.note ? { note: editForm.note } : {}),
           });
           setMsg("已修订（版本 +1）");
@@ -217,6 +218,8 @@ export function MemoryPage() {
               title: editForm.title.trim(),
               content: editForm.content,
               observed_at: nowRFC3339(),
+              // 一审 #5：replacement 恒携带敏感度（预填原值——不默认降级）。
+              sensitivity: editForm.sensitivity,
               ...(editForm.valid_from ? { valid_from: editForm.valid_from } : {}),
               ...(editForm.valid_to ? { valid_to: editForm.valid_to } : {}),
               source_refs: editing.item.source_refs ?? [],
@@ -242,6 +245,9 @@ export function MemoryPage() {
       valid_from: item.valid_from ?? "",
       valid_to: item.valid_to ?? "",
       note: "",
+      // 一审 #5：替代/修订预填原敏感度——replacement 恒携带（不默认降级
+      // normal）；表单内可显式改。
+      sensitivity: item.sensitivity === "sensitive" ? "sensitive" : "normal",
     });
   };
 
@@ -359,7 +365,7 @@ export function MemoryPage() {
             正文
             <textarea className={`${inputCls} min-h-24`} value={editForm.content} onChange={(e) => setEditForm((f) => ({ ...f, content: e.target.value }))} />
           </label>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-4 gap-2">
             <label className="flex flex-col gap-1 text-xs text-faint">
               有效期起（修订可改/空=清除）
               <input className={inputCls} value={editForm.valid_from} onChange={(e) => setEditForm((f) => ({ ...f, valid_from: e.target.value }))} />
@@ -367,6 +373,13 @@ export function MemoryPage() {
             <label className="flex flex-col gap-1 text-xs text-faint">
               有效期止
               <input className={inputCls} value={editForm.valid_to} onChange={(e) => setEditForm((f) => ({ ...f, valid_to: e.target.value }))} />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-faint">
+              敏感度（预填原值——一审 #5 不默认降级）
+              <select className={inputCls} value={editForm.sensitivity} onChange={(e) => setEditForm((f) => ({ ...f, sensitivity: e.target.value as "normal" | "sensitive" }))}>
+                <option value="normal">normal</option>
+                <option value="sensitive">sensitive</option>
+              </select>
             </label>
             <label className="flex flex-col gap-1 text-xs text-faint">
               说明（留入版本留痕）

@@ -37,6 +37,8 @@ func appendEdit(history []EditRecord, rec EditRecord) []EditRecord {
 
 // Accept 策展接受（proposed → active）。已 active 幂等返回（不追加留痕——
 // 无变化）；superseded 终结 409。
+// 一审 #2：CAS 以**读快照的状态**为基准（accept 不递增版本——纯版本 CAS
+// 分辨不出"接受前后的同名版本"）；并发已被接受时重读一次按幂等收敛。
 func (s *Service) Accept(ctx context.Context, memoryID string) (Item, error) {
 	it, err := s.Get(ctx, memoryID)
 	if err != nil {
@@ -55,11 +57,16 @@ func (s *Service) Accept(ctx context.Context, memoryID string) (Item, error) {
 	next.EditHistory = appendEdit(it.EditHistory, EditRecord{
 		Version: it.Version, Cause: CauseAccept, EditedBy: "owner", OccurredAt: now,
 	})
-	got, ok, err := s.store.UpdateItem(ctx, memoryID, it.Version, next)
+	got, ok, err := s.store.UpdateItem(ctx, memoryID, it.Version, it.Status, next)
 	if err != nil {
 		return Item{}, err
 	}
 	if !ok {
+		// 并发交错重读：已被并发接受 → 幂等返回；被终结 → 终结语义。
+		cur, rerr := s.Get(ctx, memoryID)
+		if rerr == nil && cur.Status == StatusActive {
+			return cur, nil
+		}
 		return Item{}, ErrVersionConflict
 	}
 	return got, nil
@@ -90,7 +97,8 @@ func (s *Service) Reject(ctx context.Context, memoryID, note string) (Item, erro
 	next.EditHistory = appendEdit(it.EditHistory, EditRecord{
 		Version: next.Version, Cause: cause, Note: note, EditedBy: "owner", OccurredAt: now,
 	})
-	got, ok, err := s.store.UpdateItem(ctx, memoryID, it.Version, next)
+	// 一审 #1/#2：读快照即 CAS 基准（版本 + 状态）。
+	got, ok, err := s.store.UpdateItem(ctx, memoryID, it.Version, it.Status, next)
 	if err != nil {
 		return Item{}, err
 	}
@@ -128,6 +136,11 @@ func (s *Service) Revise(ctx context.Context, memoryID string, cmd ReviseCmd) (I
 	if it.Status == StatusSuperseded {
 		return Item{}, ErrTerminal
 	}
+	// 一审 #1：请求版本必须与读取快照一致（绑定快照提交）——快照已落后
+	// 于请求预期即拒绝，不留"读到旧值却以新版本号过 CAS"的窗口。
+	if it.Version != cmd.ExpectedVersion {
+		return Item{}, ErrVersionConflict
+	}
 	next := it
 	if cmd.Title != nil {
 		next.Title = strings.TrimSpace(*cmd.Title)
@@ -139,13 +152,13 @@ func (s *Service) Revise(ctx context.Context, memoryID string, cmd ReviseCmd) (I
 		next.SourceRefs = append([]string{}, *cmd.SourceRefs...)
 	}
 	if cmd.ObservedAt != nil {
-		next.ObservedAt = *cmd.ObservedAt
+		next.ObservedAt = normTime(*cmd.ObservedAt) // 一审 #4：UTC 规范化
 	}
 	if cmd.ValidFrom != nil {
-		next.ValidFrom = *cmd.ValidFrom // 空串 = 清除
+		next.ValidFrom = normTime(*cmd.ValidFrom) // 空串 = 清除
 	}
 	if cmd.ValidTo != nil {
-		next.ValidTo = *cmd.ValidTo
+		next.ValidTo = normTime(*cmd.ValidTo)
 	}
 	if cmd.Sensitivity != nil {
 		next.Sensitivity = *cmd.Sensitivity
@@ -172,7 +185,8 @@ func (s *Service) Revise(ctx context.Context, memoryID string, cmd ReviseCmd) (I
 	next.EditHistory = appendEdit(it.EditHistory, EditRecord{
 		Version: next.Version, Cause: CauseRevise, Note: cmd.Note, EditedBy: "owner", OccurredAt: now,
 	})
-	got, ok, err := s.store.UpdateItem(ctx, memoryID, cmd.ExpectedVersion, next)
+	// 一审 #2：状态基准 CAS（纯版本 CAS 分辨不出状态已并发的同名版本）。
+	got, ok, err := s.store.UpdateItem(ctx, memoryID, cmd.ExpectedVersion, it.Status, next)
 	if err != nil {
 		return Item{}, err
 	}
@@ -201,6 +215,10 @@ func (s *Service) Supersede(ctx context.Context, oldID string, expectedVersion i
 	}
 	if old.Status == StatusSuperseded {
 		return Item{}, Item{}, ErrTerminal
+	}
+	// 一审 #1：请求版本与读取快照一致才提交（绑定快照）。
+	if old.Version != expectedVersion {
+		return Item{}, Item{}, ErrVersionConflict
 	}
 	now := s.now()
 	oldNext := old
@@ -231,9 +249,9 @@ func (s *Service) Supersede(ctx context.Context, oldID string, expectedVersion i
 		Title:       strings.TrimSpace(replacement.Title),
 		Content:     replacement.Content,
 		SourceRefs:  append([]string{}, replacement.SourceRefs...),
-		ObservedAt:  replacement.ObservedAt,
-		ValidFrom:   replacement.ValidFrom,
-		ValidTo:     replacement.ValidTo,
+		ObservedAt:  normTime(replacement.ObservedAt), // 一审 #4：UTC 规范化
+		ValidFrom:   normTime(replacement.ValidFrom),
+		ValidTo:     normTime(replacement.ValidTo),
 		Confidence:  confidence,
 		Status:      status,
 		Visibility:  "namespace",
@@ -243,7 +261,8 @@ func (s *Service) Supersede(ctx context.Context, oldID string, expectedVersion i
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	oldGot, newGot, ok, err := s.store.SupersedeItem(ctx, oldID, expectedVersion, oldNext, newItem)
+	// 一审 #2：状态基准 CAS（同 Revise——接受/撤回与替代并发交错全部拦）。
+	oldGot, newGot, ok, err := s.store.SupersedeItem(ctx, oldID, expectedVersion, old.Status, oldNext, newItem)
 	if err != nil {
 		return Item{}, Item{}, err
 	}

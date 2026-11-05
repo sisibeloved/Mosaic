@@ -155,12 +155,13 @@ type Store interface {
 	CreateItem(ctx context.Context, it Item) (Item, error)
 	ItemByID(ctx context.Context, memoryID string) (Item, bool, error)
 	ListItems(ctx context.Context, f ListFilter) ([]Item, error)
-	// UpdateItem CAS 原位替换（version 核对失败 ok=false；edit_history 由
-	// 域构造传入——存储无策展语义）。
-	UpdateItem(ctx context.Context, memoryID string, expectedVersion int, next Item) (Item, bool, error)
+	// UpdateItem CAS 原位替换（**版本 + 状态**双基准——一审 #2：accept 不
+	// 递增版本，纯版本 CAS 分辨不出状态已并发的同名版本；任一不符
+	// ok=false。edit_history 由域构造传入——存储无策展语义）。
+	UpdateItem(ctx context.Context, memoryID string, expectedVersion int, expectedStatus Status, next Item) (Item, bool, error)
 	// SupersedeItem 单事务双动作（ADR-0038 §2：旧终结 + 新建 supersedes 链；
-	// CAS 失败 ok=false 整体不落）。
-	SupersedeItem(ctx context.Context, oldID string, expectedVersion int, oldNext, replacement Item) (Item, Item, bool, error)
+	// 同双基准 CAS——失败 ok=false 整体不落）。
+	SupersedeItem(ctx context.Context, oldID string, expectedVersion int, expectedStatus Status, oldNext, replacement Item) (Item, Item, bool, error)
 }
 
 // Service 分域记忆服务（域校验单源 + 锚门 + 默认填充）。
@@ -306,9 +307,9 @@ func (s *Service) Create(ctx context.Context, cmd CreateCmd) (Item, error) {
 		// 一审 #1：规范化非 nil——省略/空数组的 source_refs 落库与读回
 		// 均为空数组（JSON []），不产生 null（页面 .length 崩溃面）。
 		SourceRefs:  append([]string{}, cmd.SourceRefs...),
-		ObservedAt:  cmd.ObservedAt,
-		ValidFrom:   cmd.ValidFrom,
-		ValidTo:     cmd.ValidTo,
+		ObservedAt:  normTime(cmd.ObservedAt), // 一审 #4：UTC 规范化
+		ValidFrom:   normTime(cmd.ValidFrom),
+		ValidTo:     normTime(cmd.ValidTo),
 		Confidence:  confidence,
 		Status:      status,
 		Visibility:  "namespace",
@@ -407,6 +408,19 @@ func (s *Service) checkAnchor(ctx context.Context, ns Namespace, scopeID string)
 		return ErrScopeNotFound
 	}
 	return nil
+}
+
+// normTime RFC3339 解析后规范化为 UTC（Z 后缀——一审 #4：sqlite julianday
+// 对部分合法偏移格式（如 +15:00）返回 NULL，写入侧统一 UTC 使时效过滤与
+// 写入校验同语义；解析失败原样返回——校验层先行把关）。
+func normTime(v string) string {
+	if v == "" {
+		return ""
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t.UTC().Format(time.RFC3339)
+	}
+	return v
 }
 
 // newToken 生成式后缀（时间毫秒 36 进制 + 8 字节随机 hex——与 dispatch

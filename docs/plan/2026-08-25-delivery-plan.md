@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.88 |
+| 版本 | v2.89 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -205,6 +205,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.89 | 2026-11-05 | Mosaic 项目组 / ZCode | **0.7.1 一审修复（2 P1 + 3 P2；ADR-0038 v0.2）**。快照绑定 + 版本/状态双基准 CAS（并发撤回不复活终结/接受不被撤销——留痕不抹；Accept 交错幂等收敛）+ include_expired URL 编码 + 时间统一 UTC 规范化（旧偏移数据保守包含）+ 替代表单保留敏感度。验证：并发交错回归 UT（interceptStore 注入）+ sqlite IT（NULL 兼容/状态基准）+ vet/-race + it/st + SPA + 冒烟 14+5 项复跑 ALL-PASS |
 | v2.88 | 2026-11-05 | Mosaic 项目组 / ZCode | **0.7.1 记忆策展与纠错开工实施（负责人指令："开工0.7.1"；ADR-0038 Accepted）——接受/修订/否决/替代四动作 + edit_history 版本留痕 + superseded 终结链 + 时效口径（默认排除过期，include_expired 显式）**。0.7.0 预留列直接启用零迁移；supersede 单事务双动作；Create += status=proposed 候选口径。验证：UT/IT/httpapi UT + vet/-race + it/st + SPA + 生成物幂等 + 真机冒烟 14 项 ALL-PASS |
 | v2.87 | 2026-11-05 | Mosaic 项目组 / ZCode | **定版 v0.7.0（负责人指令："发布"）——0.7 记忆与可移植恢复领域第一件：分域记忆基石（MemoryItem 五命名空间）**。CHANGELOG [Unreleased]（Added 基石 + Fixed 两轮审校 4+1=5 项）定版 **[0.7.0] - 2026-11-05**（Added 前置、两段 Fixed 合并一节），保留空 [Unreleased]；README 当前版本推进 v0.7.0、路线图 0.7 行标注 0.7.0 已交付（余 0.7.1–0.7.9）；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.7.0 + GitHub Release 发布说明与 Windows 产物（于 tag 的干净 worktree 重建）；CI 三平台绿基线（b830b4a 已验，定版提交复验） |
 | v2.86 | 2026-11-05 | Mosaic 项目组 / ZCode | **0.7.0 二审修复（1 P2；ADR-0037 v0.3）**。一审 #2 修法闭包残留：写入成功回调 reload 携带提交时旧条件——改 refreshTick 信号 + 列表 effect 依赖（ns/scopeFilter/refreshTick）以当次渲染条件重查（独立 reload 函数移除）。验证：SPA 构建 + 冒烟复跑 |

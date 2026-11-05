@@ -130,16 +130,17 @@ func memoryUpdateArgs(it memory.Item) ([]any, error) {
 		string(it.Sensitivity), sup, edits, it.UpdatedAt}, nil
 }
 
-// UpdateItem CAS 原位替换（单写语句：version 核对失败 rows=0 → ok=false）。
-func (s *Store) UpdateItem(ctx context.Context, memoryID string, expectedVersion int, next memory.Item) (memory.Item, bool, error) {
+// UpdateItem CAS 原位替换（**版本 + 状态**双基准——一审 #2；任一不符
+// rows=0 → ok=false）。
+func (s *Store) UpdateItem(ctx context.Context, memoryID string, expectedVersion int, expectedStatus memory.Status, next memory.Item) (memory.Item, bool, error) {
 	args, err := memoryUpdateArgs(next)
 	if err != nil {
 		return memory.Item{}, false, err
 	}
-	args = append(args, memoryID, expectedVersion)
+	args = append(args, memoryID, expectedVersion, string(expectedStatus))
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE memory_items SET `+memorySetCols+
-			` WHERE memory_id = ? AND version = ?`, args...)
+			` WHERE memory_id = ? AND version = ? AND status = ?`, args...)
 	if err != nil {
 		return memory.Item{}, false, fmt.Errorf("sqlite: update memory item: %w", err)
 	}
@@ -152,7 +153,7 @@ func (s *Store) UpdateItem(ctx context.Context, memoryID string, expectedVersion
 
 // SupersedeItem 单事务双动作（ADR-0038 §2：旧终结 CAS + 新建 supersedes 链
 // 同一事务——不存在半状态窗口）。
-func (s *Store) SupersedeItem(ctx context.Context, oldID string, expectedVersion int, oldNext, replacement memory.Item) (memory.Item, memory.Item, bool, error) {
+func (s *Store) SupersedeItem(ctx context.Context, oldID string, expectedVersion int, expectedStatus memory.Status, oldNext, replacement memory.Item) (memory.Item, memory.Item, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return memory.Item{}, memory.Item{}, false, fmt.Errorf("sqlite: supersede begin: %w", err)
@@ -162,10 +163,10 @@ func (s *Store) SupersedeItem(ctx context.Context, oldID string, expectedVersion
 	if err != nil {
 		return memory.Item{}, memory.Item{}, false, err
 	}
-	updArgs = append(updArgs, oldID, expectedVersion)
+	updArgs = append(updArgs, oldID, expectedVersion, string(expectedStatus))
 	res, err := tx.ExecContext(ctx,
 		`UPDATE memory_items SET `+memorySetCols+
-			` WHERE memory_id = ? AND version = ?`, updArgs...)
+			` WHERE memory_id = ? AND version = ? AND status = ?`, updArgs...)
 	if err != nil {
 		return memory.Item{}, memory.Item{}, false, fmt.Errorf("sqlite: supersede old: %w", err)
 	}
@@ -226,7 +227,10 @@ func (s *Store) ListItems(ctx context.Context, f memory.ListFilter) ([]memory.It
 	// now——RFC3339 **时刻**比较（0.6.13 审校 #15 教训：字典序在可变小数
 	// 位下漏判），经 datetime() 归一比较。
 	if f.Status == memory.StatusActive && !f.IncludeExpired {
-		q += ` AND (valid_to = '' OR julianday(valid_to) >= julianday(?))`
+		// 一审 #4：写入侧已统一 UTC（julianday 全认）；旧数据的合法偏移格式
+		//（如 +15:00）julianday 返回 NULL——**保守包含**不误隐（宁可多显
+		// 不漏显——0.7.2 召回前置过滤再做精确语义）。
+		q += ` AND (valid_to = '' OR julianday(valid_to) IS NULL OR julianday(valid_to) >= julianday(?))`
 		args = append(args, f.Now)
 	}
 	if f.Before != "" {

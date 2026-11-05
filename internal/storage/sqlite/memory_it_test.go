@@ -253,6 +253,50 @@ func TestMemoryCurationIT(t *testing.T) {
 	}
 }
 
+// 一审 #4：旧数据 +15:00 偏移（julianday NULL）保守包含——未过期不误隐。
+func TestMemoryItemsLegacyOffsetCompatIT(t *testing.T) {
+	s := openMemItStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	// 直插旧格式行（绕过域层 UTC 规范化——模拟 8a03aeb 期间写入）。
+	it := memIt(memory.NSAgent, "ag_1", "off1")
+	it.ValidFrom = "2026-11-01T00:00:00+15:00"
+	it.ValidTo = "2026-11-30T00:00:00+15:00" // 未过期（现 2026-11）
+	if _, err := s.CreateItem(ctx, it); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
+		Status: memory.StatusActive, Limit: 50, Now: "2026-11-05T12:00:00Z"})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("旧偏移未过期条目应保守包含，得 %d %v", len(items), err)
+	}
+}
+
+// 一审 #2：UpdateItem 状态基准——版本相符但状态已被并发策展时 CAS 拒。
+func TestMemoryItemsStatusBoundedCASIT(t *testing.T) {
+	s := openMemItStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	it, err := s.CreateItem(ctx, memIt(memory.NSAgent, "ag_1", "cas1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 版本 1 相符、状态不符（行是 proposed，期望 active）——纯版本 CAS 会过。
+	prop := it
+	prop.Status = memory.StatusProposed
+	if _, _, err := s.UpdateItem(ctx, it.MemoryID, 1, memory.StatusActive, prop); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, _ := s.ItemByID(ctx, it.MemoryID)
+	if ok && got.Status == memory.StatusActive {
+		t.Fatal("accept 不递增版本——状态基准必须拦住同名版本的并发交错")
+	}
+	// 版本不符同拒（既有语义）。
+	if _, ok, _ := s.UpdateItem(ctx, it.MemoryID, 99, memory.StatusActive, it); ok {
+		t.Fatal("版本不符应拒")
+	}
+}
+
 func TestMemoryItemsIdempotentReopenIT(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "reopen.db")
 	s, err := Open(path)
