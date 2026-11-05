@@ -4276,8 +4276,9 @@ paths:
       description: |
         按命名空间必填隔离（跨域列表不存在——越域内容与存在性不泄漏）；
         scope_id / kind / status 可选过滤；创建序降序（新记忆在前），
-        before 游标分页。0.7.0 列表只含 status=active 与 proposed/superseded
-        显式请求两种口径（默认 active——与 0.7.1 召回语义衔接）。
+        before 游标分页。默认口径 status=active 且排除已过期条目（0.7.1：
+        valid_to < now 不参与当前召回——include_expired=true 显式可见）；
+        proposed/superseded 显式请求时不过滤有效期（策展审视看全量）。
       parameters:
         - name: namespace
           in: query
@@ -4303,6 +4304,10 @@ paths:
           in: query
           required: false
           schema: { type: string, maxLength: 64, description: 分页游标（上一页末条 memory_id） }
+        - name: include_expired
+          in: query
+          required: false
+          schema: { type: boolean, default: false, description: 默认排除已过期 active 条目（valid_to < now——RFC §7.2"过期不默认参与当前召回"）；true 显式可见（历史查询仍能解释当时依据） }
       responses:
         "200":
           description: 记忆列表
@@ -4344,6 +4349,127 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /v1/memory/items/{memory_id}/accept:
+    post:
+      operationId: acceptMemoryItem
+      summary: 策展接受（0.7.1 / ADR-0038 §2）
+      description: |
+        proposed → active。已 active 幂等返回当前视图（策展重复确认无害，
+        不递增版本——内容未变）；superseded 终结态不可复活（409
+        memory_terminal——与 0.7.8 旧包防复活同基调）。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: memory_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mem_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 接受后的记忆项（或幂等）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryItemView" }
+        "404":
+          description: 记忆不存在（memory_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 终结态不可动作（memory_terminal）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { description: 记忆域未装配 }
+  /v1/memory/items/{memory_id}/reject:
+    post:
+      operationId: rejectMemoryItem
+      summary: 候选否决 / 撤回（0.7.1 / ADR-0038 §2）
+      description: |
+        proposed → superseded（cause=reject）或 active → superseded
+        （cause=withdraw）；note 记原因；版本递增并留 edit_history。superseded
+        终结态不可再动作（409 memory_terminal）。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: memory_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mem_[0-9A-Za-z_-]+$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemoryItemRejectRequest" }
+      responses:
+        "200":
+          description: 终结后的记忆项
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryItemView" }
+        "404": { description: 记忆不存在（memory_not_found） }
+        "409": { description: 终结态不可动作（memory_terminal） }
+        "503": { description: 记忆域未装配 }
+  /v1/memory/items/{memory_id}/revise:
+    post:
+      operationId: reviseMemoryItem
+      summary: 原位修订（0.7.1 / ADR-0038 §2）
+      description: |
+        人工纠错——title/content/source_refs/observed_at/valid_from/
+        valid_to/sensitivity/confidence 可改（status 保持；namespace/scope
+        归属不可改）；expected_version CAS；版本递增 + edit_history 恰追加
+        一条。valid_from/valid_to 传空串 = 清除（不限）。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: memory_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mem_[0-9A-Za-z_-]+$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemoryItemReviseRequest" }
+      responses:
+        "200":
+          description: 修订后的记忆项
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryItemView" }
+        "400": { description: 字段校验（invalid_request） }
+        "404": { description: 记忆不存在（memory_not_found） }
+        "409":
+          description: 版本冲突（memory_version_conflict）/ 终结态（memory_terminal）
+        "503": { description: 记忆域未装配 }
+  /v1/memory/items/{memory_id}/supersede:
+    post:
+      operationId: supersedeMemoryItem
+      summary: 显式替代（0.7.1 / ADR-0038 §2）
+      description: |
+        单事务双动作：旧条目 → superseded（cause=supersede，edit_history
+        留痕）+ 新条目创建（supersedes=[旧 id]——replacement 为完整创建命令，
+        status 默认 active）。事务原子——不存在"旧的死了新的没建"窗口。
+        事实随时间变化不用本端点：revise 调整有效期或新建条目即可。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: memory_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^mem_[0-9A-Za-z_-]+$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemoryItemSupersedeRequest" }
+      responses:
+        "200":
+          description: 双动作结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryItemSupersedeResult" }
+        "400": { description: replacement 字段校验（invalid_request） }
+        "404": { description: 记忆不存在（memory_not_found） }
+        "409":
+          description: 版本冲突（memory_version_conflict）/ 终结态（memory_terminal）/ replacement 锚不存在（memory_scope_not_found）
+        "503": { description: 记忆域未装配 }
 components:
   securitySchemes:
     OwnerToken:
@@ -6192,7 +6318,7 @@ components:
         expires_at: { type: string, format: date-time }
     MemoryItemView:
       type: object
-      required: [memory_id, version, namespace, scope_id, kind, title, content, source_refs, observed_at, confidence, status, visibility, sensitivity, supersedes, created_at, updated_at]
+      required: [memory_id, version, namespace, scope_id, kind, title, content, source_refs, observed_at, confidence, status, visibility, sensitivity, supersedes, edit_history, created_at, updated_at]
       description: |
         分域记忆项视图（RFC-0018 §7.2 / ADR-0037）。0.7.0：version 恒 1、
         status 恒 active、visibility 恒 namespace、supersedes 空——策展与
@@ -6213,7 +6339,8 @@ components:
         status: { type: string, enum: [active, proposed, superseded] }
         visibility: { type: string, description: 0.7.0 恒 namespace（域内可见） }
         sensitivity: { type: string, enum: [normal, sensitive], description: sensitive 随 0.7.5 Bundle 脱敏消费 }
-        supersedes: { type: array, items: { type: string }, description: 0.7.0 空——纠错链随 0.7.1 }
+        supersedes: { type: array, items: { type: string }, description: 替代链——本条显式替代的旧条目 id（0.7.1 supersede 动作写入） }
+        edit_history: { type: array, items: { $ref: "#/components/schemas/MemoryEditRecordView" }, description: 版本留痕——每次内容/状态变化恰追加一条（append-only） }
         created_at: { type: string }
         updated_at: { type: string }
     MemoryItemCreateRequest:
@@ -6233,6 +6360,57 @@ components:
         valid_to: { type: string, description: RFC3339；可选——须晚于 valid_from }
         confidence: { type: number, minimum: 0, maximum: 1 }
         sensitivity: { type: string, enum: [normal, sensitive] }
+        status: { type: string, enum: [active, proposed], description: 默认 active——不确定候选留 proposed 待策展（0.7.1） }
+    MemoryEditRecordView:
+      type: object
+      required: [version, cause, edited_by, occurred_at]
+      description: 版本留痕记录（0.7.1 / ADR-0038 §2——append-only，恰一条/次）。
+      properties:
+        version: { type: integer, description: 该次变化产生的版本 }
+        cause: { type: string, enum: [revise, reject, withdraw, supersede, accept], description: 候选否决 reject / active 撤回 withdraw / 显式替代 supersede / 原位修订 revise / 接受 accept }
+        note: { type: string, description: 原因/说明（≤500 字） }
+        edited_by: { type: string, description: 个人版单用户恒 owner }
+        occurred_at: { type: string, description: RFC3339 }
+    MemoryItemRejectRequest:
+      type: object
+      additionalProperties: false
+      description: 否决/撤回请求（0.7.1）。
+      properties:
+        note: { type: string, maxLength: 500, description: 原因——留入 edit_history }
+    MemoryItemReviseRequest:
+      type: object
+      required: [expected_version]
+      additionalProperties: false
+      description: |
+        原位修订请求（0.7.1）：缺席字段保持原值；valid_from/valid_to 传空串
+        = 清除（不限）。status/namespace/scope 不可改（归属与状态另有动作面）。
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        title: { type: string, minLength: 1, maxLength: 200 }
+        content: { type: string, minLength: 1, maxLength: 20000 }
+        source_refs: { type: array, items: { type: string, minLength: 1, maxLength: 500 }, maxItems: 16 }
+        observed_at: { type: string, description: RFC3339 }
+        valid_from: { type: string, description: RFC3339；空串 = 清除 }
+        valid_to: { type: string, description: RFC3339；空串 = 清除——须晚于 valid_from（两者均非清除时） }
+        sensitivity: { type: string, enum: [normal, sensitive] }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        note: { type: string, maxLength: 500, description: 修订说明——留入 edit_history }
+    MemoryItemSupersedeRequest:
+      type: object
+      required: [expected_version, replacement]
+      additionalProperties: false
+      description: 显式替代请求（0.7.1）——单事务双动作。
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        note: { type: string, maxLength: 500, description: 替代原因——留入双方 edit_history }
+        replacement: { $ref: "#/components/schemas/MemoryItemCreateRequest" }
+    MemoryItemSupersedeResult:
+      type: object
+      required: [superseded, replacement]
+      description: 替代双动作结果（同一事务）。
+      properties:
+        superseded: { $ref: "#/components/schemas/MemoryItemView" }
+        replacement: { $ref: "#/components/schemas/MemoryItemView" }
     MemoryItemListView:
       type: object
       required: [items]

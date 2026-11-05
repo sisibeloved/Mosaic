@@ -36,6 +36,48 @@ func (m *MemStore) ItemByID(_ context.Context, memoryID string) (Item, bool, err
 	return it, ok, nil
 }
 
+// UpdateItem CAS 原位替换（version 不符 ok=false）。
+func (m *MemStore) UpdateItem(_ context.Context, memoryID string, expectedVersion int, next Item) (Item, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.items {
+		if m.items[i].MemoryID != memoryID {
+			continue
+		}
+		if m.items[i].Version != expectedVersion {
+			return Item{}, false, nil
+		}
+		m.items[i] = next
+		m.byID[memoryID] = next
+		return next, true, nil
+	}
+	return Item{}, false, nil
+}
+
+// SupersedeItem 双动作（内存件分步 + 失败回滚补偿——0.6.13 续接原子面同
+// 模式；事务语义由调用方域层保证：CAS 失败整体不落）。
+func (m *MemStore) SupersedeItem(ctx context.Context, oldID string, expectedVersion int, oldNext, replacement Item) (Item, Item, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx := -1
+	for i := range m.items {
+		if m.items[i].MemoryID == oldID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 || m.items[idx].Version != expectedVersion {
+		return Item{}, Item{}, false, nil
+	}
+	m.items[idx] = oldNext
+	m.byID[oldID] = oldNext
+	// 持锁直写（不可调 CreateItem——mutex 不可重入会死锁）；内存件插入
+	// 无约束错误面，无需回滚补偿。
+	m.items = append(m.items, replacement)
+	m.byID[replacement.MemoryID] = replacement
+	return oldNext, replacement, true, nil
+}
+
 // ListItems 过滤 + 创建序降序 + 游标（before 之后的更早条目）+ limit+1 条
 // （第 limit+1 条供 service 判 next_cursor）。before 未知（已删除/游标失效）
 // = 空页——与 sqlite 实现同口径。
@@ -65,6 +107,10 @@ func (m *MemStore) ListItems(_ context.Context, f ListFilter) ([]Item, error) {
 			continue
 		}
 		if f.Status != "" && it.Status != f.Status {
+			continue
+		}
+		// 0.7.1 时效口径：active 且未显式包含时排除 valid_to < now。
+		if f.Status == StatusActive && !f.IncludeExpired && expired(it.ValidTo, f.Now) {
 			continue
 		}
 		out = append(out, it)

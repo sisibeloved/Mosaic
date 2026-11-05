@@ -278,6 +278,117 @@ func TestMemoryListAndGetDomainedAPIT(t *testing.T) {
 	})
 }
 
+// 策展四端点（0.7.1 / ADR-0038）：accept/reject/revise/supersede + 409 族。
+func TestMemoryCurationDomainedAPIT(t *testing.T) {
+	ts, _ := newDomainedMemoryTestServer(t, "tok")
+	ctx := context.Background()
+
+	mk := func(status string) string {
+		body := memCreateBody()
+		if status != "" {
+			body["status"] = status
+		}
+		resp := memPost(t, ts.URL+"/v1/memory/items", "tok", body)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("种子写入失败：%d", resp.StatusCode)
+		}
+		return memBody(t, resp)["memory_id"].(string)
+	}
+
+	t.Run("accept：proposed→active；active 幂等；superseded 409", func(t *testing.T) {
+		id := mk("proposed")
+		resp := memPost(t, ts.URL+"/v1/memory/items/"+id+"/accept", "tok", map[string]any{})
+		if resp.StatusCode != http.StatusOK || memBody(t, resp)["status"] != "active" {
+			t.Fatalf("接受错：%d", resp.StatusCode)
+		}
+		resp = memPost(t, ts.URL+"/v1/memory/items/"+id+"/accept", "tok", map[string]any{})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("幂等接受错：%d", resp.StatusCode)
+		}
+		memPost(t, ts.URL+"/v1/memory/items/"+id+"/reject", "tok", map[string]any{"note": "弃"})
+		resp = memPost(t, ts.URL+"/v1/memory/items/"+id+"/accept", "tok", map[string]any{})
+		if resp.StatusCode != http.StatusConflict || memBody(t, resp)["error"].(map[string]any)["code"] != "memory_terminal" {
+			t.Fatalf("终结复活应 409 memory_terminal，得 %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("revise：版本递增 + CAS 409 + edit_history 透出", func(t *testing.T) {
+		id := mk("")
+		resp := memPost(t, ts.URL+"/v1/memory/items/"+id+"/revise", "tok",
+			map[string]any{"expected_version": 1, "title": "新标题", "note": "改"})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("修订错：%d %v", resp.StatusCode, memBody(t, resp))
+		}
+		v := memBody(t, resp)
+		if v["version"].(float64) != 2 {
+			t.Fatalf("版本应 2，得 %v", v["version"])
+		}
+		hist := v["edit_history"].([]any)
+		if len(hist) != 1 || hist[0].(map[string]any)["cause"] != "revise" {
+			t.Fatalf("留痕透出错：%v", hist)
+		}
+		resp = memPost(t, ts.URL+"/v1/memory/items/"+id+"/revise", "tok",
+			map[string]any{"expected_version": 1, "title": "撞"})
+		if resp.StatusCode != http.StatusConflict || memBody(t, resp)["error"].(map[string]any)["code"] != "memory_version_conflict" {
+			t.Fatalf("CAS 应 409 memory_version_conflict，得 %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("supersede：双动作结果 + replacement 锚 409", func(t *testing.T) {
+		id := mk("")
+		resp := memPost(t, ts.URL+"/v1/memory/items/"+id+"/supersede", "tok", map[string]any{
+			"expected_version": 1, "note": "换",
+			"replacement": map[string]any{
+				"namespace": "agent", "scope_id": "ag_ok", "kind": "semantic",
+				"title": "替代", "content": "c", "observed_at": "2026-11-05T10:00:00Z",
+			},
+		})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("替代错：%d %v", resp.StatusCode, memBody(t, resp))
+		}
+		v := memBody(t, resp)
+		if v["superseded"].(map[string]any)["status"] != "superseded" ||
+			v["replacement"].(map[string]any)["supersedes"].([]any)[0] != id {
+			t.Fatalf("双动作结果错：%v", v)
+		}
+		resp = memPost(t, ts.URL+"/v1/memory/items/"+id+"/supersede", "tok", map[string]any{
+			"expected_version": 9,
+			"replacement": map[string]any{
+				"namespace": "agent", "scope_id": "ag_ok", "kind": "semantic",
+				"title": "t", "content": "c", "observed_at": "2026-11-05T10:00:00Z",
+			},
+		})
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("CAS 应 409，得 %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("include_expired：默认排除/显式可见", func(t *testing.T) {
+		body := memCreateBody()
+		body["valid_from"] = "2025-01-01T00:00:00Z"
+		body["valid_to"] = "2025-01-02T00:00:00Z" // 早已过期
+		if resp := memPost(t, ts.URL+"/v1/memory/items", "tok", body); resp.StatusCode != http.StatusCreated {
+			t.Fatalf("过期条目写入失败：%d", resp.StatusCode)
+		}
+		listNS := func(q string) int {
+			resp, err := http.Get(ts.URL + "/v1/memory/items?namespace=agent" + q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { resp.Body.Close() })
+			return len(memBody(t, resp)["items"].([]any))
+		}
+		base := listNS("") // 前序子测试的存量 active（未过期）——基线法
+		if got := listNS(""); got != base {
+			t.Fatalf("默认口径不应变化，base=%d got=%d", base, got)
+		}
+		if n := listNS("&include_expired=true"); n != base+1 {
+			t.Fatalf("显式 include 应 base+1=%d 条，得 %d", base+1, n)
+		}
+	})
+	_ = ctx
+}
+
 func TestMemoryUnavailableDomainedAPIT(t *testing.T) {
 	handler := New(Deps{Actor: room.Actor{ParticipantID: "par_owner", Kind: "human"}})
 	ts := httptest.NewServer(handler)

@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- **0.7.1 记忆策展与纠错：接受、修订、否决与 superseded**（0.7 领域线第二件 / ADR-0038，RFC-0018 §7.2——0.7.0 预留列直接启用，**零迁移**）：
+  - **状态机**：`proposed → accept → active`（幂等——重复确认无害）；`reject`（候选否决 cause=reject）/ `withdraw`（active 撤回）→ `superseded` **唯一终结态，不可复活**（409 `memory_terminal`——与 0.7.8 旧包防复活同基调）；Create 写入面 += 可选 `status`（默认 active——高可信明确指令；不确定候选留 proposed 待策展；终结态不可直造）。
+  - **原位修订 `POST /v1/memory/items/{id}/revise`**：title/content/source_refs/时效/敏感度/置信度可改（归属与状态另有动作面）；`expected_version` CAS；版本递增 + **edit_history 恰追加一条**（append-only——"人工纠错具有明确版本记录"）。
+  - **显式替代 `POST /v1/memory/items/{id}/supersede`**：**单事务双动作**——旧条目终结（留痕）+ 新条目创建（`supersedes=[旧 id]`；replacement 可跨域——迁移纠错是合法替代）；CAS 失败整体不落。事实随时间变化不用替代（revise 调整有效期或新建条目）。
+  - **时效口径**：默认 active 口径**排除已过期条目**（`valid_to < now`——RFC3339 **时刻**比较经 `julianday()` 归一，0.6.13 审校 #15 同教训）；`include_expired=true` 显式可见（历史查询仍能解释当时依据）；proposed/superseded 显式口径不过滤（策展审视看全量）。**行为变更**：0.7.0 列表默认含过期条目，0.7.1 起默认排除。
+  - **契约**：`MemoryEditRecordView`（version/cause/note/edited_by/occurred_at）+ `MemoryItemView.edit_history` + 三请求/结果 schema + 列表 `include_expired`；生成物再生成（幂等验证）。
+  - **SPA**：状态口径过滤（现行/候选/历史）+ 含已过期开关 + 条目操作（接受/否决与撤回/修订表单/替代表单——替代预填旧内容）+ 版本留痕链与替代链显示。
+  - 验证：域 UT（状态机全矩阵/CAS/留痕恰一条/时效边界含 valid_to==now）+ sqlite IT（策展链 + 事务原子 + julianday 口径）+ httpapi UT（四端点 + 409 族）+ vet/-race + it/st + SPA + 生成物幂等；真机冒烟 14 项 ALL-PASS（proposed 链路/幂等接受/撤回否决/修订 CAS/替代事务/时效开关）。
+
 ## [0.7.0] - 2026-11-05
 
 ### Added

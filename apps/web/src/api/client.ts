@@ -639,6 +639,22 @@ export const api = {
   getMemoryItem(memoryID: string): Promise<import("./schema.gen").components["schemas"]["MemoryItemView"]> {
     return request(`/v1/memory/items/${encodeURIComponent(memoryID)}`);
   },
+  /** 0.7.1 策展接受（proposed → active；已 active 幂等）。 */
+  acceptMemoryItem(memoryID: string): Promise<import("./schema.gen").components["schemas"]["MemoryItemView"]> {
+    return post(`/v1/memory/items/${encodeURIComponent(memoryID)}/accept`, {});
+  },
+  /** 0.7.1 候选否决 / active 撤回（→ superseded 终结）。 */
+  rejectMemoryItem(memoryID: string, note?: string): Promise<import("./schema.gen").components["schemas"]["MemoryItemView"]> {
+    return post(`/v1/memory/items/${encodeURIComponent(memoryID)}/reject`, note ? { note } : {});
+  },
+  /** 0.7.1 原位修订（CAS + 版本递增 + edit_history）。 */
+  reviseMemoryItem(memoryID: string, req: Partial<{ title: string; content: string; source_refs: string[]; observed_at: string; valid_from: string; valid_to: string; sensitivity: "normal" | "sensitive"; confidence: number; note: string }> & { expected_version: number }): Promise<import("./schema.gen").components["schemas"]["MemoryItemView"]> {
+    return post(`/v1/memory/items/${encodeURIComponent(memoryID)}/revise`, req);
+  },
+  /** 0.7.1 显式替代（单事务双动作：旧终结 + 新条目 supersedes 链）。 */
+  supersedeMemoryItem(memoryID: string, req: { expected_version: number; note?: string; replacement: import("./schema.gen").components["schemas"]["MemoryItemCreateRequest"] }): Promise<import("./schema.gen").components["schemas"]["MemoryItemSupersedeResult"]> {
+    return post(`/v1/memory/items/${encodeURIComponent(memoryID)}/supersede`, req);
+  },
   /** 0.6.0 创建契约（完备 → ready；缺失 → draft）。 */
   createMission(req: MissionCreateRequest): Promise<MissionView> {
     return post("/v1/missions", req);

@@ -786,6 +786,33 @@ func (e LifecycleTransitionRequestAction) Valid() bool {
 	}
 }
 
+// Defines values for MemoryEditRecordViewCause.
+const (
+	Accept    MemoryEditRecordViewCause = "accept"
+	Reject    MemoryEditRecordViewCause = "reject"
+	Revise    MemoryEditRecordViewCause = "revise"
+	Supersede MemoryEditRecordViewCause = "supersede"
+	Withdraw  MemoryEditRecordViewCause = "withdraw"
+)
+
+// Valid indicates whether the value is a known member of the MemoryEditRecordViewCause enum.
+func (e MemoryEditRecordViewCause) Valid() bool {
+	switch e {
+	case Accept:
+		return true
+	case Reject:
+		return true
+	case Revise:
+		return true
+	case Supersede:
+		return true
+	case Withdraw:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for MemoryItemCreateRequestKind.
 const (
 	MemoryItemCreateRequestKindEpisodic   MemoryItemCreateRequestKind = "episodic"
@@ -846,6 +873,42 @@ func (e MemoryItemCreateRequestSensitivity) Valid() bool {
 	case MemoryItemCreateRequestSensitivityNormal:
 		return true
 	case MemoryItemCreateRequestSensitivitySensitive:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MemoryItemCreateRequestStatus.
+const (
+	MemoryItemCreateRequestStatusActive   MemoryItemCreateRequestStatus = "active"
+	MemoryItemCreateRequestStatusProposed MemoryItemCreateRequestStatus = "proposed"
+)
+
+// Valid indicates whether the value is a known member of the MemoryItemCreateRequestStatus enum.
+func (e MemoryItemCreateRequestStatus) Valid() bool {
+	switch e {
+	case MemoryItemCreateRequestStatusActive:
+		return true
+	case MemoryItemCreateRequestStatusProposed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MemoryItemReviseRequestSensitivity.
+const (
+	MemoryItemReviseRequestSensitivityNormal    MemoryItemReviseRequestSensitivity = "normal"
+	MemoryItemReviseRequestSensitivitySensitive MemoryItemReviseRequestSensitivity = "sensitive"
+)
+
+// Valid indicates whether the value is a known member of the MemoryItemReviseRequestSensitivity enum.
+func (e MemoryItemReviseRequestSensitivity) Valid() bool {
+	switch e {
+	case MemoryItemReviseRequestSensitivityNormal:
+		return true
+	case MemoryItemReviseRequestSensitivitySensitive:
 		return true
 	default:
 		return false
@@ -3640,6 +3703,27 @@ type ManualExecutableRequest struct {
 	Version *string `json:"version,omitempty"`
 }
 
+// MemoryEditRecordView 版本留痕记录（0.7.1 / ADR-0038 §2——append-only，恰一条/次）。
+type MemoryEditRecordView struct {
+	// Cause 候选否决 reject / active 撤回 withdraw / 显式替代 supersede / 原位修订 revise / 接受 accept
+	Cause MemoryEditRecordViewCause `json:"cause"`
+
+	// EditedBy 个人版单用户恒 owner
+	EditedBy string `json:"edited_by"`
+
+	// Note 原因/说明（≤500 字）
+	Note *string `json:"note,omitempty"`
+
+	// OccurredAt RFC3339
+	OccurredAt string `json:"occurred_at"`
+
+	// Version 该次变化产生的版本
+	Version int `json:"version"`
+}
+
+// MemoryEditRecordViewCause 候选否决 reject / active 撤回 withdraw / 显式替代 supersede / 原位修订 revise / 接受 accept
+type MemoryEditRecordViewCause string
+
 // MemoryItemCreateRequest 分域记忆写入请求（0.7.0）：显式写入面——策展候选（proposed）与模型抽取随 0.7.1。
 type MemoryItemCreateRequest struct {
 	Confidence *float32                         `json:"confidence,omitempty"`
@@ -3652,7 +3736,10 @@ type MemoryItemCreateRequest struct {
 	ScopeId     string                              `json:"scope_id"`
 	Sensitivity *MemoryItemCreateRequestSensitivity `json:"sensitivity,omitempty"`
 	SourceRefs  *[]string                           `json:"source_refs,omitempty"`
-	Title       string                              `json:"title"`
+
+	// Status 默认 active——不确定候选留 proposed 待策展（0.7.1）
+	Status *MemoryItemCreateRequestStatus `json:"status,omitempty"`
+	Title  string                         `json:"title"`
 
 	// ValidFrom RFC3339；可选
 	ValidFrom *string `json:"valid_from,omitempty"`
@@ -3670,12 +3757,71 @@ type MemoryItemCreateRequestNamespace string
 // MemoryItemCreateRequestSensitivity defines model for MemoryItemCreateRequest.Sensitivity.
 type MemoryItemCreateRequestSensitivity string
 
+// MemoryItemCreateRequestStatus 默认 active——不确定候选留 proposed 待策展（0.7.1）
+type MemoryItemCreateRequestStatus string
+
 // MemoryItemListView 分域记忆列表（创建序降序 + 游标）。
 type MemoryItemListView struct {
 	Items []MemoryItemView `json:"items"`
 
 	// NextCursor 还有更多时给本页末条 memory_id——直传作下一页 before；无更多缺省
 	NextCursor *string `json:"next_cursor,omitempty"`
+}
+
+// MemoryItemRejectRequest 否决/撤回请求（0.7.1）。
+type MemoryItemRejectRequest struct {
+	// Note 原因——留入 edit_history
+	Note *string `json:"note,omitempty"`
+}
+
+// MemoryItemReviseRequest 原位修订请求（0.7.1）：缺席字段保持原值；valid_from/valid_to 传空串
+// = 清除（不限）。status/namespace/scope 不可改（归属与状态另有动作面）。
+type MemoryItemReviseRequest struct {
+	Confidence      *float32 `json:"confidence,omitempty"`
+	Content         *string  `json:"content,omitempty"`
+	ExpectedVersion int      `json:"expected_version"`
+
+	// Note 修订说明——留入 edit_history
+	Note *string `json:"note,omitempty"`
+
+	// ObservedAt RFC3339
+	ObservedAt  *string                             `json:"observed_at,omitempty"`
+	Sensitivity *MemoryItemReviseRequestSensitivity `json:"sensitivity,omitempty"`
+	SourceRefs  *[]string                           `json:"source_refs,omitempty"`
+	Title       *string                             `json:"title,omitempty"`
+
+	// ValidFrom RFC3339；空串 = 清除
+	ValidFrom *string `json:"valid_from,omitempty"`
+
+	// ValidTo RFC3339；空串 = 清除——须晚于 valid_from（两者均非清除时）
+	ValidTo *string `json:"valid_to,omitempty"`
+}
+
+// MemoryItemReviseRequestSensitivity defines model for MemoryItemReviseRequest.Sensitivity.
+type MemoryItemReviseRequestSensitivity string
+
+// MemoryItemSupersedeRequest 显式替代请求（0.7.1）——单事务双动作。
+type MemoryItemSupersedeRequest struct {
+	ExpectedVersion int `json:"expected_version"`
+
+	// Note 替代原因——留入双方 edit_history
+	Note *string `json:"note,omitempty"`
+
+	// Replacement 分域记忆写入请求（0.7.0）：显式写入面——策展候选（proposed）与模型抽取随 0.7.1。
+	Replacement MemoryItemCreateRequest `json:"replacement"`
+}
+
+// MemoryItemSupersedeResult 替代双动作结果（同一事务）。
+type MemoryItemSupersedeResult struct {
+	// Replacement 分域记忆项视图（RFC-0018 §7.2 / ADR-0037）。0.7.0：version 恒 1、
+	// status 恒 active、visibility 恒 namespace、supersedes 空——策展与
+	// 修订语义随 0.7.1 启用（表结构已带全字段）。
+	Replacement MemoryItemView `json:"replacement"`
+
+	// Superseded 分域记忆项视图（RFC-0018 §7.2 / ADR-0037）。0.7.0：version 恒 1、
+	// status 恒 active、visibility 恒 namespace、supersedes 空——策展与
+	// 修订语义随 0.7.1 启用（表结构已带全字段）。
+	Superseded MemoryItemView `json:"superseded"`
 }
 
 // MemoryItemView 分域记忆项视图（RFC-0018 §7.2 / ADR-0037）。0.7.0：version 恒 1、
@@ -3686,6 +3832,9 @@ type MemoryItemView struct {
 	Confidence float32 `json:"confidence"`
 	Content    string  `json:"content"`
 	CreatedAt  string  `json:"created_at"`
+
+	// EditHistory 版本留痕——每次内容/状态变化恰追加一条（append-only）
+	EditHistory []MemoryEditRecordView `json:"edit_history"`
 
 	// Kind 类型与权限域正交（RFC §7.1）
 	Kind MemoryItemViewKind `json:"kind"`
@@ -3707,7 +3856,7 @@ type MemoryItemView struct {
 	SourceRefs []string             `json:"source_refs"`
 	Status     MemoryItemViewStatus `json:"status"`
 
-	// Supersedes 0.7.0 空——纠错链随 0.7.1
+	// Supersedes 替代链——本条显式替代的旧条目 id（0.7.1 supersede 动作写入）
 	Supersedes []string `json:"supersedes"`
 	Title      string   `json:"title"`
 	UpdatedAt  string   `json:"updated_at"`
@@ -5428,12 +5577,13 @@ type RunHarnessExecutableUpdate202JSONResponseBodyStatus string
 
 // ListMemoryItemsParams defines parameters for ListMemoryItems.
 type ListMemoryItemsParams struct {
-	Namespace ListMemoryItemsParamsNamespace `form:"namespace" json:"namespace"`
-	ScopeId   *string                        `form:"scope_id,omitempty" json:"scope_id,omitempty"`
-	Kind      *ListMemoryItemsParamsKind     `form:"kind,omitempty" json:"kind,omitempty"`
-	Status    *ListMemoryItemsParamsStatus   `form:"status,omitempty" json:"status,omitempty"`
-	Limit     *int                           `form:"limit,omitempty" json:"limit,omitempty"`
-	Before    *string                        `form:"before,omitempty" json:"before,omitempty"`
+	Namespace      ListMemoryItemsParamsNamespace `form:"namespace" json:"namespace"`
+	ScopeId        *string                        `form:"scope_id,omitempty" json:"scope_id,omitempty"`
+	Kind           *ListMemoryItemsParamsKind     `form:"kind,omitempty" json:"kind,omitempty"`
+	Status         *ListMemoryItemsParamsStatus   `form:"status,omitempty" json:"status,omitempty"`
+	Limit          *int                           `form:"limit,omitempty" json:"limit,omitempty"`
+	Before         *string                        `form:"before,omitempty" json:"before,omitempty"`
+	IncludeExpired *bool                          `form:"include_expired,omitempty" json:"include_expired,omitempty"`
 }
 
 // ListMemoryItemsParamsNamespace defines parameters for ListMemoryItems.
@@ -5562,6 +5712,15 @@ type TransitionAgentLifecycleJSONRequestBody = LifecycleTransitionRequest
 
 // CreateMemoryItemJSONRequestBody defines body for CreateMemoryItem for application/json ContentType.
 type CreateMemoryItemJSONRequestBody = MemoryItemCreateRequest
+
+// RejectMemoryItemJSONRequestBody defines body for RejectMemoryItem for application/json ContentType.
+type RejectMemoryItemJSONRequestBody = MemoryItemRejectRequest
+
+// ReviseMemoryItemJSONRequestBody defines body for ReviseMemoryItem for application/json ContentType.
+type ReviseMemoryItemJSONRequestBody = MemoryItemReviseRequest
+
+// SupersedeMemoryItemJSONRequestBody defines body for SupersedeMemoryItem for application/json ContentType.
+type SupersedeMemoryItemJSONRequestBody = MemoryItemSupersedeRequest
 
 // ResolveMissionRunJSONRequestBody defines body for ResolveMissionRun for application/json ContentType.
 type ResolveMissionRunJSONRequestBody = RunResolve
@@ -5829,6 +5988,18 @@ type ServerInterface interface {
 	// GetMemoryItem 记忆项单查（0.7.0 / ADR-0037）
 	// (GET /v1/memory/items/{memory_id})
 	GetMemoryItem(w http.ResponseWriter, r *http.Request, memoryId string)
+	// AcceptMemoryItem 策展接受（0.7.1 / ADR-0038 §2）
+	// (POST /v1/memory/items/{memory_id}/accept)
+	AcceptMemoryItem(w http.ResponseWriter, r *http.Request, memoryId string)
+	// RejectMemoryItem 候选否决 / 撤回（0.7.1 / ADR-0038 §2）
+	// (POST /v1/memory/items/{memory_id}/reject)
+	RejectMemoryItem(w http.ResponseWriter, r *http.Request, memoryId string)
+	// ReviseMemoryItem 原位修订（0.7.1 / ADR-0038 §2）
+	// (POST /v1/memory/items/{memory_id}/revise)
+	ReviseMemoryItem(w http.ResponseWriter, r *http.Request, memoryId string)
+	// SupersedeMemoryItem 显式替代（0.7.1 / ADR-0038 §2）
+	// (POST /v1/memory/items/{memory_id}/supersede)
+	SupersedeMemoryItem(w http.ResponseWriter, r *http.Request, memoryId string)
 	// GetRun Run 详情
 	// (GET /v1/mission-runs/{run_id})
 	GetRun(w http.ResponseWriter, r *http.Request, runId string)
@@ -7501,6 +7672,19 @@ func (siw *ServerInterfaceWrapper) ListMemoryItems(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// ------------- Optional query parameter "include_expired" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "include_expired", r.URL.Query(), &params.IncludeExpired, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "include_expired"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "include_expired", Err: err})
+		}
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListMemoryItems(w, r, params)
 	}))
@@ -7543,6 +7727,110 @@ func (siw *ServerInterfaceWrapper) GetMemoryItem(w http.ResponseWriter, r *http.
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetMemoryItem(w, r, memoryId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AcceptMemoryItem operation middleware
+func (siw *ServerInterfaceWrapper) AcceptMemoryItem(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "memory_id" -------------
+	var memoryId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "memory_id", r.PathValue("memory_id"), &memoryId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "memory_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AcceptMemoryItem(w, r, memoryId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RejectMemoryItem operation middleware
+func (siw *ServerInterfaceWrapper) RejectMemoryItem(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "memory_id" -------------
+	var memoryId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "memory_id", r.PathValue("memory_id"), &memoryId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "memory_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RejectMemoryItem(w, r, memoryId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReviseMemoryItem operation middleware
+func (siw *ServerInterfaceWrapper) ReviseMemoryItem(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "memory_id" -------------
+	var memoryId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "memory_id", r.PathValue("memory_id"), &memoryId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "memory_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReviseMemoryItem(w, r, memoryId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SupersedeMemoryItem operation middleware
+func (siw *ServerInterfaceWrapper) SupersedeMemoryItem(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "memory_id" -------------
+	var memoryId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "memory_id", r.PathValue("memory_id"), &memoryId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "memory_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SupersedeMemoryItem(w, r, memoryId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -9845,6 +10133,10 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/memory/items", wrapper.ListMemoryItems)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/memory/items", wrapper.CreateMemoryItem)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/memory/items/{memory_id}", wrapper.GetMemoryItem)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/memory/items/{memory_id}/accept", wrapper.AcceptMemoryItem)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/memory/items/{memory_id}/reject", wrapper.RejectMemoryItem)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/memory/items/{memory_id}/revise", wrapper.ReviseMemoryItem)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/memory/items/{memory_id}/supersede", wrapper.SupersedeMemoryItem)
 
 	return m
 }

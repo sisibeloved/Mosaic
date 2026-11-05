@@ -20,17 +20,17 @@ var _ memory.Store = (*Store)(nil)
 
 const memoryCols = `memory_id, version, namespace, scope_id, kind, title, content,
  source_refs, observed_at, valid_from, valid_to, confidence, status, visibility,
- sensitivity, supersedes, created_at, updated_at`
+ sensitivity, supersedes, edit_history, created_at, updated_at`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
 func scanMemoryItem(row rowScanner) (memory.Item, error) {
 	var it memory.Item
-	var refs, supersedes string
+	var refs, supersedes, edits string
 	if err := row.Scan(&it.MemoryID, &it.Version, &it.Namespace, &it.ScopeID,
 		&it.Kind, &it.Title, &it.Content, &refs, &it.ObservedAt,
 		&it.ValidFrom, &it.ValidTo, &it.Confidence, &it.Status, &it.Visibility,
-		&it.Sensitivity, &supersedes, &it.CreatedAt, &it.UpdatedAt); err != nil {
+		&it.Sensitivity, &supersedes, &edits, &it.CreatedAt, &it.UpdatedAt); err != nil {
 		return memory.Item{}, err
 	}
 	if err := json.Unmarshal([]byte(refs), &it.SourceRefs); err != nil {
@@ -39,12 +39,18 @@ func scanMemoryItem(row rowScanner) (memory.Item, error) {
 	if err := json.Unmarshal([]byte(supersedes), &it.Supersedes); err != nil {
 		return memory.Item{}, fmt.Errorf("sqlite: memory supersedes: %w", err)
 	}
+	if err := json.Unmarshal([]byte(edits), &it.EditHistory); err != nil {
+		return memory.Item{}, fmt.Errorf("sqlite: memory edit_history: %w", err)
+	}
 	// 一审 #1：库中已有 null 列（v32 首版写入面）读回兼容——统一空数组。
 	if it.SourceRefs == nil {
 		it.SourceRefs = []string{}
 	}
 	if it.Supersedes == nil {
 		it.Supersedes = []string{}
+	}
+	if it.EditHistory == nil {
+		it.EditHistory = []memory.EditRecord{}
 	}
 	return it, nil
 }
@@ -59,13 +65,20 @@ func (s *Store) CreateItem(ctx context.Context, it memory.Item) (memory.Item, er
 	if err != nil {
 		return memory.Item{}, fmt.Errorf("sqlite: memory supersedes marshal: %w", err)
 	}
+	edits, err := json.Marshal(it.EditHistory)
+	if err != nil {
+		return memory.Item{}, fmt.Errorf("sqlite: memory edit_history marshal: %w", err)
+	}
+	if it.EditHistory == nil {
+		edits = []byte("[]")
+	}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO memory_items (`+memoryCols+`,
- derived_from, edit_history, extractor_version)
- VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'', '[]', 'manual')`,
+ derived_from, extractor_version)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'', 'manual')`,
 		it.MemoryID, it.Version, string(it.Namespace), it.ScopeID, string(it.Kind),
 		it.Title, it.Content, string(refs), it.ObservedAt, it.ValidFrom, it.ValidTo,
 		it.Confidence, string(it.Status), it.Visibility, string(it.Sensitivity),
-		string(sup), it.CreatedAt, it.UpdatedAt)
+		string(sup), string(edits), it.CreatedAt, it.UpdatedAt)
 	if err != nil {
 		return memory.Item{}, fmt.Errorf("sqlite: create memory item: %w", err)
 	}
@@ -86,6 +99,115 @@ func (s *Store) ItemByID(ctx context.Context, memoryID string) (memory.Item, boo
 	return it, true, nil
 }
 
+// updateCols SET 片段（CAS 原位替换——edit_history 随域构造整列替换）。
+const memorySetCols = `version=?, title=?, content=?, source_refs=?, observed_at=?,
+ valid_from=?, valid_to=?, confidence=?, status=?, visibility=?, sensitivity=?,
+ supersedes=?, edit_history=?, updated_at=?`
+
+func marshalMemoryJSON(v any, what string) (string, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("sqlite: memory %s marshal: %w", what, err)
+	}
+	return string(raw), nil
+}
+
+func memoryUpdateArgs(it memory.Item) ([]any, error) {
+	refs, err := marshalMemoryJSON(it.SourceRefs, "source_refs")
+	if err != nil {
+		return nil, err
+	}
+	sup, err := marshalMemoryJSON(it.Supersedes, "supersedes")
+	if err != nil {
+		return nil, err
+	}
+	edits, err := marshalMemoryJSON(it.EditHistory, "edit_history")
+	if err != nil {
+		return nil, err
+	}
+	return []any{it.Version, it.Title, it.Content, refs, it.ObservedAt,
+		it.ValidFrom, it.ValidTo, it.Confidence, string(it.Status), it.Visibility,
+		string(it.Sensitivity), sup, edits, it.UpdatedAt}, nil
+}
+
+// UpdateItem CAS 原位替换（单写语句：version 核对失败 rows=0 → ok=false）。
+func (s *Store) UpdateItem(ctx context.Context, memoryID string, expectedVersion int, next memory.Item) (memory.Item, bool, error) {
+	args, err := memoryUpdateArgs(next)
+	if err != nil {
+		return memory.Item{}, false, err
+	}
+	args = append(args, memoryID, expectedVersion)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE memory_items SET `+memorySetCols+
+			` WHERE memory_id = ? AND version = ?`, args...)
+	if err != nil {
+		return memory.Item{}, false, fmt.Errorf("sqlite: update memory item: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return memory.Item{}, false, err
+	}
+	return next, true, nil
+}
+
+// SupersedeItem 单事务双动作（ADR-0038 §2：旧终结 CAS + 新建 supersedes 链
+// 同一事务——不存在半状态窗口）。
+func (s *Store) SupersedeItem(ctx context.Context, oldID string, expectedVersion int, oldNext, replacement memory.Item) (memory.Item, memory.Item, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return memory.Item{}, memory.Item{}, false, fmt.Errorf("sqlite: supersede begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // 已提交时无害
+	updArgs, err := memoryUpdateArgs(oldNext)
+	if err != nil {
+		return memory.Item{}, memory.Item{}, false, err
+	}
+	updArgs = append(updArgs, oldID, expectedVersion)
+	res, err := tx.ExecContext(ctx,
+		`UPDATE memory_items SET `+memorySetCols+
+			` WHERE memory_id = ? AND version = ?`, updArgs...)
+	if err != nil {
+		return memory.Item{}, memory.Item{}, false, fmt.Errorf("sqlite: supersede old: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return memory.Item{}, memory.Item{}, false, nil // CAS 失败——整体不落
+	}
+	if err := insertMemoryItemTx(ctx, tx, replacement); err != nil {
+		return memory.Item{}, memory.Item{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return memory.Item{}, memory.Item{}, false, fmt.Errorf("sqlite: supersede commit: %w", err)
+	}
+	return oldNext, replacement, true, nil
+}
+
+// insertMemoryItemTx 事务连接上的插入（SupersedeItem 复用）。
+func insertMemoryItemTx(ctx context.Context, tx *sql.Tx, it memory.Item) error {
+	refs, err := marshalMemoryJSON(it.SourceRefs, "source_refs")
+	if err != nil {
+		return err
+	}
+	sup, err := marshalMemoryJSON(it.Supersedes, "supersedes")
+	if err != nil {
+		return err
+	}
+	edits, err := marshalMemoryJSON(it.EditHistory, "edit_history")
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO memory_items (`+memoryCols+`,
+ derived_from, extractor_version)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'', 'manual')`,
+		it.MemoryID, it.Version, string(it.Namespace), it.ScopeID, string(it.Kind),
+		it.Title, it.Content, refs, it.ObservedAt, it.ValidFrom, it.ValidTo,
+		it.Confidence, string(it.Status), it.Visibility, string(it.Sensitivity),
+		sup, edits, it.CreatedAt, it.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("sqlite: insert memory item tx: %w", err)
+	}
+	return nil
+}
+
 // ListItems 过滤 + rowid 创建序降序 + 游标（before 行之前的更早条目）+
 // limit+1 条（第 limit+1 条供 service 判 next_cursor）。before 未知
 // （已删除/游标失效）= 空页——与 memstore 同口径。
@@ -99,6 +221,13 @@ func (s *Store) ListItems(ctx context.Context, f memory.ListFilter) ([]memory.It
 	if f.Kind != "" {
 		q += ` AND kind = ?`
 		args = append(args, string(f.Kind))
+	}
+	// 0.7.1 时效口径（ADR-0038 §3）：active 且未显式包含时排除 valid_to <
+	// now——RFC3339 **时刻**比较（0.6.13 审校 #15 教训：字典序在可变小数
+	// 位下漏判），经 datetime() 归一比较。
+	if f.Status == memory.StatusActive && !f.IncludeExpired {
+		q += ` AND (valid_to = '' OR julianday(valid_to) >= julianday(?))`
+		args = append(args, f.Now)
 	}
 	if f.Before != "" {
 		// 一审 #4：游标只在本域内定位——外域同 ID 不生效（子查询空 → 0 →

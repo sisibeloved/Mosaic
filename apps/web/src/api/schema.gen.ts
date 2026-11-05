@@ -2558,8 +2558,9 @@ export interface paths {
          * 分域记忆列表（0.7.0 / ADR-0037）
          * @description 按命名空间必填隔离（跨域列表不存在——越域内容与存在性不泄漏）；
          *     scope_id / kind / status 可选过滤；创建序降序（新记忆在前），
-         *     before 游标分页。0.7.0 列表只含 status=active 与 proposed/superseded
-         *     显式请求两种口径（默认 active——与 0.7.1 召回语义衔接）。
+         *     before 游标分页。默认口径 status=active 且排除已过期条目（0.7.1：
+         *     valid_to < now 不参与当前召回——include_expired=true 显式可见）；
+         *     proposed/superseded 显式请求时不过滤有效期（策展审视看全量）。
          */
         get: operations["listMemoryItems"];
         put?: never;
@@ -2590,6 +2591,96 @@ export interface paths {
         get: operations["getMemoryItem"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/memory/items/{memory_id}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 策展接受（0.7.1 / ADR-0038 §2）
+         * @description proposed → active。已 active 幂等返回当前视图（策展重复确认无害，
+         *     不递增版本——内容未变）；superseded 终结态不可复活（409
+         *     memory_terminal——与 0.7.8 旧包防复活同基调）。
+         */
+        post: operations["acceptMemoryItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/memory/items/{memory_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 候选否决 / 撤回（0.7.1 / ADR-0038 §2）
+         * @description proposed → superseded（cause=reject）或 active → superseded
+         *     （cause=withdraw）；note 记原因；版本递增并留 edit_history。superseded
+         *     终结态不可再动作（409 memory_terminal）。
+         */
+        post: operations["rejectMemoryItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/memory/items/{memory_id}/revise": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 原位修订（0.7.1 / ADR-0038 §2）
+         * @description 人工纠错——title/content/source_refs/observed_at/valid_from/
+         *     valid_to/sensitivity/confidence 可改（status 保持；namespace/scope
+         *     归属不可改）；expected_version CAS；版本递增 + edit_history 恰追加
+         *     一条。valid_from/valid_to 传空串 = 清除（不限）。
+         */
+        post: operations["reviseMemoryItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/memory/items/{memory_id}/supersede": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 显式替代（0.7.1 / ADR-0038 §2）
+         * @description 单事务双动作：旧条目 → superseded（cause=supersede，edit_history
+         *     留痕）+ 新条目创建（supersedes=[旧 id]——replacement 为完整创建命令，
+         *     status 默认 active）。事务原子——不存在"旧的死了新的没建"窗口。
+         *     事实随时间变化不用本端点：revise 调整有效期或新建条目即可。
+         */
+        post: operations["supersedeMemoryItem"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4118,8 +4209,10 @@ export interface components {
              * @enum {string}
              */
             sensitivity: "normal" | "sensitive";
-            /** @description 0.7.0 空——纠错链随 0.7.1 */
+            /** @description 替代链——本条显式替代的旧条目 id（0.7.1 supersede 动作写入） */
             supersedes: string[];
+            /** @description 版本留痕——每次内容/状态变化恰追加一条（append-only） */
+            edit_history: components["schemas"]["MemoryEditRecordView"][];
             created_at: string;
             updated_at: string;
         };
@@ -4142,6 +4235,65 @@ export interface components {
             confidence?: number;
             /** @enum {string} */
             sensitivity?: "normal" | "sensitive";
+            /**
+             * @description 默认 active——不确定候选留 proposed 待策展（0.7.1）
+             * @enum {string}
+             */
+            status?: "active" | "proposed";
+        };
+        /** @description 版本留痕记录（0.7.1 / ADR-0038 §2——append-only，恰一条/次）。 */
+        MemoryEditRecordView: {
+            /** @description 该次变化产生的版本 */
+            version: number;
+            /**
+             * @description 候选否决 reject / active 撤回 withdraw / 显式替代 supersede / 原位修订 revise / 接受 accept
+             * @enum {string}
+             */
+            cause: "revise" | "reject" | "withdraw" | "supersede" | "accept";
+            /** @description 原因/说明（≤500 字） */
+            note?: string;
+            /** @description 个人版单用户恒 owner */
+            edited_by: string;
+            /** @description RFC3339 */
+            occurred_at: string;
+        };
+        /** @description 否决/撤回请求（0.7.1）。 */
+        MemoryItemRejectRequest: {
+            /** @description 原因——留入 edit_history */
+            note?: string;
+        };
+        /**
+         * @description 原位修订请求（0.7.1）：缺席字段保持原值；valid_from/valid_to 传空串
+         *     = 清除（不限）。status/namespace/scope 不可改（归属与状态另有动作面）。
+         */
+        MemoryItemReviseRequest: {
+            expected_version: number;
+            title?: string;
+            content?: string;
+            source_refs?: string[];
+            /** @description RFC3339 */
+            observed_at?: string;
+            /** @description RFC3339；空串 = 清除 */
+            valid_from?: string;
+            /** @description RFC3339；空串 = 清除——须晚于 valid_from（两者均非清除时） */
+            valid_to?: string;
+            /** @enum {string} */
+            sensitivity?: "normal" | "sensitive";
+            confidence?: number;
+            /** @description 修订说明——留入 edit_history */
+            note?: string;
+        };
+        /** @description 显式替代请求（0.7.1）——单事务双动作。 */
+        MemoryItemSupersedeRequest: {
+            expected_version: number;
+            /** @description 替代原因——留入双方 edit_history */
+            note?: string;
+            replacement: components["schemas"]["MemoryItemCreateRequest"];
+        };
+        /** @description 替代双动作结果（同一事务）。 */
+        MemoryItemSupersedeResult: {
+            superseded: components["schemas"]["MemoryItemView"];
+            replacement: components["schemas"]["MemoryItemView"];
         };
         /** @description 分域记忆列表（创建序降序 + 游标）。 */
         MemoryItemListView: {
@@ -10755,6 +10907,7 @@ export interface operations {
                 status?: "active" | "proposed" | "superseded";
                 limit?: number;
                 before?: string;
+                include_expired?: boolean;
             };
             header?: never;
             path?: never;
@@ -10879,6 +11032,208 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Error"];
                 };
+            };
+        };
+    };
+    acceptMemoryItem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 接受后的记忆项（或幂等） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemView"];
+                };
+            };
+            /** @description 记忆不存在（memory_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 终结态不可动作（memory_terminal） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 记忆域未装配 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rejectMemoryItem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryItemRejectRequest"];
+            };
+        };
+        responses: {
+            /** @description 终结后的记忆项 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemView"];
+                };
+            };
+            /** @description 记忆不存在（memory_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 终结态不可动作（memory_terminal） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 记忆域未装配 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reviseMemoryItem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryItemReviseRequest"];
+            };
+        };
+        responses: {
+            /** @description 修订后的记忆项 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemView"];
+                };
+            };
+            /** @description 字段校验（invalid_request） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 记忆不存在（memory_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 版本冲突（memory_version_conflict）/ 终结态（memory_terminal） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 记忆域未装配 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    supersedeMemoryItem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryItemSupersedeRequest"];
+            };
+        };
+        responses: {
+            /** @description 双动作结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemSupersedeResult"];
+                };
+            };
+            /** @description replacement 字段校验（invalid_request） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 记忆不存在（memory_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 版本冲突（memory_version_conflict）/ 终结态（memory_terminal）/ replacement 锚不存在（memory_scope_not_found） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 记忆域未装配 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

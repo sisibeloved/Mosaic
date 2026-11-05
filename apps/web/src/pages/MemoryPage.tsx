@@ -1,13 +1,15 @@
-// 分域记忆页（0.7.0 / ADR-0037 / RFC-0018 §7.1/§7.2）：五命名空间 tab +
-// scope 过滤 + 记忆卡列表（创建序降序 + 游标加载更多）+ 显式写入表单。
+// 分域记忆页（0.7.0 / ADR-0037；0.7.1 / ADR-0038 策展扩展）：五命名空间
+// tab + scope 过滤 + 状态口径（active 默认/proposed 候选/superseded 历史）
+// + 时效开关 + 记忆卡操作（接受/否决与撤回/修订/替代）+ 版本留痕链。
 // 房间收束胶囊（RFC-0007）仍是房间事件流事实——本页是分域 MemoryItem 的
-// 独立读写面，不经胶囊复制。
+// 独立读写面。
 import { useEffect, useRef, useState } from "react";
 import { api, Schemas } from "../api/client";
 
 type MemoryItemView = Schemas["MemoryItemView"];
 type Namespace = "agent" | "room" | "workspace" | "mission" | "slot";
 type Kind = "semantic" | "episodic" | "procedural";
+type StatusFilter = "active" | "proposed" | "superseded";
 
 const NAMESPACES: { key: Namespace; label: string; hint: string }[] = [
   { key: "agent", label: "Agent", hint: "长期偏好、经验、公开人格配置——Agent 私有域" },
@@ -25,22 +27,27 @@ const NS_SCOPE_PLACEHOLDER: Record<Namespace, string> = {
   mission: "mission_id",
   slot: "slot_instance_id",
 };
+const CAUSE_LABEL: Record<string, string> = {
+  revise: "修订", reject: "否决", withdraw: "撤回", supersede: "替代", accept: "接受",
+};
 
 function nowRFC3339(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+const inputCls = "w-full rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-sm outline-none focus:border-accent";
+const btnCls = "rounded-lg bg-accent px-3 py-1.5 text-sm text-white transition-opacity hover:opacity-90 disabled:opacity-50";
+const btnGhostCls = "rounded-lg bg-surface-2 px-2.5 py-1 text-xs hover:bg-surface-3 disabled:opacity-50";
+
 export function MemoryPage() {
   const [ns, setNs] = useState<Namespace>("agent");
   const [scopeFilter, setScopeFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
+  const [includeExpired, setIncludeExpired] = useState(false);
   const [items, setItems] = useState<MemoryItemView[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [listErr, setListErr] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
-  // 一审 #3：在途续页限制（同游标不重复发）。
-  const [loadingMore, setLoadingMore] = useState(false);
-  // 二审：写入成功后的刷新信号（effect 依赖——以当前浏览条件重查）。
-  const [refreshTick, setRefreshTick] = useState(0);
   const seq = useRef(0);
   // 写入表单
   const [formOpen, setFormOpen] = useState(false);
@@ -57,19 +64,30 @@ export function MemoryPage() {
     valid_from: "",
     valid_to: "",
     sensitivity: "normal" as "normal" | "sensitive",
+    status: "active" as "active" | "proposed",
   }));
+  // 0.7.1 策展编辑（修订/替代——目标条目 + 模式）
+  const [editing, setEditing] = useState<{ mode: "revise" | "supersede"; item: MemoryItemView } | null>(null);
+  const [editForm, setEditForm] = useState(() => ({ title: "", content: "", valid_from: "", valid_to: "", note: "" }));
+  // 一审 #3：在途续页限制；二审：写入成功刷新信号。
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
 
-  // 列表加载（tab/scope 变化与写入成功后重载；代次作废在途响应）。
-  // 一审 #2 + 二审：刷新统一走**当前浏览条件**——写入成功只进 refreshTick，
-  // 由本 effect 以**当次渲染**的 ns/scopeFilter 重查（提交等待期间切换
-  // tab/筛选，成功回调不携带旧闭包条件覆盖新列表）。
+  // 列表加载（浏览条件/状态口径/时效开关/写入成功重载；代次作废在途响应）。
   useEffect(() => {
     const cur = ++seq.current;
     setItems(null);
     setListErr(null);
     setCursor(null);
     api
-      .listMemoryItems({ namespace: ns, ...(scopeFilter.trim() ? { scope_id: scopeFilter.trim() } : {}), limit: 50 })
+      .listMemoryItems({
+        namespace: ns,
+        ...(scopeFilter.trim() ? { scope_id: scopeFilter.trim() } : {}),
+        ...(statusFilter !== "active" ? { status: statusFilter } : {}),
+        ...(includeExpired ? { include_expired: true } : {}),
+        limit: 50,
+      })
       .then((v) => {
         if (seq.current !== cur) return;
         setItems(v.items);
@@ -79,10 +97,9 @@ export function MemoryPage() {
         if (seq.current !== cur) return;
         setListErr(e instanceof Error ? e.message : String(e));
       });
-  }, [ns, scopeFilter, refreshTick]);
+  }, [ns, scopeFilter, statusFilter, includeExpired, refreshTick]);
 
-  // 一审 #3：代次检查 + 在途限制——切域后迟到响应不追加（越域混入），
-  // 同游标在途期间不重复发（重复追加）。
+  // 一审 #3：代次检查 + 在途限制——切域后迟到响应不追加，同游标不重复发。
   const loadMore = () => {
     if (!cursor || loadingMore) return;
     const cur = seq.current;
@@ -91,6 +108,8 @@ export function MemoryPage() {
       .listMemoryItems({
         namespace: ns,
         ...(scopeFilter.trim() ? { scope_id: scopeFilter.trim() } : {}),
+        ...(statusFilter !== "active" ? { status: statusFilter } : {}),
+        ...(includeExpired ? { include_expired: true } : {}),
         limit: 50,
         before: cursor,
       })
@@ -111,10 +130,11 @@ export function MemoryPage() {
     setForm((f) => (f.namespace === "workspace" ? { ...f, scope_id: "default" } : f.scope_id === "default" ? { ...f, scope_id: "" } : f));
   }, [form.namespace]);
 
+  const splitLines = (s: string) => s.split("\n").map((l) => l.trim()).filter(Boolean);
+
   const submit = () => {
     if (busy) return;
     setMsg(null);
-    const splitLines = (s: string) => s.split("\n").map((l) => l.trim()).filter(Boolean);
     void (async () => {
       setBusy(true);
       try {
@@ -129,12 +149,11 @@ export function MemoryPage() {
           ...(form.valid_from ? { valid_from: form.valid_from } : {}),
           ...(form.valid_to ? { valid_to: form.valid_to } : {}),
           ...(form.sensitivity === "sensitive" ? { sensitivity: "sensitive" } : {}),
+          ...(form.status === "proposed" ? { status: "proposed" } : {}),
         });
         setFormOpen(false);
         setForm((f) => ({ ...f, title: "", content: "", sources: "", observed_at: nowRFC3339(), valid_from: "", valid_to: "" }));
         setMsg("记忆已写入");
-        // 一审 #2 + 二审：只发刷新信号——由列表 effect 以**当次渲染**的
-        // 浏览条件重查（提交等待期间切换 tab/筛选不被旧闭包条件覆盖）。
         setRefreshTick((t) => t + 1);
       } catch (e) {
         setMsg(e instanceof Error ? e.message : String(e));
@@ -144,8 +163,89 @@ export function MemoryPage() {
     })();
   };
 
+  // 策展动作（接受/否决/撤回）——成功后刷新信号 + 消息。
+  const act = (item: MemoryItemView, kind: "accept" | "reject") => {
+    if (actionBusy) return;
+    let note = "";
+    if (kind === "reject") {
+      const input = window.prompt("原因（可选，留入版本留痕）：");
+      if (input === null) return; // 取消——不动作
+      note = input;
+    }
+    setActionBusy(item.memory_id + kind);
+    setMsg(null);
+    void (async () => {
+      try {
+        const v = kind === "accept"
+          ? await api.acceptMemoryItem(item.memory_id)
+          : await api.rejectMemoryItem(item.memory_id, note || undefined);
+        setMsg(kind === "accept" ? `已接受（${v.title}）` : `已终结（${v.title}）`);
+        setRefreshTick((t) => t + 1);
+      } catch (e) {
+        setMsg(e instanceof Error ? e.message : String(e));
+      } finally {
+        setActionBusy(null);
+      }
+    })();
+  };
+
+  // 修订 / 替代提交。
+  const submitEdit = () => {
+    if (!editing || actionBusy) return;
+    setMsg(null);
+    setActionBusy(editing.item.memory_id + editing.mode);
+    void (async () => {
+      try {
+        if (editing.mode === "revise") {
+          await api.reviseMemoryItem(editing.item.memory_id, {
+            expected_version: editing.item.version,
+            title: editForm.title.trim(),
+            content: editForm.content,
+            ...(editForm.valid_from !== editing.item.valid_from ? { valid_from: editForm.valid_from } : {}),
+            ...(editForm.valid_to !== editing.item.valid_to ? { valid_to: editForm.valid_to } : {}),
+            ...(editForm.note ? { note: editForm.note } : {}),
+          });
+          setMsg("已修订（版本 +1）");
+        } else {
+          await api.supersedeMemoryItem(editing.item.memory_id, {
+            expected_version: editing.item.version,
+            ...(editForm.note ? { note: editForm.note } : {}),
+            replacement: {
+              namespace: editing.item.namespace,
+              scope_id: editing.item.scope_id,
+              kind: editing.item.kind,
+              title: editForm.title.trim(),
+              content: editForm.content,
+              observed_at: nowRFC3339(),
+              ...(editForm.valid_from ? { valid_from: editForm.valid_from } : {}),
+              ...(editForm.valid_to ? { valid_to: editForm.valid_to } : {}),
+              source_refs: editing.item.source_refs ?? [],
+            },
+          });
+          setMsg("已替代（旧条目终结，新条目入链）");
+        }
+        setEditing(null);
+        setRefreshTick((t) => t + 1);
+      } catch (e) {
+        setMsg(e instanceof Error ? e.message : String(e));
+      } finally {
+        setActionBusy(null);
+      }
+    })();
+  };
+
+  const openEdit = (mode: "revise" | "supersede", item: MemoryItemView) => {
+    setEditing({ mode, item });
+    setEditForm({
+      title: item.title,
+      content: item.content,
+      valid_from: item.valid_from ?? "",
+      valid_to: item.valid_to ?? "",
+      note: "",
+    });
+  };
+
   const nsMeta = NAMESPACES.find((n) => n.key === ns)!;
-  const inputCls = "w-full rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-sm outline-none focus:border-accent";
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4 px-4 py-6">
@@ -153,14 +253,10 @@ export function MemoryPage() {
         <div>
           <h1 className="text-lg font-medium">记忆</h1>
           <p className="mt-0.5 text-xs text-faint">
-            分域 MemoryItem（RFC-0018 §7 / ADR-0037，0.7.0）：每条记忆归属恰一命名空间并锚定归属对象；显式写入面——策展与召回随 0.7.1/0.7.2。
+            分域 MemoryItem（RFC-0018 §7 / ADR-0037；策展与时效 ADR-0038，0.7.1）：接受、修订、否决与替代——版本留痕、过期不默认参与。
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setFormOpen((o) => !o)}
-          className="rounded-lg bg-accent px-3 py-1.5 text-sm text-white transition-opacity hover:opacity-90"
-        >
+        <button type="button" onClick={() => setFormOpen((o) => !o)} className={btnCls}>
           {formOpen ? "收起" : "写入记忆"}
         </button>
       </header>
@@ -172,11 +268,7 @@ export function MemoryPage() {
           <div className="grid grid-cols-2 gap-2">
             <label className="flex flex-col gap-1 text-xs text-faint">
               命名空间
-              <select
-                className={inputCls}
-                value={form.namespace}
-                onChange={(e) => setForm((f) => ({ ...f, namespace: e.target.value as Namespace }))}
-              >
+              <select className={inputCls} value={form.namespace} onChange={(e) => setForm((f) => ({ ...f, namespace: e.target.value as Namespace }))}>
                 {NAMESPACES.map((n) => (
                   <option key={n.key} value={n.key}>{n.label}</option>
                 ))}
@@ -193,7 +285,7 @@ export function MemoryPage() {
               />
             </label>
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <label className="flex flex-col gap-1 text-xs text-faint">
               类型（与权限域正交）
               <select className={inputCls} value={form.kind} onChange={(e) => setForm((f) => ({ ...f, kind: e.target.value as Kind }))}>
@@ -204,13 +296,16 @@ export function MemoryPage() {
             </label>
             <label className="flex flex-col gap-1 text-xs text-faint">
               敏感度（Bundle 脱敏消费）
-              <select
-                className={inputCls}
-                value={form.sensitivity}
-                onChange={(e) => setForm((f) => ({ ...f, sensitivity: e.target.value as "normal" | "sensitive" }))}
-              >
+              <select className={inputCls} value={form.sensitivity} onChange={(e) => setForm((f) => ({ ...f, sensitivity: e.target.value as "normal" | "sensitive" }))}>
                 <option value="normal">normal</option>
                 <option value="sensitive">sensitive</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-faint">
+              写入口径
+              <select className={inputCls} value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value as "active" | "proposed" }))}>
+                <option value="active">直接生效（active）</option>
+                <option value="proposed">策展候选（proposed）</option>
               </select>
             </label>
           </div>
@@ -244,10 +339,48 @@ export function MemoryPage() {
             type="button"
             disabled={busy || !form.title.trim() || !form.content.trim() || !form.observed_at.trim() || (form.namespace !== "workspace" && !form.scope_id.trim())}
             onClick={submit}
-            className="self-start rounded-lg bg-accent px-3 py-1.5 text-sm text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            className={`${btnCls} self-start`}
           >
             {busy ? "写入中…" : "写入"}
           </button>
+        </section>
+      )}
+
+      {editing && (
+        <section className="flex flex-col gap-2 rounded-xl border border-line bg-surface-1 p-3">
+          <p className="text-xs text-faint">
+            {editing.mode === "revise" ? `修订：${editing.item.title}（v${editing.item.version} → v${editing.item.version + 1}，留痕入版本链）` : `替代：${editing.item.title}（旧条目终结，新条目 v1 入 supersedes 链）`}
+          </p>
+          <label className="flex flex-col gap-1 text-xs text-faint">
+            标题
+            <input className={inputCls} value={editForm.title} onChange={(e) => setEditForm((f) => ({ ...f, title: e.target.value }))} />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-faint">
+            正文
+            <textarea className={`${inputCls} min-h-24`} value={editForm.content} onChange={(e) => setEditForm((f) => ({ ...f, content: e.target.value }))} />
+          </label>
+          <div className="grid grid-cols-3 gap-2">
+            <label className="flex flex-col gap-1 text-xs text-faint">
+              有效期起（修订可改/空=清除）
+              <input className={inputCls} value={editForm.valid_from} onChange={(e) => setEditForm((f) => ({ ...f, valid_from: e.target.value }))} />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-faint">
+              有效期止
+              <input className={inputCls} value={editForm.valid_to} onChange={(e) => setEditForm((f) => ({ ...f, valid_to: e.target.value }))} />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-faint">
+              说明（留入版本留痕）
+              <input className={inputCls} value={editForm.note} onChange={(e) => setEditForm((f) => ({ ...f, note: e.target.value }))} />
+            </label>
+          </div>
+          <div className="flex gap-2">
+            <button type="button" disabled={!editForm.title.trim() || !editForm.content.trim() || actionBusy !== null} onClick={submitEdit} className={btnCls}>
+              {editing.mode === "revise" ? "提交修订" : "提交替代"}
+            </button>
+            <button type="button" onClick={() => setEditing(null)} className={btnGhostCls + " self-center"}>
+              取消
+            </button>
+          </div>
         </section>
       )}
 
@@ -264,18 +397,31 @@ export function MemoryPage() {
         ))}
       </nav>
       <p className="text-xs text-faint">{nsMeta.hint}</p>
-      <input
-        className={inputCls}
-        value={scopeFilter}
-        placeholder={`按归属锚过滤（${NS_SCOPE_PLACEHOLDER[ns]}）——留空列全部`}
-        onChange={(e) => setScopeFilter(e.target.value)}
-      />
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          className={`${inputCls} flex-1`}
+          value={scopeFilter}
+          placeholder={`按归属锚过滤（${NS_SCOPE_PLACEHOLDER[ns]}）——留空列全部`}
+          onChange={(e) => setScopeFilter(e.target.value)}
+        />
+        <select className={`${inputCls} w-40`} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}>
+          <option value="active">现行（active）</option>
+          <option value="proposed">候选（proposed）</option>
+          <option value="superseded">历史（superseded）</option>
+        </select>
+        <label className="flex items-center gap-1.5 text-xs text-faint">
+          <input type="checkbox" checked={includeExpired} onChange={(e) => setIncludeExpired(e.target.checked)} />
+          含已过期
+        </label>
+      </div>
 
       {listErr && <p className="rounded-lg bg-surface-2 px-3 py-2 text-xs text-red-400">{listErr}</p>}
       {items === null && !listErr && <p className="text-xs text-faint">加载中…</p>}
       {items !== null && items.length === 0 && (
         <p className="rounded-lg bg-surface-1 px-3 py-6 text-center text-xs text-faint">
-          该命名空间暂无记忆——右上「写入记忆」显式添加（模型抽取与策展随 0.7.1）。
+          {statusFilter === "active" && "该命名空间暂无现行记忆——写入显式添加，或切「候选」看待接受条目。"}
+          {statusFilter === "proposed" && "暂无待策展候选。"}
+          {statusFilter === "superseded" && "暂无已终结条目（否决/撤回/被替代的历史可在此解释）。"}
         </p>
       )}
       <ul className="flex flex-col gap-2">
@@ -291,10 +437,23 @@ export function MemoryPage() {
               </span>
               <span className="flex shrink-0 items-center gap-1.5">
                 {it.sensitivity === "sensitive" && <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-500">敏感</span>}
-                <span className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] text-faint">{it.status}</span>
-                <span className="text-[10px] text-faint">{(it.source_refs ?? []).length} 来源</span>
+                {(it.supersedes ?? []).length > 0 && <span className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] text-faint">替代 {(it.supersedes ?? []).length} 条</span>}
+                <span className={`rounded px-1.5 py-0.5 text-[10px] ${it.status === "active" ? "bg-emerald-500/10 text-emerald-500" : it.status === "proposed" ? "bg-sky-500/10 text-sky-500" : "bg-surface-3 text-faint"}`}>{it.status}</span>
+                <span className="text-[10px] text-faint">{(it.source_refs ?? []).length} 来源 · v{it.version}</span>
               </span>
             </button>
+            {it.status !== "superseded" && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {it.status === "proposed" && (
+                  <button type="button" className={btnGhostCls + " !text-emerald-500"} disabled={actionBusy !== null} onClick={() => act(it, "accept")}>接受</button>
+                )}
+                <button type="button" className={btnGhostCls} disabled={actionBusy !== null} onClick={() => act(it, "reject")}>
+                  {it.status === "proposed" ? "否决" : "撤回"}
+                </button>
+                <button type="button" className={btnGhostCls} disabled={actionBusy !== null} onClick={() => openEdit("revise", it)}>修订</button>
+                <button type="button" className={btnGhostCls} disabled={actionBusy !== null} onClick={() => openEdit("supersede", it)}>替代</button>
+              </div>
+            )}
             {expanded === it.memory_id && (
               <div className="mt-2 flex flex-col gap-1.5 border-t border-line pt-2">
                 <p className="whitespace-pre-wrap text-sm">{it.content}</p>
@@ -304,6 +463,19 @@ export function MemoryPage() {
                       <li key={i}>· {ref}</li>
                     ))}
                   </ul>
+                )}
+                {(it.supersedes ?? []).length > 0 && (
+                  <p className="text-[10px] text-faint">替代链：{(it.supersedes ?? []).join("、")}</p>
+                )}
+                {(it.edit_history ?? []).length > 0 && (
+                  <div className="flex flex-col gap-0.5">
+                    <p className="text-[10px] text-faint">版本留痕（最新在后）：</p>
+                    {(it.edit_history ?? []).map((e, i) => (
+                      <p key={i} className="text-[10px] text-faint">
+                        v{e.version} {CAUSE_LABEL[e.cause] ?? e.cause}{e.note ? `——${e.note}` : ""} · {e.occurred_at}
+                      </p>
+                    ))}
+                  </div>
                 )}
                 <p className="text-[10px] text-faint">
                   {it.memory_id} · v{it.version} · 置信 {it.confidence} · 建于 {it.created_at}

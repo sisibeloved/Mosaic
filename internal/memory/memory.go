@@ -67,6 +67,9 @@ var (
 	ErrInvalid       = errors.New("memory: invalid item")
 	ErrScopeNotFound = errors.New("memory: scope anchor not found")
 	ErrNotFound      = errors.New("memory: item not found")
+	// 0.7.1 / ADR-0038：策展错误族（httpapi 映射 409）。
+	ErrVersionConflict = errors.New("memory: version conflict")
+	ErrTerminal        = errors.New("memory: item terminal")
 )
 
 // Item 分域记忆项（§7.2 拟定字段的 0.7.0 形态：表结构一次带全，策展/召回
@@ -87,9 +90,20 @@ type Item struct {
 	Status      Status
 	Visibility  string // 0.7.0 恒 "namespace"（授权细化随 0.7.2）
 	Sensitivity Sensitivity
-	Supersedes  []string // 0.7.0 空（纠错链列预留，随 0.7.1）
+	Supersedes  []string // 替代链（0.7.1 supersede 动作写入）
+	EditHistory []EditRecord
 	CreatedAt   string
 	UpdatedAt   string
+}
+
+// EditRecord 版本留痕（0.7.1 / ADR-0038 §2——append-only，恰一条/次；
+// cause 区分 revise/reject/withdraw/supersede/accept）。
+type EditRecord struct {
+	Version    int    `json:"version"`
+	Cause      string `json:"cause"`
+	Note       string `json:"note,omitempty"`
+	EditedBy   string `json:"edited_by"`
+	OccurredAt string `json:"occurred_at"`
 }
 
 // CreateCmd 显式写入命令（0.7.0 稳定子集——人工记忆操作或系统事实记录）。
@@ -105,6 +119,8 @@ type CreateCmd struct {
 	ValidTo     string
 	Confidence  *float64 // nil = 1.0（人工显式写入满置信）
 	Sensitivity Sensitivity
+	// 0.7.1：默认 active（高可信明确指令）；不确定候选留 proposed 待策展。
+	Status Status
 }
 
 // Anchors 归属锚存在性闭包（app 装配组合各域 store；memory 不 import 各域
@@ -126,6 +142,11 @@ type ListFilter struct {
 	Status    Status
 	Limit     int
 	Before    string // 上一页末条 memory_id；空 = 首页
+	// 0.7.1 时效口径（ADR-0038 §3）：Status=active 且 IncludeExpired=false
+	// 时排除 valid_to < Now（RFC3339 时刻比较）；Now 由 Service 时钟单源
+	// 传入。proposed/superseded 显式口径不过滤（策展审视看全量）。
+	Now            string
+	IncludeExpired bool
 }
 
 // Store 存储端口（MemoryBackend 的 0.7.0 子集——Propose/Accept/Revise/
@@ -134,6 +155,12 @@ type Store interface {
 	CreateItem(ctx context.Context, it Item) (Item, error)
 	ItemByID(ctx context.Context, memoryID string) (Item, bool, error)
 	ListItems(ctx context.Context, f ListFilter) ([]Item, error)
+	// UpdateItem CAS 原位替换（version 核对失败 ok=false；edit_history 由
+	// 域构造传入——存储无策展语义）。
+	UpdateItem(ctx context.Context, memoryID string, expectedVersion int, next Item) (Item, bool, error)
+	// SupersedeItem 单事务双动作（ADR-0038 §2：旧终结 + 新建 supersedes 链；
+	// CAS 失败 ok=false 整体不落）。
+	SupersedeItem(ctx context.Context, oldID string, expectedVersion int, oldNext, replacement Item) (Item, Item, bool, error)
 }
 
 // Service 分域记忆服务（域校验单源 + 锚门 + 默认填充）。
@@ -193,41 +220,53 @@ func (c CreateCmd) validate() error {
 	if c.Namespace == NSWorkspace && scope != WorkspaceScope {
 		return invalidErr("workspace 命名空间 scope_id 恒为 " + WorkspaceScope + "（单工作区事实）")
 	}
-	if t := strings.TrimSpace(c.Title); t == "" || utf8.RuneCountInString(t) > maxTitleRunes {
+	// 0.7.1：status 可选 active|proposed（默认 active；superseded 只能经
+	// 策展动作到达——写入面不得直接造终结态）。
+	switch c.Status {
+	case "", StatusActive, StatusProposed:
+	default:
+		return invalidErr("status 写入面只接受 active|proposed")
+	}
+	return validateFields(c.Title, c.Content, c.SourceRefs, c.ObservedAt, c.ValidFrom, c.ValidTo, c.Confidence)
+}
+
+// validateFields 字段级校验（Create 与 Revise 共用单源）。
+func validateFields(title, content string, sourceRefs []string, observedAt, validFrom, validTo string, confidence *float64) error {
+	if t := strings.TrimSpace(title); t == "" || utf8.RuneCountInString(t) > maxTitleRunes {
 		return invalidErr("title 须为 1–200 字符")
 	}
-	if strings.TrimSpace(c.Content) == "" || utf8.RuneCountInString(c.Content) > maxContentRunes {
+	if strings.TrimSpace(content) == "" || utf8.RuneCountInString(content) > maxContentRunes {
 		return invalidErr("content 须为 1–20000 字符")
 	}
-	if len(c.SourceRefs) > maxSourceRefs {
+	if len(sourceRefs) > maxSourceRefs {
 		return invalidErr("source_refs 至多 16 条")
 	}
-	for _, ref := range c.SourceRefs {
+	for _, ref := range sourceRefs {
 		r := strings.TrimSpace(ref)
 		if r == "" || utf8.RuneCountInString(r) > maxSourceRefRune {
 			return invalidErr("source_ref 须为 1–500 字符")
 		}
 	}
-	if _, err := time.Parse(time.RFC3339, c.ObservedAt); err != nil {
+	if _, err := time.Parse(time.RFC3339, observedAt); err != nil {
 		return invalidErr("observed_at 须为 RFC3339")
 	}
 	var from, to time.Time
-	if c.ValidFrom != "" {
+	if validFrom != "" {
 		var err error
-		if from, err = time.Parse(time.RFC3339, c.ValidFrom); err != nil {
+		if from, err = time.Parse(time.RFC3339, validFrom); err != nil {
 			return invalidErr("valid_from 须为 RFC3339")
 		}
 	}
-	if c.ValidTo != "" {
+	if validTo != "" {
 		var err error
-		if to, err = time.Parse(time.RFC3339, c.ValidTo); err != nil {
+		if to, err = time.Parse(time.RFC3339, validTo); err != nil {
 			return invalidErr("valid_to 须为 RFC3339")
 		}
 	}
 	if !from.IsZero() && !to.IsZero() && !to.After(from) {
 		return invalidErr("valid_to 须晚于 valid_from")
 	}
-	if c.Confidence != nil && (*c.Confidence < 0 || *c.Confidence > 1) {
+	if confidence != nil && (*confidence < 0 || *confidence > 1) {
 		return invalidErr("confidence 须在 [0,1]")
 	}
 	return nil
@@ -249,6 +288,12 @@ func (s *Service) Create(ctx context.Context, cmd CreateCmd) (Item, error) {
 	if sensitivity == "" {
 		sensitivity = SensNormal
 	}
+	// 0.7.1：status 默认 active；proposed 为策展候选（写入面不得直接造
+	// 终结态——superseded 只经策展动作到达）。
+	status := cmd.Status
+	if status == "" {
+		status = StatusActive
+	}
 	now := s.now()
 	it := Item{
 		MemoryID:  "mem_" + newToken(),
@@ -265,10 +310,11 @@ func (s *Service) Create(ctx context.Context, cmd CreateCmd) (Item, error) {
 		ValidFrom:   cmd.ValidFrom,
 		ValidTo:     cmd.ValidTo,
 		Confidence:  confidence,
-		Status:      StatusActive,
+		Status:      status,
 		Visibility:  "namespace",
 		Sensitivity: sensitivity,
 		Supersedes:  []string{},
+		EditHistory: []EditRecord{},
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -316,6 +362,12 @@ func (s *Service) List(ctx context.Context, f ListFilter) ([]Item, string, error
 	}
 	if f.Limit > MaxListLimit {
 		return nil, "", invalidErr("limit 至多 100")
+	}
+	// 0.7.1 时效口径（ADR-0038 §3）：now 由时钟单源填充——active 默认口径
+	// 排除 valid_to < now（Store 下推）；proposed/superseded 显式口径与
+	// IncludeExpired 不过滤（策展审视/历史解释看全量）。
+	if f.Now == "" {
+		f.Now = s.now()
 	}
 	items, err := s.store.ListItems(ctx, f)
 	if err != nil {

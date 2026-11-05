@@ -173,6 +173,86 @@ func TestMemoryItemsCursorScopedIT(t *testing.T) {
 	}
 }
 
+// 策展动作 IT（0.7.1 / ADR-0038）：状态机/CAS/supersede 事务/时效口径。
+func TestMemoryCurationIT(t *testing.T) {
+	s := openMemItStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	svc := memory.NewService(s, memory.Anchors{}, func() string { return "2026-11-05T12:00:00Z" })
+
+	// proposed → accept → edit_history 落库读回。
+	cmd := memory.CreateCmd{Namespace: memory.NSAgent, ScopeID: "ag_1", Kind: memory.KindSemantic,
+		Title: "候选", Content: "c", ObservedAt: "2026-11-05T10:00:00Z", Status: memory.StatusProposed}
+	prop, err := svc.Create(ctx, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Accept(ctx, prop.MemoryID)
+	if err != nil || got.Status != memory.StatusActive || len(got.EditHistory) != 1 {
+		t.Fatalf("接受错：%v %+v", err, got)
+	}
+	back, _, _ := s.ItemByID(ctx, prop.MemoryID)
+	if back.Status != memory.StatusActive || len(back.EditHistory) != 1 || back.EditHistory[0].Cause != "accept" {
+		t.Fatalf("落库读回错：%+v", back.EditHistory)
+	}
+
+	// revise：版本递增 + 留痕；CAS 失败。
+	title := "修订标题"
+	rev, err := svc.Revise(ctx, prop.MemoryID, memory.ReviseCmd{ExpectedVersion: got.Version, Title: &title, Note: "n"})
+	if err != nil || rev.Version != got.Version+1 || len(rev.EditHistory) != 2 {
+		t.Fatalf("修订错：%v v%d %d", err, rev.Version, len(rev.EditHistory))
+	}
+	if _, err = svc.Revise(ctx, prop.MemoryID, memory.ReviseCmd{ExpectedVersion: got.Version, Title: &title}); err == nil {
+		t.Fatal("CAS 应失败")
+	}
+
+	// supersede：事务双动作——旧终结 + 新 supersedes 链；CAS 失败新条目不落。
+	repl := cmd
+	repl.Title = "替代版"
+	repl.Status = ""
+	oldIt, newIt, err := svc.Supersede(ctx, prop.MemoryID, rev.Version, "换条", repl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldIt.Status != memory.StatusSuperseded || newIt.Supersedes[0] != prop.MemoryID {
+		t.Fatalf("替代错：%s %v", oldIt.Status, newIt.Supersedes)
+	}
+	if _, _, err = svc.Supersede(ctx, prop.MemoryID, oldIt.Version, "", repl); err == nil {
+		t.Fatal("终结态应拒")
+	}
+	// reject 撤回 + 终结动作全拒。
+	rej, err := svc.Reject(ctx, newIt.MemoryID, "弃用")
+	if err != nil || rej.Status != memory.StatusSuperseded {
+		t.Fatalf("撤回错：%v %s", err, rej.Status)
+	}
+	if _, err = svc.Accept(ctx, newIt.MemoryID); err == nil {
+		t.Fatal("终结复活应拒")
+	}
+
+	// 时效口径：默认 active 排除过期（julianday 时刻比较）；include_expired 可见。
+	exp := memory.CreateCmd{Namespace: memory.NSAgent, ScopeID: "ag_1", Kind: memory.KindSemantic,
+		Title: "过期", Content: "c", ObservedAt: "2026-11-05T10:00:00Z",
+		ValidFrom: "2026-11-05T00:00:00Z", ValidTo: "2026-11-05T11:59:59Z"}
+	if _, err = svc.Create(ctx, exp); err != nil {
+		t.Fatal(err)
+	}
+	alv := exp
+	alv.Title, alv.ValidTo = "有效", "2026-11-06T00:00:00Z"
+	if _, err = svc.Create(ctx, alv); err != nil {
+		t.Fatal(err)
+	}
+	items, _, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent})
+	if err != nil || len(items) != 1 || items[0].Title != "有效" {
+		t.Fatalf("默认口径应 1 条有效，得 %d %v", len(items), err)
+	}
+	// include_expired=true：有效 + 过期共 2 条（superseded 终结条目 status 非
+	// active，不入 active 口径——终结态经显式 status=superseded 查询）。
+	items, _, err = svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, IncludeExpired: true})
+	if err != nil || len(items) != 2 {
+		t.Fatalf("include_expired 应 2 条 active（有效+过期），得 %d %v", len(items), err)
+	}
+}
+
 func TestMemoryItemsIdempotentReopenIT(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "reopen.db")
 	s, err := Open(path)
