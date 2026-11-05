@@ -110,8 +110,10 @@ export function MissionsPage() {
   const formLocked = detailState !== "idle" || missions === null;
   // 三审/四审前端（映射陈旧切续接）：create 撞 409 后保留用户录入——草稿
   // **绑定引发 409 的 room/task**（四审 #2）；命中同一来源时以详情为底稿合并
-  // 用户显式修改的字段（四审 #1：未编辑字段/预算留现行值），切换来源即丢弃。
-  const pendingMergeRef = useRef<{ room: string; task: string } | null>(null);
+  // 用户显式修改的字段（四审 #1：未编辑字段/预算留现行值）。
+  // 十二审 #2：待合并记录**按任务卡保留**（Map——键 room|task）：其它任务卡
+  // 的详情加载不清除记录；回到引发 409 的卡才消费（消费即删）；提交成功清空。
+  const pendingMergesRef = useRef<Map<string, FrozenDraft>>(new Map());
   // 五审 #1：预算按**字段**跟踪用户编辑——合并只覆盖编辑过的字段（展开面板
   // 查看不得放宽其他上限）；面板展开状态不进详情加载依赖（五审 #2）。
   const budgetEditedRef = useRef<Set<string>>(new Set());
@@ -125,8 +127,6 @@ export function MissionsPage() {
   const fieldOwnersRef = useRef<Record<string, string>>({});
   const budgetOwnersRef = useRef<Record<string, string>>({});
   const prevContentRef = useRef<Record<string, string>>({});
-  // 十审 #1：409 时冻结的本卡编辑快照（合并只消费这份副本）。
-  const frozenDraftRef = useRef<FrozenDraft | null>(null);
   const [budget, setBudget] = useState({ concurrency: "1", max_runs: "32", max_wall_clock_seconds: "86400", max_retries: "0", max_delegation_depth: "0" });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -182,25 +182,9 @@ export function MissionsPage() {
   useEffect(() => {
     const room = form.room.trim();
     const task = form.task.trim();
-    // 十一审 #1：lastSrc 逐字跟踪；归属迁移只在**完整来源**（room 与 task
-    // 皆非空）建立时发生——把所有**未绑定草稿**（归属为空键或部分键：先填
-    // 正文/预算、或只填 room 期间的编辑）一次迁移到完整键。部分来源（只填
-    // room）不迁移（归属停在未绑定，待完整来源建立后统一迁移）；换卡（完整
-    // → 完整）不迁移（旧卡字段不属于新卡——跨卡污染关闭）。
-    const srcKeyComplete = (k: string) => {
-      const i = k.indexOf("|");
-      return k.slice(0, i).trim() !== "" && k.slice(i + 1).trim() !== "";
-    };
-    const prevKey = lastSrcRef.current.room + "|" + lastSrcRef.current.task;
-    const nextKey = room + "|" + task;
-    if (srcKeyComplete(nextKey) && !srcKeyComplete(prevKey)) {
-      for (const [name, owner] of Object.entries(fieldOwnersRef.current)) {
-        if (!srcKeyComplete(owner)) fieldOwnersRef.current[name] = nextKey;
-      }
-      for (const [name, owner] of Object.entries(budgetOwnersRef.current)) {
-        if (!srcKeyComplete(owner)) budgetOwnersRef.current[name] = nextKey;
-      }
-    }
+    // 十二审 #1：lastSrc 逐字跟踪；**不做任何归属迁移**——未绑定草稿（归属
+    // 为空键、部分键或逐字输入的中间键）保持原样，提交时再按最终来源统一
+    // 接纳（submitCreate 内——逐字输入 task 的首字符不再把归属固定到中间键）。
     lastSrcRef.current = { room, task };
     // 八审 #1：清理仅在**离开已确认卡**时发生一次（confirmedSrc 置空后逐字
     // 输入不再触发）；命中新卡预填/合并时在详情回调里确认新卡。
@@ -247,15 +231,17 @@ export function MissionsPage() {
           constraints: d.constraints ?? [],
           delegation: { allowed: d.delegation?.allowed ?? [], max_depth: d.delegation?.max_depth ?? 0 },
         });
-        const pm = pendingMergeRef.current;
-        if (pm && pm.room === room && pm.task === task) {
+        // 十二审 #2：按任务卡消费（get+delete）——其它任务卡的详情加载不
+        // 触碰记录（Map 按键保留）。
+        const pmKey = room + "|" + task;
+        const fr = pendingMergesRef.current.get(pmKey);
+        if (fr) {
           // 409 合并路径（四审 #1）：以现行契约为**底稿**，仅合并用户显式输入
           // 的字段（非空者）；预算未显式编辑（开关未开）留现行值——不清空
           // 验收/交付、不放宽预算。合并结果回填表单供用户核对。
-          pendingMergeRef.current = null;
           // 十审 #1：合并只消费**冻结快照**（409 时按字段归属捕获的本卡编辑）
           //——其后表单变化不影响本次合并；未在本卡编辑的字段回落 B 现行值。
-          const fr = frozenDraftRef.current ?? {};
+          pendingMergesRef.current.delete(pmKey);
           const fv = (v?: string) => (v && v.trim() ? v : "");
           setForm((f) => ({
             ...f,
@@ -286,9 +272,6 @@ export function MissionsPage() {
           setBudgetOpen(true); // 显示合并结果（五审 #2：仅显示——不再触发详情重载）
           setDetailState("idle");
           return;
-        }
-        if (pm) {
-          pendingMergeRef.current = null; // 来源已切换——丢弃旧卡保留标记（四审 #2）
         }
         setForm((f) => ({
           ...f,
@@ -362,6 +345,26 @@ export function MissionsPage() {
       },
       budget: { ...budget },
     };
+    // 十二审 #1：提交时就地接纳**未绑定草稿**——归属为空键、部分键（只填
+    // room）或逐字输入的中间键（提交键的输入前缀态：room/task 两段分别是
+    // 最终值的前缀）划归最终来源键；其它完整键（旧卡编辑）隔离（跨卡污染
+    // 关闭）。只改快照副本——live refs 不受影响。
+    const splitKey = (k: string): [string, string] => {
+      const i = k.indexOf("|");
+      return [k.slice(0, i), k.slice(i + 1)];
+    };
+    const [fkr, fkt] = splitKey(fk);
+    const feedsKey = (owner: string) => {
+      if (owner === fk) return true;
+      const [orr, ort] = splitKey(owner);
+      return fkr.startsWith(orr) && fkt.startsWith(ort);
+    };
+    for (const name of Object.keys(snap.fieldOwners)) {
+      if (feedsKey(snap.fieldOwners[name])) snap.fieldOwners[name] = fk;
+    }
+    for (const name of Object.keys(snap.budgetOwners)) {
+      if (feedsKey(snap.budgetOwners[name])) snap.budgetOwners[name] = fk;
+    }
     void (async () => {
       const err = await act(async () => {
       const m = await api.createMission({
@@ -384,13 +387,14 @@ export function MissionsPage() {
       setForm({ objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "", owner: "", reviewer: "", room: "", task: "" });
       budgetEditedRef.current = new Set();
       confirmedSrcRef.current = null;
-      frozenDraftRef.current = null;
+      pendingMergesRef.current.clear();
       });
       // 来源已被他处交办（列表陈旧）——保留录入切续接模式（重取映射与版本）
       if (err?.code === "source_already_mapped") {
-        // 十一审 #2：以**提交时快照**（发送前冻结的来源/归属/载荷）构建续接
-        // 目标与冻结编辑——等待期间切换任务卡改写的 form/归属不入本次合并。
-        pendingMergeRef.current = { room: snap.room, task: snap.task };
+        // 十一审 #2：以**提交时快照**（发送前冻结的来源/归属/载荷）构建冻结
+        // 编辑——等待期间切换任务卡改写的 form/归属不入本次合并。
+        // 十二审 #2：按提交键登记（Map）——其它任务卡的详情加载不清除；回到
+        // 引发 409 的卡才消费。
         const frz: FrozenDraft = {};
         for (const [name, val] of Object.entries(snap.fields)) {
           if (snap.fieldOwners[name] === fk && val.trim()) frz[name as keyof FrozenDraft] = val;
@@ -400,7 +404,7 @@ export function MissionsPage() {
           if (snap.budgetOwners[k] === fk) fb[k] = snap.budget[k];
         }
         if (Object.keys(fb).length) frz.budget = fb;
-        frozenDraftRef.current = frz;
+        pendingMergesRef.current.set(fk, frz);
         setRev((r) => r + 1);
         setMsg("该任务卡已被交办——正切换为续接模式：现行契约将与您已填写的字段合并（未填字段与预算留现行值），请核对后重新提交");
       }
@@ -444,7 +448,7 @@ export function MissionsPage() {
         setForm({ objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "", owner: "", reviewer: "", room: "", task: "" });
       budgetEditedRef.current = new Set();
       confirmedSrcRef.current = null;
-      frozenDraftRef.current = null;
+      pendingMergesRef.current.clear();
       });
       // 复审 #6：真并发冲突（他处已修订）→ 显式重新加载入口
       if (err?.code === "version_conflict") setConflictReload(true);
