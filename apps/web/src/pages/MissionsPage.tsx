@@ -60,6 +60,16 @@ function returnStatusCls(s: string): string {
   return "text-faint";
 }
 
+/** 九审 #1：单卡草稿快照——按任务卡（room|task）记录用户在该卡上编辑的
+ * 契约字段与预算；409 合并只用**当前卡**的快照（跨卡污染关闭）。 */
+type CardDraft = {
+  objective: string; scope: string; acceptance: string; deliverables: string;
+  sources: string; returns: string; reviewer: string; owner: string;
+  budget: { concurrency: string; max_runs: string; max_wall_clock_seconds: string; max_retries: string; max_delegation_depth: string };
+  budgetEdited: string[];
+  budgetOpen: boolean;
+};
+
 export function MissionsPage() {
   const [missions, setMissions] = useState<MissionSummary[] | null>(null);
   const [listErr, setListErr] = useState<string | null>(null);
@@ -98,6 +108,9 @@ export function MissionsPage() {
   // 六审 #1 + 八审 #1：预算/草稿绑定**已确认卡**（命中映射预填过的来源）——
   // 逐字输入中的来源是草稿不触发清理；仅离开一张已确认卡时清理上一卡预算与草稿。
   const confirmedSrcRef = useRef<{ room: string; task: string } | null>(null);
+  // 九审 #1：当前来源（逐字跟踪——不做清理判定）+ 按卡草稿快照。
+  const lastSrcRef = useRef<{ room: string; task: string }>({ room: "", task: "" });
+  const cardDraftsRef = useRef<Map<string, CardDraft>>(new Map());
   const [budget, setBudget] = useState({ concurrency: "1", max_runs: "32", max_wall_clock_seconds: "86400", max_retries: "0", max_delegation_depth: "0" });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -127,10 +140,30 @@ export function MissionsPage() {
     if (id) setSelected(id);
   }, [searchParams]);
 
+  // 九审 #1：按卡草稿快照——内容/预算每次变化记入**当前卡**（lastSrc）；
+  // 409 合并只读本卡快照（未在本卡编辑过的字段回落详情现行值——A 卡的
+  // 200 次/验收/交付不再写进 B）。
+  useEffect(() => {
+    const key = lastSrcRef.current.room + "|" + lastSrcRef.current.task;
+    if (!key.replace("|", "")) return; // 来源全空不入册
+    cardDraftsRef.current.set(key, {
+      objective: form.objective, scope: form.scope, acceptance: form.acceptance,
+      deliverables: form.deliverables, sources: form.sources, returns: form.returns,
+      reviewer: form.reviewer, owner: form.owner,
+      budget: { ...budget },
+      budgetEdited: [...budgetEditedRef.current],
+      budgetOpen,
+    });
+  }, [form.objective, form.scope, form.acceptance, form.deliverables, form.sources,
+      form.returns, form.reviewer, form.owner, budget, budgetOpen]);
+
   // 复审 #1/#6：来源命中既有映射 → 续接模式——详情成功后目标/版本/预填
   // 原子生效；失败禁提（提交门在按钮与提交函数双重校验）；代次作废切换前
   // 的在途响应（慢请求不得覆盖已切换的表单）。
   useEffect(() => {
+    // 九审 #1：lastSrc 逐字跟踪（快照归属用）；显示清理保持八审语义（数据
+    // 面由按卡快照保证——合并只读本卡编辑记录）。
+    lastSrcRef.current = { room: form.room.trim(), task: form.task.trim() };
     const room = form.room.trim();
     const task = form.task.trim();
     // 八审 #1：清理仅在**离开已确认卡**时发生一次（confirmedSrc 置空后逐字
@@ -184,18 +217,22 @@ export function MissionsPage() {
           // 的字段（非空者）；预算未显式编辑（开关未开）留现行值——不清空
           // 验收/交付、不放宽预算。合并结果回填表单供用户核对。
           pendingMergeRef.current = null;
+          // 九审 #1：用户编辑面取**当前卡快照**（未在本卡编辑过的字段回落详情
+          // 现行值——上一卡的草稿不进入本卡合并）。
+          const snap = cardDraftsRef.current.get(room + "|" + task);
+          const sv = (v?: string) => (v && v.trim() ? v : "");
           setForm((f) => ({
             ...f,
-            objective: f.objective.trim() || d.objective || "",
-            scope: f.scope.trim() || d.scope || "",
-            acceptance: f.acceptance.trim() || (d.acceptance_criteria ?? []).join("\n"),
-            deliverables: f.deliverables.trim() || (d.deliverable_specs ?? []).join("\n"),
-            sources: f.sources.trim() || (d.source_refs ?? []).join("\n"),
-            returns: f.returns.trim() || (d.return_targets ?? []).join("\n"),
-            reviewer: f.reviewer.trim() || d.reviewer || "",
+            objective: sv(snap?.objective) || d.objective || "",
+            scope: sv(snap?.scope) || d.scope || "",
+            acceptance: sv(snap?.acceptance) || (d.acceptance_criteria ?? []).join("\n"),
+            deliverables: sv(snap?.deliverables) || (d.deliverable_specs ?? []).join("\n"),
+            sources: sv(snap?.sources) || (d.source_refs ?? []).join("\n"),
+            returns: sv(snap?.returns) || (d.return_targets ?? []).join("\n"),
+            reviewer: sv(snap?.reviewer) || d.reviewer || "",
           }));
-          // 五审 #1：以现行预算为底，仅覆盖用户**编辑过**的字段——只展开查看
-          // 或只改一个数值不再放宽其余上限。
+          // 五审 #1 + 九审 #1：以现行预算为底，仅覆盖**本卡快照**中编辑过的
+          // 字段（快照无本卡预算编辑 → 全留现行——上一卡的 200 次不带入）。
           const cur = {
             concurrency: String(d.budget?.concurrency ?? 1),
             max_runs: String(d.budget?.max_runs ?? 32),
@@ -203,13 +240,14 @@ export function MissionsPage() {
             max_retries: String(d.budget?.max_retries ?? 0),
             max_delegation_depth: String(d.budget?.max_delegation_depth ?? 0),
           };
-          const edited = budgetEditedRef.current;
+          const snapEdited = new Set(snap?.budgetEdited ?? []);
+          const sb = snap?.budget;
           setBudget({
-            concurrency: edited.has("concurrency") ? budget.concurrency : cur.concurrency,
-            max_runs: edited.has("max_runs") ? budget.max_runs : cur.max_runs,
-            max_wall_clock_seconds: edited.has("max_wall_clock_seconds") ? budget.max_wall_clock_seconds : cur.max_wall_clock_seconds,
-            max_retries: edited.has("max_retries") ? budget.max_retries : cur.max_retries,
-            max_delegation_depth: edited.has("max_delegation_depth") ? budget.max_delegation_depth : cur.max_delegation_depth,
+            concurrency: snapEdited.has("concurrency") ? sb?.concurrency ?? cur.concurrency : cur.concurrency,
+            max_runs: snapEdited.has("max_runs") ? sb?.max_runs ?? cur.max_runs : cur.max_runs,
+            max_wall_clock_seconds: snapEdited.has("max_wall_clock_seconds") ? sb?.max_wall_clock_seconds ?? cur.max_wall_clock_seconds : cur.max_wall_clock_seconds,
+            max_retries: snapEdited.has("max_retries") ? sb?.max_retries ?? cur.max_retries : cur.max_retries,
+            max_delegation_depth: snapEdited.has("max_delegation_depth") ? sb?.max_delegation_depth ?? cur.max_delegation_depth : cur.max_delegation_depth,
           });
           setBudgetOpen(true); // 显示合并结果（五审 #2：仅显示——不再触发详情重载）
           setDetailState("idle");

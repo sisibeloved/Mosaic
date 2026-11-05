@@ -1304,11 +1304,17 @@ func (s *Service) RecoverUnfinished(ctx context.Context) (int, error) {
 		now := s.now()
 		mStatus, _, _ := s.missions.StatusOf(ctx, r.MissionID)
 		if mStatus == "canceling" || mStatus == "paused" {
-			// 八审 #4：动作码映射（paused→pause / canceling→cancel——与终态事务/
-			// 控制路径同组常量）；stop_requested 按去重规则仅在无持久标记时写。
+			// 八审 #4 + 九审 #2：动作码映射（paused→pause / canceling→cancel）；
+			// stop_requested 仅在无持久标记时写（标记**读取失败**上抛跳过——
+			// 不得当不存在重复写）；canceled 写失败保留 running 可重试（恢复
+			// 返回错误，不再静默报成功）。
 			cause := "pause"
 			if mStatus == "canceling" {
 				cause = "cancel"
+			}
+			mk, mErr := s.readPersistedStopCause(ctx, r.RunID)
+			if mErr != nil {
+				return n, fmt.Errorf("run: 恢复读取停止标记失败（%s）：%w", r.RunID, mErr)
 			}
 			r.State = StateCanceled
 			r.ErrorText = "停止请求在途时进程重启——结果未知"
@@ -1318,19 +1324,20 @@ func (s *Service) RecoverUnfinished(ctx context.Context) (int, error) {
 				{RunID: r.RunID, EventType: EventCanceled, OccurredAt: now,
 					Payload: map[string]any{"cause": cause, "recovery": true}},
 			}
-			if !s.hasPersistedStopMarker(ctx, r.RunID) {
+			if mk == "" { // 无持久标记才补写（去重）
 				evs = append([]Event{{
 					RunID: r.RunID, EventType: EventStopRequested, OccurredAt: now,
 					Payload: map[string]any{"cause": cause, "recovery": true},
 				}}, evs...)
 			}
-			if err := s.store.UpdateRun(ctx, r, evs); err == nil {
-				_ = s.leases.Release(ctx, r.LeaseID)
-				if mStatus == "canceling" {
-					_ = s.missions.FinishCanceling(ctx, r.MissionID, "recovery_stop")
-				}
-				n++
+			if err := s.store.UpdateRun(ctx, r, evs); err != nil {
+				return n, fmt.Errorf("run: 恢复兑现停止失败（%s，保留 running 可重试）：%w", r.RunID, err)
 			}
+			_ = s.leases.Release(ctx, r.LeaseID)
+			if mStatus == "canceling" {
+				_ = s.missions.FinishCanceling(ctx, r.MissionID, "recovery_stop")
+			}
+			n++
 			continue
 		}
 		// 七审 #6 + 八审 #4/#5：Run 自身的持久停止标记（暂停/取消事务内写入
