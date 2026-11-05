@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **0.7.0 一审修复（1 P1 + 3 P2，ADR-0037 v0.2）**：
+  - **空数组规范化（#1 P1）**：`source_refs` 省略或传 `[]` 时三层统一输出空数组——域 Create 规范化非 nil、sqlite 读回兼容 v32 首版已落的 null 列、契约视图兜底；SPA 显示同步兜底。含该记录的列表不再使记忆页崩溃。
+  - **创建后刷新口径（#2 P2，前端）**：写入成功后的刷新统一走**当前浏览条件**（tab + 过滤输入单源）——Agent 标签下不再显示工作区记忆、筛选 Agent A 不再显示 Agent B 列表。
+  - **续页竞态（#3 P2，前端）**：续页请求加代次检查（切换命名空间后迟到响应丢弃——跨域混入关闭）与在途限制（同游标连续点击不重复追加）。
+  - **游标域内定位（#4 P2）**：游标子查询限定 `namespace`（sqlite 与内存实现）——外域 ID 作 `before` 一律空页（与未知 ID 同语义），不再随外域条目存在与否漂移。
+
 ### Added
 
 - **0.7.0 分域记忆基石：MemoryItem 五命名空间**（0.7 领域线第一件 / ADR-0037，RFC-0018 §7.1/§7.2）：每条记忆归属恰一命名空间（`agent` / `room` / `workspace` / `mission` / `slot`）并锚定归属对象（agent_id / room_id / workspace 恒 `default`——单工作区事实 / mission_id / slot_instance_id）——**锚对象不存在写入即拒**（409 `memory_scope_not_found`，app 装配组合四域存在性闭包）。类型（`semantic` / `episodic` / `procedural`）与权限域正交；来源引用（≤16 条）、时效（observed_at + valid_from/to——"何时知道"与"何时有效"分记）、敏感度（normal/sensitive——0.7.5 Bundle 脱敏消费）与置信度落字段；**表结构一次带全 §7.2 拟定字段**（status/visibility/supersedes/derived_from/edit_history/extractor_version 列预留——策展状态机随 0.7.1、授权过滤与 FTS 召回随 0.7.2，写入面 0.7.0 固定 status=active、visibility=namespace）。

@@ -48,7 +48,9 @@ func (m *MemStore) ListItems(_ context.Context, f ListFilter) ([]Item, error) {
 	for i := len(m.items) - 1; i >= 0; i-- {
 		it := m.items[i]
 		if !started {
-			if it.MemoryID == f.Before {
+			// 一审 #4：游标只在本域内定位——外域同 ID 不生效（空页，
+			// 与未知 ID/游标失效同语义，越域存在性不泄漏）。
+			if it.MemoryID == f.Before && it.Namespace == f.Namespace {
 				started = true
 			}
 			continue

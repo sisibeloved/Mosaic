@@ -153,6 +153,64 @@ func TestCreateDefaults(t *testing.T) {
 	}
 }
 
+// 一审 #1：省略 source_refs → 落库为空数组（非 nil——JSON [] 不出 null）。
+func TestCreateSourceRefsNormalizedNonNil(t *testing.T) {
+	svc := NewService(NewMemStore(), allAnchors(true, nil), fixedNow)
+	it, err := svc.Create(context.Background(), okCmd()) // okCmd 不带 source_refs
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.SourceRefs == nil || len(it.SourceRefs) != 0 {
+		t.Fatalf("SourceRefs 应为非 nil 空数组，得 %#v", it.SourceRefs)
+	}
+	// 显式空数组同样规范化。
+	cmd := okCmd()
+	cmd.SourceRefs = []string{}
+	it2, err := svc.Create(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it2.SourceRefs == nil {
+		t.Fatal("显式空数组 SourceRefs 不应为 nil")
+	}
+}
+
+// 一审 #4：memstore 游标只在本域定位——外域同 ID = 空页。
+func TestMemStoreCursorScopedToNamespace(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	ag := Item{MemoryID: "mem_ag_1", Namespace: NSAgent, ScopeID: "ag_1", Kind: KindSemantic,
+		Title: "a", Content: "c", Status: StatusActive, Visibility: "namespace",
+		Sensitivity: SensNormal, Supersedes: []string{}, CreatedAt: fixedNow(), UpdatedAt: fixedNow()}
+	ws := Item{MemoryID: "mem_ws_1", Namespace: NSWorkspace, ScopeID: WorkspaceScope, Kind: KindSemantic,
+		Title: "w", Content: "c", Status: StatusActive, Visibility: "namespace",
+		Sensitivity: SensNormal, Supersedes: []string{}, CreatedAt: fixedNow(), UpdatedAt: fixedNow()}
+	if _, err := store.CreateItem(ctx, ag); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateItem(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	// workspace 查询以 agent 域条目 ID 作 before：外域 ID 不生效（空页——
+	// 与未知 ID 同语义，越域存在性不泄漏）。
+	items, err := store.ListItems(ctx, ListFilter{Namespace: NSWorkspace,
+		Status: StatusActive, Limit: 50, Before: "mem_ag_1"})
+	if err != nil || len(items) != 0 {
+		t.Fatalf("外域游标应空页，得 %d %v", len(items), err)
+	}
+	// 本域游标正常。
+	items, err = store.ListItems(ctx, ListFilter{Namespace: NSWorkspace,
+		Status: StatusActive, Limit: 50, Before: "mem_ws_1"})
+	if err != nil || len(items) != 0 {
+		t.Fatalf("本域末条游标应空页（其后无更早条目），得 %d %v", len(items), err)
+	}
+	items, err = store.ListItems(ctx, ListFilter{Namespace: NSAgent,
+		Status: StatusActive, Limit: 50})
+	if err != nil || len(items) != 1 || items[0].MemoryID != "mem_ag_1" {
+		t.Fatalf("agent 列表应 1 条，得 %d %v", len(items), err)
+	}
+}
+
 func TestListIsolationAndCursor(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()

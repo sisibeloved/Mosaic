@@ -122,6 +122,57 @@ func TestMemoryItemsCRUDAndCursorIT(t *testing.T) {
 	}
 }
 
+// 一审 #1：v32 首版写入的 null 列读回兼容——统一空数组。
+func TestMemoryItemsNullRefsCompatIT(t *testing.T) {
+	s := openMemItStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	it := memIt(memory.NSAgent, "ag_1", "n1")
+	it.SourceRefs = nil
+	if _, err := s.CreateItem(ctx, it); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.ItemByID(ctx, it.MemoryID)
+	if err != nil || !ok {
+		t.Fatalf("读回：%v %v", err, ok)
+	}
+	if got.SourceRefs == nil || len(got.SourceRefs) != 0 {
+		t.Fatalf("null 列应读回空数组，得 %#v", got.SourceRefs)
+	}
+}
+
+// 一审 #4：sqlite 游标只在本域定位——外域同 ID = 空页。
+func TestMemoryItemsCursorScopedIT(t *testing.T) {
+	s := openMemItStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	if _, err := s.CreateItem(ctx, memIt(memory.NSAgent, "ag_1", "a1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateItem(ctx, memIt(memory.NSWorkspace, memory.WorkspaceScope, "w1")); err != nil {
+		t.Fatal(err)
+	}
+	// workspace 以 agent 域条目 ID 作 before：子查询限本域不命中 → 0 → 空页
+	//（与未知 ID 同语义）。
+	items, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSWorkspace,
+		Status: memory.StatusActive, Limit: 50, Before: "mem_it_a1"})
+	if err != nil || len(items) != 0 {
+		t.Fatalf("外域游标应空页，得 %d %v", len(items), err)
+	}
+	// 本域末条游标正常（其后无更早条目 → 空）。
+	items, err = s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSWorkspace,
+		Status: memory.StatusActive, Limit: 50, Before: "mem_it_w1"})
+	if err != nil || len(items) != 0 {
+		t.Fatalf("本域末条游标应空页，得 %d %v", len(items), err)
+	}
+	// agent 域列表不受影响。
+	items, err = s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
+		Status: memory.StatusActive, Limit: 50})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("agent 列表应 1 条，得 %d %v", len(items), err)
+	}
+}
+
 func TestMemoryItemsIdempotentReopenIT(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "reopen.db")
 	s, err := Open(path)

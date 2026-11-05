@@ -251,14 +251,16 @@ func (s *Service) Create(ctx context.Context, cmd CreateCmd) (Item, error) {
 	}
 	now := s.now()
 	it := Item{
-		MemoryID:    "mem_" + newToken(),
-		Version:     1,
-		Namespace:   cmd.Namespace,
-		ScopeID:     strings.TrimSpace(cmd.ScopeID),
-		Kind:        cmd.Kind,
-		Title:       strings.TrimSpace(cmd.Title),
-		Content:     cmd.Content,
-		SourceRefs:  append([]string(nil), cmd.SourceRefs...),
+		MemoryID:  "mem_" + newToken(),
+		Version:   1,
+		Namespace: cmd.Namespace,
+		ScopeID:   strings.TrimSpace(cmd.ScopeID),
+		Kind:      cmd.Kind,
+		Title:     strings.TrimSpace(cmd.Title),
+		Content:   cmd.Content,
+		// 一审 #1：规范化非 nil——省略/空数组的 source_refs 落库与读回
+		// 均为空数组（JSON []），不产生 null（页面 .length 崩溃面）。
+		SourceRefs:  append([]string{}, cmd.SourceRefs...),
 		ObservedAt:  cmd.ObservedAt,
 		ValidFrom:   cmd.ValidFrom,
 		ValidTo:     cmd.ValidTo,

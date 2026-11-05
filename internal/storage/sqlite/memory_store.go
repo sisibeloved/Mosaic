@@ -39,6 +39,13 @@ func scanMemoryItem(row rowScanner) (memory.Item, error) {
 	if err := json.Unmarshal([]byte(supersedes), &it.Supersedes); err != nil {
 		return memory.Item{}, fmt.Errorf("sqlite: memory supersedes: %w", err)
 	}
+	// 一审 #1：库中已有 null 列（v32 首版写入面）读回兼容——统一空数组。
+	if it.SourceRefs == nil {
+		it.SourceRefs = []string{}
+	}
+	if it.Supersedes == nil {
+		it.Supersedes = []string{}
+	}
 	return it, nil
 }
 
@@ -94,8 +101,10 @@ func (s *Store) ListItems(ctx context.Context, f memory.ListFilter) ([]memory.It
 		args = append(args, string(f.Kind))
 	}
 	if f.Before != "" {
-		q += ` AND rowid < COALESCE((SELECT rowid FROM memory_items WHERE memory_id = ?), 0)`
-		args = append(args, f.Before)
+		// 一审 #4：游标只在本域内定位——外域同 ID 不生效（子查询空 → 0 →
+		// 空页，与未知 ID 同语义；越域存在性不泄漏）。
+		q += ` AND rowid < COALESCE((SELECT rowid FROM memory_items WHERE memory_id = ? AND namespace = ?), 0)`
+		args = append(args, f.Before, string(f.Namespace))
 	}
 	q += ` ORDER BY rowid DESC LIMIT ?`
 	args = append(args, f.Limit+1)

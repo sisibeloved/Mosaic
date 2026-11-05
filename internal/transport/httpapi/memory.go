@@ -136,6 +136,14 @@ func (s *server) writeMemoryError(w http.ResponseWriter, err error) {
 	}
 }
 
+// nonNilRefs nil 切片兜底为空数组（一审 #1——序列化恒 []，不出 null）。
+func nonNilRefs(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
+}
+
 // memoryItemView 域 → 契约视图（confidence float32 语义等价——[0,1] 内
 // 精度无损）。
 func memoryItemView(it memory.Item) apigen.MemoryItemView {
@@ -147,7 +155,8 @@ func memoryItemView(it memory.Item) apigen.MemoryItemView {
 		Kind:        apigen.MemoryItemViewKind(it.Kind),
 		Title:       it.Title,
 		Content:     it.Content,
-		SourceRefs:  it.SourceRefs,
+		SourceRefs:  nonNilRefs(it.SourceRefs),
+		Supersedes:  nonNilRefs(it.Supersedes),
 		ObservedAt:  it.ObservedAt,
 		ValidFrom:   &it.ValidFrom,
 		ValidTo:     &it.ValidTo,
@@ -155,7 +164,6 @@ func memoryItemView(it memory.Item) apigen.MemoryItemView {
 		Status:      apigen.MemoryItemViewStatus(it.Status),
 		Visibility:  it.Visibility,
 		Sensitivity: apigen.MemoryItemViewSensitivity(it.Sensitivity),
-		Supersedes:  it.Supersedes,
 		CreatedAt:   it.CreatedAt,
 		UpdatedAt:   it.UpdatedAt,
 	}

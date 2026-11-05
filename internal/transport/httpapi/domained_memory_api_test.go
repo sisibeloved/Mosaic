@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -108,6 +109,32 @@ func TestMemoryCreateDomainedAPIT(t *testing.T) {
 	}
 	if id, _ := v["memory_id"].(string); len(id) < 8 || id[:4] != "mem_" {
 		t.Fatalf("memory_id 形态错：%v", v["memory_id"])
+	}
+}
+
+// 一审 #1：省略 source_refs → 契约响应恒空数组（不出 null——页面 .length 面）。
+func TestMemoryCreateSourceRefsAlwaysArrayDomainedAPIT(t *testing.T) {
+	ts, _ := newDomainedMemoryTestServer(t, "tok")
+	body := memCreateBody()
+	delete(body, "source_refs")
+	resp := memPost(t, ts.URL+"/v1/memory/items", "tok", body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("应 201，得 %d", resp.StatusCode)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(raw, []byte(`"source_refs":[]`)) {
+		t.Fatalf("source_refs 应序列化为 []，得 %s", raw)
+	}
+	// 显式空数组同口径。
+	body2 := memCreateBody()
+	body2["source_refs"] = []string{}
+	resp2 := memPost(t, ts.URL+"/v1/memory/items", "tok", body2)
+	if resp2.StatusCode != http.StatusCreated {
+		t.Fatalf("应 201，得 %d", resp2.StatusCode)
+	}
+	raw2, _ := io.ReadAll(resp2.Body)
+	if !bytes.Contains(raw2, []byte(`"source_refs":[]`)) {
+		t.Fatalf("source_refs 应序列化为 []，得 %s", raw2)
 	}
 }
 

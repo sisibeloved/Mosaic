@@ -37,6 +37,8 @@ export function MemoryPage() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [listErr, setListErr] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  // 一审 #3：在途续页限制（同游标不重复发）。
+  const [loadingMore, setLoadingMore] = useState(false);
   const seq = useRef(0);
   // 写入表单
   const [formOpen, setFormOpen] = useState(false);
@@ -57,6 +59,12 @@ export function MemoryPage() {
 
   // 列表加载（tab/scope 变化重载；代次作废在途响应）。
   useEffect(() => {
+    reload();
+  }, [ns, scopeFilter]);
+
+  // 一审 #2：刷新统一走**当前浏览条件**（tab + 过滤输入）——写入表单的
+  // namespace/scope 不改写列表口径（Agent 标签下不显示工作区记忆）。
+  const reload = () => {
     const cur = ++seq.current;
     setItems(null);
     setListErr(null);
@@ -72,10 +80,14 @@ export function MemoryPage() {
         if (seq.current !== cur) return;
         setListErr(e instanceof Error ? e.message : String(e));
       });
-  }, [ns, scopeFilter]);
+  };
 
+  // 一审 #3：代次检查 + 在途限制——切域后迟到响应不追加（越域混入），
+  // 同游标在途期间不重复发（重复追加）。
   const loadMore = () => {
-    if (!cursor) return;
+    if (!cursor || loadingMore) return;
+    const cur = seq.current;
+    setLoadingMore(true);
     api
       .listMemoryItems({
         namespace: ns,
@@ -84,10 +96,15 @@ export function MemoryPage() {
         before: cursor,
       })
       .then((v) => {
+        if (seq.current !== cur) return; // 已切换浏览条件——丢弃迟到页
         setItems((prev) => [...(prev ?? []), ...v.items]);
         setCursor(v.next_cursor ?? null);
       })
-      .catch((e: unknown) => setListErr(e instanceof Error ? e.message : String(e)));
+      .catch((e: unknown) => {
+        if (seq.current !== cur) return;
+        setListErr(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => setLoadingMore(false));
   };
 
   // workspace 锚恒 default（表单内锁定）。
@@ -117,15 +134,9 @@ export function MemoryPage() {
         setFormOpen(false);
         setForm((f) => ({ ...f, title: "", content: "", sources: "", observed_at: nowRFC3339(), valid_from: "", valid_to: "" }));
         setMsg("记忆已写入");
-        const cur = ++seq.current;
-        api
-          .listMemoryItems({ namespace: form.namespace, ...(form.scope_id.trim() ? { scope_id: form.scope_id.trim() } : {}), limit: 50 })
-          .then((v) => {
-            if (seq.current !== cur) return;
-            setItems(v.items);
-            setCursor(v.next_cursor ?? null);
-          })
-          .catch(() => {/* 列表刷新失败不打断写入成功反馈 */});
+        // 一审 #2：刷新走**当前浏览条件**（reload 单源）——表单命名空间与
+        // 当前标签不一致时，列表仍保持用户正在看的口径。
+        reload();
       } catch (e) {
         setMsg(e instanceof Error ? e.message : String(e));
       } finally {
@@ -282,15 +293,15 @@ export function MemoryPage() {
               <span className="flex shrink-0 items-center gap-1.5">
                 {it.sensitivity === "sensitive" && <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-500">敏感</span>}
                 <span className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] text-faint">{it.status}</span>
-                <span className="text-[10px] text-faint">{it.source_refs.length} 来源</span>
+                <span className="text-[10px] text-faint">{(it.source_refs ?? []).length} 来源</span>
               </span>
             </button>
             {expanded === it.memory_id && (
               <div className="mt-2 flex flex-col gap-1.5 border-t border-line pt-2">
                 <p className="whitespace-pre-wrap text-sm">{it.content}</p>
-                {it.source_refs.length > 0 && (
+                {(it.source_refs ?? []).length > 0 && (
                   <ul className="flex flex-col gap-0.5 text-xs text-faint">
-                    {it.source_refs.map((ref, i) => (
+                    {(it.source_refs ?? []).map((ref, i) => (
                       <li key={i}>· {ref}</li>
                     ))}
                   </ul>
@@ -304,8 +315,8 @@ export function MemoryPage() {
         ))}
       </ul>
       {cursor && (
-        <button type="button" onClick={loadMore} className="self-center rounded-lg bg-surface-2 px-3 py-1.5 text-sm hover:bg-surface-3">
-          加载更多
+        <button type="button" disabled={loadingMore} onClick={loadMore} className="self-center rounded-lg bg-surface-2 px-3 py-1.5 text-sm hover:bg-surface-3 disabled:opacity-50">
+          {loadingMore ? "加载中…" : "加载更多"}
         </button>
       )}
     </div>

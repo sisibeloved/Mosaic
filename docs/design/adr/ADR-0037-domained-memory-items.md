@@ -1,6 +1,6 @@
 # ADR-0037：0.7.0 分域 MemoryItem——五命名空间记忆基石（0.7.0）
 
-- 状态：Accepted（2026-11-04，随 0.7.0 实施）
+- 状态：Accepted（2026-11-04，随 0.7.0 实施；v0.2 一轮审校修订）
 - 关联：[RFC-0018](../rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（§7.1 数据分层与归属——"增加 Agent、Workspace、Goal/Mission 和职责实例的记忆域；原 Room 记忆不自动变成 Agent 私有记忆；跨域复制须记录授权与来源"；§7.2 MemoryItem 拟定字段；§7.4 MemoryBackend 端口；AT-04）；[RFC-0007](2026-08-25-rfc-0007-context-memory.md)（§7.4 原 Memory 归房间——胶囊/记忆编辑保持房间事件流事实）；[交付计划](../../plan/2026-08-25-delivery-plan.md) 0.7 领域表（0.7.0 唯一交付特性：分域 MemoryItem——Agent、Room、Workspace、Mission、Slot 命名空间）。
 
 ## 背景与问题
@@ -70,6 +70,14 @@ SQLite migration **v32**：`memory_items` 表（全字段列 + `(namespace, scop
 ### 7. 测试与验证
 
 域 UT（锚矩阵：五命名空间 × 存在/不存在/ workspace 锚约束；字段校验矩阵）、memstore UT（CRUD/过滤/游标）、sqlite IT（v32 迁移 + 新旧库升级 + CRUD + 锚集成 + 并发唯一）、httpapi UT（三端点 + 写门 + 400/404/409 语义）、SPA 构建、真机冒烟（建锚→写五域→列表过滤→409 面）。
+
+## 审校修订记录
+
+- v0.2（2026-11-05）：一审 4 项（1 P1 + 3 P2）修复——
+  1. **空数组规范化（#1 P1）**：`source_refs` 省略/空数组三层统一——域 Create 规范化非 nil（JSON `[]` 不出 `null`）；sqlite 读回 null 列兼容（v32 首版已落 null 行统一空数组）；契约视图 nil 兜底；SPA 显示 `?? []` 兜底。
+  2. **创建后刷新口径（#2 P2，前端）**：刷新统一走**当前浏览条件**（`reload` 单源——tab + 过滤输入）——写入表单的 namespace/scope 不改写列表口径。
+  3. **续页竞态（#3 P2，前端）**：`loadMore` 加代次检查（切域后迟到响应不追加——越域混入关闭）+ 在途限制（同游标不重复发）。
+  4. **游标域内定位（#4 P2）**：sqlite 子查询与 memstore 匹配均限定 `namespace`——外域同 ID 作 before 一律空页（与未知 ID 同语义，越域存在性不泄漏）。
 
 ## 后果
 
