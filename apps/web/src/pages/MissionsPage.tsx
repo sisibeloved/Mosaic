@@ -69,6 +69,17 @@ type FrozenDraft = Partial<Record<
   budget?: Partial<Record<"concurrency" | "max_runs" | "max_wall_clock_seconds" | "max_retries" | "max_delegation_depth", string>>;
 };
 
+/** 十一审 #2：提交时快照——发送创建请求前一并冻结来源、字段归属与载荷；
+ * 409 返回时（等待期间可能已切到其它任务卡编辑）按这份快照构建续接目标
+ * 与冻结编辑——被后续编辑改写的 form/归属不入本次合并。 */
+type SubmittedDraft = {
+  room: string; task: string;
+  fieldOwners: Record<string, string>;
+  budgetOwners: Record<string, string>;
+  fields: Record<string, string>;
+  budget: Record<string, string>;
+};
+
 export function MissionsPage() {
   const [missions, setMissions] = useState<MissionSummary[] | null>(null);
   const [listErr, setListErr] = useState<string | null>(null);
@@ -171,17 +182,23 @@ export function MissionsPage() {
   useEffect(() => {
     const room = form.room.trim();
     const task = form.task.trim();
-    // 十审 #1/#2：lastSrc 逐字跟踪；**首绑来源**（空 → 卡）把绑定前的编辑
-    // 归属迁移到新卡（先填正文/预算再填卡不丢草稿）；换卡（卡 → 卡）不迁移
-    //（旧卡字段不属于新卡——跨卡污染关闭）。
+    // 十一审 #1：lastSrc 逐字跟踪；归属迁移只在**完整来源**（room 与 task
+    // 皆非空）建立时发生——把所有**未绑定草稿**（归属为空键或部分键：先填
+    // 正文/预算、或只填 room 期间的编辑）一次迁移到完整键。部分来源（只填
+    // room）不迁移（归属停在未绑定，待完整来源建立后统一迁移）；换卡（完整
+    // → 完整）不迁移（旧卡字段不属于新卡——跨卡污染关闭）。
+    const srcKeyComplete = (k: string) => {
+      const i = k.indexOf("|");
+      return k.slice(0, i).trim() !== "" && k.slice(i + 1).trim() !== "";
+    };
     const prevKey = lastSrcRef.current.room + "|" + lastSrcRef.current.task;
     const nextKey = room + "|" + task;
-    if (prevKey.replace("|", "") === "" && nextKey.replace("|", "") !== "") {
+    if (srcKeyComplete(nextKey) && !srcKeyComplete(prevKey)) {
       for (const [name, owner] of Object.entries(fieldOwnersRef.current)) {
-        if (owner.replace("|", "") === "") fieldOwnersRef.current[name] = nextKey;
+        if (!srcKeyComplete(owner)) fieldOwnersRef.current[name] = nextKey;
       }
       for (const [name, owner] of Object.entries(budgetOwnersRef.current)) {
-        if (owner.replace("|", "") === "") budgetOwnersRef.current[name] = nextKey;
+        if (!srcKeyComplete(owner)) budgetOwnersRef.current[name] = nextKey;
       }
     }
     lastSrcRef.current = { room, task };
@@ -331,6 +348,20 @@ export function MissionsPage() {
       max_wall_clock_seconds: Number(budget.max_wall_clock_seconds),
       max_retries: Number(budget.max_retries), max_delegation_depth: Number(budget.max_delegation_depth),
     };
+    // 十一审 #2：发送前冻结**提交时快照**——来源、字段归属与载荷一并拷贝。
+    // 等待响应期间切到其它任务卡编辑（form/归属已被改写）不影响 409 冻结。
+    const fk = form.room.trim() + "|" + form.task.trim();
+    const snap: SubmittedDraft = {
+      room: form.room.trim(), task: form.task.trim(),
+      fieldOwners: { ...fieldOwnersRef.current },
+      budgetOwners: { ...budgetOwnersRef.current },
+      fields: {
+        objective: form.objective, scope: form.scope, acceptance: form.acceptance,
+        deliverables: form.deliverables, sources: form.sources, returns: form.returns,
+        reviewer: form.reviewer, owner: form.owner,
+      },
+      budget: { ...budget },
+    };
     void (async () => {
       const err = await act(async () => {
       const m = await api.createMission({
@@ -357,21 +388,16 @@ export function MissionsPage() {
       });
       // 来源已被他处交办（列表陈旧）——保留录入切续接模式（重取映射与版本）
       if (err?.code === "source_already_mapped") {
-        pendingMergeRef.current = { room: form.room.trim(), task: form.task.trim() };
-        // 十审 #1：冻结本卡编辑快照——按字段归属过滤当前值（A 卡残留不入册）。
-        const fk = form.room.trim() + "|" + form.task.trim();
-        const cur2 = {
-          objective: form.objective, scope: form.scope, acceptance: form.acceptance,
-          deliverables: form.deliverables, sources: form.sources, returns: form.returns,
-          reviewer: form.reviewer, owner: form.owner,
-        };
+        // 十一审 #2：以**提交时快照**（发送前冻结的来源/归属/载荷）构建续接
+        // 目标与冻结编辑——等待期间切换任务卡改写的 form/归属不入本次合并。
+        pendingMergeRef.current = { room: snap.room, task: snap.task };
         const frz: FrozenDraft = {};
-        for (const [name, val] of Object.entries(cur2)) {
-          if (fieldOwnersRef.current[name] === fk && val.trim()) frz[name as keyof FrozenDraft] = val;
+        for (const [name, val] of Object.entries(snap.fields)) {
+          if (snap.fieldOwners[name] === fk && val.trim()) frz[name as keyof FrozenDraft] = val;
         }
         const fb: NonNullable<FrozenDraft["budget"]> = {};
         for (const k of ["concurrency", "max_runs", "max_wall_clock_seconds", "max_retries", "max_delegation_depth"] as const) {
-          if (budgetOwnersRef.current[k] === fk) fb[k] = budget[k];
+          if (snap.budgetOwners[k] === fk) fb[k] = snap.budget[k];
         }
         if (Object.keys(fb).length) frz.budget = fb;
         frozenDraftRef.current = frz;
