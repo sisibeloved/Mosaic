@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.79 |
+| 版本 | v2.80 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -205,6 +205,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.80 | 2026-11-05 | Mosaic 项目组 / ZCode | **0.6.13 十审修复（2 P1；ADR-0036 v1.1）**。前端字段级任务卡归属（fieldOwners/budgetOwners——换卡隔离旧编辑）+ 409 冻结快照（合并只消费冻结副本）+ 首绑来源接纳（空→卡归属迁移——先草稿后来源不丢输入）。验证：SPA 构建 + vet/UT + 真机冒烟 22+19 项复跑 ALL-PASS |
 | v2.79 | 2026-11-05 | Mosaic 项目组 / ZCode | **0.6.13 九审修复（1 P1 + 1 P2；ADR-0036 v1.0）**。前端按卡草稿快照（合并只用当前卡编辑记录——跨卡污染关闭）；恢复面 paused/canceling 分支读写错误上抛（读失败跳过不重复写/写失败保留 running）。验证：UT/IT 全绿 + vet/-race + it/st + SPA；真机冒烟 22+19 项复跑 ALL-PASS |
 | v2.78 | 2026-11-04 | Mosaic 项目组 / ZCode | **0.6.13 八审修复（3 P1 + 3 P2；ADR-0036 v0.9）**。前端已确认卡语义（输入草稿不触发清理——恰一次离开清理）；PreRun 移入 supervisor（Boot 后/Session.Run 前复核——Boot 期撤权关闭）；交付首步核对持久停止标记（注册前暂停恢复不交付/读失败阻止）；复核闭包用 runCtx（断开不 failed）；恢复面审计（原动作码/去重）与错误上抛（读失败跳过/写失败保留 running）。验证：IT（TestPauseBeforeRegisterIT 标记仲裁）+ UT（TestRecoverStopMarkerBranches 恢复审计两分支）+ vet/-race + it/st + SPA 绿；真机冒烟 22+19 项复跑 ALL-PASS |
 | v2.77 | 2026-11-04 | Mosaic 项目组 / ZCode | **0.6.13 七审修复（4 P1 + 6 P2 + 1 P3 + 既有 P1；ADR-0036 v0.8）**。前端来源草稿边界（仅换卡重置/换卡清草稿/列表加载锁 formLocked）；停止标记入暂停/取消事务（NOT EXISTS 去重恰一条；信号路径零持久写）；PreDeliver 交付时点授权复核（经结果通道仲裁——暂停在场 canceled）；恢复面核对 Run 停止标记（不再误判 unknown）；终写失败上抛 ErrTerminalWrite；执行会话按 Run 隔离（撤权后不复用旧线程）；runs 409 补 budget_exhausted。验证：IT（暂停事务标记/恢复兑现/终态去重）+ UT + vet/-race + it/st + SPA 绿 + 生成物幂等；真机冒烟 22+19 项复跑 ALL-PASS |
