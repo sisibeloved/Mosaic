@@ -4,31 +4,32 @@
 
 ## [Unreleased]
 
+## [0.6.13] - 2026-11-04
+
+### Added
+
+- **0.6 域收口：网关续接、Slot 职责寻址与墙钟强制**（0.6 领域线第十四件 / ADR-0036，RFC-0018 §4.5/§6.1/§10.3，AT-14/15/18——v2.69 盘点三项落差收口）：**网关续接 `POST /v1/dispatch/update`**（= mission_update，§10.3）：幂等键先行（同键同载荷重放原回执 / 同键异载荷 409 / pending 恢复重驱动）→ 服务端复核（任务存在 + owner active——续接不发往已停身份）→ revise（CAS + 归属锚由网关以服务端读值填充，**owner 不变**——换人走交接）→ 回执（`domain_command_id = mission:<id>:revise:v<新版本>`）；领域拒绝原样透传（网关不吞并）；无 route 决策行（无寻址面，竞态防护即 CAS + 归属锚）。**Slot 职责寻址**（§4.5）：resolve 请求 += `slot_instance_id`（显式实例）或 `slot_spec_id`（模板——scope 内无实例 blocked `slot_no_instance` / 多实例歧义 blocked `slot_ambiguous` 禁止猜选 / 恰一实例继续）；寻址链 scope → SlotInstance → **active Binding** → AgentID（无 active 任职 blocked `slot_unassigned`——**不自动激活 ready Binding**）；解析结果写入决策存档的 owner（`selection_source=slot_binding`）；**投递复核**：决策后任职换人 → `route_stale` 重新解析（§4.6"不能只改路由缓存"）；与显式 `owner_agent_id` 互斥（并存 400——显式 Agent ≠ 责任已移交）。**墙钟强制**（§6.1 / AT-18）：Run 进入 running 时按执行开始契约的 `budget.max_wall_clock_seconds` 快照 `deadline`（migration v30：runs += deadline 列；修订不追改在途）；扫描过期 → 走既有停止面（run canceled + `cause=wall_clock_exceeded` 事件 + Mission 回 ready，迟到结果只审计）——停止面零新增机制；**max_runs 派发上限**一并落：已创建 Run 总数达上限不再派发（`budget_exhausted_hits` 诊断计数，任务停留 ready 不被静默吞）。
+  - **契约**：`DispatchUpdateRequest` schema + `DispatchResolveRequest` += slot 引用 + `SchedulerStatus` += `budget_exhausted_hits`；apigen/TS 再生成。
+  - **装配**：`dispatch.SlotLookups` 端口（app 直查 store——实例/active 任职存储事实）；`runMissionsAdapter.ListReady` 携 budget 快照（墙钟 + max_runs）。
+  - 验证：UT 续接幂等/复核/透传族 + 寻址五分支 + 换绑 stale + 墙钟到期停止（可变时钟 + 阻塞执行器）+ max_runs 上限；IT v30 新库/旧库升级 + deadline 落行与过期查询；API 续接全链 + slot 寻址；全量 vet/-race + it/st + SPA 绿；真机冒烟 13 项 ALL-PASS（v30 结构 + max_runs 上限实测 + 续接幂等 + 寻址/换绑 stale/互斥/无任职）。
+
 ### Fixed
 
 - **0.6.13 十二审修复（2 P1，ADR-0036 v1.3）**：
   - **逐字输入来源丢草稿（#1，前端）**：删除来源键迁移——task 首字符形成的伪完整中间键不再把未绑定草稿归属固定死；改为**提交时**按最终来源接纳（归属为空键/部分键/逐字中间键——提交键的输入前缀态——划归提交键，其它完整卡键隔离）。先填正文与 1 次/60 秒、再逐字输入来源补全，409 续接保留草稿与限制。
   - **切已映射卡清掉待合并记录（#2，前端）**：待合并冻结编辑按任务卡 Map 保留——其它任务卡的详情加载不清除记录；回到引发 409 的卡才消费；提交成功清空。A 等待 409 期间切到已映射 B 编辑，回到 A 续接仍合并 A 的提交快照。
 
-### Fixed
-
 - **0.6.13 十一审修复（2 P1，ADR-0036 v1.2）**：
   - **先草稿后来源仍丢输入（#1，前端）**：归属迁移改为只在**完整来源**（room 与 task 皆非空）建立时统一迁移——部分来源（只填 room）不再提前把未绑定草稿迁到部分键。先填正文与 1 次/60 秒预算、再依次填写 room、task，409 续接保留该草稿与限制（不再落库服务器原文与 32 次/86400 秒）。
   - **异步 409 丢提交时载荷（#2，前端回归）**：创建请求发送前冻结**提交时快照**（来源、字段归属、载荷一并拷贝）；409 返回时按快照构建续接目标与冻结编辑——等待响应期间切到其它任务卡编辑不再改写本次合并（A 的正文与 1 次/60 秒限制保留）。
-
-### Fixed
 
 - **0.6.13 十审修复（2 P1，ADR-0036 v1.1）**：
   - **跨卡污染残留（#1，前端）**：草稿归属改为**字段级**——每个契约/预算字段记录最后一次编辑所在卡；409 时按归属冻结本卡编辑快照（合并只消费冻结副本）。未映射 A 卡切到 B 后，只改 B 的目标/范围不再把 A 的 200 次上限与验收/交付/来源/返回带入 B 的合并（未在本卡编辑的字段回落 B 现行值）。
   - **先草稿后来源丢输入（#2，前端）**：**首绑来源**（空 → 卡）把绑定前的编辑归属迁移到新卡——先填正文与 1 次/60 秒预算、再首次填写任务卡，409 合并保留该草稿与预算（不再落库服务器原文与 32 次/86400 秒缺省）。
 
-### Fixed
-
 - **0.6.13 九审修复（1 P1 + 1 P2，ADR-0036 v1.0）**：
   - **跨卡预算/契约污染回归（#1，前端）**：草稿与编辑记录**绑定具体任务卡**（按卡快照 `cardDraftsRef`）——409 合并只用当前卡的编辑快照：未映射 A 卡编辑的 200 次上限与验收/交付/来源/返回不再写进 B 卡（未在本卡编辑的字段回落 B 的现行值）；预算同样只覆盖本卡快照中编辑过的字段。
   - **恢复错误处理遗漏（#2）**：paused/canceling 恢复分支补齐读写错误语义——停止标记读取失败上抛跳过（不再当不存在重复写 stop_requested）；canceled 写失败保留 running 可重试（恢复返回错误，不再静默报成功）。
-
-### Fixed
 
 - **0.6.13 八审修复（3 P1 + 3 P2，ADR-0036 v0.9）**：
   - **逐字输入来源误清草稿（#1，前端）**：预算/草稿绑定**已确认卡**（详情命中过的来源）——输入中的来源是草稿不触发清理；仅离开已确认卡时清理一次（正文不再丢、预算不再回默认）。
@@ -37,8 +38,6 @@
   - **恢复审计不一致（#4）**：标记分支 canceled 携原停止动作码（pause/cancel）与 recovery 标记、无重复 stop_requested；paused/canceling 恢复分支同样映射动作码并按去重规则写事件。
   - **恢复失败误吞（#5）**：停止标记**读取失败**上抛跳过（不再当不存在误判 unknown）；canceled 写失败保留 running 可重试（不落 unknown/waiting），恢复返回错误。
   - **断开连接致 failed（#6）**：交付前复核闭包改用 **runCtx**（脱离请求上下文——客户端断开不使授权读取失败把 Run 记 failed）。
-
-### Fixed
 
 - **0.6.13 七审修复（4 P1 + 6 P2 + 1 P3 + 既有 P1，ADR-0036 v0.8）**：
   - **首填来源放宽预算（#1，前端）**：仅换卡（上一来源非空）时重置预算/草稿——先设 1 次/60 秒再首次填写房间任务卡不再被默认值覆盖。
@@ -53,8 +52,6 @@
   - **budget_exhausted 文档（#11）**：手动执行 409 说明补齐（须上调契约预算后重试）。
   - **既有 P1（旧线程复用）**：执行会话按 **Run** 隔离（`mrun:<run_id>`）——撤权重装配后不再 resume 旧线程（旧线程携带已撤销上下文）；任务连续性由清单 Inline 每次全量重递。
 
-### Fixed
-
 - **0.6.13 六审修复（2 P1 + 1 P2 + 1 P3 + 2 基线，ADR-0036 v0.7）**：
   - **跨卡预算串写（#1，前端）**：预算值与编辑集绑定 room/task——切换来源即丢弃上一卡的编辑；A 卡的 200 次上限不再写进 B 卡的续接合并。
   - **暂停→恢复窗口发布正文（#2）**：停止信号**首次送达**即把 stop_requested 持久写入该 Run 的事件流（resume 不清除）；终态写事务核对 **Run 自身**的停止事实——暂停后立即恢复，旧 Run 取得写锁也改判 canceled、正文只审计。
@@ -62,8 +59,6 @@
   - **手动执行 409 说明（#4）**：OpenAPI 补 grant_drift（及 contract_drift/owner_not_active）与"按现行授权重新装配后重试可降级执行"的语义。
   - **基线 P1（交付前撤权）**：提交执行器**之前**复核授权快照指纹——Run 建行后、输入交付前撤权，旧清单不再送达执行器（Run failed 留档 + 重新装配降级）。
   - **基线 P2（收起预算丢设置，前端）**：新建时用户编辑过任何预算字段后，即使收起面板也随请求发送——显式设置的 1 次/60 秒不被缺省 32 次/1 天覆盖。
-
-### Fixed
 
 - **0.6.13 五审修复（3 P1 + 4 P2 + 1 P3 + 既有 P1，ADR-0036 v0.6）**：
   - **预算字段级编辑（#1/#2，前端）**：按字段记录用户编辑——冲突合并以现行预算为底仅覆盖编辑过的字段（只展开面板或只改并发数不再把 1 次/60 秒放宽成 32 次/1 天）；预算面板展开状态移出详情加载依赖（展开/收起只改显示——不再触发重载覆盖已合并或编辑中的草稿）。
@@ -75,16 +70,12 @@
   - **授权冲突 409（#7）**：`ErrGrantDrift` 映射 409 `grant_drift`（手动执行与其他冲突一致——重新装配后可执行，不再 500）。
   - **遗留指引统一（#8）**：删除 SQLite/内存分支残留的"携当前版本重试"旧指引（照做必得摘要冲突）——仅保留 ErrLegacyPendingUnresolved 的单一处置流程（GET claims 取摘要 → 确认未执行 → release → 更正载荷重提）。
 
-### Fixed
-
 - **0.6.13 四审修复（4 P1 + 4 P2，ADR-0036 v0.5）**：
   - **冲突草稿合并（#1/#2/#5，前端）**：create 撞 409 后保留的用户草稿绑定引发冲突的 room/task（切换来源即丢弃——不再串入其他任务）；命中同源时以现行契约为底稿**合并**用户显式输入字段，未编辑字段与预算留现行值（不清空验收/交付、不放宽预算），合并结果回填供核对；预算开关与输入在详情加载期间禁编辑。
   - **可选授权撤销仍交付（#3）**：execctx 装配计算授权快照指纹（GrantFingerprint）随清单传递，`CreateRun` 建行事务内与当前授权比对——可选上下文/工具撤销（必需判定不变）即 `ErrGrantDrift`（409 `grant_drift`）拒领，重新装配按剩余授权降级（RFC §11.4 撤权立即阻止新交付）。
   - **release 可撤在途建单认领（#4）**：处置资格限定 update 类认领（route_id 空）——create 在途认领 409 `claim_not_releasable`，杜绝公开入口释放在途建单导致同键两单串回执。
   - **写锁等待期停止被完成覆盖（#6）**：`UpdateRunTerminal` 在取得写锁后以现行时刻核对行上 deadline——completed/failed 改按 canceled 落终态、结果仅 late_result 审计（失败终态同样并入停止归档）。
   - **遗留处置闭环（#7/#8）**：`GET /v1/dispatch/claims/{key}` 认领只读面（提供 release 所需完整摘要与状态）；`ReleaseClaim` 单一写事务判定+删除（仅 RowsAffected=1 为 released，零行按真值分辨 finalized/not_found/digest_mismatch——并发完结不再误报成功）；`legacy_pending_unresolved` 文案改为正确指引。
-
-### Fixed
 
 - **0.6.13 三审修复（4 P1 + 2 P2 + 既有前端 2 P2，ADR-0036 v0.4）**：
   - **同键并发串单（#1）**：create 路径拒绝不再释放认领——并发孪生共享同一条 pending，单方释放会让异摘要请求冒用键建第二单（A/B 均成功、重放互串）。拒绝后同键同载荷重试重驱动/重放胜者回执。
@@ -95,8 +86,6 @@
   - **遗留认领处置（#6）**：旧候选版（未发布）遗留 pending 的续接认领 → 明确 `409 legacy_pending_unresolved` 待核验（不冒领）；`POST /v1/dispatch/claims/{key}/release`（确认未执行后释放，digest 核对）；`ClaimByKey` 认领只读面；release 后携当前版本同键重提。
   - **前端（既有两项）**：详情加载期间契约字段禁编辑（防读取返回覆盖输入）；create 撞 `source_already_mapped` 后保留录入切续接模式（仅取现行版本与基准，不预填覆盖）。
 
-### Fixed
-
 - **0.6.13 复审修复（13 项：5 P1 + 6 P2 + 2 P3，ADR-0036 v0.3）**：
   - **建单事务门统一**（#3/#5/#7）：`CreationGate`（职责意图五核 + 模板唯一性锚 + `RequireOwnerActive` 身份门）——显式 owner 网关交办在建单事务内核对身份（预检后退役/暂停不得落入新承诺）；模板引用的建单核对该 scope 实例集仍恰为解析实例（长出兄弟实例即歧义拒建；显式实例路径不受限）；授权档案事务内快照补 `workspace_access`（合法 read_write 不再被当 none 误拒 409）。
   - **执行预算单快照**（#4/#10）：预算取**清单钉住版本的契约层**（与执行输入同版本——RefOf 后修订收紧即时生效，不混用两版本）；`CreateRun` 建行事务内核对现行契约版本（漂移 409 `contract_drift` 释放租约重新装配）与现行 max_runs；执行者门核负责人 active + 所钉任职未失效/换人（暂停身份启动 409 `owner_not_active`，任务停留 ready）。
@@ -106,21 +95,12 @@
   - **前端续接模式重写**（#1/#2/#6）：目标/版本/完整草稿（含 constraints/delegation 基准——全量替换不清空不可编辑字段）在详情请求成功后**同请求原子生效**；切换来源作废旧请求（代次）；加载/失败禁用提交并提供重试；版本基准 = 预填同一详情响应（列表陈旧不再反复 409）；真并发冲突提供显式重新加载。
   - **摘要墓碑**（#13）：`ListMissions` 摘要与详情对房间来源给出同一 `deleted_at` 墓碑事实。
 
-### Fixed
-
 - **0.6.13 独立审校修复（17 项：5 P1 + 10 P2 + 2 P3，ADR-0036 v0.2）**：
   - **续接原子化**：`dispatch.Update` 在 SQLite 上以**单写事务**完成认领 + 复核（事务内身份门——owner 在册且 active）+ 修订 + 回执（`UpdateMissionAtomic`；内存件分步退化 + 拒绝回滚补偿）——修订已生效而回执失败不再留下"同键重试 409"的裂口（审校 #3）；领域拒绝/身份门失败整体回滚**不占幂等键**，修正后同键重试成功（#11）；owner 状态读取失败即错、未指派/未在册/非 active 明确拒绝（#12）；恢复重驱动命中 pending 采纳**原回执行**——与重放同 receipt_id（#13）；`reason` 随回执持久化并读回、目标引用携修订后版本 `mission:<id>:v<n>`（#16）；入口字段校验 400 先于认领（#17）；公开回执查询只见已提交行（pending 不可见）。
   - **Slot 派发链补强**：解析事实（实例 + 任职）作为决策事实另存、**原请求摘要**稳定——换绑后重解析同一请求同键可重放已提交回执（#10）；建单在**同一写事务**内核对实例/任职/身份/授权四项——换绑、暂停、撤权不得插进复核与建单之间（#2/#7，`CreateMissionSlot` + `mission.ErrSlotIntentViolated` → 409 route_stale）；解析所得实例落 `missions.slot_instance_id` 创建事实，执行装配按实例固定 Binding——**同人双任职不再串用**（#1，`Bindings.ActiveOfInstance`）；预检补 owner active 与授权准入（blocked `agent_not_active` / `slot_grant_missing`，#7）；契约对齐：`selection_source` 补 `slot_binding`/`explicit_owner`、reason_code 补 slot 族、决策回包携 `resolved_slot_instance_id`/`resolved_agent_id`（#9）。
   - **执行预算收口**：墙钟监控改**独立 ticker** + 按 **RunID** 直达停止——不被同步执行器阻塞（审校 #4：阻塞执行器跨多个扫描周期 Run 仍 running），同 Mission 换发的新 Run 未到期不误伤；启动前经 `RefOf` 重读**权威预算**（手动与自动入口共用——#5/#8：手动两次 POST 达限 409 `budget_exhausted` + deadline 落快照；排队期修订收紧/放宽即时生效；预算查询失败中止派发）；`max_runs` 核对移入 `CreateRun` 建行事务（并发孪生恰一胜者，#14）；期限比较改**时刻**——RFC3339Nano 小数位数不定，字典序 `.11Z < .1Z` 会漏已过期行/选中未来行（双存储同修，#15）。
   - **任务卡续接入口**（#6）：`MissionSummary` += `room_source`；已交办任务卡在 MissionsPage 表单切"追加要求"模式，经 `/v1/dispatch/update` 续接（稳定幂等键 + 现行契约预填），不再撞 createMission 的 409 `source_already_mapped`。
   - 换绑回归补强：`TestDispatchSlotStaleRereresolve` 重写为未映射任务卡起步（先断言 resolved 再换绑验 409——原测试第二任务卡预先被占用，删除复核分支仍侥幸通过）。
-
-### Added
-
-- **0.6 域收口：网关续接、Slot 职责寻址与墙钟强制**（0.6 领域线第十四件 / ADR-0036，RFC-0018 §4.5/§6.1/§10.3，AT-14/15/18——v2.69 盘点三项落差收口）：**网关续接 `POST /v1/dispatch/update`**（= mission_update，§10.3）：幂等键先行（同键同载荷重放原回执 / 同键异载荷 409 / pending 恢复重驱动）→ 服务端复核（任务存在 + owner active——续接不发往已停身份）→ revise（CAS + 归属锚由网关以服务端读值填充，**owner 不变**——换人走交接）→ 回执（`domain_command_id = mission:<id>:revise:v<新版本>`）；领域拒绝原样透传（网关不吞并）；无 route 决策行（无寻址面，竞态防护即 CAS + 归属锚）。**Slot 职责寻址**（§4.5）：resolve 请求 += `slot_instance_id`（显式实例）或 `slot_spec_id`（模板——scope 内无实例 blocked `slot_no_instance` / 多实例歧义 blocked `slot_ambiguous` 禁止猜选 / 恰一实例继续）；寻址链 scope → SlotInstance → **active Binding** → AgentID（无 active 任职 blocked `slot_unassigned`——**不自动激活 ready Binding**）；解析结果写入决策存档的 owner（`selection_source=slot_binding`）；**投递复核**：决策后任职换人 → `route_stale` 重新解析（§4.6"不能只改路由缓存"）；与显式 `owner_agent_id` 互斥（并存 400——显式 Agent ≠ 责任已移交）。**墙钟强制**（§6.1 / AT-18）：Run 进入 running 时按执行开始契约的 `budget.max_wall_clock_seconds` 快照 `deadline`（migration v30：runs += deadline 列；修订不追改在途）；扫描过期 → 走既有停止面（run canceled + `cause=wall_clock_exceeded` 事件 + Mission 回 ready，迟到结果只审计）——停止面零新增机制；**max_runs 派发上限**一并落：已创建 Run 总数达上限不再派发（`budget_exhausted_hits` 诊断计数，任务停留 ready 不被静默吞）。
-  - **契约**：`DispatchUpdateRequest` schema + `DispatchResolveRequest` += slot 引用 + `SchedulerStatus` += `budget_exhausted_hits`；apigen/TS 再生成。
-  - **装配**：`dispatch.SlotLookups` 端口（app 直查 store——实例/active 任职存储事实）；`runMissionsAdapter.ListReady` 携 budget 快照（墙钟 + max_runs）。
-  - 验证：UT 续接幂等/复核/透传族 + 寻址五分支 + 换绑 stale + 墙钟到期停止（可变时钟 + 阻塞执行器）+ max_runs 上限；IT v30 新库/旧库升级 + deadline 落行与过期查询；API 续接全链 + slot 寻址；全量 vet/-race + it/st + SPA 绿；真机冒烟 13 项 ALL-PASS（v30 结构 + max_runs 上限实测 + 续接幂等 + 寻址/换绑 stale/互斥/无任职）。
 
 ## [0.6.12] - 2026-11-03
 
