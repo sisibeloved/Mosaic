@@ -95,9 +95,9 @@ export function MissionsPage() {
   // 五审 #1：预算按**字段**跟踪用户编辑——合并只覆盖编辑过的字段（展开面板
   // 查看不得放宽其他上限）；面板展开状态不进详情加载依赖（五审 #2）。
   const budgetEditedRef = useRef<Set<string>>(new Set());
-  // 六审 #1：预算草稿与编辑集**绑定 room/task**——切换来源即丢弃上一卡的
-  // 编辑（共用集合会把 A 卡的 200 次写进 B 卡的续接合并）。
-  const lastSrcRef = useRef<{ room: string; task: string }>({ room: "", task: "" });
+  // 六审 #1 + 八审 #1：预算/草稿绑定**已确认卡**（命中映射预填过的来源）——
+  // 逐字输入中的来源是草稿不触发清理；仅离开一张已确认卡时清理上一卡预算与草稿。
+  const confirmedSrcRef = useRef<{ room: string; task: string } | null>(null);
   const [budget, setBudget] = useState({ concurrency: "1", max_runs: "32", max_wall_clock_seconds: "86400", max_retries: "0", max_delegation_depth: "0" });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -133,21 +133,18 @@ export function MissionsPage() {
   useEffect(() => {
     const room = form.room.trim();
     const task = form.task.trim();
-    // 来源变化：仅**换卡**（上一来源非空）时丢弃上一卡的预算与契约草稿
-    //（七审 #1：首填来源不重置——先设预算再填卡不得放宽；#2：换卡清契约
-    // 草稿——A 卡预填值不得经 409 合并写进 B 卡）。
-    if (lastSrcRef.current.room !== room || lastSrcRef.current.task !== task) {
-      const wasCard = lastSrcRef.current.room !== "" && lastSrcRef.current.task !== "";
-      lastSrcRef.current = { room, task };
-      if (wasCard) {
-        budgetEditedRef.current = new Set();
-        setBudget({ concurrency: "1", max_runs: "32", max_wall_clock_seconds: "86400", max_retries: "0", max_delegation_depth: "0" });
-        setForm((f) => ({
-          ...f,
-          objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "",
-          reviewer: "", owner: "",
-        }));
-      }
+    // 八审 #1：清理仅在**离开已确认卡**时发生一次（confirmedSrc 置空后逐字
+    // 输入不再触发）；命中新卡预填/合并时在详情回调里确认新卡。
+    const confirmed = confirmedSrcRef.current;
+    if (confirmed && (confirmed.room !== room || confirmed.task !== task)) {
+      confirmedSrcRef.current = null; // 离开已确认卡——丢弃其预算与草稿（恰一次）
+      budgetEditedRef.current = new Set();
+      setBudget({ concurrency: "1", max_runs: "32", max_wall_clock_seconds: "86400", max_retries: "0", max_delegation_depth: "0" });
+      setForm((f) => ({
+        ...f,
+        objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "",
+        reviewer: "", owner: "",
+      }));
     }
     if (!formOpen || !room || !task || !missions) {
       detailSeq.current++;
@@ -174,6 +171,7 @@ export function MissionsPage() {
       .getMission(hit.mission_id)
       .then((d) => {
         if (detailSeq.current !== cur) return; // 旧请求（来源已切换）——作废
+        confirmedSrcRef.current = { room, task }; // 八审 #1：命中确认（此后离开才清理）
         setUpdateTarget({ missionID: hit.mission_id, version: d.contract_version, key: `web-update-${crypto.randomUUID()}` });
         // 复审 #2：不可编辑字段以同版本契约为基准（全量替换不得清空）。
         setBaseContract({
@@ -299,6 +297,7 @@ export function MissionsPage() {
       setFormOpen(false);
       setForm({ objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "", owner: "", reviewer: "", room: "", task: "" });
       budgetEditedRef.current = new Set();
+      confirmedSrcRef.current = null;
       });
       // 来源已被他处交办（列表陈旧）——保留录入切续接模式（重取映射与版本）
       if (err?.code === "source_already_mapped") {
@@ -345,6 +344,7 @@ export function MissionsPage() {
         setConflictReload(false);
         setForm({ objective: "", scope: "", acceptance: "", deliverables: "", sources: "", returns: "", owner: "", reviewer: "", room: "", task: "" });
       budgetEditedRef.current = new Set();
+      confirmedSrcRef.current = null;
       });
       // 复审 #6：真并发冲突（他处已修订）→ 显式重新加载入口
       if (err?.code === "version_conflict") setConflictReload(true);

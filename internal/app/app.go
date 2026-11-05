@@ -1179,13 +1179,6 @@ func (e supervisorExecutor) Submit(ctx context.Context, in missionrun.ExecutionI
 	if obj, _ := in.Inline["objective"].(string); obj != "" {
 		in.Inline["instruction"] = obj
 	}
-	// 七审 #3：实际交付时点复核——会话启动后、内容送出前核对授权快照指纹
-	//（撤权即放弃交付，错误按执行失败上报）。
-	if in.PreDeliver != nil {
-		if err := in.PreDeliver(); err != nil {
-			return "", err
-		}
-	}
 	profile := agent.Profile{
 		ProfileID: in.AgentID, Adapter: adapterName, DisplayName: in.AgentID,
 	}
@@ -1194,6 +1187,9 @@ func (e supervisorExecutor) Submit(ctx context.Context, in missionrun.ExecutionI
 		ParticipantID: in.AgentID, RoomID: "mrun:" + in.RunID, // 七审既有 P1：会话按 Run 隔离（撤权重装配后不复用旧线程——旧线程携带已撤销上下文；任务连续性由 Inline 每次全量重递）
 		Deadline: time.Now().Add(30 * time.Minute),
 		Context:  agent.Context{Inline: in.Inline},
+		// 八审 #2：交付时点复核经 supervisor——**Boot 完成后**、任务送入
+		// Session.Run 之前（Boot 期间撤权的窗口在此收口；失败即阻止交付）。
+		PreRun: in.PreDeliver,
 	})
 	if err != nil {
 		return "", err

@@ -246,3 +246,70 @@ func TestTerminalWriteArbitration(t *testing.T) {
 		t.Fatalf("期限后失败须并入停止: %+v", out2)
 	}
 }
+
+// TestRecoverStopMarkerBranches 八审 #4/#5：恢复面标记分支——canceled 携原动作码
+// 与 recovery 标记、无重复 stop_requested；paused 分支映射动作码且标记去重；
+// 标记读取失败上抛（memstore 经 missionStatus 错误注入不可行——读取失败路径
+// 由 sqlite 层错误传播保证，此处覆盖可注入面：读取成功分支）。
+func TestRecoverStopMarkerBranches(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	// 场景 A：标记在册（run running + stop_requested{cause:pause}）、mission running
+	seedA := Run{RunID: "run_rc_a", MissionID: "mi_rc_a", Attempt: 1, LeaseID: "lse_a",
+		State: StateRunning, RequestedAt: "t", StartedAt: "t", UpdatedAt: "t"}
+	if _, err := f.svc.store.CreateRun(ctx, seedA, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	f.svc.store.AppendRunEvents(ctx, "run_rc_a", []Event{{
+		RunID: "run_rc_a", EventType: EventStopRequested, OccurredAt: "2026-11-04T14:10:00Z",
+		Payload: map[string]any{"cause": "pause", "persisted_in_tx": true},
+	}})
+	f.missions.status["mi_rc_a"] = "running"
+	if _, err := f.svc.RecoverUnfinished(ctx); err != nil {
+		t.Fatalf("恢复 A: %v", err)
+	}
+	rA, _, _ := f.svc.store.RunByID(ctx, "run_rc_a")
+	if rA.State != StateCanceled {
+		t.Fatalf("A 须 canceled: %+v", rA)
+	}
+	evsA, _ := f.svc.store.RunEvents(ctx, "run_rc_a")
+	stopN, causeOK := 0, false
+	for _, e := range evsA {
+		if e.EventType == EventStopRequested {
+			stopN++
+		}
+		if e.EventType == EventCanceled && evStr(e.Payload, "cause") == "pause" && e.Payload["recovery"] == true {
+			causeOK = true
+		}
+	}
+	if stopN != 1 || !causeOK {
+		t.Fatalf("A 审计（stopN=%d causeOK=%v）: %+v", stopN, causeOK, evsA)
+	}
+	if f.missions.status["mi_rc_a"] != "ready" {
+		t.Fatalf("A Mission 回 ready: %v", f.missions.status["mi_rc_a"])
+	}
+
+	// 场景 B：mission paused（无标记）→ paused 分支映射动作码 pause、恰一 stop_requested
+	seedB := Run{RunID: "run_rc_b", MissionID: "mi_rc_b", Attempt: 1, LeaseID: "lse_b",
+		State: StateRunning, RequestedAt: "t", StartedAt: "t", UpdatedAt: "t"}
+	if _, err := f.svc.store.CreateRun(ctx, seedB, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	f.missions.status["mi_rc_b"] = "paused"
+	if _, err := f.svc.RecoverUnfinished(ctx); err != nil {
+		t.Fatalf("恢复 B: %v", err)
+	}
+	evsB, _ := f.svc.store.RunEvents(ctx, "run_rc_b")
+	stopB, causeB := 0, false
+	for _, e := range evsB {
+		if e.EventType == EventStopRequested {
+			stopB++
+		}
+		if e.EventType == EventCanceled && evStr(e.Payload, "cause") == "pause" {
+			causeB = true
+		}
+	}
+	if stopB != 1 || !causeB {
+		t.Fatalf("B 审计（stopB=%d causeB=%v）: %+v", stopB, causeB, evsB)
+	}
+}

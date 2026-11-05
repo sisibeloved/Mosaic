@@ -795,14 +795,27 @@ func (s *Service) ExecuteMission(ctx context.Context, ref MissionRef) (Run, erro
 	// 际交付时点）。失败经结果通道上报：停止意图在场（暂停/取消已信号）→
 	// Done 分支按停止终理化（canceled，#8）；否则 failed → 终态事务再仲裁
 	//（暂停映射 pause → canceled）。
+	// 八审 #6：复核闭包用 **runCtx**（脱离请求上下文——客户端断开不使授权
+	// 读取失败把 Run 记 failed）。
 	preDeliver := func() error {
 		if manifest.GrantFingerprint == "" {
 			return nil
 		}
-		return s.store.VerifyGrantFingerprint(ctx, r.AgentID, r.BindingID, manifest.GrantFingerprint)
+		return s.store.VerifyGrantFingerprint(runCtx, r.AgentID, r.BindingID, manifest.GrantFingerprint)
 	}
 	done := make(chan execResult, 1)
 	go func() {
+		// 八审 #3：首次交付前核对该 Run 的**持久停止事实**（建行后、句柄注册
+		// 前暂停再恢复——标记在册而注册表无信号；读取失败同样阻止交付）。
+		// 命中即不交付，错误走结果通道 → 终态事务仲裁按标记改判 canceled。
+		if stopped, cerr := s.readPersistedStopCause(runCtx, r.RunID); cerr != nil || stopped != "" {
+			err := fmt.Errorf("停止事实在交付前已持久（%s）——不交付", stopped)
+			if cerr != nil {
+				err = fmt.Errorf("停止事实读取失败（交付阻止）: %w", cerr)
+			}
+			done <- execResult{err: err}
+			return
+		}
 		if err := preDeliver(); err != nil {
 			done <- execResult{err: fmt.Errorf("授权快照漂移（交付前复核）——重新装配: %w", err)}
 			return
@@ -903,6 +916,24 @@ func (s *Service) finalizeWithCleanup(f func(ctx context.Context) error) error {
 	ctx, cancel := s.cleanupContext()
 	defer cancel()
 	return f(ctx)
+}
+
+// readPersistedStopCause 读取该 Run 的持久停止标记 cause（八审 #3/#4：空串
+// = 无标记；err = 读取失败——调用方按阻止交付/上抛处理，不得当不存在）。
+func (s *Service) readPersistedStopCause(ctx context.Context, runID string) (string, error) {
+	evs, err := s.store.RunEvents(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	cause := ""
+	for _, e := range evs {
+		if e.EventType == EventStopRequested {
+			if c, ok := e.Payload["cause"].(string); ok && c != "" {
+				cause = c
+			}
+		}
+	}
+	return cause, nil
 }
 
 // hasPersistedStopMarker 该 Run 是否已有持久 stop_requested（七审 #10：
@@ -1273,16 +1304,27 @@ func (s *Service) RecoverUnfinished(ctx context.Context) (int, error) {
 		now := s.now()
 		mStatus, _, _ := s.missions.StatusOf(ctx, r.MissionID)
 		if mStatus == "canceling" || mStatus == "paused" {
+			// 八审 #4：动作码映射（paused→pause / canceling→cancel——与终态事务/
+			// 控制路径同组常量）；stop_requested 按去重规则仅在无持久标记时写。
+			cause := "pause"
+			if mStatus == "canceling" {
+				cause = "cancel"
+			}
 			r.State = StateCanceled
 			r.ErrorText = "停止请求在途时进程重启——结果未知"
 			r.FinishedAt = now
 			r.UpdatedAt = now
-			if err := s.store.UpdateRun(ctx, r, []Event{
-				{RunID: r.RunID, EventType: EventStopRequested, OccurredAt: now,
-					Payload: map[string]any{"cause": mStatus, "recovery": true}},
+			evs := []Event{
 				{RunID: r.RunID, EventType: EventCanceled, OccurredAt: now,
-					Payload: map[string]any{"cause": mStatus, "recovery": true}},
-			}); err == nil {
+					Payload: map[string]any{"cause": cause, "recovery": true}},
+			}
+			if !s.hasPersistedStopMarker(ctx, r.RunID) {
+				evs = append([]Event{{
+					RunID: r.RunID, EventType: EventStopRequested, OccurredAt: now,
+					Payload: map[string]any{"cause": cause, "recovery": true},
+				}}, evs...)
+			}
+			if err := s.store.UpdateRun(ctx, r, evs); err == nil {
 				_ = s.leases.Release(ctx, r.LeaseID)
 				if mStatus == "canceling" {
 					_ = s.missions.FinishCanceling(ctx, r.MissionID, "recovery_stop")
@@ -1291,23 +1333,28 @@ func (s *Service) RecoverUnfinished(ctx context.Context) (int, error) {
 			}
 			continue
 		}
-		// 七审 #6：Run 自身的持久停止标记（暂停/取消事务内写入——此后恢复/
-		// 重启不清除）→ 按停止兑现收尾（canceled + cause），Mission 回调度列；
-		// 不再误判 unknown/waiting。
-		if s.hasPersistedStopMarker(ctx, r.RunID) {
+		// 七审 #6 + 八审 #4/#5：Run 自身的持久停止标记（暂停/取消事务内写入
+		//——此后恢复/重启不清除）→ 按停止兑现收尾（canceled 携**原停止动作码**
+		// 与 recovery 标记，Mission 回调度列）。标记**读取失败**上抛并跳过该
+		// Run（不得当不存在误判 unknown）；canceled 写失败保留 running 可重试
+		//（不落 unknown/waiting，恢复返回错误）。
+		if mCause, mErr := s.readPersistedStopCause(ctx, r.RunID); mErr != nil {
+			return n, fmt.Errorf("run: 恢复读取停止标记失败（%s）：%w", r.RunID, mErr)
+		} else if mCause != "" {
 			r.State = StateCanceled
 			r.ErrorText = "停止意图在重启前已持久（恢复面兑现）"
 			r.FinishedAt = now
 			r.UpdatedAt = now
 			if err := s.store.UpdateRun(ctx, r, []Event{
 				{RunID: r.RunID, EventType: EventCanceled, OccurredAt: now,
-					Payload: map[string]any{"recovery": true}},
-			}); err == nil {
-				_ = s.leases.Release(ctx, r.LeaseID)
-				_ = s.missions.SetReadyFromRunning(ctx, r.MissionID, "run_canceled")
-				n++
-				continue
+					Payload: map[string]any{"cause": mCause, "recovery": true}},
+			}); err != nil {
+				return n, fmt.Errorf("run: 恢复兑现停止失败（%s，保留 running 可重试）：%w", r.RunID, err)
 			}
+			_ = s.leases.Release(ctx, r.LeaseID)
+			_ = s.missions.SetReadyFromRunning(ctx, r.MissionID, "run_canceled")
+			n++
+			continue
 		}
 		// 0.6.7 / ADR-0030 决策 1/2：无停止意图的在途 Run → unknown（结果不可
 		// 判定——非 failed）+ 租约释放（进程已死）+ Mission → waiting

@@ -1,6 +1,6 @@
 # ADR-0036：0.6 域收口——网关续接、Slot 职责寻址与墙钟强制（0.6.13）
 
-- 状态：Accepted（2026-11-03，随 0.6.13 实施；v0.2–v0.8 七轮审校修订）
+- 状态：Accepted（2026-11-03，随 0.6.13 实施；v0.2–v0.9 八轮审校修订）
 - 关联：[RFC-0018](../rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（§4.5——"任务型职责寻址使用 当前 scope → SlotInstance → active Binding → AgentID → 候选 Runtime。SlotSpec 只作版本化模板，同名模板在不同项目下可有多个实例；禁止跨项目猜选任职者。没有 active Binding 时返回待任职，不能自动激活一个 ready Binding"；§4.6——投递复核与"已提交后从 A 改为 B 走领域交接，不能只改路由缓存"；§10.3——`mission_update` 续接序列与 `route_stale`；§6.1——budget 五项"契约声明事实，运行时强制随 Scheduler 落"；AT-14/15/18）；[ADR-0024](ADR-0024-dispatch-first-slice.md)（网关首切片——create 路径）；[ADR-0028](ADR-0028-single-agent-execution.md)（Scheduler）；[ADR-0029](ADR-0029-mission-pause-resume-cancel.md)（停止面复用）；[ADR-0030](ADR-0030-run-crash-recovery.md)（迟到结果审计复用）；[ADR-0035](ADR-0035-mission-handover.md)（换人走交接——本件寻址不改在途归属）；[交付计划](../../plan/2026-08-25-delivery-plan.md) v2.69 盘点三项落差、负责人裁定"开 0.6.13"。
 
 ## 背景与问题
@@ -69,6 +69,10 @@ v2.69 阶段性验收盘点确认：0.6 出口的既定范围（AT-02/03/10/13�
 ## 修订记录
 
 - v0.1（2026-11-03）：首版（随 0.6.13 实施）。
+- v0.9（2026-11-04）：八审 6 项（3 P1 + 3 P2）修复——三项设计修订：
+  1. **已确认卡语义（前端）**：预算/草稿绑定**已确认卡**（详情命中预填过的来源，`confirmedSrcRef`）——逐字输入中的来源是草稿不触发清理（第二字符不再误判换卡清空正文/放宽预算）；仅离开一张已确认卡时清理一次，命中新卡时确认。
+  2. **交付时点收口两段（§3）**：授权复核经 `agent.Task.PreRun` 在 supervisor 内 **Boot 完成后、Session.Run 之前**调用（Boot 期间撤权窗口关闭）；执行 goroutine 首步核对该 Run 的**持久停止事实**（建行后、句柄注册前暂停再恢复——标记在册注册表无信号；读取失败同样阻止交付），命中即不交付，错误走结果通道由终态事务按标记改判 canceled。复核闭包用 **runCtx**（客户端断开不使授权读取失败记 failed）。
+  3. **恢复面审计与错误语义（§3）**：标记分支 canceled 携**原停止动作码**与 recovery 标记（无重复 stop_requested）；paused/canceling 分支映射动作码（pause/cancel）并按去重规则写事件；标记**读取失败**上抛跳过（不当不存在误判 unknown）；canceled 写失败保留 running 可重试（不落 unknown/waiting、恢复返回错误）。
 - v0.8（2026-11-04）：七审 11 项（4 P1 + 6 P2 + 1 P3）+ 既有 P1 修复——五项设计修订：
   1. **来源草稿边界（前端）**：仅**换卡**（上一来源非空）时丢弃上一卡的预算与契约草稿——首填来源不重置（先设预算再填卡不放宽）；换卡清契约草稿（A 卡预填值不得经 409 合并写进 B 卡）；映射列表未载（null）期间锁定全部契约字段（formLocked——列表到达触发的详情预填不覆盖加载期输入）。
   2. **停止标记入控制事务（§3）**：暂停/取消的 Run 停止标记随 `PauseMission`/`MarkCanceling` **同一事务**写入（`stop_requested{cause=pause|cancel}`，NOT EXISTS 去重恰一条）；信号路径回归**零持久写**（监控只取消进程内上下文——两 Run 同时超时不被首条事件写拖住第二个的取消）；终态裁决组与 finalizeStopped 按存在性去重（恰一条停止审计）。

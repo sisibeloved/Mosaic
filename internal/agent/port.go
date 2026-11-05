@@ -62,6 +62,10 @@ type Task struct {
 	Grant         *Grant    `json:"grant,omitempty"`
 	Deadline      time.Time `json:"deadline"`
 	Context       Context   `json:"context"`
+	// PreRun 交付前复核钩子（0.6.13 八审 #2）：会话 Boot 完成后、任务送入
+	// Session.Run **之前**调用——非 nil 错误即阻止交付（任务不下发）。用于
+	// 授权快照等"实际交付时点"的复核。
+	PreRun func() error `json:"-"`
 }
 
 // DraftUpdate 草稿流安全子集（RFC-0002 v0.5：广播前需过可见性与 DLP/secret scan）。

@@ -89,6 +89,12 @@ func (s *Supervisor) Submit(ctx context.Context, profile Profile, task Task) (Ha
 	}
 	key := sessionKey(profile.ProfileID, task.RoomID)
 	if session, ok := s.sessions[key]; ok {
+		// 八审 #2：既有会话——Boot 早已完成，Run 前复核即实际交付时点。
+		if task.PreRun != nil {
+			if err := task.PreRun(); err != nil {
+				return nil, err
+			}
+		}
 		return session.Run(ctx, task)
 	}
 	session, err := adapter.Boot(ctx, profile)
@@ -96,6 +102,13 @@ func (s *Supervisor) Submit(ctx context.Context, profile Profile, task Task) (Ha
 		return nil, fmt.Errorf("agent: boot %s: %w", profile.Adapter, err)
 	}
 	s.sessions[key] = session
+	// 八审 #2：Boot 完成后、任务送入 Session.Run 之前复核（Boot 期间撤权的
+	// 窗口在此收口——失败即阻止交付，会话留存复用不受影响）。
+	if task.PreRun != nil {
+		if err := task.PreRun(); err != nil {
+			return nil, err
+		}
+	}
 	return session.Run(ctx, task)
 }
 
