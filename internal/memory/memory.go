@@ -413,12 +413,15 @@ func (s *Service) checkAnchor(ctx context.Context, ns Namespace, scopeID string)
 // normTime RFC3339 解析后规范化为 UTC（Z 后缀——一审 #4：sqlite julianday
 // 对部分合法偏移格式（如 +15:00）返回 NULL，写入侧统一 UTC 使时效过滤与
 // 写入校验同语义；解析失败原样返回——校验层先行把关）。
+// 二审 #1：格式化用 **RFC3339Nano**——RFC3339 常量不含小数位会把
+// `.100Z/.900Z` 截成整秒（区间塌缩成相等 → 修订 400；截止 `.900Z` 在
+// `.500Z` 时被提前判过期）。Nano 保留纳秒并去尾零，无损且 julianday 可比。
 func normTime(v string) string {
 	if v == "" {
 		return ""
 	}
 	if t, err := time.Parse(time.RFC3339, v); err == nil {
-		return t.UTC().Format(time.RFC3339)
+		return t.UTC().Format(time.RFC3339Nano)
 	}
 	return v
 }

@@ -6,7 +6,11 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
+
+// timeParse 测试助手（RFC3339 解析——失败由调用方断言处理）。
+func timeParse(v string) (time.Time, error) { return time.Parse(time.RFC3339, v) }
 
 // interceptStore 包装 MemStore——onBeforeCAS 在每次 UpdateItem/SupersedeItem
 // 前回调（模拟并发交错），再透传真 CAS。
@@ -182,5 +186,55 @@ func TestCreateNormalizesTimeToUTC(t *testing.T) {
 	got, err := svc.Revise(ctx, it.MemoryID, ReviseCmd{ExpectedVersion: 1, ValidTo: &clear})
 	if err != nil || got.ValidTo != "2026-11-07T09:00:00Z" {
 		t.Fatalf("修订规范化错：%v %s", err, got.ValidTo)
+	}
+}
+
+// 二审 #1：UTC 规范化不得丢失小数秒——`.100Z/.900Z` 区间经创建/替代后
+// 塌缩成整秒会引发"仅改标题修订 400"与"截止 .900Z 在 .500Z 提前隐藏"。
+func TestNormTimeKeepsFractionalSeconds(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMemStore(), Anchors{}, fixedNow)
+	cmd := okCmd()
+	cmd.ObservedAt = "2026-11-06T12:00:00.100Z"
+	cmd.ValidFrom = "2026-11-06T12:00:00.100Z"
+	cmd.ValidTo = "2026-11-06T12:00:00.900Z"
+	it, err := svc.Create(ctx, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.ValidFrom != "2026-11-06T12:00:00.1Z" || it.ValidTo != "2026-11-06T12:00:00.9Z" {
+		t.Fatalf("小数秒丢失（区间塌缩）：from=%s to=%s", it.ValidFrom, it.ValidTo)
+	}
+	if it.ObservedAt != "2026-11-06T12:00:00.1Z" {
+		t.Fatalf("observed_at 小数秒丢失：%s", it.ObservedAt)
+	}
+	// 时刻无损（解析等价）。
+	f, _ := timeParse(it.ValidFrom)
+	o, _ := timeParse("2026-11-06T12:00:00.100Z")
+	if !f.Equal(o) {
+		t.Fatalf("时刻不等价：%v vs %v", f, o)
+	}
+	// 回归场景：区间条目仅改标题的修订应成功（整秒截断会 from==to → 400）。
+	title := "只改标题"
+	if _, err := svc.Revise(ctx, it.MemoryID, ReviseCmd{ExpectedVersion: 1, Title: &title}); err != nil {
+		t.Fatalf("小数秒区间条目仅改标题修订失败（回归）：%v", err)
+	}
+	// 时效边界：截止 .900Z 在 .500Z 时刻未过期（提前隐藏回归）。
+	if expired(it.ValidTo, "2026-11-06T12:00:00.5Z") {
+		t.Fatalf("截止 .900Z 不应在 .500Z 判过期（小数秒截断回归）")
+	}
+	if !expired(it.ValidTo, "2026-11-06T12:00:00.95Z") {
+		t.Fatalf(".95Z 应已过期")
+	}
+	// 替代路径同规范化（replacement 携带小数秒区间）。
+	cmd2 := okCmd()
+	cmd2.Title = "替代小数秒"
+	cmd2.ObservedAt = "2026-11-06T12:00:00.100+15:00"
+	_, newIt, err := svc.Supersede(ctx, it.MemoryID, 2, "", cmd2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newIt.ObservedAt != "2026-11-05T21:00:00.1Z" {
+		t.Fatalf("替代路径小数秒丢失：%s", newIt.ObservedAt)
 	}
 }

@@ -272,28 +272,77 @@ func TestMemoryItemsLegacyOffsetCompatIT(t *testing.T) {
 	}
 }
 
-// 一审 #2：UpdateItem 状态基准——版本相符但状态已被并发策展时 CAS 拒。
+// 一审 #2（二审测试缺口补强）：UpdateItem 状态基准——**同版本、状态失配**
+// 拒且数据/审计不变（移除状态条件本测试必红：纯版本 CAS 会改写 proposed 行）。
 func TestMemoryItemsStatusBoundedCASIT(t *testing.T) {
 	s := openMemItStore(t)
 	defer s.Close()
 	ctx := context.Background()
-	it, err := s.CreateItem(ctx, memIt(memory.NSAgent, "ag_1", "cas1"))
+	// proposed v1（带留痕基线——不变断言覆盖审计面）。
+	base := memIt(memory.NSAgent, "ag_1", "cas1")
+	base.Status = memory.StatusProposed
+	base.EditHistory = []memory.EditRecord{{Version: 1, Cause: "accept", EditedBy: "owner", OccurredAt: "2026-11-05T12:00:00Z"}}
+	it, err := s.CreateItem(ctx, base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 版本 1 相符、状态不符（行是 proposed，期望 active）——纯版本 CAS 会过。
-	prop := it
-	prop.Status = memory.StatusProposed
-	if _, _, err := s.UpdateItem(ctx, it.MemoryID, 1, memory.StatusActive, prop); err != nil {
+	// 同版本（1 相符）、状态失配（行 proposed，期望 active）——纯版本 CAS
+	// 会过并写回，双基准必须拒。
+	active := it
+	active.Status = memory.StatusActive
+	_, ok, err := s.UpdateItem(ctx, it.MemoryID, 1, memory.StatusActive, active)
+	if err != nil {
 		t.Fatal(err)
 	}
-	got, ok, _ := s.ItemByID(ctx, it.MemoryID)
-	if ok && got.Status == memory.StatusActive {
-		t.Fatal("accept 不递增版本——状态基准必须拦住同名版本的并发交错")
+	if ok {
+		t.Fatal("同版本状态失配应拒（ok=false）——纯版本 CAS 的并发交错窗口")
 	}
-	// 版本不符同拒（既有语义）。
-	if _, ok, _ := s.UpdateItem(ctx, it.MemoryID, 99, memory.StatusActive, it); ok {
-		t.Fatal("版本不符应拒")
+	// 数据/审计不变断言（整行回读比对）。
+	cur, _, _ := s.ItemByID(ctx, it.MemoryID)
+	if cur.Status != memory.StatusProposed || cur.Version != 1 || len(cur.EditHistory) != 1 ||
+		cur.EditHistory[0].Cause != "accept" || cur.Title != it.Title || cur.UpdatedAt != it.UpdatedAt {
+		t.Fatalf("失配拒绝后行被改动：%+v", cur)
+	}
+	// 版本失配（状态相符）同拒且不变。
+	bump := it
+	bump.Version = 2
+	if _, ok, _ := s.UpdateItem(ctx, it.MemoryID, 99, memory.StatusProposed, bump); ok {
+		t.Fatal("版本失配应拒")
+	}
+	cur2, _, _ := s.ItemByID(ctx, it.MemoryID)
+	if cur2.Version != 1 || cur2.Status != memory.StatusProposed {
+		t.Fatalf("版本失配拒绝后行被改动：%+v", cur2)
+	}
+	// 基准相符（版本 + 状态都对）正常通过——语义完备性。
+	acc := it
+	acc.Status = memory.StatusActive
+	acc.EditHistory = append(acc.EditHistory, memory.EditRecord{Version: 1, Cause: "accept", EditedBy: "owner", OccurredAt: "2026-11-05T12:01:00Z"})
+	if _, ok, _ := s.UpdateItem(ctx, it.MemoryID, 1, memory.StatusProposed, acc); !ok {
+		t.Fatal("基准相符应通过")
+	}
+}
+
+// 二审 #1：小数秒时效边界——截止 .900Z 在 .500Z 未过期、.950Z 过期
+// （sqlite julianday 小数比较；整秒截断会提前隐藏）。
+func TestMemoryItemsFractionalExpiryIT(t *testing.T) {
+	s := openMemItStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	live := memIt(memory.NSAgent, "ag_1", "frac1")
+	live.ValidTo = "2026-11-06T12:00:00.900Z"
+	if _, err := s.CreateItem(ctx, live); err != nil {
+		t.Fatal(err)
+	}
+	gone := memIt(memory.NSAgent, "ag_1", "frac0")
+	gone.ValidTo = "2026-11-06T12:00:00.400Z"
+	if _, err := s.CreateItem(ctx, gone); err != nil {
+		t.Fatal(err)
+	}
+	// now=.500Z：frac1 未过期可见；frac0 已过期隐藏。
+	items, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
+		Status: memory.StatusActive, Limit: 50, Now: "2026-11-06T12:00:00.500Z"})
+	if err != nil || len(items) != 1 || items[0].Title != "frac1" {
+		t.Fatalf("小数秒边界过滤错：%d %v", len(items), err)
 	}
 }
 
