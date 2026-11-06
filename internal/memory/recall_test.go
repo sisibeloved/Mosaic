@@ -82,9 +82,46 @@ func TestRecallMemStore(t *testing.T) {
 			t.Fatalf("截断/计数错：%d/%d %v", len(res.Items), res.TotalHits, err)
 		}
 	})
+	t.Run("一审 #2：字面 %/_ 不作通配（与 sqlite ESCAPE 同语义）", func(t *testing.T) {
+		mkRecall(t, svc, NSAgent, "折扣 100%OFF", "c")
+		mkRecall(t, svc, NSAgent, "普通甲", "c")
+		mkRecall(t, svc, NSAgent, "普通乙", "c")
+		res, err := svc.List(ctx, ListFilter{Namespace: NSAgent, Query: "100%"})
+		if err != nil || res.TotalHits != 1 {
+			t.Fatalf("字面 %% 应恰 1：%d %v", res.TotalHits, err)
+		}
+		res, err = svc.List(ctx, ListFilter{Namespace: NSAgent, Query: "_"})
+		if err != nil || res.TotalHits != 0 {
+			t.Fatalf("字面 _ 应 0（无含该字符条目）：%d %v", res.TotalHits, err)
+		}
+	})
+	t.Run("一审 #3：每页 total 恒定（七条 limit=2）", func(t *testing.T) {
+		svc2 := NewService(NewMemStore(), Anchors{}, fixedNow)
+		for i := 0; i < 7; i++ {
+			cmd := CreateCmd{Namespace: NSAgent, ScopeID: "ag_1", Kind: KindSemantic,
+				Title: "页" + string(rune('A'+i)), Content: "c", ObservedAt: "2026-11-05T10:00:00Z"}
+			if _, err := svc2.Create(ctx, cmd); err != nil {
+				t.Fatal(err)
+			}
+		}
+		res, err := svc2.List(ctx, ListFilter{Namespace: NSAgent, Limit: 2})
+		if err != nil || res.TotalHits != 7 {
+			t.Fatalf("首页 total 应 7，得 %d %v", res.TotalHits, err)
+		}
+		for res.NextCursor != "" {
+			res, err = svc2.List(ctx, ListFilter{Namespace: NSAgent, Limit: 2, Before: res.NextCursor})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.TotalHits != 7 {
+				t.Fatalf("续页 total 应恒 7，得 %d", res.TotalHits)
+			}
+		}
+	})
 	t.Run("空查询词 = 非召回（既有列表语义）", func(t *testing.T) {
+		// 本测试 svc 上 active 条目：初始 2 + 字面转义用例新增 3 = 5。
 		res, err := svc.List(ctx, ListFilter{Namespace: NSAgent, Query: "  "})
-		if err != nil || len(res.Items) != 2 || res.TotalHits != 2 {
+		if err != nil || len(res.Items) != 5 || res.TotalHits != 5 {
 			t.Fatalf("空白词应走列表：%d/%d %v", len(res.Items), res.TotalHits, err)
 		}
 	})

@@ -89,20 +89,14 @@ func (m *MemStore) SupersedeItem(_ context.Context, oldID string, expectedVersio
 func (m *MemStore) ListItems(_ context.Context, f ListFilter) ([]Item, int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// 降序遍历（追加序倒排）；before 命中后开始收集。
+	// 降序遍历（追加序倒排）。total = 公共过滤+匹配的**全量计数**（一审 #3：
+	// 不含 before/limit——每页恒定）；before 只作用于收集起点（一审 #4：游标
+	// 只在本域内定位——外域同 ID 不生效 = 空页）。
 	out := make([]Item, 0, f.Limit+1)
 	total := 0
 	started := f.Before == ""
 	for i := len(m.items) - 1; i >= 0; i-- {
 		it := m.items[i]
-		if !started {
-			// 一审 #4：游标只在本域内定位——外域同 ID 不生效（空页，
-			// 与未知 ID/游标失效同语义，越域存在性不泄漏）。
-			if it.MemoryID == f.Before && it.Namespace == f.Namespace {
-				started = true
-			}
-			continue
-		}
 		if it.Namespace != f.Namespace {
 			continue
 		}
@@ -125,15 +119,23 @@ func (m *MemStore) ListItems(_ context.Context, f ListFilter) ([]Item, int, erro
 			continue
 		}
 		total++
+		if !started {
+			// before 之前的（更新的）条目不收集——计数已含（每页恒定）。
+			if it.MemoryID == f.Before {
+				started = true
+			}
+			continue
+		}
 		if f.Query != "" {
 			if len(out) >= f.Limit {
 				continue // 召回模式无游标——只截断，total 继续计
 			}
+		} else if len(out) >= f.Limit+1 {
+			// 一审 #3：非召回模式同样**不 break**——total 继续计满（每页
+			// 总数恒定），只停止收集（limit+1 供 service 判 next_cursor）。
+			continue
 		}
 		out = append(out, it)
-		if f.Query == "" && len(out) >= f.Limit+1 {
-			break
-		}
 	}
 	return out, total, nil
 }

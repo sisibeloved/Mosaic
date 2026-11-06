@@ -1,6 +1,6 @@
 # ADR-0039：0.7.2 记忆召回——FTS5 与授权过滤先行（0.7.2）
 
-- 状态：Accepted（2026-11-05，随 0.7.2 实施）
+- 状态：Accepted（2026-11-05，随 0.7.2 实施；v0.2 一轮审校修订）
 - 关联：[RFC-0018](../rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（§7.3——"授权及有效期过滤**先于**排序、摘要与计数，避免泄漏其他域的内容和存在性"；§7.4——"首版保留 SQLite + FTS5、结构化 scope / 时间 / 来源过滤及按需查询"）；[ADR-0037](ADR-0037-domained-memory-items.md)（0.7.0 基石）；[ADR-0038](ADR-0038-memory-curation-timeliness-superseded.md)（0.7.1 策展——active + 未过期口径即召回前置纪律）；[交付计划](../../plan/2026-08-25-delivery-plan.md) 0.7 领域表（0.7.2 唯一交付特性：授权过滤与 FTS5 召回——先过滤权限，再排序和计数）。
 
 ## 背景与问题
@@ -46,6 +46,14 @@
 ### 6. 测试与验证
 
 域 UT（q 命中集/大小写/total 计数排除 status 与时效过滤项）；sqlite IT（trigram 中文 ≥3 字与英文命中、<3 字 LIKE 回退、**过滤先行断言**——异域同词条目不出现在结果与 total、修订后 FTS 同步旧词不中新词中、superseded 不入召回、触发器同步、v33 存量回填）；httpapi UT（q + total_hits）；真机冒烟（中文召回/过滤先行/total 口径）；全量 vet/-race + it/st + 生成物幂等 + SPA。
+
+## 审校修订记录
+
+- v0.2（2026-11-05）：一审 4 项（1 P1 + 3 P2）修复——
+  1. **MATCH 驱动 JOIN（#1 P1）**：召回改 `FROM memory_fts f JOIN memory_items m ON m.memory_id = f.memory_id WHERE f.memory_fts MATCH ? AND <公共过滤>`——FTS 索引一次 MATCH 驱动、连接过滤、bm25 在 MATCH 行上评分。原 `memory_id IN (子查询)` + 逐候选 `bm25()` 子查询对过滤后每行全扫 FTS 表（1000/9000 命中约 1.56/14s）——受控 300 命中实测 **8ms**。
+  2. **LIKE 字面转义（#2 P2）**：短词路径 pattern 转义 `%`/`_`/`\` 并显式 `ESCAPE '\\'`（SQL 字面单反斜杠）——字面 `100%`/`_a` 恰命中含该字符条目（原通配命中全部）；与 memstore `strings.Contains` 双实现同语义（对照测试固化）。
+  3. **total 与分页解耦（#3 P2）**：计数只含公共过滤（namespace/scope/kind/status/时效），**不含 before**——七条 limit=2 首页与每续页 total 恒 7（sqlite 原续页 5、memstore 原首页 3）；memstore 去提前 break、before 只作用收集门。
+  4. **bm25 真实评分（#4 P2）**：MATCH 与评分共享游标——旧强命中不再被新弱命中挤出（limit=1 用例固化）；与 #1 同行同修但独立断言（评分与扫描分别验收）。
 
 ## 后果
 

@@ -23,6 +23,12 @@ const memoryCols = `memory_id, version, namespace, scope_id, kind, title, conten
  source_refs, observed_at, valid_from, valid_to, confidence, status, visibility,
  sensitivity, supersedes, edit_history, created_at, updated_at`
 
+// memoryColsM 带 m. 前缀的列串（召回 MATCH JOIN 路径——两表 title/content
+// 列名冲突，全列显式前缀）。
+const memoryColsM = `m.memory_id, m.version, m.namespace, m.scope_id, m.kind, m.title, m.content,
+ m.source_refs, m.observed_at, m.valid_from, m.valid_to, m.confidence, m.status, m.visibility,
+ m.sensitivity, m.supersedes, m.edit_history, m.created_at, m.updated_at`
+
 type rowScanner interface{ Scan(dest ...any) error }
 
 func scanMemoryItem(row rowScanner) (memory.Item, error) {
@@ -210,63 +216,114 @@ func insertMemoryItemTx(ctx context.Context, tx *sql.Tx, it memory.Item) error {
 	return nil
 }
 
-// ListItems 过滤 +（可选）召回匹配 + 排序 + 游标 + 计数（0.7.2 / ADR-0039）。
-// 召回模式（q 非空）：授权/时效过滤与 FTS MATCH/LIKE **同一 WHERE**（过滤
-// 先于排序与计数——他域命中不出现在结果与 total）；bm25 升序 + rowid DESC
-// 兜底；无游标（limit 截断，total 为全量计数）。非召回模式：rowid 降序 +
-// before 游标 + limit+1 条。before 未知 = 空页——与 memstore 同口径。
-func (s *Store) ListItems(ctx context.Context, f memory.ListFilter) ([]memory.Item, int, error) {
-	q := `SELECT ` + memoryCols + ` FROM memory_items WHERE namespace = ? AND status = ?`
+// memoryCommonWhere 公共过滤条件（授权 + 状态 + 时效——三条路径共用：
+// 非召回列表、召回 MATCH、召回 LIKE；prefix 为表别名前缀）。返回条件片段
+// 与参数——**不含 before/limit**（分页只在取页时应用；计数用公共条件）。
+func memoryCommonWhere(f memory.ListFilter, prefix string) (string, []any) {
+	where := prefix + `namespace = ? AND ` + prefix + `status = ?`
 	args := []any{string(f.Namespace), string(f.Status)}
 	if f.ScopeID != "" {
-		q += ` AND scope_id = ?`
+		where += ` AND ` + prefix + `scope_id = ?`
 		args = append(args, f.ScopeID)
 	}
 	if f.Kind != "" {
-		q += ` AND kind = ?`
+		where += ` AND ` + prefix + `kind = ?`
 		args = append(args, string(f.Kind))
 	}
 	// 0.7.1 时效口径（ADR-0038 §3）：active 且未显式包含时排除 valid_to <
-	// now——RFC3339 **时刻**比较（0.6.13 审校 #15 教训：字典序在可变小数
-	// 位下漏判），经 datetime() 归一比较。
+	// now（UTC 写入 + NULL 保守包含——0.7.1 一审 #4）。
 	if f.Status == memory.StatusActive && !f.IncludeExpired {
-		// 一审 #4：写入侧已统一 UTC（julianday 全认）；旧数据的合法偏移格式
-		//（如 +15:00）julianday 返回 NULL——**保守包含**不误隐（宁可多显
-		// 不漏显——0.7.2 召回前置过滤再做精确语义）。
-		q += ` AND (valid_to = '' OR julianday(valid_to) IS NULL OR julianday(valid_to) >= julianday(?))`
+		where += ` AND (` + prefix + `valid_to = '' OR julianday(` + prefix + `valid_to) IS NULL OR julianday(` + prefix + `valid_to) >= julianday(?))`
 		args = append(args, f.Now)
 	}
+	return where, args
+}
+
+// likePattern 字面 LIKE 模式（0.7.2 一审 #2：%/_/\ 是 LIKE 通配符/转义符——
+// 搜索字面量须转义并显式 ESCAPE '\'；语义与 memstore strings.Contains 一致）。
+func likePattern(query string) string {
+	esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return "%" + esc.Replace(query) + "%"
+}
+
+// ListItems 过滤 +（可选）召回匹配 + 排序 + 游标 + 计数（0.7.2 / ADR-0039）。
+// 三路径：非召回（rowid 降序 + before 游标 + limit+1）；召回 MATCH ≥3 rune
+// （**一次 MATCH 驱动** JOIN memory_items 过滤——bm25 在 MATCH 行上评分，
+// 一审 #1/#4：逐候选 bm25 子查询既全表扫描又脱离 MATCH 上下文评分恒零）；
+// 召回 LIKE <3 rune（独立路径 + ESCAPE 字面匹配）。total = 公共过滤+匹配
+// 后全量计数（**不含 before**——一审 #3：每页总数恒定）。
+func (s *Store) ListItems(ctx context.Context, f memory.ListFilter) ([]memory.Item, int, error) {
+	if f.Query != "" && len([]rune(f.Query)) >= 3 {
+		return s.listRecallFTS(ctx, f)
+	}
+	if f.Query != "" {
+		return s.listRecallLike(ctx, f)
+	}
+	where, args := memoryCommonWhere(f, "")
+	// 一审 #3：计数先于分页段——公共过滤条件的全量计数（不含 before）。
+	total, err := s.countMemory(ctx, `FROM memory_items WHERE `+where, args)
+	if err != nil {
+		return nil, 0, err
+	}
 	if f.Before != "" {
-		q += ` AND rowid < COALESCE((SELECT rowid FROM memory_items WHERE memory_id = ? AND namespace = ?), 0)`
+		where += ` AND rowid < COALESCE((SELECT rowid FROM memory_items WHERE memory_id = ? AND namespace = ?), 0)`
 		args = append(args, f.Before, string(f.Namespace))
 	}
-	// 0.7.2 召回匹配（过滤先行——WHERE 前段已是授权/时效过滤）。
-	if f.Query != "" {
-		if len([]rune(f.Query)) >= 3 {
-			// trigram ≥3 rune：FTS MATCH（phrase 引号防语法注入——room 先例）。
-			phrase := `"` + strings.ReplaceAll(f.Query, `"`, `""`) + `"`
-			q += ` AND memory_id IN (SELECT memory_id FROM memory_fts WHERE memory_fts MATCH ?)`
-			args = append(args, phrase)
-		} else {
-			q += ` AND (title LIKE ? COLLATE NOCASE OR content LIKE ? COLLATE NOCASE)`
-			args = append(args, "%"+f.Query+"%", "%"+f.Query+"%")
-		}
-	}
-	// total：过滤+匹配后全量计数（不含分页截断——"先过滤再计数"）。
-	var total int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM memory_items WHERE `+strings.TrimPrefix(q, `SELECT `+memoryCols+` FROM memory_items WHERE `), args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("sqlite: count memory items: %w", err)
-	}
-	if f.Query != "" {
-		// 召回模式：bm25 相关性（升序——越小越相关）+ rowid DESC 兜底；无游标。
-		order := ` ORDER BY (SELECT bm25(memory_fts) FROM memory_fts WHERE memory_fts.memory_id = memory_items.memory_id) ASC, rowid DESC LIMIT ?`
-		args = append(args, f.Limit)
-		return s.queryMemoryItems(ctx, q+order, args, total)
-	}
-	q += ` ORDER BY rowid DESC LIMIT ?`
 	args = append(args, f.Limit+1)
-	return s.queryMemoryItems(ctx, q, args, total)
+	return s.queryMemoryItems(ctx,
+		`SELECT `+memoryCols+` FROM memory_items WHERE `+where+` ORDER BY rowid DESC LIMIT ?`, args, total)
+}
+
+// memoryCommonArgs 公共过滤参数（计数复用——与取页同条件但无分页参数）。
+func memoryCommonArgs(f memory.ListFilter) []any {
+	_, args := memoryCommonWhere(f, "")
+	return args
+}
+
+func (s *Store) countMemory(ctx context.Context, fromWhere string, args []any) (int, error) {
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) `+fromWhere, args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("sqlite: count memory items: %w", err)
+	}
+	return total, nil
+}
+
+// listRecallFTS 召回 ≥3 rune：FTS 索引一次 MATCH 驱动 → JOIN 过滤 → bm25
+// 评分排序（一审 #1/#4：MATCH 与评分共享游标——非逐候选子查询）。
+func (s *Store) listRecallFTS(ctx context.Context, f memory.ListFilter) ([]memory.Item, int, error) {
+	phrase := `"` + strings.ReplaceAll(f.Query, `"`, `""`) + `"` // phrase 防语法注入
+	common, cargs := memoryCommonWhere(f, "m.")
+	where := `f.memory_fts MATCH ? AND ` + common
+	// MATCH 参数在最前（FTS 驱动表），过滤参数随后。
+	args := append([]any{phrase}, cargs...)
+	total, err := s.countMemory(ctx,
+		`FROM memory_fts f JOIN memory_items m ON m.memory_id = f.memory_id WHERE `+where, args)
+	if err != nil {
+		return nil, 0, err
+	}
+	args = append(args, f.Limit)
+	return s.queryMemoryItems(ctx,
+		`SELECT `+memoryColsM+`
+FROM memory_fts f JOIN memory_items m ON m.memory_id = f.memory_id
+WHERE `+where+`
+ORDER BY bm25(f.memory_fts) ASC, m.rowid DESC LIMIT ?`, args, total)
+}
+
+// listRecallLike 召回 <3 rune：独立 LIKE 路径（trigram 不可用区间）——
+// ESCAPE 字面匹配（一审 #2）+ 创建序（LIKE 无相关性评分）。
+func (s *Store) listRecallLike(ctx context.Context, f memory.ListFilter) ([]memory.Item, int, error) {
+	common, cargs := memoryCommonWhere(f, "")
+	pat := likePattern(f.Query)
+	// 一审 #2：ESCAPE 声明转义符（SQL 字面单反斜杠）——pattern 内 \%/ \_ 为字面量。
+	where := `(title LIKE ? COLLATE NOCASE ESCAPE '\' OR content LIKE ? COLLATE NOCASE ESCAPE '\') AND ` + common
+	args := append([]any{pat, pat}, cargs...)
+	total, err := s.countMemory(ctx, `FROM memory_items WHERE `+where, args)
+	if err != nil {
+		return nil, 0, err
+	}
+	args = append(args, f.Limit)
+	return s.queryMemoryItems(ctx,
+		`SELECT `+memoryCols+` FROM memory_items WHERE `+where+` ORDER BY rowid DESC LIMIT ?`, args, total)
 }
 
 // queryMemoryItems 执行 + 扫描（召回/非召回共用）。

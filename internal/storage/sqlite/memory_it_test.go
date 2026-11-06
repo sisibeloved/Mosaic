@@ -6,9 +6,16 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/sisibeloved/Mosaic/internal/memory"
 )
+
+// 计时助手（性能粗断言用）。
+func timeNow() time.Time                  { return time.Now() }
+func timeSince(t time.Time) time.Duration { return time.Since(t) }
+
+const timeSecond = time.Second
 
 func openMemItStore(t *testing.T) *Store {
 	t.Helper()
@@ -437,6 +444,127 @@ func TestMemoryRecallIT(t *testing.T) {
 			t.Fatalf("bm25 序错：首条 %s", res.Items[0].Title)
 		}
 	})
+}
+
+// 一审 #2：LIKE 字面 %/_/反斜杠——五条仅一条含目标字符（ESCAPE 转义后
+// 精确命中；未转义会通配命中全部）。
+func TestMemoryRecallLikeLiteralIT(t *testing.T) {
+	s := openMemItStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	svc := memory.NewService(s, memory.Anchors{}, func() string { return "2026-11-05T12:00:00Z" })
+	mk := func(title string) {
+		cmd := memory.CreateCmd{Namespace: memory.NSAgent, ScopeID: "ag_1", Kind: memory.KindSemantic,
+			Title: title, Content: "普通内容", ObservedAt: "2026-11-05T10:00:00Z"}
+		if _, err := svc.Create(ctx, cmd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("折扣 100%OFF")
+	mk("下划线_a 样式")
+	mk("反斜杠\\x 路径")
+	mk("普通标题一")
+	mk("普通标题二")
+	for _, tc := range []struct{ q string }{
+		{"100%"}, {"%"}, {"_a"}, {"_"}, {"\\"},
+	} {
+		res, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Query: tc.q})
+		if err != nil {
+			t.Fatalf("q=%q：%v", tc.q, err)
+		}
+		if res.TotalHits < 1 || res.TotalHits > 2 {
+			t.Fatalf("q=%q 字面命中异常：%d（未转义通配会命中全部 5）", tc.q, res.TotalHits)
+		}
+	}
+	// 纯 % 只命中标题含 % 的一条（LIKE 未转义时 5）。
+	res, _ := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Query: "100%"})
+	if res.TotalHits != 1 || res.Items[0].Title != "折扣 100%OFF" {
+		t.Fatalf("字面 %% 命中错：%d %+v", res.TotalHits, res.Items)
+	}
+}
+
+// 一审 #3：total 与分页解耦——七条、limit=2，首页与每续页 total 恒 7。
+func TestMemoryRecallTotalConstantPagingIT(t *testing.T) {
+	s := openMemItStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	svc := memory.NewService(s, memory.Anchors{}, func() string { return "2026-11-05T12:00:00Z" })
+	for i := 0; i < 7; i++ {
+		cmd := memory.CreateCmd{Namespace: memory.NSAgent, ScopeID: "ag_1", Kind: memory.KindSemantic,
+			Title: "条目" + string(rune('A'+i)), Content: "c", ObservedAt: "2026-11-05T10:00:00Z"}
+		if _, err := svc.Create(ctx, cmd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Limit: 2})
+	if err != nil || res.TotalHits != 7 || len(res.Items) != 2 {
+		t.Fatalf("首页 total 应 7，得 %d（items %d）%v", res.TotalHits, len(res.Items), err)
+	}
+	pages := 1
+	for res.NextCursor != "" && pages < 5 {
+		res, err = svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Limit: 2, Before: res.NextCursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		if res.TotalHits != 7 {
+			t.Fatalf("第 %d 页 total 应恒 7，得 %d", pages, res.TotalHits)
+		}
+	}
+	if pages != 4 { // 2+2+2+1
+		t.Fatalf("分页页数错：%d", pages)
+	}
+}
+
+// 一审 #4：强命中先创建排前——bm25 真实评分（脱离 MATCH 的子查询恒零会
+// 退化为纯 rowid 序，新弱命中挤出旧强命中）。
+func TestMemoryRecallBM25RealScoringIT(t *testing.T) {
+	s := openMemItStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	svc := memory.NewService(s, memory.Anchors{}, func() string { return "2026-11-05T12:00:00Z" })
+	mk := func(title, content string) {
+		cmd := memory.CreateCmd{Namespace: memory.NSAgent, ScopeID: "ag_1", Kind: memory.KindSemantic,
+			Title: title, Content: content, ObservedAt: "2026-11-05T10:00:00Z"}
+		if _, err := svc.Create(ctx, cmd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 先建：标题强命中（词在标题 + 正文重复）；后建：仅正文一次弱命中。
+	mk("缓存策略详解", "缓存策略应考虑失效与预热，缓存策略正文重复加权。")
+	mk("无关标题", "提一句缓存策略。")
+	res, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Query: "缓存策略", Limit: 1})
+	if err != nil || len(res.Items) != 1 {
+		t.Fatalf("召回错：%d %v", len(res.Items), err)
+	}
+	if res.Items[0].Title != "缓存策略详解" {
+		t.Fatalf("bm25 评分未生效——旧强命中被挤出：%s", res.Items[0].Title)
+	}
+}
+
+// 一审 #1：MATCH 驱动 JOIN——受控 300 条命中在毫秒级（逐候选子查询为秒级
+// 全表扫描；粗断言防性能回归）。
+func TestMemoryRecallPerfIT(t *testing.T) {
+	s := openMemItStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	svc := memory.NewService(s, memory.Anchors{}, func() string { return "2026-11-05T12:00:00Z" })
+	for i := 0; i < 300; i++ {
+		cmd := memory.CreateCmd{Namespace: memory.NSAgent, ScopeID: "ag_1", Kind: memory.KindSemantic,
+			Title: "性能条目", Content: "基准词命中内容", ObservedAt: "2026-11-05T10:00:00Z"}
+		if _, err := svc.Create(ctx, cmd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := timeNow()
+	res, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Query: "基准词命中", Limit: 50})
+	elapsed := timeSince(start)
+	if err != nil || res.TotalHits != 300 || len(res.Items) != 50 {
+		t.Fatalf("受控召回错：%d/%d %v", len(res.Items), res.TotalHits, err)
+	}
+	if elapsed > 2*timeSecond {
+		t.Fatalf("召回耗时 %v（MATCH 驱动应在毫秒级——逐候选子查询回归）", elapsed)
+	}
 }
 
 func TestMemoryItemsIdempotentReopenIT(t *testing.T) {
