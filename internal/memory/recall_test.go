@@ -118,6 +118,66 @@ func TestRecallMemStore(t *testing.T) {
 			}
 		}
 	})
+	t.Run("二审 #1：游标条撤回后续页不空（域内定位先于状态过滤）", func(t *testing.T) {
+		svc3 := NewService(NewMemStore(), Anchors{}, fixedNow)
+		var ids []string
+		for i := 0; i < 4; i++ {
+			cmd := CreateCmd{Namespace: NSAgent, ScopeID: "ag_1", Kind: KindSemantic,
+				Title: "游标" + string(rune('A'+i)), Content: "c", ObservedAt: "2026-11-05T10:00:00Z"}
+			it, err := svc3.Create(ctx, cmd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids = append(ids, it.MemoryID)
+		}
+		p1, err := svc3.List(ctx, ListFilter{Namespace: NSAgent, Limit: 2})
+		if err != nil || len(p1.Items) != 2 || p1.NextCursor == "" {
+			t.Fatalf("首页错：%d %v", len(p1.Items), err)
+		}
+		// 首页末条（游标条）被撤回——续页仍应取到更早 2 条。
+		if _, err := svc3.Reject(ctx, p1.NextCursor, "撤回游标条"); err != nil {
+			t.Fatal(err)
+		}
+		p2, err := svc3.List(ctx, ListFilter{Namespace: NSAgent, Limit: 2, Before: p1.NextCursor})
+		if err != nil || len(p2.Items) != 2 {
+			t.Fatalf("游标条撤回后续页应 2 条，得 %d %v", len(p2.Items), err)
+		}
+		if p2.Items[0].Title != "游标B" || p2.Items[1].Title != "游标A" {
+			t.Fatalf("续页序错：%s %s", p2.Items[0].Title, p2.Items[1].Title)
+		}
+		if p2.TotalHits != 3 { // 4 - 撤回 1
+			t.Fatalf("total 应 3，得 %d", p2.TotalHits)
+		}
+	})
+	t.Run("二审 #1：游标条过期后续页不空（时效过滤同解）", func(t *testing.T) {
+		// 注入时钟推进使游标条过期。
+		now := "2026-11-05T12:00:00Z"
+		svc4 := NewService(NewMemStore(), Anchors{}, func() string { return now })
+		var last string
+		for i := 0; i < 4; i++ {
+			cmd := CreateCmd{Namespace: NSAgent, ScopeID: "ag_1", Kind: KindSemantic,
+				Title: "时效游标" + string(rune('A'+i)), Content: "c", ObservedAt: "2026-11-05T10:00:00Z"}
+			it, err := svc4.Create(ctx, cmd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			last = it.MemoryID
+			_ = last
+		}
+		p1, err := svc4.List(ctx, ListFilter{Namespace: NSAgent, Limit: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 游标条（首页末条）置有效期止于 now 之前——续页不应漏。
+		exp := "2026-11-05T11:00:00Z"
+		if _, err := svc4.Revise(ctx, p1.NextCursor, ReviseCmd{ExpectedVersion: 1, ValidTo: &exp}); err != nil {
+			t.Fatal(err)
+		}
+		p2, err := svc4.List(ctx, ListFilter{Namespace: NSAgent, Limit: 2, Before: p1.NextCursor})
+		if err != nil || len(p2.Items) != 2 {
+			t.Fatalf("游标条过期后续页应 2 条，得 %d %v", len(p2.Items), err)
+		}
+	})
 	t.Run("空查询词 = 非召回（既有列表语义）", func(t *testing.T) {
 		// 本测试 svc 上 active 条目：初始 2 + 字面转义用例新增 3 = 5。
 		res, err := svc.List(ctx, ListFilter{Namespace: NSAgent, Query: "  "})

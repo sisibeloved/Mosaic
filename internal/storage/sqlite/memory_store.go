@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/sisibeloved/Mosaic/internal/memory"
@@ -289,7 +290,11 @@ func (s *Store) countMemory(ctx context.Context, fromWhere string, args []any) (
 }
 
 // listRecallFTS 召回 ≥3 rune：FTS 索引一次 MATCH 驱动 → JOIN 过滤 → bm25
-// 评分排序（一审 #1/#4：MATCH 与评分共享游标——非逐候选子查询）。
+// listRecallFTS 召回 ≥3 rune：MATCH 索引驱动 JOIN 过滤取**全量候选行**，
+// Go 侧按**语料内 BM25** 精排（二审 #2：FTS5 bm25() 的统计是全索引级——
+// 过滤外条目改变 avgdl 会翻转本域排名，违反"过滤先于评分"；自算评分的
+// dl/avgdl 限定于过滤后语料，排序键对语料外增删不敏感）。输入序 rowid DESC
+// + 稳定排序保持同名分兜底。
 func (s *Store) listRecallFTS(ctx context.Context, f memory.ListFilter) ([]memory.Item, int, error) {
 	phrase := `"` + strings.ReplaceAll(f.Query, `"`, `""`) + `"` // phrase 防语法注入
 	common, cargs := memoryCommonWhere(f, "m.")
@@ -301,12 +306,59 @@ func (s *Store) listRecallFTS(ctx context.Context, f memory.ListFilter) ([]memor
 	if err != nil {
 		return nil, 0, err
 	}
-	args = append(args, f.Limit)
-	return s.queryMemoryItems(ctx,
+	if total == 0 {
+		return []memory.Item{}, 0, nil
+	}
+	cands, _, err := s.queryMemoryItems(ctx,
 		`SELECT `+memoryColsM+`
 FROM memory_fts f JOIN memory_items m ON m.memory_id = f.memory_id
-WHERE `+where+`
-ORDER BY bm25(f.memory_fts) ASC, m.rowid DESC LIMIT ?`, args, total)
+WHERE `+where+` ORDER BY m.rowid DESC`, args, total)
+	if err != nil {
+		return nil, 0, err
+	}
+	scored := corpusBM25(cands, f.Query)
+	if len(scored) > f.Limit {
+		scored = scored[:f.Limit]
+	}
+	return scored, total, nil
+}
+
+// corpusBM25 语料内 BM25 精排（k1=1.2 / b=0.75——SQLite FTS5 同参；dl/avgdl
+// 与 tf 均取过滤后候选集；同查询的 IDF 项对全体候选相同，排序可略）。
+// 返回相关度降序；输入已是 rowid 降序，sort.SliceStable 保同名分兜底。
+func corpusBM25(cands []memory.Item, query string) []memory.Item {
+	const k1, b = 1.2, 0.75
+	q := strings.ToLower(query)
+	type scoredItem struct {
+		it    memory.Item
+		score float64
+	}
+	list := make([]scoredItem, 0, len(cands))
+	sumLen := 0
+	for _, it := range cands {
+		list = append(list, scoredItem{it: it})
+		sumLen += len([]rune(it.Title)) + len([]rune(it.Content))
+	}
+	avgdl := float64(sumLen) / float64(len(cands))
+	if avgdl <= 0 {
+		avgdl = 1
+	}
+	for i := range list {
+		it := list[i].it
+		tf := float64(strings.Count(strings.ToLower(it.Title), q) +
+			strings.Count(strings.ToLower(it.Content), q))
+		if tf == 0 {
+			continue // FTS 命中但分词粒度差异兜底——零频不加分
+		}
+		dl := float64(len([]rune(it.Title)) + len([]rune(it.Content)))
+		list[i].score = tf * (k1 + 1) / (tf + k1*(1-b+b*dl/avgdl))
+	}
+	sort.SliceStable(list, func(i, j int) bool { return list[i].score > list[j].score })
+	out := make([]memory.Item, 0, len(list))
+	for _, s := range list {
+		out = append(out, s.it)
+	}
+	return out
 }
 
 // listRecallLike 召回 <3 rune：独立 LIKE 路径（trigram 不可用区间）——

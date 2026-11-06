@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.93 |
+| 版本 | v2.94 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -205,6 +205,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.94 | 2026-11-05 | Mosaic 项目组 / ZCode | **0.7.2 二审修复（2 P2；ADR-0039 v0.3）**。memstore 游标 namespace 后先定位（撤回/过期游标条不漏续页；计数与门解耦）+ 召回改 Go 语料内 BM25 精排（FTS5 全索引 avgdl 污染关闭——六组过滤面排名不变回归；2000 命中实测 0.15s）。验证：UT/IT 回归 + vet/-race + SPA + 真机冒烟 5 项 ALL-PASS |
 | v2.93 | 2026-11-05 | Mosaic 项目组 / ZCode | **0.7.2 一审修复（1 P1 + 3 P2；ADR-0039 v0.2）**。MATCH 驱动 JOIN（受控 300 命中 8ms——原逐候选 bm25 子查询秒级全扫）+ LIKE 字面 %/_/\\ 转义与 ESCAPE（双实现对照）+ total 与分页解耦（每页恒定）+ bm25 真实评分（旧强命中不再被挤出）。验证：回归 IT/UT（字面/恒定 total/评分序/性能粗断言）+ vet/-race + it 受影响面 + SPA + 真机冒烟 4 项 ALL-PASS（F4 实测 0.008s） |
 | v2.92 | 2026-11-05 | Mosaic 项目组 / ZCode | **0.7.2 记忆召回开工实施（负责人指令："开工0.7.2"；ADR-0039 Accepted）——FTS5 trigram（v33：触发器同事务同步 + 回填）+ 授权/时效过滤先行（同一 WHERE——他域命中不入结果与 total_hits）+ bm25 序 + total_hits 计数 + SPA 搜索框**。召回模式无游标；<3 rune LIKE 回退；memstore 子串基准同语义。验证：召回 UT/IT（含过滤先行与 FTS 同步）+ vet/-race + it/st + SPA + 生成物幂等 + 真机冒烟 6 项 ALL-PASS |
 | v2.91 | 2026-11-05 | Mosaic 项目组 / ZCode | **定版 v0.7.1（负责人指令："发布"）——0.7 记忆与可移植恢复领域第二件：记忆策展与纠错（接受/修订/否决/superseded + 时效口径）**。CHANGELOG [Unreleased]（Added 策展主功能 + Fixed 两轮审校 5+1=6 项）定版 **[0.7.1] - 2026-11-05**（Added 前置、两段 Fixed 合并一节），保留空 [Unreleased]；README 当前版本推进 v0.7.1、路线图 0.7 行标注 0.7.0–0.7.1 已交付（余 0.7.2–0.7.9）；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.7.1 + GitHub Release 发布说明与 Windows 产物（于 tag 的干净 worktree 重建）；CI 三平台绿基线（0fc8193 已验，定版提交复验） |

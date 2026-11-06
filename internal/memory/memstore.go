@@ -90,8 +90,9 @@ func (m *MemStore) ListItems(_ context.Context, f ListFilter) ([]Item, int, erro
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// 降序遍历（追加序倒排）。total = 公共过滤+匹配的**全量计数**（一审 #3：
-	// 不含 before/limit——每页恒定）；before 只作用于收集起点（一审 #4：游标
-	// 只在本域内定位——外域同 ID 不生效 = 空页）。
+	// 不含 before/limit——每页恒定）；before 只作用于收集起点。二审 #1：游标
+	// 在 **namespace 隔离后、其余过滤前**定位——游标条自身被撤回/过期
+	//（status/时效过滤掉）不影响续页（门仍可打开）；外域同 ID 仍不生效。
 	out := make([]Item, 0, f.Limit+1)
 	total := 0
 	started := f.Before == ""
@@ -100,39 +101,41 @@ func (m *MemStore) ListItems(_ context.Context, f ListFilter) ([]Item, int, erro
 		if it.Namespace != f.Namespace {
 			continue
 		}
+		// passes = 公共过滤+匹配命中（计数判据——与收集门解耦）。
+		passes := true
 		if f.ScopeID != "" && it.ScopeID != f.ScopeID {
-			continue
-		}
-		if f.Kind != "" && it.Kind != f.Kind {
-			continue
-		}
-		if f.Status != "" && it.Status != f.Status {
-			continue
-		}
-		// 0.7.1 时效口径：active 且未显式包含时排除 valid_to < now。
-		if f.Status == StatusActive && !f.IncludeExpired && expired(it.ValidTo, f.Now) {
-			continue
-		}
-		// 0.7.2 召回匹配（过滤先行——授权/时效过滤完成后才计 total 与收集）。
-		if f.Query != "" &&
+			passes = false
+		} else if f.Kind != "" && it.Kind != f.Kind {
+			passes = false
+		} else if f.Status != "" && it.Status != f.Status {
+			passes = false
+		} else if f.Status == StatusActive && !f.IncludeExpired && expired(it.ValidTo, f.Now) {
+			// 0.7.1 时效口径：active 且未显式包含时排除 valid_to < now。
+			passes = false
+		} else if f.Query != "" &&
 			!strings.Contains(strings.ToLower(it.Title+"\n"+it.Content), strings.ToLower(f.Query)) {
-			continue
+			// 0.7.2 召回匹配（过滤先行——授权/时效过滤完成后才计 total）。
+			passes = false
 		}
-		total++
+		if passes {
+			total++ // 全量计数（每页恒定——含游标门前与收集截断后的条目）
+		}
 		if !started {
-			// before 之前的（更新的）条目不收集——计数已含（每页恒定）。
 			if it.MemoryID == f.Before {
 				started = true
 			}
+			continue // before 之前的（更新的）条目不收集
+		}
+		if !passes {
 			continue
 		}
 		if f.Query != "" {
 			if len(out) >= f.Limit {
-				continue // 召回模式无游标——只截断，total 继续计
+				continue // 召回模式无游标——只截断
 			}
 		} else if len(out) >= f.Limit+1 {
-			// 一审 #3：非召回模式同样**不 break**——total 继续计满（每页
-			// 总数恒定），只停止收集（limit+1 供 service 判 next_cursor）。
+			// 非召回模式不 break——total 已继续计满，只停止收集
+			//（limit+1 供 service 判 next_cursor）。
 			continue
 		}
 		out = append(out, it)

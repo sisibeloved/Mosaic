@@ -5,6 +5,7 @@ package sqlite
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -564,6 +565,72 @@ func TestMemoryRecallPerfIT(t *testing.T) {
 	}
 	if elapsed > 2*timeSecond {
 		t.Fatalf("召回耗时 %v（MATCH 驱动应在毫秒级——逐候选子查询回归）", elapsed)
+	}
+}
+
+// 二审 #2：过滤外条目不得改变本域召回排名——FTS5 bm25() 是全索引统计
+// （avgdl 污染）；语料内评分对六组过滤外的增删不敏感（排名不变回归）。
+func TestMemoryRecallCorpusIsolatedScoringIT(t *testing.T) {
+	s := openMemItStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	svc := memory.NewService(s, memory.Anchors{}, func() string { return "2026-11-05T12:00:00Z" })
+	mk := func(ns memory.Namespace, scope, title, content, validTo string) {
+		cmd := memory.CreateCmd{Namespace: ns, ScopeID: scope, Kind: memory.KindSemantic,
+			Title: title, Content: content, ObservedAt: "2026-11-05T10:00:00Z", ValidTo: validTo}
+		if _, err := svc.Create(ctx, cmd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 本域两条：B 更相关（标题+正文双命中），A 弱（正文一次）——B 应居首。
+	mk(memory.NSAgent, "ag_1", "目标词详解", "目标词应考虑失效与预热，目标词正文重复加权。", "")
+	mk(memory.NSAgent, "ag_1", "无关标题甲", "提一句目标词。", "")
+	base, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Query: "目标词", Limit: 1})
+	if err != nil || len(base.Items) != 1 || base.Items[0].Title != "目标词详解" {
+		t.Fatalf("基线排名错：%+v %v", base.Items, err)
+	}
+	// 六组语料外增补：不含查询词的长文——namespace/scope/kind/状态/时效各
+	// 过滤面 + 同域已过期。语料内评分下排名与 total 均不变。
+	long := "完全无关的超长文档内容。" + strings.Repeat("填充材料。", 200)
+	mk(memory.NSWorkspace, memory.WorkspaceScope, "异域长文", long, "")
+	mk(memory.NSAgent, "ag_9", "他锚长文", long, "")
+	superseded := memory.CreateCmd{Namespace: memory.NSAgent, ScopeID: "ag_1", Kind: memory.KindSemantic,
+		Title: "终结长文", Content: long, ObservedAt: "2026-11-05T10:00:00Z"}
+	supIt, _ := svc.Create(ctx, superseded)
+	svc.Reject(ctx, supIt.MemoryID, "")
+	exp := "2026-11-05T11:00:00Z"
+	mk(memory.NSAgent, "ag_1", "已过期长文", long, exp)
+	after, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Query: "目标词", Limit: 1})
+	if err != nil || len(after.Items) != 1 || after.Items[0].Title != "目标词详解" {
+		t.Fatalf("语料外增删改变排名（二审 #2 回归）：%+v %v", after.Items, err)
+	}
+	if after.TotalHits != 2 {
+		t.Fatalf("total 应仍 2，得 %d", after.TotalHits)
+	}
+}
+
+// 二审（审校建议）：代表性性能回归——2000 条命中（含计数 + 取页 + Go 精排）
+// 在 1s 内（一审受控 300/2s 旧实现也能过——提升代表性与阈值）。
+func TestMemoryRecallPerf2000IT(t *testing.T) {
+	s := openMemItStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	svc := memory.NewService(s, memory.Anchors{}, func() string { return "2026-11-05T12:00:00Z" })
+	for i := 0; i < 2000; i++ {
+		cmd := memory.CreateCmd{Namespace: memory.NSAgent, ScopeID: "ag_1", Kind: memory.KindSemantic,
+			Title: "性能条目", Content: "基准词命中内容", ObservedAt: "2026-11-05T10:00:00Z"}
+		if _, err := svc.Create(ctx, cmd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := timeNow()
+	res, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Query: "基准词命中", Limit: 50})
+	elapsed := timeSince(start)
+	if err != nil || res.TotalHits != 2000 || len(res.Items) != 50 {
+		t.Fatalf("受控召回错：%d/%d %v", len(res.Items), res.TotalHits, err)
+	}
+	if elapsed > timeSecond {
+		t.Fatalf("2000 命中召回耗时 %v（含 Go 精排应远低于 1s）", elapsed)
 	}
 }
 
