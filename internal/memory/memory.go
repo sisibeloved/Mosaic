@@ -147,6 +147,18 @@ type ListFilter struct {
 	// 传入。proposed/superseded 显式口径不过滤（策展审视看全量）。
 	Now            string
 	IncludeExpired bool
+	// 0.7.2 召回（ADR-0039 §2）：非空 = 召回模式——授权/时效过滤**先于**
+	// 排序与计数（他域命中不出现、total 不计）；排序 bm25 升序（sqlite）/
+	// 创建序降序（memstore 语义子集）；召回模式无游标。
+	Query string
+}
+
+// ListResult 列表/召回结果（0.7.2：TotalHits = 过滤+匹配后总数——不含
+// 分页截断；NextCursor 召回模式恒空）。
+type ListResult struct {
+	Items      []Item
+	NextCursor string
+	TotalHits  int
 }
 
 // Store 存储端口（MemoryBackend 的 0.7.0 子集——Propose/Accept/Revise/
@@ -154,7 +166,9 @@ type ListFilter struct {
 type Store interface {
 	CreateItem(ctx context.Context, it Item) (Item, error)
 	ItemByID(ctx context.Context, memoryID string) (Item, bool, error)
-	ListItems(ctx context.Context, f ListFilter) ([]Item, error)
+	// ListItems 过滤+（可选）召回匹配；返回条目（非召回模式至多 limit+1 条
+	// 供游标判定，召回模式至多 limit 条）与 total（过滤+匹配全量计数）。
+	ListItems(ctx context.Context, f ListFilter) ([]Item, int, error)
 	// UpdateItem CAS 原位替换（**版本 + 状态**双基准——一审 #2：accept 不
 	// 递增版本，纯版本 CAS 分辨不出状态已并发的同名版本；任一不符
 	// ok=false。edit_history 由域构造传入——存储无策展语义）。
@@ -334,20 +348,20 @@ func (s *Service) Get(ctx context.Context, memoryID string) (Item, error) {
 	return it, nil
 }
 
-// List 按命名空间隔离列表（缺 namespace / limit 越界 ErrInvalid；status 缺省
-// active——与 0.7.1 召回口径衔接）。Store 返回至多 limit+1 条，本方法截取
-// limit 条并以第 limit+1 条算 next_cursor（无更多为空）。
-func (s *Service) List(ctx context.Context, f ListFilter) ([]Item, string, error) {
+// List 按命名空间隔离列表/召回（缺 namespace / limit 越界 ErrInvalid；status
+// 缺省 active）。Store 返回至多 limit+1 条（召回模式 limit 条）与 total；
+// 本方法截取 limit 条并以第 limit+1 条算 next_cursor（召回模式恒空）。
+func (s *Service) List(ctx context.Context, f ListFilter) (ListResult, error) {
 	switch f.Namespace {
 	case NSAgent, NSRoom, NSWorkspace, NSMission, NSSlot:
 	default:
-		return nil, "", invalidErr("namespace 必填且须为五命名空间之一")
+		return ListResult{}, invalidErr("namespace 必填且须为五命名空间之一")
 	}
 	if f.Kind != "" {
 		switch f.Kind {
 		case KindSemantic, KindEpisodic, KindProcedural:
 		default:
-			return nil, "", invalidErr("kind 未知：" + string(f.Kind))
+			return ListResult{}, invalidErr("kind 未知：" + string(f.Kind))
 		}
 	}
 	if f.Status == "" {
@@ -356,13 +370,13 @@ func (s *Service) List(ctx context.Context, f ListFilter) ([]Item, string, error
 	switch f.Status {
 	case StatusActive, StatusProposed, StatusSuperseded:
 	default:
-		return nil, "", invalidErr("status 未知：" + string(f.Status))
+		return ListResult{}, invalidErr("status 未知：" + string(f.Status))
 	}
 	if f.Limit <= 0 {
 		f.Limit = DefaultListLimit
 	}
 	if f.Limit > MaxListLimit {
-		return nil, "", invalidErr("limit 至多 100")
+		return ListResult{}, invalidErr("limit 至多 100")
 	}
 	// 0.7.1 时效口径（ADR-0038 §3）：now 由时钟单源填充——active 默认口径
 	// 排除 valid_to < now（Store 下推）；proposed/superseded 显式口径与
@@ -370,15 +384,27 @@ func (s *Service) List(ctx context.Context, f ListFilter) ([]Item, string, error
 	if f.Now == "" {
 		f.Now = s.now()
 	}
-	items, err := s.store.ListItems(ctx, f)
+	// 0.7.2：召回词清洗（≤200 rune；召回模式无游标）。
+	q := strings.TrimSpace(f.Query)
+	if r := utf8.RuneCountInString(q); r > 200 {
+		return ListResult{}, invalidErr("q 至多 200 字")
+	}
+	f.Query = q
+	if f.Query != "" {
+		f.Before = ""
+	}
+	items, total, err := s.store.ListItems(ctx, f)
 	if err != nil {
-		return nil, "", err
+		return ListResult{}, err
+	}
+	if f.Query != "" {
+		return ListResult{Items: items, TotalHits: total}, nil
 	}
 	if len(items) > f.Limit {
 		// next_cursor = 本页末条——客户端直传作下一页 before。
-		return items[:f.Limit], items[f.Limit-1].MemoryID, nil
+		return ListResult{Items: items[:f.Limit], NextCursor: items[f.Limit-1].MemoryID, TotalHits: total}, nil
 	}
-	return items, "", nil
+	return ListResult{Items: items, TotalHits: total}, nil
 }
 
 // checkAnchor 锚存在性门（workspace 恒过——单工作区事实；nil 闭包跳过——

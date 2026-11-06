@@ -4,6 +4,7 @@ package memory
 
 import (
 	"context"
+	"strings"
 	"sync"
 )
 
@@ -79,14 +80,18 @@ func (m *MemStore) SupersedeItem(_ context.Context, oldID string, expectedVersio
 	return oldNext, replacement, true, nil
 }
 
-// ListItems 过滤 + 创建序降序 + 游标（before 之后的更早条目）+ limit+1 条
-// （第 limit+1 条供 service 判 next_cursor）。before 未知（已删除/游标失效）
-// = 空页——与 sqlite 实现同口径。
-func (m *MemStore) ListItems(_ context.Context, f ListFilter) ([]Item, error) {
+// ListItems 过滤 +（可选）召回匹配 + 创建序降序 + 游标（before 之后的更早
+// 条目）+ limit+1 条（第 limit+1 条供 service 判 next_cursor；召回模式 limit
+// 条）。before 未知（已删除/游标失效）= 空页——与 sqlite 实现同口径。
+// 0.7.2 召回（ADR-0039 §3）：子串匹配（大小写不敏感——与 sqlite LIKE 回退
+// 基准同语义）；total 为过滤+匹配全量计数；排序保持创建序降序（语义子集——
+// bm25 序由 sqlite 实现独占）。
+func (m *MemStore) ListItems(_ context.Context, f ListFilter) ([]Item, int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// 降序遍历（追加序倒排）；before 命中后开始收集。
 	out := make([]Item, 0, f.Limit+1)
+	total := 0
 	started := f.Before == ""
 	for i := len(m.items) - 1; i >= 0; i-- {
 		it := m.items[i]
@@ -114,10 +119,21 @@ func (m *MemStore) ListItems(_ context.Context, f ListFilter) ([]Item, error) {
 		if f.Status == StatusActive && !f.IncludeExpired && expired(it.ValidTo, f.Now) {
 			continue
 		}
+		// 0.7.2 召回匹配（过滤先行——授权/时效过滤完成后才计 total 与收集）。
+		if f.Query != "" &&
+			!strings.Contains(strings.ToLower(it.Title+"\n"+it.Content), strings.ToLower(f.Query)) {
+			continue
+		}
+		total++
+		if f.Query != "" {
+			if len(out) >= f.Limit {
+				continue // 召回模式无游标——只截断，total 继续计
+			}
+		}
 		out = append(out, it)
-		if len(out) >= f.Limit+1 {
+		if f.Query == "" && len(out) >= f.Limit+1 {
 			break
 		}
 	}
-	return out, nil
+	return out, total, nil
 }

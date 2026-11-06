@@ -226,22 +226,22 @@ func TestCurationTimeliness(t *testing.T) {
 	mk("2026-11-06T00:00:00Z", "active")   // 未过期
 	mk("2026-11-04T00:00:00Z", "proposed") // 过期但 proposed——显式口径不过滤
 
-	items, _, err := svc.List(ctx, ListFilter{Namespace: NSAgent})
+	res, err := svc.List(ctx, ListFilter{Namespace: NSAgent})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 2 { // 恰到期 + 未过期
-		t.Fatalf("默认 active 口径应 2 条（过期排除），得 %d", len(items))
+	if len(res.Items) != 2 { // 恰到期 + 未过期
+		t.Fatalf("默认 active 口径应 2 条（过期排除），得 %d", len(res.Items))
 	}
 	// include_expired 显式可见。
-	items, _, err = svc.List(ctx, ListFilter{Namespace: NSAgent, IncludeExpired: true})
-	if err != nil || len(items) != 3 {
-		t.Fatalf("include_expired 应 3 条，得 %d %v", len(items), err)
+	res, err = svc.List(ctx, ListFilter{Namespace: NSAgent, IncludeExpired: true})
+	if err != nil || len(res.Items) != 3 {
+		t.Fatalf("include_expired 应 3 条，得 %d %v", len(res.Items), err)
 	}
 	// proposed 显式口径不过滤有效期。
-	items, _, err = svc.List(ctx, ListFilter{Namespace: NSAgent, Status: StatusProposed})
-	if err != nil || len(items) != 1 {
-		t.Fatalf("proposed 口径应 1 条（过期不过滤），得 %d %v", len(items), err)
+	res, err = svc.List(ctx, ListFilter{Namespace: NSAgent, Status: StatusProposed})
+	if err != nil || len(res.Items) != 1 {
+		t.Fatalf("proposed 口径应 1 条（过期不过滤），得 %d %v", len(res.Items), err)
 	}
 }
 

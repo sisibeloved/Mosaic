@@ -75,7 +75,7 @@ func TestMemoryItemsCRUDAndCursorIT(t *testing.T) {
 	}
 
 	// 默认 active 域隔离：agent 3 条降序。
-	items, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
+	items, _, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
 		Status: memory.StatusActive, Limit: 50})
 	if err != nil || len(items) != 3 {
 		t.Fatalf("agent active 应 3 条，得 %d %v", len(items), err)
@@ -84,24 +84,24 @@ func TestMemoryItemsCRUDAndCursorIT(t *testing.T) {
 		t.Fatalf("rowid 降序错：%s %s", items[0].Title, items[2].Title)
 	}
 	// proposed 不入默认口径；显式请求可见。
-	items, err = s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
+	items, _, err = s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
 		Status: memory.StatusProposed, Limit: 50})
 	if err != nil || len(items) != 1 || items[0].MemoryID != "mem_it_proposed" {
 		t.Fatalf("proposed 口径错：%d %v", len(items), err)
 	}
 	// scope/kind 过滤。
-	if items, err = s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
+	if items, _, err = s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
 		Status: memory.StatusActive, ScopeID: "ag_404", Limit: 50}); err != nil || len(items) != 0 {
 		t.Fatal("scope 过滤应空")
 	}
-	if items, err = s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
+	if items, _, err = s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
 		Status: memory.StatusActive, Kind: memory.KindEpisodic, Limit: 50}); err != nil || len(items) != 0 {
 		t.Fatal("kind 过滤应空")
 	}
 
 	// 游标分页（limit=2）：Store 返回 limit+1 条供 service 截断；次页
 	// before=mem_it_a2 → [a1]。
-	p1, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
+	p1, _, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
 		Status: memory.StatusActive, Limit: 2})
 	if err != nil || len(p1) != 3 {
 		t.Fatalf("首页应 limit+1 条，得 %d %v", len(p1), err)
@@ -109,13 +109,13 @@ func TestMemoryItemsCRUDAndCursorIT(t *testing.T) {
 	if p1[0].Title != "a3" || p1[1].Title != "a2" || p1[2].Title != "a1" {
 		t.Fatal("首页序错")
 	}
-	p2, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
+	p2, _, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
 		Status: memory.StatusActive, Limit: 2, Before: "mem_it_a2"})
 	if err != nil || len(p2) != 1 || p2[0].Title != "a1" {
 		t.Fatalf("次页错：%d %v", len(p2), err)
 	}
 	// 游标失效 = 空页。
-	p3, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
+	p3, _, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
 		Status: memory.StatusActive, Limit: 2, Before: "mem_deleted"})
 	if err != nil || len(p3) != 0 {
 		t.Fatalf("游标失效应空页：%d %v", len(p3), err)
@@ -154,19 +154,19 @@ func TestMemoryItemsCursorScopedIT(t *testing.T) {
 	}
 	// workspace 以 agent 域条目 ID 作 before：子查询限本域不命中 → 0 → 空页
 	//（与未知 ID 同语义）。
-	items, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSWorkspace,
+	items, _, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSWorkspace,
 		Status: memory.StatusActive, Limit: 50, Before: "mem_it_a1"})
 	if err != nil || len(items) != 0 {
 		t.Fatalf("外域游标应空页，得 %d %v", len(items), err)
 	}
 	// 本域末条游标正常（其后无更早条目 → 空）。
-	items, err = s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSWorkspace,
+	items, _, err = s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSWorkspace,
 		Status: memory.StatusActive, Limit: 50, Before: "mem_it_w1"})
 	if err != nil || len(items) != 0 {
 		t.Fatalf("本域末条游标应空页，得 %d %v", len(items), err)
 	}
 	// agent 域列表不受影响。
-	items, err = s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
+	items, _, err = s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
 		Status: memory.StatusActive, Limit: 50})
 	if err != nil || len(items) != 1 {
 		t.Fatalf("agent 列表应 1 条，得 %d %v", len(items), err)
@@ -241,15 +241,15 @@ func TestMemoryCurationIT(t *testing.T) {
 	if _, err = svc.Create(ctx, alv); err != nil {
 		t.Fatal(err)
 	}
-	items, _, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent})
-	if err != nil || len(items) != 1 || items[0].Title != "有效" {
-		t.Fatalf("默认口径应 1 条有效，得 %d %v", len(items), err)
+	res, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent})
+	if err != nil || len(res.Items) != 1 || res.Items[0].Title != "有效" {
+		t.Fatalf("默认口径应 1 条有效，得 %d %v", len(res.Items), err)
 	}
 	// include_expired=true：有效 + 过期共 2 条（superseded 终结条目 status 非
 	// active，不入 active 口径——终结态经显式 status=superseded 查询）。
-	items, _, err = svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, IncludeExpired: true})
-	if err != nil || len(items) != 2 {
-		t.Fatalf("include_expired 应 2 条 active（有效+过期），得 %d %v", len(items), err)
+	res, err = svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, IncludeExpired: true})
+	if err != nil || len(res.Items) != 2 {
+		t.Fatalf("include_expired 应 2 条 active（有效+过期），得 %d %v", len(res.Items), err)
 	}
 }
 
@@ -265,7 +265,7 @@ func TestMemoryItemsLegacyOffsetCompatIT(t *testing.T) {
 	if _, err := s.CreateItem(ctx, it); err != nil {
 		t.Fatal(err)
 	}
-	items, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
+	items, _, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
 		Status: memory.StatusActive, Limit: 50, Now: "2026-11-05T12:00:00Z"})
 	if err != nil || len(items) != 1 {
 		t.Fatalf("旧偏移未过期条目应保守包含，得 %d %v", len(items), err)
@@ -339,11 +339,104 @@ func TestMemoryItemsFractionalExpiryIT(t *testing.T) {
 		t.Fatal(err)
 	}
 	// now=.500Z：frac1 未过期可见；frac0 已过期隐藏。
-	items, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
+	items, _, err := s.ListItems(ctx, memory.ListFilter{Namespace: memory.NSAgent,
 		Status: memory.StatusActive, Limit: 50, Now: "2026-11-06T12:00:00.500Z"})
 	if err != nil || len(items) != 1 || items[0].Title != "frac1" {
 		t.Fatalf("小数秒边界过滤错：%d %v", len(items), err)
 	}
+}
+
+// 召回 IT（0.7.2 / ADR-0039）：trigram 中文/英文、<3 字 LIKE 回退、过滤先行
+// （异域/异状态命中不出现在结果与 total）、修订后 FTS 同步（触发器）。
+func TestMemoryRecallIT(t *testing.T) {
+	s := openMemItStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	svc := memory.NewService(s, memory.Anchors{}, func() string { return "2026-11-05T12:00:00Z" })
+	mk := func(ns memory.Namespace, scope, title, content string) memory.Item {
+		cmd := memory.CreateCmd{Namespace: ns, ScopeID: scope, Kind: memory.KindSemantic,
+			Title: title, Content: content, ObservedAt: "2026-11-05T10:00:00Z"}
+		it, err := svc.Create(ctx, cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return it
+	}
+	mk(memory.NSAgent, "ag_1", "部署流程", "先建单后执行，验收前自查。")
+	mk(memory.NSAgent, "ag_1", "Weekly Report", "Export the report every Monday.")
+	mk(memory.NSWorkspace, memory.WorkspaceScope, "异域同词", "部署流程也在本条——不应出现在 agent 召回")
+
+	t.Run("trigram 中文 ≥3 字", func(t *testing.T) {
+		res, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Query: "部署流程"})
+		if err != nil || len(res.Items) != 1 || res.TotalHits != 1 || res.Items[0].Title != "部署流程" {
+			t.Fatalf("中文召回错：%d/%d %v", len(res.Items), res.TotalHits, err)
+		}
+		if res.NextCursor != "" {
+			t.Fatal("召回模式不应有游标")
+		}
+	})
+	t.Run("英文子串 + 大小写", func(t *testing.T) {
+		res, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Query: "REPORT"})
+		if err != nil || res.TotalHits != 1 {
+			t.Fatalf("英文召回错：%d %v", res.TotalHits, err)
+		}
+	})
+	t.Run("<3 字 LIKE 回退（单字符）", func(t *testing.T) {
+		// "p" 命中 Report/Export（COLLATE NOCASE）——LIKE 回退路径。
+		res, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Query: "p"})
+		if err != nil || res.TotalHits != 1 {
+			t.Fatalf("短词回退错：%d %v", res.TotalHits, err)
+		}
+	})
+	t.Run("过滤先行——异域命中不计结果与 total", func(t *testing.T) {
+		res, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Query: "部署流程"})
+		if err != nil || res.TotalHits != 1 {
+			t.Fatalf("异域泄漏：%d %v", res.TotalHits, err)
+		}
+		for _, it := range res.Items {
+			if it.Namespace != memory.NSAgent {
+				t.Fatalf("跨域结果：%+v", it)
+			}
+		}
+	})
+	t.Run("修订后 FTS 同步（触发器）——旧词不中新词中", func(t *testing.T) {
+		it := mk(memory.NSAgent, "ag_1", "旧标题甲", "旧内容乙")
+		title := "新标题丙"
+		if _, err := svc.Revise(ctx, it.MemoryID, memory.ReviseCmd{ExpectedVersion: 1, Title: &title}); err != nil {
+			t.Fatal(err)
+		}
+		if res, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Query: "旧标题甲"}); err != nil || res.TotalHits != 0 {
+			t.Fatalf("旧词应不中：%d %v", res.TotalHits, err)
+		}
+		if res, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Query: "新标题丙"}); err != nil || res.TotalHits != 1 {
+			t.Fatalf("新词应中：%d %v", res.TotalHits, err)
+		}
+	})
+	t.Run("superseded 不入召回（status 过滤同 WHERE）", func(t *testing.T) {
+		it := mk(memory.NSAgent, "ag_1", "终结条目", "内容独特词")
+		if _, err := svc.Reject(ctx, it.MemoryID, ""); err != nil {
+			t.Fatal(err)
+		}
+		if res, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Query: "内容独特词"}); err != nil || res.TotalHits != 0 {
+			t.Fatalf("终结条目不应入召回：%d %v", res.TotalHits, err)
+		}
+		// 显式 superseded 口径可查（历史解释）。
+		if res, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Status: memory.StatusSuperseded, Query: "内容独特词"}); err != nil || res.TotalHits != 1 {
+			t.Fatalf("历史口径应中：%d %v", res.TotalHits, err)
+		}
+	})
+	t.Run("bm25 相关性排序（更相关在前）", func(t *testing.T) {
+		mk(memory.NSAgent, "ag_1", "搜索词一次", "无关内容。")
+		mk(memory.NSAgent, "ag_1", "标题无关", "搜索词出现两次：搜索词重复加权。")
+		res, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, Query: "搜索词"})
+		if err != nil || len(res.Items) != 2 {
+			t.Fatalf("相关召回错：%d %v", len(res.Items), err)
+		}
+		// 双次命中（标题+正文）应更相关——bm25 升序在前。
+		if res.Items[0].Title != "标题无关" {
+			t.Fatalf("bm25 序错：首条 %s", res.Items[0].Title)
+		}
+	})
 }
 
 func TestMemoryItemsIdempotentReopenIT(t *testing.T) {

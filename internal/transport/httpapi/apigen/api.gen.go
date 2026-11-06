@@ -3760,12 +3760,15 @@ type MemoryItemCreateRequestSensitivity string
 // MemoryItemCreateRequestStatus 默认 active——不确定候选留 proposed 待策展（0.7.1）
 type MemoryItemCreateRequestStatus string
 
-// MemoryItemListView 分域记忆列表（创建序降序 + 游标）。
+// MemoryItemListView 分域记忆列表（创建序降序 + 游标；召回模式 bm25 序无游标）。
 type MemoryItemListView struct {
 	Items []MemoryItemView `json:"items"`
 
-	// NextCursor 还有更多时给本页末条 memory_id——直传作下一页 before；无更多缺省
+	// NextCursor 还有更多时给本页末条 memory_id——直传作下一页 before；无更多/召回模式缺省
 	NextCursor *string `json:"next_cursor,omitempty"`
+
+	// TotalHits 过滤+匹配后的总数（0.7.2——不含分页截断；他域/过期/异状态命中不计——"先过滤再计数"）
+	TotalHits int `json:"total_hits"`
 }
 
 // MemoryItemRejectRequest 否决/撤回请求（0.7.1）。
@@ -5582,6 +5585,7 @@ type ListMemoryItemsParams struct {
 	Kind           *ListMemoryItemsParamsKind     `form:"kind,omitempty" json:"kind,omitempty"`
 	Status         *ListMemoryItemsParamsStatus   `form:"status,omitempty" json:"status,omitempty"`
 	Limit          *int                           `form:"limit,omitempty" json:"limit,omitempty"`
+	Q              *string                        `form:"q,omitempty" json:"q,omitempty"`
 	Before         *string                        `form:"before,omitempty" json:"before,omitempty"`
 	IncludeExpired *bool                          `form:"include_expired,omitempty" json:"include_expired,omitempty"`
 }
@@ -7655,6 +7659,19 @@ func (siw *ServerInterfaceWrapper) ListMemoryItems(w http.ResponseWriter, r *htt
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "q" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "q", r.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "q"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "q", Err: err})
 		}
 		return
 	}

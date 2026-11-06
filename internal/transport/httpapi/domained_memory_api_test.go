@@ -389,6 +389,58 @@ func TestMemoryCurationDomainedAPIT(t *testing.T) {
 	_ = ctx
 }
 
+// 召回端点（0.7.2）：q 编码 + total_hits + 过滤先行（异域不泄漏）。
+func TestMemoryRecallDomainedAPIT(t *testing.T) {
+	ts, _ := newDomainedMemoryTestServer(t, "")
+	body := memCreateBody()
+	body["title"] = "部署流程"
+	body["content"] = "先建单后执行。"
+	memCreateHTTP(t, ts.URL+"/v1/memory/items", body)
+	ws := memCreateBody()
+	ws["namespace"], ws["scope_id"], ws["title"] = "workspace", "default", "异域同词"
+	ws["content"] = "部署流程也在本条。"
+	memCreateHTTP(t, ts.URL+"/v1/memory/items", ws)
+
+	resp, err := http.Get(ts.URL + "/v1/memory/items?namespace=agent&q=" + urlQueryEscape("部署流程"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("应 200，得 %d", resp.StatusCode)
+	}
+	v := memBody(t, resp)
+	if n := len(v["items"].([]any)); n != 1 {
+		t.Fatalf("召回应 1 条，得 %d", n)
+	}
+	if v["total_hits"].(float64) != 1 {
+		t.Fatalf("total_hits 应 1（异域命中不计），得 %v", v["total_hits"])
+	}
+	// 无 q 的既有列表也带 total_hits。
+	resp2, err := http.Get(ts.URL + "/v1/memory/items?namespace=agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp2.Body.Close() })
+	v2 := memBody(t, resp2)
+	if v2["total_hits"].(float64) != 1 {
+		t.Fatalf("列表 total_hits 应 1，得 %v", v2["total_hits"])
+	}
+}
+
+func urlQueryEscape(v string) string {
+	const hex = "0123456789ABCDEF"
+	out := make([]byte, 0, len(v)*3)
+	for _, r := range []byte(v) {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			out = append(out, r)
+			continue
+		}
+		out = append(out, '%', hex[r>>4], hex[r&15])
+	}
+	return string(out)
+}
+
 func TestMemoryUnavailableDomainedAPIT(t *testing.T) {
 	handler := New(Deps{Actor: room.Actor{ParticipantID: "par_owner", Kind: "human"}})
 	ts := httptest.NewServer(handler)

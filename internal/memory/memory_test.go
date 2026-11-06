@@ -193,18 +193,18 @@ func TestMemStoreCursorScopedToNamespace(t *testing.T) {
 	}
 	// workspace 查询以 agent 域条目 ID 作 before：外域 ID 不生效（空页——
 	// 与未知 ID 同语义，越域存在性不泄漏）。
-	items, err := store.ListItems(ctx, ListFilter{Namespace: NSWorkspace,
+	items, _, err := store.ListItems(ctx, ListFilter{Namespace: NSWorkspace,
 		Status: StatusActive, Limit: 50, Before: "mem_ag_1"})
 	if err != nil || len(items) != 0 {
 		t.Fatalf("外域游标应空页，得 %d %v", len(items), err)
 	}
 	// 本域游标正常。
-	items, err = store.ListItems(ctx, ListFilter{Namespace: NSWorkspace,
+	items, _, err = store.ListItems(ctx, ListFilter{Namespace: NSWorkspace,
 		Status: StatusActive, Limit: 50, Before: "mem_ws_1"})
 	if err != nil || len(items) != 0 {
 		t.Fatalf("本域末条游标应空页（其后无更早条目），得 %d %v", len(items), err)
 	}
-	items, err = store.ListItems(ctx, ListFilter{Namespace: NSAgent,
+	items, _, err = store.ListItems(ctx, ListFilter{Namespace: NSAgent,
 		Status: StatusActive, Limit: 50})
 	if err != nil || len(items) != 1 || items[0].MemoryID != "mem_ag_1" {
 		t.Fatalf("agent 列表应 1 条，得 %d %v", len(items), err)
@@ -239,64 +239,64 @@ func TestListIsolationAndCursor(t *testing.T) {
 	}
 
 	t.Run("namespace 必填", func(t *testing.T) {
-		if _, _, err := svc.List(ctx, ListFilter{}); !errors.Is(err, ErrInvalid) {
+		if _, err := svc.List(ctx, ListFilter{}); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("应 ErrInvalid，得 %v", err)
 		}
 	})
 	t.Run("默认 status=active——proposed 不出现", func(t *testing.T) {
-		items, _, err := svc.List(ctx, ListFilter{Namespace: NSAgent})
+		res, err := svc.List(ctx, ListFilter{Namespace: NSAgent})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(items) != 3 {
-			t.Fatalf("应 3 条 active，得 %d", len(items))
+		if len(res.Items) != 3 {
+			t.Fatalf("应 3 条 active，得 %d", len(res.Items))
 		}
 	})
 	t.Run("proposed 显式请求可见", func(t *testing.T) {
-		items, _, err := svc.List(ctx, ListFilter{Namespace: NSAgent, Status: StatusProposed})
-		if err != nil || len(items) != 1 || items[0].MemoryID != "mem_proposed" {
-			t.Fatalf("proposed 口径错：%v %d", err, len(items))
+		res, err := svc.List(ctx, ListFilter{Namespace: NSAgent, Status: StatusProposed})
+		if err != nil || len(res.Items) != 1 || res.Items[0].MemoryID != "mem_proposed" {
+			t.Fatalf("proposed 口径错：%v %d", err, len(res.Items))
 		}
 	})
 	t.Run("域隔离——mission 列表不见 agent 条目", func(t *testing.T) {
-		items, _, err := svc.List(ctx, ListFilter{Namespace: NSMission})
-		if err != nil || len(items) != 2 {
-			t.Fatalf("应 2 条，得 %d %v", len(items), err)
+		res, err := svc.List(ctx, ListFilter{Namespace: NSMission})
+		if err != nil || len(res.Items) != 2 {
+			t.Fatalf("应 2 条，得 %d %v", len(res.Items), err)
 		}
-		for _, it := range items {
+		for _, it := range res.Items {
 			if it.Namespace != NSMission {
 				t.Fatalf("跨域泄漏：%+v", it)
 			}
 		}
 	})
 	t.Run("limit=2 + next_cursor 续页", func(t *testing.T) {
-		p1, cur, err := svc.List(ctx, ListFilter{Namespace: NSAgent, Limit: 2})
-		if err != nil || len(p1) != 2 || cur == "" {
-			t.Fatalf("首页错：%d %q %v", len(p1), cur, err)
+		res, err := svc.List(ctx, ListFilter{Namespace: NSAgent, Limit: 2})
+		if err != nil || len(res.Items) != 2 || res.NextCursor == "" {
+			t.Fatalf("首页错：%d %q %v", len(res.Items), res.NextCursor, err)
 		}
-		if p1[0].Title != "AAA" { // 创建序降序——最新在前
-			t.Fatalf("降序错：首条 %q", p1[0].Title)
+		if res.Items[0].Title != "AAA" { // 创建序降序——最新在前
+			t.Fatalf("降序错：首条 %q", res.Items[0].Title)
 		}
-		p2, cur2, err := svc.List(ctx, ListFilter{Namespace: NSAgent, Limit: 2, Before: cur})
-		if err != nil || len(p2) != 1 || cur2 != "" {
-			t.Fatalf("次页错：%d %q %v", len(p2), cur2, err)
+		res, err = svc.List(ctx, ListFilter{Namespace: NSAgent, Limit: 2, Before: res.NextCursor})
+		if err != nil || len(res.Items) != 1 || res.NextCursor != "" {
+			t.Fatalf("次页错：%d %q %v", len(res.Items), res.NextCursor, err)
 		}
-		if p2[0].Title != "A" {
-			t.Fatalf("续页错：%q", p2[0].Title)
+		if res.Items[0].Title != "A" {
+			t.Fatalf("续页错：%q", res.Items[0].Title)
 		}
 	})
 	t.Run("scope/kind 过滤", func(t *testing.T) {
-		items, _, err := svc.List(ctx, ListFilter{Namespace: NSMission, ScopeID: "m_404"})
-		if err != nil || len(items) != 0 {
-			t.Fatalf("scope 过滤错：%d %v", len(items), err)
+		res, err := svc.List(ctx, ListFilter{Namespace: NSMission, ScopeID: "m_404"})
+		if err != nil || len(res.Items) != 0 {
+			t.Fatalf("scope 过滤错：%d %v", len(res.Items), err)
 		}
-		items, _, err = svc.List(ctx, ListFilter{Namespace: NSAgent, Kind: KindEpisodic})
-		if err != nil || len(items) != 0 {
-			t.Fatalf("kind 过滤错：%d %v", len(items), err)
+		res, err = svc.List(ctx, ListFilter{Namespace: NSAgent, Kind: KindEpisodic})
+		if err != nil || len(res.Items) != 0 {
+			t.Fatalf("kind 过滤错：%d %v", len(res.Items), err)
 		}
 	})
 	t.Run("limit 越界拒绝", func(t *testing.T) {
-		if _, _, err := svc.List(ctx, ListFilter{Namespace: NSAgent, Limit: 101}); !errors.Is(err, ErrInvalid) {
+		if _, err := svc.List(ctx, ListFilter{Namespace: NSAgent, Limit: 101}); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("应 ErrInvalid，得 %v", err)
 		}
 	})

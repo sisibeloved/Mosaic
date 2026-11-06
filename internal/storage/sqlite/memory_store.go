@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/sisibeloved/Mosaic/internal/memory"
 )
@@ -209,10 +210,12 @@ func insertMemoryItemTx(ctx context.Context, tx *sql.Tx, it memory.Item) error {
 	return nil
 }
 
-// ListItems 过滤 + rowid 创建序降序 + 游标（before 行之前的更早条目）+
-// limit+1 条（第 limit+1 条供 service 判 next_cursor）。before 未知
-// （已删除/游标失效）= 空页——与 memstore 同口径。
-func (s *Store) ListItems(ctx context.Context, f memory.ListFilter) ([]memory.Item, error) {
+// ListItems 过滤 +（可选）召回匹配 + 排序 + 游标 + 计数（0.7.2 / ADR-0039）。
+// 召回模式（q 非空）：授权/时效过滤与 FTS MATCH/LIKE **同一 WHERE**（过滤
+// 先于排序与计数——他域命中不出现在结果与 total）；bm25 升序 + rowid DESC
+// 兜底；无游标（limit 截断，total 为全量计数）。非召回模式：rowid 降序 +
+// before 游标 + limit+1 条。before 未知 = 空页——与 memstore 同口径。
+func (s *Store) ListItems(ctx context.Context, f memory.ListFilter) ([]memory.Item, int, error) {
 	q := `SELECT ` + memoryCols + ` FROM memory_items WHERE namespace = ? AND status = ?`
 	args := []any{string(f.Namespace), string(f.Status)}
 	if f.ScopeID != "" {
@@ -234,25 +237,52 @@ func (s *Store) ListItems(ctx context.Context, f memory.ListFilter) ([]memory.It
 		args = append(args, f.Now)
 	}
 	if f.Before != "" {
-		// 一审 #4：游标只在本域内定位——外域同 ID 不生效（子查询空 → 0 →
-		// 空页，与未知 ID 同语义；越域存在性不泄漏）。
 		q += ` AND rowid < COALESCE((SELECT rowid FROM memory_items WHERE memory_id = ? AND namespace = ?), 0)`
 		args = append(args, f.Before, string(f.Namespace))
 	}
+	// 0.7.2 召回匹配（过滤先行——WHERE 前段已是授权/时效过滤）。
+	if f.Query != "" {
+		if len([]rune(f.Query)) >= 3 {
+			// trigram ≥3 rune：FTS MATCH（phrase 引号防语法注入——room 先例）。
+			phrase := `"` + strings.ReplaceAll(f.Query, `"`, `""`) + `"`
+			q += ` AND memory_id IN (SELECT memory_id FROM memory_fts WHERE memory_fts MATCH ?)`
+			args = append(args, phrase)
+		} else {
+			q += ` AND (title LIKE ? COLLATE NOCASE OR content LIKE ? COLLATE NOCASE)`
+			args = append(args, "%"+f.Query+"%", "%"+f.Query+"%")
+		}
+	}
+	// total：过滤+匹配后全量计数（不含分页截断——"先过滤再计数"）。
+	var total int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory_items WHERE `+strings.TrimPrefix(q, `SELECT `+memoryCols+` FROM memory_items WHERE `), args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("sqlite: count memory items: %w", err)
+	}
+	if f.Query != "" {
+		// 召回模式：bm25 相关性（升序——越小越相关）+ rowid DESC 兜底；无游标。
+		order := ` ORDER BY (SELECT bm25(memory_fts) FROM memory_fts WHERE memory_fts.memory_id = memory_items.memory_id) ASC, rowid DESC LIMIT ?`
+		args = append(args, f.Limit)
+		return s.queryMemoryItems(ctx, q+order, args, total)
+	}
 	q += ` ORDER BY rowid DESC LIMIT ?`
 	args = append(args, f.Limit+1)
+	return s.queryMemoryItems(ctx, q, args, total)
+}
+
+// queryMemoryItems 执行 + 扫描（召回/非召回共用）。
+func (s *Store) queryMemoryItems(ctx context.Context, q string, args []any, total int) ([]memory.Item, int, error) {
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: list memory items: %w", err)
+		return nil, 0, fmt.Errorf("sqlite: list memory items: %w", err)
 	}
 	defer rows.Close()
-	out := make([]memory.Item, 0, f.Limit+1)
+	out := make([]memory.Item, 0, 16)
 	for rows.Next() {
 		it, err := scanMemoryItem(rows)
 		if err != nil {
-			return nil, fmt.Errorf("sqlite: list memory items scan: %w", err)
+			return nil, 0, fmt.Errorf("sqlite: list memory items scan: %w", err)
 		}
 		out = append(out, it)
 	}
-	return out, rows.Err()
+	return out, total, rows.Err()
 }

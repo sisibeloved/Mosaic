@@ -69,16 +69,20 @@ func (s *server) ListMemoryItems(w http.ResponseWriter, r *http.Request, params 
 	if params.IncludeExpired != nil {
 		f.IncludeExpired = *params.IncludeExpired
 	}
-	items, cursor, err := s.deps.MemorySVC.List(r.Context(), f)
+	if params.Q != nil {
+		f.Query = *params.Q
+	}
+	res, err := s.deps.MemorySVC.List(r.Context(), f)
 	if err != nil {
 		s.writeMemoryError(w, err)
 		return
 	}
-	view := apigen.MemoryItemListView{Items: make([]apigen.MemoryItemView, 0, len(items))}
-	for _, it := range items {
+	view := apigen.MemoryItemListView{Items: make([]apigen.MemoryItemView, 0, len(res.Items)), TotalHits: res.TotalHits}
+	for _, it := range res.Items {
 		view.Items = append(view.Items, memoryItemView(it))
 	}
-	if cursor != "" {
+	if res.NextCursor != "" {
+		cursor := res.NextCursor
 		view.NextCursor = &cursor
 	}
 	writeJSON(w, http.StatusOK, view)

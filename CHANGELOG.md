@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- **0.7.2 记忆召回：FTS5 与授权过滤先行**（0.7 领域线第三件 / ADR-0039，RFC-0018 §7.3/§7.4）：`GET /v1/memory/items` += 可选 `q`（召回模式）——
+  - **FTS5 trigram 索引**（migration v33：`memory_fts(title, content)`；AI/AU 触发器同事务同步——策展修订/替代路径零改动；存量回填幂等）。≥3 rune 走 MATCH（phrase 引号防注入——room_fts/doc_fts 同裁定：unicode61 中文整串单 token 不可用，trigram 对 CJK 子串与英文均正确命中）；<3 rune 回退 LIKE 子串（COLLATE NOCASE）。
+  - **过滤先行**（RFC §7.3 铁律）：namespace（授权）+ scope/kind/status + 时效过滤与 FTS 匹配在**同一 WHERE**——他域命中不出现在结果也**不计入 total_hits**（存在性不泄漏）；0.7.1 的默认排除过期在召回同样生效。
+  - **排序与计数**：召回模式 bm25 相关性升序（rowid DESC 兜底）、无游标（limit 截断）；响应 += `total_hits`（过滤+匹配后总数，不含分页截断——非召回模式同给）。memstore 子串基准同语义（命中集/total 一致——排序为 sqlite 独占）。
+  - **SPA**：记忆页搜索框（召回词进列表 effect 依赖——与浏览条件同源刷新）+ 结果总数显示。
+  - 验证：域 UT（命中集/大小写/total 排除 status 与时效项/召回无游标）+ sqlite IT（trigram 中文/英文/短词回退/过滤先行/修订 FTS 同步/终结不入召回/bm25 序）+ httpapi UT + vet/-race + it/st + SPA + 生成物幂等；真机冒烟 6 项 ALL-PASS。
+
 ## [0.7.1] - 2026-11-05
 
 ### Added

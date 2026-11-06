@@ -623,15 +623,17 @@ export const api = {
     limit?: number;
     before?: string;
     include_expired?: boolean;
+    q?: string;
   }): Promise<import("./schema.gen").components["schemas"]["MemoryItemListView"]> {
-    const q = new URLSearchParams({ namespace: params.namespace });
-    if (params.scope_id) q.set("scope_id", params.scope_id);
-    if (params.kind) q.set("kind", params.kind);
-    if (params.status) q.set("status", params.status);
-    if (params.limit) q.set("limit", String(params.limit));
-    if (params.before) q.set("before", params.before);
-    if (params.include_expired) q.set("include_expired", "true");
-    return request(`/v1/memory/items?${q.toString()}`);
+    const qs = new URLSearchParams({ namespace: params.namespace });
+    if (params.scope_id) qs.set("scope_id", params.scope_id);
+    if (params.kind) qs.set("kind", params.kind);
+    if (params.status) qs.set("status", params.status);
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.before) qs.set("before", params.before);
+    if (params.include_expired) qs.set("include_expired", "true");
+    if (params.q?.trim()) qs.set("q", params.q.trim());
+    return request(`/v1/memory/items?${qs.toString()}`);
   },
   /** 0.7.0 写入分域记忆项（显式写入面——人工记忆操作或系统事实记录）。 */
   createMemoryItem(req: import("./schema.gen").components["schemas"]["MemoryItemCreateRequest"]): Promise<import("./schema.gen").components["schemas"]["MemoryItemView"]> {

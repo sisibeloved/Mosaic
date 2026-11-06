@@ -650,6 +650,30 @@ CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_items(namespace, status);
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (32, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 `
 
+// migrationV33（0.7.2 / ADR-0039）：记忆召回——memory_fts FTS5 trigram 派生
+// 索引（title+content；room_fts/doc_fts 同 tokenizer 裁定）+ AI/AU 触发器
+// 同事务同步（策展修订/替代路径零改动）+ 存量回填（全清后重灌——幂等重放
+// 安全）。本件无删除面（Forget 归 0.7.8——届时补 AD 触发器）。
+const migrationV33 = `
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+	memory_id UNINDEXED,
+	title,
+	content,
+	tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS memory_fts_ai AFTER INSERT ON memory_items BEGIN
+	INSERT INTO memory_fts(memory_id, title, content)
+	VALUES (NEW.memory_id, NEW.title, NEW.content);
+END;
+CREATE TRIGGER IF NOT EXISTS memory_fts_au AFTER UPDATE ON memory_items BEGIN
+	UPDATE memory_fts SET title = NEW.title, content = NEW.content WHERE memory_id = NEW.memory_id;
+END;
+DELETE FROM memory_fts;
+INSERT INTO memory_fts(memory_id, title, content)
+	SELECT memory_id, title, content FROM memory_items;
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (33, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+`
+
 // migrationV29（0.6.12 / ADR-0035）：责任交接——missions 增 pending_owner_agent_id
 // （在途交接承接人；空 = 无在途交接）。逐语句加列（重复容忍）+ 登记。
 var migrationV29 = []string{
@@ -846,6 +870,11 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(migrationV32); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: migration v32: %w", err)
+	}
+	// v33 迁移（0.7.2 / ADR-0039）：memory_fts——幂等 DDL + 触发器 + 回填
+	if _, err := db.Exec(migrationV33); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("sqlite: migration v33: %w", err)
 	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {

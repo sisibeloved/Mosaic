@@ -2561,6 +2561,9 @@ export interface paths {
          *     before 游标分页。默认口径 status=active 且排除已过期条目（0.7.1：
          *     valid_to < now 不参与当前召回——include_expired=true 显式可见）；
          *     proposed/superseded 显式请求时不过滤有效期（策展审视看全量）。
+         *     q 非空 = 召回模式（0.7.2）：授权/时效过滤**先于**排序与计数
+         *     （RFC §7.3——他域命中不出现在结果与 total_hits）；bm25 相关性排序，
+         *     无游标；total_hits 为过滤+匹配后总数（不含分页截断）。
          */
         get: operations["listMemoryItems"];
         put?: never;
@@ -4295,11 +4298,13 @@ export interface components {
             superseded: components["schemas"]["MemoryItemView"];
             replacement: components["schemas"]["MemoryItemView"];
         };
-        /** @description 分域记忆列表（创建序降序 + 游标）。 */
+        /** @description 分域记忆列表（创建序降序 + 游标；召回模式 bm25 序无游标）。 */
         MemoryItemListView: {
             items: components["schemas"]["MemoryItemView"][];
-            /** @description 还有更多时给本页末条 memory_id——直传作下一页 before；无更多缺省 */
+            /** @description 还有更多时给本页末条 memory_id——直传作下一页 before；无更多/召回模式缺省 */
             next_cursor?: string;
+            /** @description 过滤+匹配后的总数（0.7.2——不含分页截断；他域/过期/异状态命中不计——"先过滤再计数"） */
+            total_hits: number;
         };
         /** @description 认领行视图（0.6.13 四审 */
         DispatchClaimView: {
@@ -10906,6 +10911,7 @@ export interface operations {
                 kind?: "semantic" | "episodic" | "procedural";
                 status?: "active" | "proposed" | "superseded";
                 limit?: number;
+                q?: string;
                 before?: string;
                 include_expired?: boolean;
             };

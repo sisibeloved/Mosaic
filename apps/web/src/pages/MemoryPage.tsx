@@ -43,6 +43,9 @@ export function MemoryPage() {
   const [ns, setNs] = useState<Namespace>("agent");
   const [scopeFilter, setScopeFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
+  // 0.7.2 召回词 + 总数（过滤+匹配后——先过滤再计数）。
+  const [searchQ, setSearchQ] = useState("");
+  const [total, setTotal] = useState(0);
   const [includeExpired, setIncludeExpired] = useState(false);
   const [items, setItems] = useState<MemoryItemView[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -74,7 +77,7 @@ export function MemoryPage() {
   const [refreshTick, setRefreshTick] = useState(0);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
 
-  // 列表加载（浏览条件/状态口径/时效开关/写入成功重载；代次作废在途响应）。
+  // 列表加载（浏览条件/状态口径/时效开关/召回词/写入成功重载；代次作废在途响应）。
   useEffect(() => {
     const cur = ++seq.current;
     setItems(null);
@@ -86,18 +89,20 @@ export function MemoryPage() {
         ...(scopeFilter.trim() ? { scope_id: scopeFilter.trim() } : {}),
         ...(statusFilter !== "active" ? { status: statusFilter } : {}),
         ...(includeExpired ? { include_expired: true } : {}),
+        ...(searchQ.trim() ? { q: searchQ.trim() } : {}),
         limit: 50,
       })
       .then((v) => {
         if (seq.current !== cur) return;
         setItems(v.items);
         setCursor(v.next_cursor ?? null);
+        setTotal(v.total_hits);
       })
       .catch((e: unknown) => {
         if (seq.current !== cur) return;
         setListErr(e instanceof Error ? e.message : String(e));
       });
-  }, [ns, scopeFilter, statusFilter, includeExpired, refreshTick]);
+  }, [ns, scopeFilter, statusFilter, includeExpired, searchQ, refreshTick]);
 
   // 一审 #3：代次检查 + 在途限制——切域后迟到响应不追加，同游标不重复发。
   const loadMore = () => {
@@ -426,6 +431,19 @@ export function MemoryPage() {
           <input type="checkbox" checked={includeExpired} onChange={(e) => setIncludeExpired(e.target.checked)} />
           含已过期
         </label>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          className={`${inputCls} flex-1`}
+          value={searchQ}
+          placeholder="召回（0.7.2——按标题/正文全文；过滤先行：命名空间/口径/时效先于排序与计数）"
+          onChange={(e) => setSearchQ(e.target.value)}
+        />
+        {items !== null && (
+          <span className="shrink-0 text-xs text-faint">
+            共 {total} 条{searchQ.trim() ? "（召回——相关度序，无分页）" : ""}
+          </span>
+        )}
       </div>
 
       {listErr && <p className="rounded-lg bg-surface-2 px-3 py-2 text-xs text-red-400">{listErr}</p>}
