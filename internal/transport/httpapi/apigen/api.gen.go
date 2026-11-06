@@ -4587,6 +4587,57 @@ type RouteDecisionViewSelectionSource string
 // RouteDecisionViewStatus defines model for RouteDecisionView.Status.
 type RouteDecisionViewStatus string
 
+// RunCheckpointCreateRequest 检查点落盘请求（0.7.3——显式写入面；执行面自动挂点随 0.7.4）。
+type RunCheckpointCreateRequest struct {
+	ActionReceipts    *[]string          `json:"action_receipts,omitempty"`
+	ArtifactRefs      *[]string          `json:"artifact_refs,omitempty"`
+	CompletedSteps    *[]string          `json:"completed_steps,omitempty"`
+	MissionId         string             `json:"mission_id"`
+	MissionVersion    int                `json:"mission_version"`
+	PendingSteps      *[]string          `json:"pending_steps,omitempty"`
+	ProgressSummary   *string            `json:"progress_summary,omitempty"`
+	SourceWatermarks  *map[string]string `json:"source_watermarks,omitempty"`
+	UncertainActions  *[]string          `json:"uncertain_actions,omitempty"`
+	WaitingConditions *[]string          `json:"waiting_conditions,omitempty"`
+	WorkItemId        *string            `json:"work_item_id,omitempty"`
+}
+
+// RunCheckpointListView 检查点列表（checkpoint_version 降序——最新在前）。
+type RunCheckpointListView struct {
+	Checkpoints []RunCheckpointView `json:"checkpoints"`
+}
+
+// RunCheckpointView Run 检查点（RFC-0018 §7.3——可恢复业务状态，独立于 Receipt）。
+type RunCheckpointView struct {
+	ActionReceipts []string `json:"action_receipts"`
+	ArtifactRefs   []string `json:"artifact_refs"`
+
+	// CheckpointId ckp_ 前缀生成式
+	CheckpointId string `json:"checkpoint_id"`
+
+	// CheckpointVersion 同 run 内递增（存储原子分配）
+	CheckpointVersion int      `json:"checkpoint_version"`
+	CompletedSteps    []string `json:"completed_steps"`
+	CreatedAt         string   `json:"created_at"`
+	MissionId         string   `json:"mission_id"`
+
+	// MissionVersion 落盘时契约版本（恢复时判漂移）
+	MissionVersion int      `json:"mission_version"`
+	PendingSteps   []string `json:"pending_steps"`
+
+	// ProgressSummary 简短公开摘要（≤500 字）
+	ProgressSummary string `json:"progress_summary"`
+	RunId           string `json:"run_id"`
+
+	// SourceWatermarks 各领域水位（跨流对齐——不虚构全局序号）
+	SourceWatermarks  map[string]string `json:"source_watermarks"`
+	UncertainActions  []string          `json:"uncertain_actions"`
+	WaitingConditions []string          `json:"waiting_conditions"`
+
+	// WorkItemId 可选工作项锚（空 = 无）
+	WorkItemId *string `json:"work_item_id,omitempty"`
+}
+
 // RunResolve unknown Run 核验处置请求体（0.6.7 / ADR-0030）。
 type RunResolve struct {
 	// Note 可选备注（记入 resolution_note 与 resolved 事件）
@@ -5726,6 +5777,9 @@ type ReviseMemoryItemJSONRequestBody = MemoryItemReviseRequest
 // SupersedeMemoryItemJSONRequestBody defines body for SupersedeMemoryItem for application/json ContentType.
 type SupersedeMemoryItemJSONRequestBody = MemoryItemSupersedeRequest
 
+// CreateRunCheckpointJSONRequestBody defines body for CreateRunCheckpoint for application/json ContentType.
+type CreateRunCheckpointJSONRequestBody = RunCheckpointCreateRequest
+
 // ResolveMissionRunJSONRequestBody defines body for ResolveMissionRun for application/json ContentType.
 type ResolveMissionRunJSONRequestBody = RunResolve
 
@@ -6007,6 +6061,15 @@ type ServerInterface interface {
 	// GetRun Run 详情
 	// (GET /v1/mission-runs/{run_id})
 	GetRun(w http.ResponseWriter, r *http.Request, runId string)
+	// ListRunCheckpoints Run 检查点列表（0.7.3——checkpoint_version 降序，最新在前）
+	// (GET /v1/mission-runs/{run_id}/checkpoints)
+	ListRunCheckpoints(w http.ResponseWriter, r *http.Request, runId string)
+	// CreateRunCheckpoint 落盘 Run 检查点（0.7.3 / ADR-0040，RFC-0018 §7.3）
+	// (POST /v1/mission-runs/{run_id}/checkpoints)
+	CreateRunCheckpoint(w http.ResponseWriter, r *http.Request, runId string)
+	// GetLatestRunCheckpoint 最新检查点（0.7.3——恢复面入口；无落盘 404）
+	// (GET /v1/mission-runs/{run_id}/checkpoints/latest)
+	GetLatestRunCheckpoint(w http.ResponseWriter, r *http.Request, runId string)
 	// GetMissionRunEvents Run 事件流（含围栏拒绝审计）
 	// (GET /v1/mission-runs/{run_id}/events)
 	GetMissionRunEvents(w http.ResponseWriter, r *http.Request, runId string)
@@ -7874,6 +7937,84 @@ func (siw *ServerInterfaceWrapper) GetRun(w http.ResponseWriter, r *http.Request
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetRun(w, r, runId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListRunCheckpoints operation middleware
+func (siw *ServerInterfaceWrapper) ListRunCheckpoints(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "run_id" -------------
+	var runId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "run_id", r.PathValue("run_id"), &runId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "run_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListRunCheckpoints(w, r, runId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateRunCheckpoint operation middleware
+func (siw *ServerInterfaceWrapper) CreateRunCheckpoint(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "run_id" -------------
+	var runId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "run_id", r.PathValue("run_id"), &runId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "run_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateRunCheckpoint(w, r, runId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetLatestRunCheckpoint operation middleware
+func (siw *ServerInterfaceWrapper) GetLatestRunCheckpoint(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "run_id" -------------
+	var runId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "run_id", r.PathValue("run_id"), &runId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "run_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetLatestRunCheckpoint(w, r, runId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -10154,6 +10295,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/memory/items/{memory_id}/reject", wrapper.RejectMemoryItem)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/memory/items/{memory_id}/revise", wrapper.ReviseMemoryItem)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/memory/items/{memory_id}/supersede", wrapper.SupersedeMemoryItem)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/mission-runs/{run_id}/checkpoints", wrapper.ListRunCheckpoints)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/mission-runs/{run_id}/checkpoints", wrapper.CreateRunCheckpoint)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/mission-runs/{run_id}/checkpoints/latest", wrapper.GetLatestRunCheckpoint)
 
 	return m
 }

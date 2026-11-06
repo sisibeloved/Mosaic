@@ -674,6 +674,33 @@ INSERT INTO memory_fts(memory_id, title, content)
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (33, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 `
 
+// migrationV34（0.7.3 / ADR-0040）：Run 检查点——checkpoints 表（RFC-0018
+// §7.3 可恢复业务状态；JSON 列存步骤/回执/水位；checkpoint_version 事务内
+// MAX+1 原子分配——(run_id, checkpoint_version) 唯一兜底）。幂等 DDL。
+const migrationV34 = `
+CREATE TABLE IF NOT EXISTS checkpoints (
+  checkpoint_id      TEXT PRIMARY KEY,
+  run_id             TEXT NOT NULL,
+  mission_id         TEXT NOT NULL,
+  mission_version    INTEGER NOT NULL,
+  checkpoint_version INTEGER NOT NULL,
+  work_item_id       TEXT NOT NULL DEFAULT '',
+  completed_steps    TEXT NOT NULL DEFAULT '[]',
+  pending_steps      TEXT NOT NULL DEFAULT '[]',
+  artifact_refs      TEXT NOT NULL DEFAULT '[]',
+  action_receipts    TEXT NOT NULL DEFAULT '[]',
+  uncertain_actions  TEXT NOT NULL DEFAULT '[]',
+  waiting_conditions TEXT NOT NULL DEFAULT '[]',
+  source_watermarks  TEXT NOT NULL DEFAULT '{}',
+  progress_summary   TEXT NOT NULL DEFAULT '',
+  created_at         TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_checkpoints_run_version
+  ON checkpoints(run_id, checkpoint_version);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_run ON checkpoints(run_id);
+INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (34, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+`
+
 // migrationV29（0.6.12 / ADR-0035）：责任交接——missions 增 pending_owner_agent_id
 // （在途交接承接人；空 = 无在途交接）。逐语句加列（重复容忍）+ 登记。
 var migrationV29 = []string{
@@ -875,6 +902,11 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(migrationV33); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: migration v33: %w", err)
+	}
+	// v34 迁移（0.7.3 / ADR-0040）：checkpoints——幂等 DDL
+	if _, err := db.Exec(migrationV34); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("sqlite: migration v34: %w", err)
 	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {

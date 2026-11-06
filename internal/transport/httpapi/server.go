@@ -22,6 +22,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/agent"
 	"github.com/sisibeloved/Mosaic/internal/attach"
 	"github.com/sisibeloved/Mosaic/internal/backup"
+	"github.com/sisibeloved/Mosaic/internal/checkpoint"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/dispatch"
 	"github.com/sisibeloved/Mosaic/internal/doc"
@@ -153,6 +154,8 @@ type Deps struct {
 	// Diagnostics 自诊断 bundle 构造器（M4-0）：nil = 诊断端点 404。
 	// 内容纪律：不含凭据/环境变量（OQ-20）——版本/运行时/数据面统计/注册表状态/日志尾。
 	Diagnostics func() (map[string]any, error)
+	// CheckpointSVC Run 检查点服务（0.7.3 / ADR-0040）：nil = 检查点端点 503（测试装配）。
+	CheckpointSVC *checkpoint.Service
 	// MemorySVC 分域记忆服务（0.7.0 / ADR-0037）：nil = 记忆端点 503（测试装配）。
 	MemorySVC *memory.Service
 	// ShellOpenURL 桌面壳系统浏览器打开面（手工注册路由 POST /v1/shell/open-external，

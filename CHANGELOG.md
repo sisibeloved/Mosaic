@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **0.7.3 Checkpoint：可恢复业务状态**（0.7 领域线第四件 / ADR-0040，RFC-0018 §7.3——独立于 ContextReceipt：那是"交付了什么"，这是"工作到哪了"）：
+  - **域模型（§7.3 字段全量）**：进度（completed/pending steps——**交集须为空**："文字摘要不能将 pending 偷换成 completed"的机器可判子集）、产物引用（artifact_refs）、动作回执（action_receipts）、不确定动作（uncertain_actions）、等待条件（waiting_conditions）、各领域水位（source_watermarks——跨流对齐不虚构全局序号）、简短公开摘要、work_item 锚。
+  - **双锚**：Run 在册且 `Run.MissionID == mission_id`（404 `run_not_found` / 409 `checkpoint_scope_mismatch`——归属一致性门）；`mission_version` 记录落盘时契约版本（恢复时判漂移——"必须能重新读取权威任务状态"）。
+  - **checkpoint_version 存储原子分配**（INSERT 语句内子查询 MAX+1——单语句原子，并发落盘经 `(run_id, checkpoint_version)` 唯一索引兜底不撞号；执行面无状态落盘）。
+  - **读写面**：`POST /v1/mission-runs/{run_id}/checkpoints`（owner 写门 + 严格拒收）+ `GET …/checkpoints`（降序——最新在前）+ `GET …/checkpoints/latest`（恢复面入口；无落盘 404 `checkpoint_not_found`——区分"无检查点"与"有"）。0.7.3 为显式写入面；Run 生命周期自动落盘挂点随 0.7.4 续办接线。
+  - SQLite migration **v34**（checkpoints + 唯一/查询索引，幂等）；memstore 双实现同语义。
+  - 验证：域 UT（校验矩阵/双锚/并发 20 落盘版本不撞号）+ sqlite IT（v34/版本递增/降序/JSON 列读回/并发 10 race）+ httpapi UT（三端点 + 错误族）+ vet/-race + it/st + 生成物幂等；真机冒烟 10 项 ALL-PASS（Run 锚全链路——runtime→agent→grant→任职→mission→run→三级落盘→latest/降序→双锚/校验族）。
+
 ## [0.7.2] - 2026-11-05
 
 ### Added

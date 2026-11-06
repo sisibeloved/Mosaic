@@ -4477,6 +4477,92 @@ paths:
         "409":
           description: 版本冲突（memory_version_conflict）/ 终结态（memory_terminal）/ replacement 锚不存在（memory_scope_not_found）
         "503": { description: 记忆域未装配 }
+  /v1/mission-runs/{run_id}/checkpoints:
+    post:
+      operationId: createRunCheckpoint
+      summary: 落盘 Run 检查点（0.7.3 / ADR-0040，RFC-0018 §7.3）
+      description: |
+        可恢复业务状态（独立于 ContextReceipt——那是"交付了什么"，这是
+        "工作到哪了"）。双锚：Run 在册且 mission_id 与 Run 归属一致；
+        checkpoint_version 由存储原子分配（同 run 事务内 MAX+1——并发
+        落盘不撞号）。completed 与 pending 步骤交集须为空（"文字摘要不能
+        将 pending 偷换成 completed"的机器可判子集）。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^run_[0-9A-Za-z_-]+$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RunCheckpointCreateRequest" }
+      responses:
+        "201":
+          description: 已落盘
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunCheckpointView" }
+        "400":
+          description: 字段校验（invalid_request——交集非空/长度/枚举）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Run 不存在（run_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: mission_id 与 Run 归属不一致（checkpoint_scope_mismatch）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { description: 检查点域未装配（checkpoint_unavailable） }
+    get:
+      operationId: listRunCheckpoints
+      summary: Run 检查点列表（0.7.3——checkpoint_version 降序，最新在前）
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^run_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 检查点列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunCheckpointListView" }
+        "404": { description: Run 不存在（run_not_found） }
+        "503": { description: 检查点域未装配（checkpoint_unavailable） }
+  /v1/mission-runs/{run_id}/checkpoints/latest:
+    get:
+      operationId: getLatestRunCheckpoint
+      summary: 最新检查点（0.7.3——恢复面入口；无落盘 404）
+      description: |
+        0.7.4 跨 Harness 续办的恢复入口：最新 checkpoint + mission_version
+        与任务现行版本核对（漂移即重读权威状态）。尚未落盘返回 404
+        checkpoint_not_found（恢复面据此区分"无检查点"与"有"）。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^run_[0-9A-Za-z_-]+$" }
+      responses:
+        "200":
+          description: 最新检查点
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunCheckpointView" }
+        "404":
+          description: Run 不存在（run_not_found）/ 尚未落盘（checkpoint_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { description: 检查点域未装配（checkpoint_unavailable） }
 components:
   securitySchemes:
     OwnerToken:
@@ -6368,6 +6454,49 @@ components:
         confidence: { type: number, minimum: 0, maximum: 1 }
         sensitivity: { type: string, enum: [normal, sensitive] }
         status: { type: string, enum: [active, proposed], description: 默认 active——不确定候选留 proposed 待策展（0.7.1） }
+    RunCheckpointView:
+      type: object
+      required: [checkpoint_id, run_id, mission_id, mission_version, checkpoint_version, completed_steps, pending_steps, artifact_refs, action_receipts, uncertain_actions, waiting_conditions, source_watermarks, progress_summary, created_at]
+      description: Run 检查点（RFC-0018 §7.3——可恢复业务状态，独立于 Receipt）。
+      properties:
+        checkpoint_id: { type: string, description: "ckp_ 前缀生成式" }
+        run_id: { type: string }
+        mission_id: { type: string }
+        mission_version: { type: integer, description: 落盘时契约版本（恢复时判漂移） }
+        checkpoint_version: { type: integer, description: 同 run 内递增（存储原子分配） }
+        work_item_id: { type: string, description: 可选工作项锚（空 = 无） }
+        completed_steps: { type: array, items: { type: string } }
+        pending_steps: { type: array, items: { type: string } }
+        artifact_refs: { type: array, items: { type: string } }
+        action_receipts: { type: array, items: { type: string } }
+        uncertain_actions: { type: array, items: { type: string } }
+        waiting_conditions: { type: array, items: { type: string } }
+        source_watermarks: { type: object, additionalProperties: { type: string }, description: 各领域水位（跨流对齐——不虚构全局序号） }
+        progress_summary: { type: string, description: 简短公开摘要（≤500 字） }
+        created_at: { type: string }
+    RunCheckpointCreateRequest:
+      type: object
+      required: [mission_id, mission_version]
+      additionalProperties: false
+      description: 检查点落盘请求（0.7.3——显式写入面；执行面自动挂点随 0.7.4）。
+      properties:
+        mission_id: { type: string, minLength: 1, maxLength: 128 }
+        mission_version: { type: integer, minimum: 1 }
+        work_item_id: { type: string, maxLength: 128 }
+        completed_steps: { type: array, items: { type: string, minLength: 1, maxLength: 300 }, maxItems: 64 }
+        pending_steps: { type: array, items: { type: string, minLength: 1, maxLength: 300 }, maxItems: 64 }
+        artifact_refs: { type: array, items: { type: string, minLength: 1, maxLength: 300 }, maxItems: 64 }
+        action_receipts: { type: array, items: { type: string, minLength: 1, maxLength: 300 }, maxItems: 64 }
+        uncertain_actions: { type: array, items: { type: string, minLength: 1, maxLength: 300 }, maxItems: 64 }
+        waiting_conditions: { type: array, items: { type: string, minLength: 1, maxLength: 300 }, maxItems: 64 }
+        source_watermarks: { type: object, additionalProperties: { type: string } }
+        progress_summary: { type: string, maxLength: 500 }
+    RunCheckpointListView:
+      type: object
+      required: [checkpoints]
+      description: 检查点列表（checkpoint_version 降序——最新在前）。
+      properties:
+        checkpoints: { type: array, items: { $ref: "#/components/schemas/RunCheckpointView" } }
     MemoryEditRecordView:
       type: object
       required: [version, cause, edited_by, occurred_at]

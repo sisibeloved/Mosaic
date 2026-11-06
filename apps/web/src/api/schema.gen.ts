@@ -2690,6 +2690,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/mission-runs/{run_id}/checkpoints": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Run 检查点列表（0.7.3——checkpoint_version 降序，最新在前） */
+        get: operations["listRunCheckpoints"];
+        put?: never;
+        /**
+         * 落盘 Run 检查点（0.7.3 / ADR-0040，RFC-0018 §7.3）
+         * @description 可恢复业务状态（独立于 ContextReceipt——那是"交付了什么"，这是
+         *     "工作到哪了"）。双锚：Run 在册且 mission_id 与 Run 归属一致；
+         *     checkpoint_version 由存储原子分配（同 run 事务内 MAX+1——并发
+         *     落盘不撞号）。completed 与 pending 步骤交集须为空（"文字摘要不能
+         *     将 pending 偷换成 completed"的机器可判子集）。
+         */
+        post: operations["createRunCheckpoint"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/mission-runs/{run_id}/checkpoints/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 最新检查点（0.7.3——恢复面入口；无落盘 404）
+         * @description 0.7.4 跨 Harness 续办的恢复入口：最新 checkpoint + mission_version
+         *     与任务现行版本核对（漂移即重读权威状态）。尚未落盘返回 404
+         *     checkpoint_not_found（恢复面据此区分"无检查点"与"有"）。
+         */
+        get: operations["getLatestRunCheckpoint"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4243,6 +4290,52 @@ export interface components {
              * @enum {string}
              */
             status?: "active" | "proposed";
+        };
+        /** @description Run 检查点（RFC-0018 §7.3——可恢复业务状态，独立于 Receipt）。 */
+        RunCheckpointView: {
+            /** @description ckp_ 前缀生成式 */
+            checkpoint_id: string;
+            run_id: string;
+            mission_id: string;
+            /** @description 落盘时契约版本（恢复时判漂移） */
+            mission_version: number;
+            /** @description 同 run 内递增（存储原子分配） */
+            checkpoint_version: number;
+            /** @description 可选工作项锚（空 = 无） */
+            work_item_id?: string;
+            completed_steps: string[];
+            pending_steps: string[];
+            artifact_refs: string[];
+            action_receipts: string[];
+            uncertain_actions: string[];
+            waiting_conditions: string[];
+            /** @description 各领域水位（跨流对齐——不虚构全局序号） */
+            source_watermarks: {
+                [key: string]: string;
+            };
+            /** @description 简短公开摘要（≤500 字） */
+            progress_summary: string;
+            created_at: string;
+        };
+        /** @description 检查点落盘请求（0.7.3——显式写入面；执行面自动挂点随 0.7.4）。 */
+        RunCheckpointCreateRequest: {
+            mission_id: string;
+            mission_version: number;
+            work_item_id?: string;
+            completed_steps?: string[];
+            pending_steps?: string[];
+            artifact_refs?: string[];
+            action_receipts?: string[];
+            uncertain_actions?: string[];
+            waiting_conditions?: string[];
+            source_watermarks?: {
+                [key: string]: string;
+            };
+            progress_summary?: string;
+        };
+        /** @description 检查点列表（checkpoint_version 降序——最新在前）。 */
+        RunCheckpointListView: {
+            checkpoints: components["schemas"]["RunCheckpointView"][];
         };
         /** @description 版本留痕记录（0.7.1 / ADR-0038 §2——append-only，恰一条/次）。 */
         MemoryEditRecordView: {
@@ -11235,6 +11328,140 @@ export interface operations {
                 content?: never;
             };
             /** @description 记忆域未装配 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listRunCheckpoints: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 检查点列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunCheckpointListView"];
+                };
+            };
+            /** @description Run 不存在（run_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 检查点域未装配（checkpoint_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createRunCheckpoint: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunCheckpointCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已落盘 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunCheckpointView"];
+                };
+            };
+            /** @description 字段校验（invalid_request——交集非空/长度/枚举） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Run 不存在（run_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description mission_id 与 Run 归属不一致（checkpoint_scope_mismatch） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 检查点域未装配（checkpoint_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getLatestRunCheckpoint: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 最新检查点 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunCheckpointView"];
+                };
+            };
+            /** @description Run 不存在（run_not_found）/ 尚未落盘（checkpoint_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 检查点域未装配（checkpoint_unavailable） */
             503: {
                 headers: {
                     [name: string]: unknown;

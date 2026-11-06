@@ -36,6 +36,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/agent/slowrun"
 	"github.com/sisibeloved/Mosaic/internal/attach"
 	"github.com/sisibeloved/Mosaic/internal/backup"
+	"github.com/sisibeloved/Mosaic/internal/checkpoint"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/delivery"
 	"github.com/sisibeloved/Mosaic/internal/dispatch"
@@ -354,6 +355,18 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			return ok, err
 		},
 	}, clock)
+	// Run 检查点（0.7.3 / ADR-0040，RFC-0018 §7.3）：可恢复业务状态——双锚
+	//（Run 在册 + mission 归属一致）经 RunMission 闭包（checkpoint 不 import
+	// run 域——依赖方向同 memory.Anchors 模式）。
+	checkpointSvc := checkpoint.NewService(store, checkpoint.Anchors{
+		RunMission: func(ctx context.Context, runID string) (string, bool, error) {
+			r, ok, err := store.RunByID(ctx, runID)
+			if err != nil || !ok {
+				return "", ok, err
+			}
+			return r.MissionID, true, nil
+		},
+	}, clock)
 	// 执行上下文清单域（RFC-0018 §7.3 / ADR-0025，0.6.2）：确定性装配存档
 	// （digest 即身份——重建重放，状态变化追加）；任职事实（binding → 实例
 	// → 钉版本模板行）与房间事件经端口适配注入。readiness 经 ADR-0022
@@ -494,6 +507,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Backups:          backupMgr,
 		Attachments:      attachStore,
 		Settings:         settingsStore,
+		CheckpointSVC:    checkpointSvc,
 		MemorySVC:        memorySvc,
 		Monitors:         monitorMgr,
 		DocSVC:           docSvc,
