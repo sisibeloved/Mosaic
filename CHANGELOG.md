@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- **0.7.4 跨 Harness 续办：Checkpoint 注入执行上下文**（0.7 领域线第五件 / ADR-0041，RFC-0018 §1/§7.3/§7.4——原生会话不可用时仍能恢复工作）：
+  - **清单 checkpoint 层接线**（execctx 架构预留位启用——`ReasonCheckpointUnavailable` 仅首跑保持）：`Ports.Checkpoints` 闭包端口按任务取最新检查点，装入 `checkpoint` 层（role resume，进 digest/存档/回执）；**漂移不阻断**（`checkpoint.mission_version != contract_version` → 层内 `contract_drift: true`——进度是业务状态，契约修订不必然作废）；读取失败报错（不静默 omitted——恢复面不能丢事实）。
+  - **任务级最新检查点**：`checkpoint.Service/Store += LatestOfMission`（跨 Run——新 Run ≠ 旧 Run，续办取任务级最新；sqlite rowid DESC / memstore 插入序同语义）。
+  - **Run 终态自动落盘**（0.7.3 预留兑现）：`run.Service` += `CheckpointSaver` 端口（`WithCheckpointSaver`）；`finalizeRun` 在终态写入成功后落系统检查点（`progress_summary = "Run {id} 终态 {state}"`，≤500 字）；**best-effort**（失败不阻断终态——终态是权威事实）。执行面显式落盘（业务步骤）仍走 0.7.3 API。
+  - **Inline 透传**：`manifestInline` 为 checkpoint 层抽 `resume_checkpoint` 键 → `supervisorExecutor` 既有 `Context{Inline}` 全量重递——新会话 Boot 即收到续办状态，换 Harness/重启后工作上下文不丢。
+  - 验证：execctx UT（层装入/漂移/首跑 omitted/读错阻断）+ checkpoint UT（LatestOfMission 跨 Run 取最新）+ run UT（终态自动落盘/best-effort 不阻断/nil 兼容/Inline 透传）+ vet/-race + it/st + 生成物幂等 + SPA；真机冒烟（显式落盘含漂移 → 新 Run 清单含 checkpoint 层 + contract_drift → 终态自动落盘摘要入表）ALL-PASS。
+
 ## [0.7.3] - 2026-11-06
 
 ### Added

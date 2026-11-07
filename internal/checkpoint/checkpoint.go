@@ -71,6 +71,9 @@ type Anchors struct {
 type Store interface {
 	CreateCheckpoint(ctx context.Context, cp Checkpoint) (Checkpoint, error)
 	CheckpointsOfRun(ctx context.Context, runID string) ([]Checkpoint, error) // 降序（最新在前）
+	// LatestOfMission 按任务取最新检查点（跨 Run——0.7.4 续办：新 Run ≠
+	// 旧 Run，续办取任务级最新；ok=false = 无落盘）。
+	LatestOfMission(ctx context.Context, missionID string) (Checkpoint, bool, error)
 }
 
 const (
@@ -196,6 +199,18 @@ func (s *Service) ListOfRun(ctx context.Context, runID string) ([]Checkpoint, er
 		}
 	}
 	return s.store.CheckpointsOfRun(ctx, runID)
+}
+
+// LatestOfMission 任务级最新（跨 Run——0.7.4 续办装配入口；无落盘 ErrNotFound）。
+func (s *Service) LatestOfMission(ctx context.Context, missionID string) (Checkpoint, error) {
+	cp, ok, err := s.store.LatestOfMission(ctx, missionID)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	if !ok {
+		return Checkpoint{}, ErrNotFound
+	}
+	return cp, nil
 }
 
 // Latest 最新一条（无落盘 ErrNotFound——恢复面区分"无检查点"与"有"）。

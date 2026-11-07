@@ -12,6 +12,7 @@ import (
 type MemStore struct {
 	mu    sync.Mutex
 	byRun map[string][]Checkpoint // 升序追加（版本递增）
+	seq   []Checkpoint            // 插入序（LatestOfMission 跨 Run 取最新）
 }
 
 // NewMemStore 构造。
@@ -24,7 +25,20 @@ func (m *MemStore) CreateCheckpoint(_ context.Context, cp Checkpoint) (Checkpoin
 	list := m.byRun[cp.RunID]
 	cp.CheckpointVersion = len(list) + 1
 	m.byRun[cp.RunID] = append(list, cp)
+	m.seq = append(m.seq, cp)
 	return cp, nil
+}
+
+// LatestOfMission 任务级最新（插入序末位——与 sqlite rowid DESC 同语义）。
+func (m *MemStore) LatestOfMission(_ context.Context, missionID string) (Checkpoint, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := len(m.seq) - 1; i >= 0; i-- {
+		if m.seq[i].MissionID == missionID {
+			return m.seq[i], true, nil
+		}
+	}
+	return Checkpoint{}, false, nil
 }
 
 // CheckpointsOfRun 降序（最新在前）。

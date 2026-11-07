@@ -367,6 +367,27 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			return r.MissionID, true, nil
 		},
 	}, clock)
+
+	// 0.7.4 续办装配（ADR-0041）：清单 checkpoint 层闭包（任务级最新）+
+	// Run 终态自动落盘适配（现行契约版本单读——best-effort）。
+	ckptFacts := func(ctx context.Context, missionID string) (*execctx.CheckpointFacts, bool, error) {
+		cp, err := checkpointSvc.LatestOfMission(ctx, missionID)
+		if err != nil {
+			if err == checkpoint.ErrNotFound {
+				return nil, false, nil
+			}
+			return nil, false, err
+		}
+		return &execctx.CheckpointFacts{
+			CheckpointID: cp.CheckpointID, RunID: cp.RunID,
+			CheckpointVersion: cp.CheckpointVersion, MissionVersion: cp.MissionVersion,
+			CompletedSteps: cp.CompletedSteps, PendingSteps: cp.PendingSteps,
+			ArtifactRefs: cp.ArtifactRefs, ActionReceipts: cp.ActionReceipts,
+			UncertainActions: cp.UncertainActions, WaitingConditions: cp.WaitingConditions,
+			ProgressSummary: cp.ProgressSummary,
+		}, true, nil
+	}
+	runCkptSaver := runCheckpointSaver{svc: checkpointSvc, missions: missionSvc}
 	// 执行上下文清单域（RFC-0018 §7.3 / ADR-0025，0.6.2）：确定性装配存档
 	// （digest 即身份——重建重放，状态变化追加）；任职事实（binding → 实例
 	// → 钉版本模板行）与房间事件经端口适配注入。readiness 经 ADR-0022
@@ -378,6 +399,8 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Bindings: bindingFactsAdapter{slots: slotSvc},
 		Grants:   store,
 		Rooms:    execRoomEvents{reader: store},
+
+		Checkpoints: ckptFacts,
 	}, execctx.WithNow(clock))
 	// 本地 Environment / Runtime 域（RFC-0018 §3/§6 / ADR-0026，0.6.3）：
 	// 发现源与探测面复用 harness 注册表（sync 单向搬运不回写；Reprobe 只读）；
@@ -404,7 +427,8 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		runLeasesAdapter{runtimes: runtimeSvc},
 		runManifestsAdapter{execctx: execCtxSvc},
 		supervisorExecutor{supervisor: supervisor, identity: identitySvc, harness: harnessRegistry},
-		missionrun.WithNow(clock))
+		missionrun.WithNow(clock),
+		missionrun.WithCheckpointSaver(runCkptSaver))
 	if n, err := runSvc.RecoverUnfinished(ctx); err != nil {
 		logger.Warn("Run 恢复失败", "err", err)
 	} else if n > 0 {
@@ -953,6 +977,25 @@ func (l roomTaskLookup) RoomTaskExists(ctx context.Context, roomID, taskID strin
 }
 
 // runMissionsAdapter missionrun.Missions 的 Mission 域适配（ADR-0028）。
+// runCheckpointSaver Run 终态自动落盘适配（0.7.4 / ADR-0041 §3——现行
+// 契约版本单读；best-effort 由 run 域保证）。
+type runCheckpointSaver struct {
+	svc      *checkpoint.Service
+	missions *mission.Service
+}
+
+func (a runCheckpointSaver) SaveTerminal(ctx context.Context, runID, missionID, summary string) error {
+	version := 1
+	if m, ok, err := a.missions.Get(ctx, missionID); err == nil && ok {
+		version = m.ContractVersion
+	}
+	_, err := a.svc.Create(ctx, checkpoint.CreateCmd{
+		RunID: runID, MissionID: missionID, MissionVersion: version,
+		ProgressSummary: summary,
+	})
+	return err
+}
+
 type runMissionsAdapter struct{ svc *mission.Service }
 
 func (a runMissionsAdapter) ListReady(ctx context.Context) ([]missionrun.MissionRef, error) {

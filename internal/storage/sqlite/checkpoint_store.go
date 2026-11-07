@@ -116,6 +116,21 @@ func (s *Store) CreateCheckpoint(ctx context.Context, cp checkpoint.Checkpoint) 
 	return cp, nil
 }
 
+// LatestOfMission 任务级最新（跨 Run——rowid DESC 取最新插入行）。
+func (s *Store) LatestOfMission(ctx context.Context, missionID string) (checkpoint.Checkpoint, bool, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+checkpointCols+` FROM checkpoints WHERE mission_id = ?
+ ORDER BY rowid DESC LIMIT 1`, missionID)
+	cp, err := scanCheckpoint(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return checkpoint.Checkpoint{}, false, nil
+	}
+	if err != nil {
+		return checkpoint.Checkpoint{}, false, fmt.Errorf("sqlite: latest checkpoint of mission: %w", err)
+	}
+	return cp, true, nil
+}
+
 // CheckpointsOfRun 列表（checkpoint_version 降序——最新在前）。
 func (s *Store) CheckpointsOfRun(ctx context.Context, runID string) ([]checkpoint.Checkpoint, error) {
 	rows, err := s.db.QueryContext(ctx,

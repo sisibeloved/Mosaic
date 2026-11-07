@@ -106,6 +106,31 @@ func TestAnchorGate(t *testing.T) {
 	})
 }
 
+// 0.7.4：任务级最新（跨 Run——续办装配入口）。
+func TestLatestOfMission(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMemStore(), anchorFor("m_1", true), fixedNow)
+	cmdA := okCmd() // run_1
+	cmdB := okCmd()
+	cmdB.RunID = "run_2"
+	cmdC := okCmd()
+	cmdC.RunID = "run_1"
+	for _, c := range []CreateCmd{cmdA, cmdB, cmdC} {
+		if _, err := svc.Create(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 插入序：A(run_1 v1) B(run_2 v1) C(run_1 v2)——任务级最新 = C。
+	cp, err := svc.LatestOfMission(ctx, "m_1")
+	if err != nil || cp.CheckpointID == "" || cp.RunID != "run_1" || cp.CheckpointVersion != 2 {
+		t.Fatalf("任务级最新应 C（run_1 v2），得 run=%s v=%d %v", cp.RunID, cp.CheckpointVersion, err)
+	}
+	// 无落盘。
+	if _, err := svc.LatestOfMission(ctx, "m_none"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("应 ErrNotFound，得 %v", err)
+	}
+}
+
 func TestVersionAllocationAndOrder(t *testing.T) {
 	ctx := context.Background()
 	svc := NewService(NewMemStore(), anchorFor("m_1", true), fixedNow)

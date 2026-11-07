@@ -68,6 +68,27 @@ const (
 	LayerTools           = "tools"
 )
 
+// CheckpointFacts 续办事实（0.7.4 / ADR-0041 §1——§7.3 字段的清单投影；
+// 经闭包端口取得，execctx 不 import checkpoint 域）。
+type CheckpointFacts struct {
+	CheckpointID      string   `json:"checkpoint_id"`
+	RunID             string   `json:"run_id"`
+	CheckpointVersion int      `json:"checkpoint_version"`
+	MissionVersion    int      `json:"mission_version"`
+	ContractDrift     bool     `json:"contract_drift"`
+	CompletedSteps    []string `json:"completed_steps"`
+	PendingSteps      []string `json:"pending_steps"`
+	ArtifactRefs      []string `json:"artifact_refs"`
+	ActionReceipts    []string `json:"action_receipts"`
+	UncertainActions  []string `json:"uncertain_actions"`
+	WaitingConditions []string `json:"waiting_conditions"`
+	ProgressSummary   string   `json:"progress_summary"`
+}
+
+// CheckpointFactsFn 按任务取最新续办事实（跨 Run——ADR-0041 §2；
+// ok=false = 无检查点[首跑常态]）。
+type CheckpointFactsFn func(ctx context.Context, missionID string) (*CheckpointFacts, bool, error)
+
 // blocked 原因（固定优先级，先命中先记录）。
 const (
 	ReasonOwnerMismatch      = "owner_mismatch"       // 执行者须为契约负责人
@@ -284,6 +305,9 @@ type Ports struct {
 	Bindings Bindings
 	Grants   Grants
 	Rooms    RoomReader
+	// Checkpoints 按任务取最新续办事实（0.7.4；nil = checkpoint 层恒
+	// omitted——测试装配/未接线面）。
+	Checkpoints CheckpointFactsFn
 }
 
 // GrantFingerprint 授权档案快照指纹（四审 #3 / RFC §11.4：领取 Run 时与
@@ -500,9 +524,24 @@ func (s *Service) assemble(ctx context.Context, m mission.Mission, facts Binding
 		includedLayer(LayerResponsibility, RoleRequired, responsibility),
 		includedLayer(LayerContract, RoleRequired, ContractContent{Mission: m}),
 		omittedLayer(LayerDecisionCapsule, ReasonDecisionCapsuleUnavailable),
-		omittedLayer(LayerCheckpoint, ReasonCheckpointUnavailable),
+		omittedLayer(LayerCheckpoint, ReasonCheckpointUnavailable), // 下方按续办事实替换（0.7.4）
 		omittedLayer(LayerMemory, ReasonMemoryUnavailable),
 		sources,
+	}
+
+	// 0.7.4 续办层（ADR-0041 §1）：按任务取最新检查点——有则替换 omitted
+	//（漂移不阻断，层内携 contract_drift 标记）；无（首跑）保持 omitted。
+	if s.ports.Checkpoints != nil {
+		if ck, ok, err := s.ports.Checkpoints(ctx, m.MissionID); err != nil {
+			return nil, nil, slot.ReadinessReport{}, fmt.Errorf("execctx: 读最新检查点失败：%w", err)
+		} else if ok {
+			ck.ContractDrift = ck.MissionVersion != m.ContractVersion
+			for i := range layers {
+				if layers[i].Name == LayerCheckpoint {
+					layers[i] = includedLayer(LayerCheckpoint, RoleOptional, *ck)
+				}
+			}
+		}
 	}
 
 	// 水位向量：模板版本分量恒在（digest 输入自包含——存储往返可复算，

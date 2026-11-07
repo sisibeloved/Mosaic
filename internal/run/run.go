@@ -289,6 +289,25 @@ type Manifests interface {
 	Build(ctx context.Context, missionID, bindingID string) (Manifest, error)
 }
 
+// CheckpointSaver 终态检查点落盘（0.7.4 / ADR-0041 §3——run 不 import
+// checkpoint 域；mission_version 由适配器读现行契约版本；best-effort：
+// 失败不阻断终态）。
+type CheckpointSaver interface {
+	SaveTerminal(ctx context.Context, runID, missionID, summary string) error
+}
+
+// TerminalCheckpointSummary 终态摘要上限（§7.3 公开摘要 ≤500 字）。
+func TerminalCheckpointSummary(runID, state, detail string) string {
+	sum := "Run " + runID + " 终态 " + state
+	if detail != "" {
+		sum += "：" + detail
+	}
+	if r := []rune(sum); len(r) > 500 {
+		sum = string(r[:500])
+	}
+	return sum
+}
+
 // Manifest 清单摘要。
 type Manifest struct {
 	ManifestID string
@@ -354,10 +373,13 @@ type Store interface {
 // 选项。
 type Option func(*Service)
 
-func WithNow(f func() string) Option          { return func(s *Service) { s.now = f } }
-func WithNewRunID(f func() string) Option     { return func(s *Service) { s.newRunID = f } }
-func WithSchedulerDisabled() Option           { return func(s *Service) { s.enabled = false } }
-func WithScanInterval(d time.Duration) Option { return func(s *Service) { s.scanInterval = d } }
+func WithNow(f func() string) Option { return func(s *Service) { s.now = f } }
+
+// WithCheckpointSaver 终态自动落盘（0.7.4 / ADR-0041 §3；nil = 不落盘）。
+func WithCheckpointSaver(cs CheckpointSaver) Option { return func(s *Service) { s.ckptSaver = cs } }
+func WithNewRunID(f func() string) Option           { return func(s *Service) { s.newRunID = f } }
+func WithSchedulerDisabled() Option                 { return func(s *Service) { s.enabled = false } }
+func WithScanInterval(d time.Duration) Option       { return func(s *Service) { s.scanInterval = d } }
 
 // WithWallClockInterval 墙钟监控独立 ticker 周期（0.6.13 审校 #4：监控面与
 // 调度扫描分离——不被同步执行器阻塞；测试注入亚秒级）。
@@ -378,6 +400,7 @@ type Service struct {
 	runtimes  Runtimes
 	leases    Leases
 	manifests Manifests
+	ckptSaver CheckpointSaver // 0.7.4：终态自动落盘（nil = 未接线——测试装配）
 	executor  Executor
 	now       func() string
 	newRunID  func() string
@@ -1095,6 +1118,15 @@ func (s *Service) finalizeRun(ctx context.Context, r *Run, lease Lease, state, e
 	}
 	*r = finalRun
 	_ = s.leases.Release(ctx, lease.LeaseID)
+	// 0.7.4 / ADR-0041 §3：终态自动落盘（安全边界挂点——best-effort，失败
+	// 不阻断终态：终态是权威事实，检查点是派生可恢复状态）。
+	if s.ckptSaver != nil {
+		detail := r.ErrorText
+		if detail == "" && r.ResultBlock != "" {
+			detail = r.ResultBlock
+		}
+		_ = s.ckptSaver.SaveTerminal(ctx, r.RunID, r.MissionID, TerminalCheckpointSummary(r.RunID, r.State, detail))
+	}
 	// 五审 #5：投影原因取**实际落库终态**（写锁内改判 canceled → run_canceled，
 	// 与 finalizeStopped 同因——Run 行、事件流、Mission 状态原因三者重建同一结果）。
 	_ = s.missions.SetReadyFromRunning(ctx, r.MissionID, "run_"+r.State)
@@ -1549,6 +1581,10 @@ func manifestInline(m Manifest) map[string]any {
 		case "tools":
 			inline["tools_required"] = l.Content["required"]
 			inline["tools_optional"] = l.Content["optional"]
+		case "checkpoint":
+			// 0.7.4 续办事实透传（ADR-0041 §4——Inline 全量重递，新会话
+			// Boot 即收到；原生会话不可用不再丢工作上下文）。
+			inline["resume_checkpoint"] = l.Content
 		case "constraints":
 			inline["readiness"] = l.Content["readiness"]
 		}

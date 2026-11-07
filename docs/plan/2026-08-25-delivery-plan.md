@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v2.97 |
+| 版本 | v2.98 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -205,6 +205,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v2.98 | 2026-11-06 | Mosaic 项目组 / ZCode | **0.7.4 跨 Harness 续办开工实施（负责人指令："开工0.7.4"；ADR-0041 Accepted）——清单 checkpoint 层接线（漂移标记/首跑 omitted/读错阻断）+ LatestOfMission（任务级跨 Run）+ Run 终态自动落盘（best-effort）+ Inline resume_checkpoint 透传**。零 HTTP 契约变更（内部接线）；换 Harness/重启后新会话 Boot 即收续办状态。验证：execctx/checkpoint/run UT + vet/-race + it/st + SPA + 真机冒烟（含漂移场景与终态自动落盘）ALL-PASS |
 | v2.97 | 2026-11-06 | Mosaic 项目组 / ZCode | **定版 v0.7.3（负责人指令："发布"）——0.7 记忆与可移植恢复领域第四件：Checkpoint（可恢复业务状态）**。CHANGELOG [Unreleased]（Added Checkpoint 主功能）定版 **[0.7.3] - 2026-11-06**，保留空 [Unreleased]；README 当前版本推进 v0.7.3、路线图 0.7 行标注 0.7.0–0.7.3 已交付（余 0.7.4–0.7.9）；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.7.3 + GitHub Release 发布说明与 Windows 产物（于 tag 的干净 worktree 重建，productVersion 断言防错版）；CI 三平台绿基线（17fe0b4 已验，定版提交复验） |
 | v2.96 | 2026-11-06 | Mosaic 项目组 / ZCode | **0.7.3 Checkpoint 开工实施（负责人指令："开工0.7.3"；ADR-0040 Accepted）——可恢复业务状态（§7.3 字段全量）+ 双锚 + 版本原子分配 + 三端点 + migration v34**。completed/pending 交集空校验；mission_version 漂移锚备恢复；执行面自动挂点随 0.7.4。验证：UT/IT/httpapi UT（含并发 race）+ vet/-race + it/st + 生成物幂等 + 真机冒烟 10 项 ALL-PASS |
 | v2.95 | 2026-11-05 | Mosaic 项目组 / ZCode | **定版 v0.7.2（负责人指令："发布"）——0.7 记忆与可移植恢复领域第三件：记忆召回（FTS5 与授权过滤先行）**。CHANGELOG [Unreleased]（Added 召回主功能 + Fixed 两轮审校 4+2=6 项）定版 **[0.7.2] - 2026-11-05**（Added 前置、两段 Fixed 合并一节），保留空 [Unreleased]；README 当前版本推进 v0.7.2、路线图 0.7 行标注 0.7.0–0.7.2 已交付（余 0.7.3–0.7.9）；版本字样同步（wails.json productVersion / SPA 关于区）；发布链：定版 docs 提交 + tag v0.7.2 + GitHub Release 发布说明与 Windows 产物（于 tag 的干净 worktree 重建，productVersion 断言防错版）；CI 三平台绿基线（b514837 已验，定版提交复验） |
