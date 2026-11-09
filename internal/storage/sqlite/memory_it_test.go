@@ -629,8 +629,10 @@ func TestMemoryRecallPerf2000IT(t *testing.T) {
 	if err != nil || res.TotalHits != 2000 || len(res.Items) != 50 {
 		t.Fatalf("受控召回错：%d/%d %v", len(res.Items), res.TotalHits, err)
 	}
-	if elapsed > timeSecond {
-		t.Fatalf("2000 命中召回耗时 %v（含 Go 精排应远低于 1s）", elapsed)
+	// 阈值 2s：慢速 CI runner 宽裕（本地实测 ~0.15s）；原逐候选扫描实现
+	// 在 2000 命中约 3.1s（1000=1.56s/9000=14s 线性内插）——回归仍必红。
+	if elapsed > 2*timeSecond {
+		t.Fatalf("2000 命中召回耗时 %v（含 Go 精排应远低于 2s——旧实现 ~3.1s）", elapsed)
 	}
 }
 
