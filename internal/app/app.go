@@ -371,7 +371,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	// 0.7.4 续办装配（ADR-0041）：清单 checkpoint 层闭包（任务级最新）+
 	// Run 终态自动落盘适配（现行契约版本单读——best-effort）。
 	ckptFacts := func(ctx context.Context, missionID string) (*execctx.CheckpointFacts, bool, error) {
-		cp, err := checkpointSvc.LatestOfMission(ctx, missionID)
+		cp, err := checkpointSvc.LatestForResume(ctx, missionID)
 		if err != nil {
 			if err == checkpoint.ErrNotFound {
 				return nil, false, nil
@@ -379,7 +379,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			return nil, false, err
 		}
 		return &execctx.CheckpointFacts{
-			CheckpointID: cp.CheckpointID, RunID: cp.RunID,
+			CheckpointID: cp.CheckpointID, RunID: cp.RunID, Source: cp.Source,
 			CheckpointVersion: cp.CheckpointVersion, MissionVersion: cp.MissionVersion,
 			CompletedSteps: cp.CompletedSteps, PendingSteps: cp.PendingSteps,
 			ArtifactRefs: cp.ArtifactRefs, ActionReceipts: cp.ActionReceipts,

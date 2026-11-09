@@ -75,6 +75,32 @@ func TestCheckpointSystemSourceIT(t *testing.T) {
 	}
 }
 
+// 二审 #1：sqlite 回退面——无业务条时 LatestForResume 交付系统摘要。
+func TestCheckpointResumeFallbackIT(t *testing.T) {
+	s := openCkptStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	svc := checkpoint.NewService(s, checkpoint.Anchors{}, func() string { return "2026-11-08T12:00:00Z" })
+	sys := checkpoint.CreateCmd{RunID: "run_f1", MissionID: "m_f", MissionVersion: 1,
+		ProgressSummary: "Run run_f1 终态 canceled：暂停", Source: "system"}
+	if _, err := svc.Create(ctx, sys); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := svc.LatestForResume(ctx, "m_f")
+	if err != nil || cp.Source != "system" {
+		t.Fatalf("应回退系统摘要：%+v %v", cp, err)
+	}
+	biz := checkpoint.CreateCmd{RunID: "run_f2", MissionID: "m_f", MissionVersion: 1,
+		CompletedSteps: []string{"步骤一"}}
+	if _, err := svc.Create(ctx, biz); err != nil {
+		t.Fatal(err)
+	}
+	cp, err = svc.LatestForResume(ctx, "m_f")
+	if err != nil || cp.Source != "" || len(cp.CompletedSteps) != 1 {
+		t.Fatalf("业务条优先：%+v", cp)
+	}
+}
+
 func TestCheckpointCRUDAndVersioningIT(t *testing.T) {
 	s := openCkptStore(t)
 	defer s.Close()

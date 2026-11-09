@@ -71,7 +71,10 @@ const (
 // CheckpointFacts 续办事实（0.7.4 / ADR-0041 §1——§7.3 字段的清单投影；
 // 经闭包端口取得，execctx 不 import checkpoint 域）。
 type CheckpointFacts struct {
-	CheckpointID      string   `json:"checkpoint_id"`
+	CheckpointID string `json:"checkpoint_id"`
+	// Source 落盘来源（二审 #1）："" = 业务快照 / "system" = 终态摘要——
+	// 消费方据此区分续办输入形态。
+	Source            string   `json:"source"`
 	RunID             string   `json:"run_id"`
 	CheckpointVersion int      `json:"checkpoint_version"`
 	MissionVersion    int      `json:"mission_version"`

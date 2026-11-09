@@ -131,6 +131,21 @@ func (s *Store) LatestOfMission(ctx context.Context, missionID string) (checkpoi
 	return cp, true, nil
 }
 
+// LatestSystemOfMission 最新系统终态摘要（二审 #1 回退面）。
+func (s *Store) LatestSystemOfMission(ctx context.Context, missionID string) (checkpoint.Checkpoint, bool, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+checkpointCols+` FROM checkpoints WHERE mission_id = ? AND source = 'system'
+ ORDER BY rowid DESC LIMIT 1`, missionID)
+	cp, err := scanCheckpoint(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return checkpoint.Checkpoint{}, false, nil
+	}
+	if err != nil {
+		return checkpoint.Checkpoint{}, false, fmt.Errorf("sqlite: latest system checkpoint: %w", err)
+	}
+	return cp, true, nil
+}
+
 // CheckpointsOfRun 列表（checkpoint_version 降序——最新在前）。
 func (s *Store) CheckpointsOfRun(ctx context.Context, runID string) ([]checkpoint.Checkpoint, error) {
 	rows, err := s.db.QueryContext(ctx,

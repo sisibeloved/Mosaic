@@ -29,6 +29,18 @@ func (m *MemStore) CreateCheckpoint(_ context.Context, cp Checkpoint) (Checkpoin
 	return cp, nil
 }
 
+// LatestSystemOfMission 最新系统终态摘要（插入序倒查 source=system）。
+func (m *MemStore) LatestSystemOfMission(_ context.Context, missionID string) (Checkpoint, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := len(m.seq) - 1; i >= 0; i-- {
+		if m.seq[i].MissionID == missionID && m.seq[i].Source == "system" {
+			return m.seq[i], true, nil
+		}
+	}
+	return Checkpoint{}, false, nil
+}
+
 // LatestOfMission 任务级最新（插入序末位——与 sqlite rowid DESC 同语义）。
 func (m *MemStore) LatestOfMission(_ context.Context, missionID string) (Checkpoint, bool, error) {
 	m.mu.Lock()

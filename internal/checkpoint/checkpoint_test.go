@@ -172,6 +172,37 @@ func TestSystemSummaryDoesNotShadowBusiness(t *testing.T) {
 	}
 }
 
+// 二审 #1：无业务快照时回退系统摘要——续办层不丢停止/终态事实。
+func TestLatestForResumeFallbackToSystem(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMemStore(), anchorFor("m_1", true), fixedNow)
+	// 仅系统条。
+	sys := okCmd()
+	sys.Source = "system"
+	sys.ProgressSummary = "Run run_1 终态 canceled：暂停"
+	if _, err := svc.Create(ctx, sys); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := svc.LatestForResume(ctx, "m_1")
+	if err != nil || cp.Source != "system" || cp.ProgressSummary != "Run run_1 终态 canceled：暂停" {
+		t.Fatalf("应回退系统摘要：%+v %v", cp, err)
+	}
+	// 后落业务条 → 业务优先（一审 #1 语义保持）。
+	biz := okCmd()
+	biz.CompletedSteps = []string{"采集"}
+	if _, err := svc.Create(ctx, biz); err != nil {
+		t.Fatal(err)
+	}
+	cp, err = svc.LatestForResume(ctx, "m_1")
+	if err != nil || cp.Source == "system" || len(cp.CompletedSteps) != 1 {
+		t.Fatalf("有业务条时系统条不得入选：%+v", cp)
+	}
+	// 两者皆无。
+	if _, err := svc.LatestForResume(ctx, "m_none"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("应 ErrNotFound：%v", err)
+	}
+}
+
 func TestVersionAllocationAndOrder(t *testing.T) {
 	ctx := context.Background()
 	svc := NewService(NewMemStore(), anchorFor("m_1", true), fixedNow)

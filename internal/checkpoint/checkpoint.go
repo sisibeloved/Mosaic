@@ -79,6 +79,8 @@ type Store interface {
 	// LatestOfMission 按任务取最新**业务快照**检查点（跨 Run；一审 #1：
 	// 排除 system 终态摘要——不遮蔽业务字段；ok=false = 无业务快照）。
 	LatestOfMission(ctx context.Context, missionID string) (Checkpoint, bool, error)
+	// LatestSystemOfMission 最新系统终态摘要（二审 #1 回退面）。
+	LatestSystemOfMission(ctx context.Context, missionID string) (Checkpoint, bool, error)
 }
 
 const (
@@ -223,6 +225,28 @@ func (s *Service) LatestOfMission(ctx context.Context, missionID string) (Checkp
 		return Checkpoint{}, ErrNotFound
 	}
 	return cp, nil
+}
+
+// LatestForResume 续办装配入口（二审 #1）：**业务快照优先**——无业务快照
+// 时回退最新系统终态摘要（停止/完成/失败事实仍可达新会话；不遮蔽业务字段
+// 的一审 #1 语义保持——有业务条时系统条永不入选）。两者皆无 ErrNotFound。
+func (s *Service) LatestForResume(ctx context.Context, missionID string) (Checkpoint, error) {
+	cp, ok, err := s.store.LatestOfMission(ctx, missionID) // 排除 system
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	if ok {
+		return cp, nil
+	}
+	// 回退：最新系统摘要。
+	sys, hasSys, err := s.store.LatestSystemOfMission(ctx, missionID)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	if hasSys {
+		return sys, nil
+	}
+	return Checkpoint{}, ErrNotFound
 }
 
 // Latest 最新一条（无落盘 ErrNotFound——恢复面区分"无检查点"与"有"）。
