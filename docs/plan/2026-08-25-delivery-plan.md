@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v3.02 |
+| 版本 | v3.03 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -205,6 +205,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v3.03 | 2026-11-09 | Mosaic 项目组 / ZCode | **0.7.5 一审修复（独立审校 5 项 P2，ADR-0042 v0.2）**。#1 面板换 Agent 重置面补齐（敏感开关/命名空间/任务口径回缺省）；#2 面板响应按 Agent 代次校验（迟到回包丢弃、旧清单清空）；#3 任务口径三态（自动/显式/不携带）与 mission 命名空间解耦（承诺+检查点随任务口径独立）；#4 ExeID 路径脱敏投影 portableExeID（adapter@runtime[:distro]——不含安装路径，单测钉住）；#5 交接竞态双层防线（wiring Get 后复核 owner + 域级自动跳过/显式拒绝，UT 钉住已交接任务不入包不查记忆）。触及包 UT/-race + SPA 全绿；真机冒烟复跑 + 新增路径脱敏与交接断言 ALL-PASS |
 | v3.02 | 2026-11-09 | Mosaic 项目组 / ZCode | **开工 v0.7.5（负责人指令："开工0.7.5"）——0.7 记忆与可移植恢复领域第六件：Portable Agent Bundle 导出（范围选择、摘要与脱敏报告；ADR-0042）**。internal/bundle 新域（Ports 闭包投影——零域依赖）+ 三端点（创建/列表/详情）+ §8.2 包布局 v1 zip（manifest 逐文件 sha256 摘要与水位；零 DB migration——产物落数据目录 bundles/）；0.7.0 敏感度标记与 0.7.2 过滤先行口径的导出侧消费（未授权 scope 结构性不查询；敏感默认省略只 ID 进报告）；设置页"迁移包"面板；契约冻结（OpenAPI 生成物幂等）；测试先行红→绿（bundle UT + httpapi IT）；全量验证（gofmt/vet 双标签/UT/-race/it/st 全绿）；真机冒烟 ALL-PASS |
 | v3.01 | 2026-11-08 | Mosaic 项目组 / ZCode | **定版 v0.7.4（负责人指令："发布"）——0.7 记忆与可移植恢复领域第五件：跨 Harness 续办（Checkpoint 注入执行上下文）**。CHANGELOG [Unreleased]（Added 续办主功能 + Fixed 两轮审校 3+1=4 项）定版 **[0.7.4] - 2026-11-08**（Added 前置、两段 Fixed 合并一节），保留空 [Unreleased]；README 当前版本推进 v0.7.4、路线图 0.7 行标注 0.7.0–0.7.4 已交付（余 0.7.5–0.7.9）；版本字样同步；发布链：定版 docs 提交 + tag v0.7.4 + GitHub Release 发布说明与 Windows 产物（productVersion 断言防错版）；CI 三平台绿基线（e0f1680 已验，定版提交复验） |
 | v3.00 | 2026-11-08 | Mosaic 项目组 / ZCode | **0.7.4 二审修复（1 P2；ADR-0041 v0.3）**。LatestForResume——业务快照优先、无业务时回退系统终态摘要（停止/完成/失败后续办层不丢；CheckpointFacts += source 透传标记）。验证：域/sqlite 回归（回退与优先序）+ vet/-race 四包 + 真机冒烟（暂停后系统摘要 → 新 Run 清单 included 含摘要）ALL-PASS |

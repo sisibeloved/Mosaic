@@ -33,8 +33,11 @@ func bundlePorts(identitySvc *personalagent.Service, slotSvc *slot.Service,
 				},
 			}
 			for _, e := range v.Executables {
+				// 一审 #4：注册表 ExeID 含安装路径（adapter@runtime[:distro]:path
+				// ——暴露本机用户名/目录结构）。投影为可移植标识 adapter@runtime[:distro]
+				//（去路径段；runtime/distro/channel 已有独立字段，无信息损失）。
 				f.Executables = append(f.Executables, bundle.ExecutableRef{
-					ExecutableID: e.ExecutableID, Runtime: e.Runtime,
+					ExecutableID: portableExeID(v.Adapter, e.Runtime, e.Distro), Runtime: e.Runtime,
 					Distro: e.Distro, Channel: e.Channel, Enabled: e.Enabled,
 				})
 			}
@@ -97,6 +100,12 @@ func bundlePorts(identitySvc *personalagent.Service, slotSvc *slot.Service,
 				if !ok {
 					continue // 摘要与详情竞态——保守跳过（导出是合并视图，ADR §5）
 				}
+				// 一审 #5：Get 后复核 owner（详情时刻事实）——摘要读取后任务可能
+				// 已交接给他人；此处跳过把竞态窗口收窄到"Get 之后"（域级复核
+				// 兜底——bundle.Export 对非所属任务自动跳过/显式拒绝）。
+				if m.OwnerAgentID != agentID {
+					continue
+				}
 				out = append(out, bundleMissionOf(m))
 			}
 			return out, nil
@@ -147,6 +156,18 @@ func bundlePorts(identitySvc *personalagent.Service, slotSvc *slot.Service,
 			return out, nil
 		},
 	}
+}
+
+// portableExeID 可执行项的 Bundle 投影标识（一审 #4）：注册表 ExeID 为
+// adapter@runtime[:distro]:path（含安装路径——暴露本机用户名/目录结构），
+// 导出面统一去路径段，形如 codex@wsl:openEuler-24.03；runtime/distro/
+// channel 已有独立字段，无信息损失。
+func portableExeID(adapter, runtime, distro string) string {
+	host := runtime
+	if distro != "" {
+		host += ":" + distro
+	}
+	return adapter + "@" + host
 }
 
 // bundleSpecOf slot.SpecContent → 中性投影。

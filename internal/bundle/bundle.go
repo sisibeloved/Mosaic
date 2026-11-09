@@ -56,7 +56,8 @@ var bundleIDRe = regexp.MustCompile(`^bdl_[0-9a-z_]+$`)
 
 // ---- 投影类型（app 闭包映射；字段同构各域）----
 
-// ExecutableRef 可执行项引用（注册表标识——无路径无凭据）。
+// ExecutableRef 可执行项引用（一审 #4：ExecutableID 为可移植投影
+// adapter@runtime[:distro]——注册表路径型标识不随包；无凭据）。
 type ExecutableRef struct {
 	ExecutableID string `json:"executable_id"`
 	Runtime      string `json:"runtime"`
@@ -404,7 +405,9 @@ func (s *Service) Export(ctx context.Context, agentID string, req ScopeRequest) 
 	selection := "auto"
 	if req.MissionIDs == nil {
 		for _, m := range all {
-			if nonTerminal[m.Status] {
+			// 一审 #5：owner 复核（详情时刻事实）——wiring 摘要/详情两步读取间
+			// 任务可能已交接；非所属任务静默跳过（自动圈定的竞态保守语义）。
+			if nonTerminal[m.Status] && m.OwnerAgentID == agentID {
 				selected = append(selected, m)
 			}
 		}
@@ -418,6 +421,11 @@ func (s *Service) Export(ctx context.Context, agentID string, req ScopeRequest) 
 			picked[id] = true
 			m, ok := byID[id]
 			if !ok {
+				return View{}, fmt.Errorf("%w: 任务不存在或非当前负责：%s", ErrInvalid, id)
+			}
+			// 一审 #5：显式圈定遇已交接任务整体拒绝（透明不静默缩圈——与
+			// "任务不存在或非当前负责"同语义）。
+			if m.OwnerAgentID != agentID {
 				return View{}, fmt.Errorf("%w: 任务不存在或非当前负责：%s", ErrInvalid, id)
 			}
 			selected = append(selected, m)

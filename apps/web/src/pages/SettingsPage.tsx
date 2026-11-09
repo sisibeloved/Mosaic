@@ -2146,15 +2146,18 @@ function AgentGrants() {
 
 /** AgentBundleExports 0.7.5 Portable Agent Bundle 导出面板（ADR-0042）：
  * 范围选择（命名空间/任务口径/敏感开关）→ 导出 → 脱敏报告内联展示 + 历史
- * 列表。换 Agent 即重置范围与结果（表单归属纪律同 AgentGrants——切档残留
- * 绝无机会覆盖别人的导出上下文）。 */
+ * 列表。换 Agent 即重置范围与结果（一审 #1：敏感开关与命名空间一并重置——
+ * 切档残留绝无机会替别人做导出决策）；所有响应按 Agent 代次校验（一审 #2：
+ * 旧代次迟到响应整体丢弃——任务/历史/结果不串档）；任务口径与记忆命名空间
+ * 解耦（一审 #3：承诺与检查点随任务圈定，mission 勾选只控制任务命名空间
+ * 记忆——后端本就正交，此处 UI 对齐）。 */
 function AgentBundleExports() {
   const [agents, setAgents] = useState<{ agent_id: string; display_name: string; status: string }[]>([]);
   const [agentID, setAgentID] = useState("");
   const [nsAgent, setNsAgent] = useState(true);
   const [nsWorkspace, setNsWorkspace] = useState(true);
   const [nsMission, setNsMission] = useState(false);
-  const [missionMode, setMissionMode] = useState<"auto" | "explicit">("auto");
+  const [missionMode, setMissionMode] = useState<"auto" | "explicit" | "none">("auto");
   const [missions, setMissions] = useState<MissionSummary[]>([]);
   const [pickedMissions, setPickedMissions] = useState<Set<string>>(new Set());
   const [includeSensitive, setIncludeSensitive] = useState(false);
@@ -2162,6 +2165,7 @@ function AgentBundleExports() {
   const [msg, setMsg] = useState<string | null>(null);
   const [result, setResult] = useState<AgentBundleExportView | null>(null);
   const [history, setHistory] = useState<AgentBundleSummary[] | null>(null);
+  const seq = useRef(0); // Agent 代次（#2：切档递增，迟到响应丢弃）
 
   useEffect(() => {
     api
@@ -2170,21 +2174,41 @@ function AgentBundleExports() {
       .catch(() => setAgents([]));
   }, []);
 
-  // 换 Agent：重置范围与结果；任务清单与历史随 Agent 重载。
+  // 换 Agent：重置范围与结果（#1：敏感开关/命名空间/任务口径一并回缺省）；
+  // 清空旧任务清单（#2），新代次下重载任务与历史——迟到回包核对代次后才落。
   useEffect(() => {
     setResult(null);
     setMsg(null);
     setPickedMissions(new Set());
     setHistory(null);
+    setMissions([]);
+    setIncludeSensitive(false);
+    setNsAgent(true);
+    setNsWorkspace(true);
+    setNsMission(false);
+    setMissionMode("auto");
     if (!agentID) return;
+    const cur = ++seq.current;
     api
       .listMissions()
-      .then((m) => setMissions(m.missions.filter((x) => x.owner_agent_id === agentID)))
-      .catch(() => setMissions([]));
+      .then((m) => {
+        if (seq.current !== cur) return;
+        setMissions(m.missions.filter((x) => x.owner_agent_id === agentID));
+      })
+      .catch(() => {
+        if (seq.current !== cur) return;
+        setMissions([]);
+      });
     api
       .listAgentBundleExports(agentID)
-      .then((r) => setHistory(r.exports))
-      .catch(() => setHistory(null));
+      .then((r) => {
+        if (seq.current !== cur) return;
+        setHistory(r.exports);
+      })
+      .catch(() => {
+        if (seq.current !== cur) return;
+        setHistory(null);
+      });
   }, [agentID]);
 
   const ownedMissions = missions;
@@ -2202,6 +2226,7 @@ function AgentBundleExports() {
 
   const onExport = async () => {
     if (!agentID) return;
+    const cur = seq.current;
     setBusy(true);
     setMsg(null);
     const namespaces: string[] = [];
@@ -2211,14 +2236,19 @@ function AgentBundleExports() {
     const req: Record<string, unknown> = { namespaces, include_sensitive: includeSensitive };
     if (missionMode === "explicit") {
       req.mission_ids = Array.from(pickedMissions);
+    } else if (missionMode === "none") {
+      req.mission_ids = []; // 显式空集 = 不携带任何任务（承诺与检查点同去）
     }
     try {
       const view = await api.createAgentBundleExport(agentID, req);
+      if (seq.current !== cur) return; // 已切档——迟到结果丢弃
       setResult(view);
       setMsg(`已导出 ${view.bundle_id}（${(view.size_bytes / 1024).toFixed(0)} KiB）`);
       const r = await api.listAgentBundleExports(agentID);
+      if (seq.current !== cur) return;
       setHistory(r.exports);
     } catch (e) {
+      if (seq.current !== cur) return;
       setMsg(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
@@ -2266,43 +2296,32 @@ function AgentBundleExports() {
               <input type="checkbox" checked={nsWorkspace} onChange={(e) => setNsWorkspace(e.target.checked)} /> workspace（共享）
             </label>
             <label className="flex items-center gap-1.5">
-              <input
-                type="checkbox"
-                checked={nsMission}
-                onChange={(e) => {
-                  setNsMission(e.target.checked);
-                  if (!e.target.checked) setMissionMode("auto");
-                }}
-              />{" "}
-              mission（随所选任务）
+              <input type="checkbox" checked={nsMission} onChange={(e) => setNsMission(e.target.checked)} /> mission
+              （任务记忆——仅当任务随包时其命名空间记忆才入包）
             </label>
           </div>
           <div className="flex flex-wrap items-center gap-4">
             <span className="text-dim">任务承诺：</span>
             <label className="flex items-center gap-1.5">
-              <input
-                type="radio"
-                checked={missionMode === "auto"}
-                onChange={() => setMissionMode("auto")}
-                disabled={!nsMission}
-              />{" "}
-              自动（全部在办任务）
+              <input type="radio" checked={missionMode === "auto"} onChange={() => setMissionMode("auto")} /> 自动
+              （全部在办任务）
             </label>
             <label className="flex items-center gap-1.5">
-              <input
-                type="radio"
-                checked={missionMode === "explicit"}
-                onChange={() => setMissionMode("explicit")}
-                disabled={!nsMission}
-              />{" "}
+              <input type="radio" checked={missionMode === "explicit"} onChange={() => setMissionMode("explicit")} />{" "}
               显式选择
+            </label>
+            <label className="flex items-center gap-1.5">
+              <input type="radio" checked={missionMode === "none"} onChange={() => setMissionMode("none")} /> 不携带
             </label>
             <label className="flex items-center gap-1.5" title="敏感记忆默认省略并计入脱敏报告；勾选即随包（注意接收方信任）">
               <input type="checkbox" checked={includeSensitive} onChange={(e) => setIncludeSensitive(e.target.checked)} />{" "}
               携带敏感记忆
             </label>
           </div>
-          {nsMission && missionMode === "explicit" && (
+          <p className="text-[11px] leading-4 text-faint">
+            任务承诺（契约与检查点）随任务口径独立入包；上方 mission 勾选只决定任务命名空间的记忆是否随包。
+          </p>
+          {missionMode === "explicit" && (
             <div className="rounded-lg border border-border bg-surface-2 p-2">
               {ownedMissions.length === 0 ? (
                 <p className="text-faint">该 Agent 名下没有任务。</p>

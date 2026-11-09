@@ -476,6 +476,43 @@ func TestExportZipLayoutAndDigests(t *testing.T) {
 
 // ---- 边车与读取面 ----
 
+// 一审 #5：交接竞态的域级复核——wiring 摘要/详情两步读取间任务可能已交接
+// （MissionFact.OwnerAgentID 是详情时刻事实）。自动圈定跳过非所属；显式圈定
+// 拒绝（与"任务不存在或非当前负责"同语义——不静默缩圈）。
+func TestExportOwnerRecheckAfterHandover(t *testing.T) {
+	handed := missionFact("mi_gone", "running")
+	handed.OwnerAgentID = "ag_other" // 详情时刻 owner 已变
+	stays := missionFact("mi_keep", "running")
+	fp := &fakePorts{
+		agents:   map[string]AgentFacts{"ag_ok": agentA()},
+		missions: map[string][]MissionFact{"ag_ok": {handed, stays}},
+		memories: map[string][]MemoryFact{
+			"mission|mi_gone": {memItem("mem_g", "mission", "mi_gone", "active", "normal", "")},
+		},
+	}
+	svc, _ := newTestService(t, fp)
+
+	// 自动圈定：已交接任务不入选（连带其 mission 记忆不被查询）。
+	view, err := svc.Export(context.Background(), "ag_ok", ScopeRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(view.Scope.MissionIDs) != fmt.Sprint([]string{"mi_keep"}) {
+		t.Fatalf("自动圈定应跳过已交接任务: %v", view.Scope.MissionIDs)
+	}
+	for _, q := range fp.queried {
+		if q == "mission|mi_gone" {
+			t.Fatal("已交接任务的 mission 记忆被查询")
+		}
+	}
+
+	// 显式圈定：已交接任务整体拒绝。
+	if _, err := svc.Export(context.Background(), "ag_ok",
+		ScopeRequest{MissionIDs: []string{"mi_keep", "mi_gone"}}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("显式圈定已交接任务应拒绝: %v", err)
+	}
+}
+
 func TestListAndGet(t *testing.T) {
 	fp := &fakePorts{
 		agents: map[string]AgentFacts{"ag_ok": agentA()},

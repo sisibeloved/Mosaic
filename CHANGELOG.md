@@ -14,6 +14,15 @@
   - **域与装配**：`internal/bundle` 新包（Ports 全闭包 + 域内投影类型——不 import personalagent/slot/mission/checkpoint/memory，依赖方向同 execctx）；产物落数据目录 `bundles/<bundle_id>/`（zip + export.json 边车，**零 migration**——backup 同例）；列表/详情端点（`GET /v1/agents/{agent_id}/bundle-exports`、`GET /v1/bundle-exports/{bundle_id}`——bundle_id 白名单防穿越）；设置页新增"迁移包"面板（Agent 选择/命名空间勾选/任务口径/敏感开关/脱敏报告内联展示/导出历史）。
   - 验证：bundle UT（范围校验族/默认范围与自动圈定/敏感省略与显式携带/时效与状态口径/mission 记忆随任务/检查点选取与恢复限制/zip 布局与摘要逐一相符/边车读取与防穿越）+ httpapi IT（三端点全语义）+ gofmt/vet 双标签 + UT/-race/it/st + 生成物幂等 + SPA；真机冒烟（默认范围导出→敏感/过期/未决排除计数→zip 九文件布局→manifest 摘要逐文件核对→水位→显式圈定含恢复限制→列表/详情→越权任务 400）ALL-PASS。
 
+### Fixed
+
+- **0.7.5 一审修复（5 P2，ADR-0042 v0.2）**：
+  - **敏感选项跨 Agent 保留**：迁移包面板换 Agent 重置面补齐——include_sensitive 与命名空间/任务口径一并回缺省（为 A 开启的敏感开关不得替 B 做导出决策）。
+  - **迟到响应覆盖当前 Agent**：面板所有异步响应按 Agent 代次校验（旧代次回包整体丢弃），切档清空旧任务清单——任务/历史/导出结果不串档。
+  - **任务选择依赖记忆开关**：任务口径（自动/显式/不携带——显式空集 = 不带任务）与 mission 命名空间勾选解耦；承诺与检查点随任务口径独立入包。
+  - **导出包含源安装路径**：注册表 ExeID 含安装路径（暴露本机用户名/目录）——wiring 投影为可移植标识 `adapter@runtime[:distro]`（portableExeID，单测钉住无路径分隔符）。
+  - **交接后的任务仍归入原 Agent**：wiring Get 详情后复核 owner（窗口收窄）+ 域级权威复核（自动圈定跳过非所属、显式圈定整体拒绝；已交接任务的 mission 记忆不被查询——UT 钉住）。
+
 ## [0.7.4] - 2026-11-08
 
 ### Added

@@ -1,6 +1,6 @@
 # ADR-0042：0.7.5 Portable Agent Bundle 导出——范围选择、摘要与脱敏报告
 
-- 状态：Accepted（2026-11-09，随 0.7.5 实施）
+- 状态：Accepted（2026-11-09，随 0.7.5 实施；v0.2 一轮审校修订）
 - 关联：[RFC-0018](../rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（§8 可迁移 Agent 与交接协议——§8.1 三种迁移分别承诺、§8.2 Portable Agent Bundle v1 候选格式、§8.3 导出语义"普通备份/导出可在一致水位快照上进行，不停止源 Agent"）；[ADR-0037](ADR-0037-domained-memory-items.md)（0.7.0 基石——sensitivity 列"0.7.5 Bundle 脱敏消费"、supersedes/derived_from 血缘预留、"导出范围按 namespace×scope 组合"）；[ADR-0038](ADR-0038-memory-curation-timeliness-superseded.md)（0.7.1 时效口径——active 排除 valid_to < now）；[ADR-0039](ADR-0039-memory-recall-fts-authz.md)（0.7.2 授权过滤先行——"他域命中不入结果与计数"）；[ADR-0040](ADR-0040-run-checkpoints.md)/[ADR-0041](ADR-0041-cross-harness-resume.md)（Checkpoint 事实源与 LatestForResume 选取口径）；[交付计划](../../plan/2026-08-25-delivery-plan.md) 0.7 领域表（0.7.5 唯一交付特性：Portable Agent Bundle 导出——范围选择、摘要与脱敏报告）。
 
 ## 背景与问题
@@ -119,6 +119,15 @@ Agent 选择（复用 GET /v1/agents）→ 命名空间勾选（默认 agent+wor
 ### 9. 测试与验证
 
 bundle UT（fake Ports + 临时目录）：范围校验族（未知/重复/room/slot 命名空间 400、任务非所属 400、agent 404）；默认范围与自动任务圈定；sensitive 默认省略（计数+ID 进报告、不入包不入计数）/显式携带（报告 notes 转记）；时效与状态口径排除计数；mission 记忆仅随选中任务；checkpoint 业务优先系统兜底 + 无检查点 recovery_limits；zip 布局断言（§8.2 文件集、路径无 `..`/绝对、`/` 分隔）；manifest 摘要与实际文件 sha256 逐一相符（manifest 自身缺席 files）；ndjson 每行可解析；List/Get 边车读取 + bundle_id 白名单拒绝。httpapi IT：三端点全语义（201/400/404/503/列表序/详情）。真机冒烟：造敏感+过期+多命名空间记忆与任务检查点 → 导出 → unzip -l 布局 + sha256 逐文件核对 + 报告内容人检。
+
+## 审校修订记录
+
+- v0.2（2026-11-09）：一审 5 项 P2 修复——
+  1. **敏感选项跨 Agent 保留（#1）**：换 Agent 重置面补齐——include_sensitive 与命名空间勾选/任务口径一并回缺省（原只重置结果与历史——为 A 开启的敏感开关不得替 B 做导出决策）。
+  2. **迟到响应覆盖当前 Agent（#2）**：面板所有异步响应（任务清单/历史/导出结果/失败消息）按 Agent 代次（seq ref）校验，旧代次迟到回包整体丢弃；切档同时清空旧任务清单（MissionsPage 代次模式平移）。
+  3. **任务选择依赖记忆开关（#3）**：任务口径与 mission 命名空间解耦——口径三态（自动/显式/不携带，显式空集 = 不带任何任务）恒可选；mission 勾选只控制任务命名空间记忆是否随包（后端本就正交：mission_ids 定承诺+检查点圈定，namespaces 定记忆面——UI 对齐语义）。
+  4. **导出包含源安装路径（#4）**：注册表 ExeID（`adapter@runtime[:distro]:path`）含安装路径——暴露本机用户名/目录结构；wiring 投影统一为可移植标识 `adapter@runtime[:distro]`（`portableExeID`，runtime/distro/channel 已有独立字段无信息损失）；单测钉住不含路径分隔符。
+  5. **交接后的任务仍归入原 Agent（#5）**：双层防线——wiring Missions 闭包 Get 详情后复核 owner（窗口收窄到 Get 之后）；域级权威复核（`bundle.Export` 对非所属任务自动圈定静默跳过、显式圈定整体拒绝——UT 钉住"已交接任务不入包、其 mission 记忆不被查询"）。
 
 ## 后果
 
