@@ -992,6 +992,7 @@ func (a runCheckpointSaver) SaveTerminal(ctx context.Context, runID, missionID, 
 	_, err := a.svc.Create(ctx, checkpoint.CreateCmd{
 		RunID: runID, MissionID: missionID, MissionVersion: version,
 		ProgressSummary: summary,
+		Source:          "system",
 	})
 	return err
 }

@@ -45,6 +45,36 @@ func TestCheckpointMigrationV34IT(t *testing.T) {
 	}
 }
 
+// 一审 #1：v35 source 列 + sqlite LatestOfMission 排除 system。
+func TestCheckpointSystemSourceIT(t *testing.T) {
+	s := openCkptStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	svc := checkpoint.NewService(s, checkpoint.Anchors{}, func() string { return "2026-11-06T12:00:00Z" })
+	biz := checkpoint.CreateCmd{RunID: "run_s1", MissionID: "m_s", MissionVersion: 1,
+		CompletedSteps: []string{"业务步骤"}}
+	if _, err := svc.Create(ctx, biz); err != nil {
+		t.Fatal(err)
+	}
+	sys := checkpoint.CreateCmd{RunID: "run_s1", MissionID: "m_s", MissionVersion: 1,
+		ProgressSummary: "Run run_s1 终态 completed", Source: "system"}
+	if _, err := svc.Create(ctx, sys); err != nil {
+		t.Fatal(err)
+	}
+	cp, ok, err := s.LatestOfMission(ctx, "m_s")
+	if err != nil || !ok {
+		t.Fatalf("LatestOfMission：%v %v", ok, err)
+	}
+	if cp.Source == "system" || len(cp.CompletedSteps) != 1 {
+		t.Fatalf("系统摘要遮蔽业务快照：%+v", cp)
+	}
+	// 全列表含系统条（行数 2）。
+	list, _ := s.CheckpointsOfRun(ctx, "run_s1")
+	if len(list) != 2 {
+		t.Fatalf("历史应 2 条：%d", len(list))
+	}
+}
+
 func TestCheckpointCRUDAndVersioningIT(t *testing.T) {
 	s := openCkptStore(t)
 	defer s.Close()

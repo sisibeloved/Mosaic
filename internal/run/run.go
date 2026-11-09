@@ -1118,19 +1118,27 @@ func (s *Service) finalizeRun(ctx context.Context, r *Run, lease Lease, state, e
 	}
 	*r = finalRun
 	_ = s.leases.Release(ctx, lease.LeaseID)
-	// 0.7.4 / ADR-0041 §3：终态自动落盘（安全边界挂点——best-effort，失败
-	// 不阻断终态：终态是权威事实，检查点是派生可恢复状态）。
-	if s.ckptSaver != nil {
-		detail := r.ErrorText
-		if detail == "" && r.ResultBlock != "" {
-			detail = r.ResultBlock
-		}
-		_ = s.ckptSaver.SaveTerminal(ctx, r.RunID, r.MissionID, TerminalCheckpointSummary(r.RunID, r.State, detail))
-	}
+	// 0.7.4 / ADR-0041 §3 + 一审 #3：终态自动落盘（安全边界挂点——
+	// best-effort，失败不阻断终态：终态是权威事实，检查点是派生可恢复状态）。
+	s.saveTerminalCkpt(ctx, r)
 	// 五审 #5：投影原因取**实际落库终态**（写锁内改判 canceled → run_canceled，
 	// 与 finalizeStopped 同因——Run 行、事件流、Mission 状态原因三者重建同一结果）。
 	_ = s.missions.SetReadyFromRunning(ctx, r.MissionID, "run_"+r.State)
 	return nil
+}
+
+// saveTerminalCkpt 终态自动落盘（一审 #3：全终态路径统一——completed/failed/
+// canceled/fence_rejected；best-effort）。在 UpdateRun/UpdateRunTerminal 成功
+// 后、租约释放前调用（保持顺序）。
+func (s *Service) saveTerminalCkpt(ctx context.Context, r *Run) {
+	if s.ckptSaver == nil {
+		return
+	}
+	detail := r.ErrorText
+	if detail == "" && r.ResultBlock != "" {
+		detail = r.ResultBlock
+	}
+	_ = s.ckptSaver.SaveTerminal(ctx, r.RunID, r.MissionID, TerminalCheckpointSummary(r.RunID, r.State, detail))
 }
 
 // finalizeFailed 失败路径（Run failed + 租约释放 + Mission 回 ready）——
@@ -1148,6 +1156,7 @@ func (s *Service) finalizeFailed(ctx context.Context, r *Run, errText, leaseID s
 		// 七审 #9：终态写失败上抛（租约/投影不重复施做——恢复面统一收尾）
 		return fmt.Errorf("%w：%v", ErrTerminalWrite, err)
 	}
+	s.saveTerminalCkpt(ctx, r) // 一审 #3：停止/失败路径同样落摘要
 	_ = s.leases.Release(ctx, leaseID)
 	_ = s.missions.SetReadyFromRunning(ctx, r.MissionID, "run_failed")
 	return nil
@@ -1212,6 +1221,7 @@ func (s *Service) finalizeStopped(ctx context.Context, r *Run, lease Lease, caus
 	if err := s.store.UpdateRun(ctx, *r, events); err != nil {
 		return fmt.Errorf("停止终态写入失败：%w", err)
 	}
+	s.saveTerminalCkpt(ctx, r) // 一审 #3：停止（暂停/取消/墙钟）同样落摘要——续办可见停止事实
 	// 租约释放后于执行器退出（0.6.6 审校 P1；0.6.7 发布前补齐修正）：真实面
 	// ctx 取消即杀进程组（毫秒级退出）；超窗时**不得释放**——执行器可能仍在
 	// 收尾写工作区，释放即允许新执行同写。持有租约 + 后台等执行器退出（先补

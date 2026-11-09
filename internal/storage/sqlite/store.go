@@ -701,6 +701,13 @@ CREATE INDEX IF NOT EXISTS idx_checkpoints_run ON checkpoints(run_id);
 INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (34, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 `
 
+// migrationV35（0.7.4 一审 #1）：checkpoints += source（落盘来源——system
+// 终态摘要与业务快照分流，LatestOfMission 排除前者）。逐语句加列（重复容忍）。
+var migrationV35 = []string{
+	"ALTER TABLE checkpoints ADD COLUMN source TEXT NOT NULL DEFAULT ''",
+	"INSERT OR IGNORE INTO migrations (version, applied_at) VALUES (35, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+}
+
 // migrationV29（0.6.12 / ADR-0035）：责任交接——missions 增 pending_owner_agent_id
 // （在途交接承接人；空 = 无在途交接）。逐语句加列（重复容忍）+ 登记。
 var migrationV29 = []string{
@@ -907,6 +914,13 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(migrationV34); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: migration v34: %w", err)
+	}
+	// v35 迁移（0.7.4 一审 #1）：checkpoints.source——逐语句，重复加列容忍
+	for _, stmt := range migrationV35 {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("sqlite: migration v35: %w", err)
+		}
 	}
 	// 二轮审校 #19：DB 文件 owner-only（目录 0700 之外的兜底；WAL/SHM 由目录权限覆盖）
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {

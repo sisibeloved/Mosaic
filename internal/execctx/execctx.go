@@ -559,7 +559,7 @@ func (s *Service) assemble(ctx context.Context, m mission.Mission, facts Binding
 			return nil, nil, slot.ReadinessReport{}, fmt.Errorf("execctx: 读来源房间失败：%w", err)
 		}
 		// 审校 P5：可选层配额同时受剩余总预算约束（必需 + 已装可选先行扣减）
-		remaining := TotalBudgetBytes - requiredBytes(layers) - layerBytes(sources) - layerBytes(toolsLayerOf(tools))
+		remaining := TotalBudgetBytes - requiredBytes(layers) - layerBytes(sources) - layerBytes(toolsLayerOf(tools)) - checkpointBytes(layers)
 		quota := RecentMessagesQuotaBytes
 		if remaining < quota {
 			quota = max(remaining, 0)
@@ -573,6 +573,17 @@ func (s *Service) assemble(ctx context.Context, m mission.Mission, facts Binding
 
 	layers = append(layers, includedLayer(LayerTools, RoleRequired, tools))
 	return layers, watermarks, report, nil
+}
+
+// checkpointBytes 已装入 checkpoint 层的字节数（一审 #2：可选配额扣减——
+// 检查点与必需内容本可放入 256KiB 时不得误阻断续办——先扣检查点再裁消息）。
+func checkpointBytes(layers []Layer) int {
+	for _, l := range layers {
+		if l.Name == LayerCheckpoint && l.State == LayerIncluded {
+			return l.Bytes
+		}
+	}
+	return 0
 }
 
 // toolsLayerOf 预算扣减用：工具层（必需）内容块的字节数。

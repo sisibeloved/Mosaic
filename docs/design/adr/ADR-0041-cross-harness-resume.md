@@ -1,6 +1,6 @@
 # ADR-0041：0.7.4 跨 Harness 续办——Checkpoint 注入执行上下文（0.7.4）
 
-- 状态：Accepted（2026-11-06，随 0.7.4 实施）
+- 状态：Accepted（2026-11-06，随 0.7.4 实施；v0.2 一轮审校修订）
 - 关联：[RFC-0018](../rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（§1"即嵌即走"——更换 Harness/环境后可从持久任务状态恢复工作，不承诺无损搬运 CLI 内部会话；§7.1 Native Session 是 Harness 私有、"可选恢复提示，不是便携事实源"；§7.3 Checkpoint 层位与"最后一次动作之后尚未落盘则恢复时核验回执"；§7.4 续办保留面：稳定身份/任务版本/授权记忆/Checkpoint/工作文件）；[ADR-0025](ADR-0025-exec-context-manifest.md)（execctx 层结构——checkpoint 层自始预留）；[ADR-0040](ADR-0040-run-checkpoints.md)（0.7.3 Checkpoint 存储——"执行面自动挂点随 0.7.4 续办接线"）；[交付计划](../../plan/2026-08-25-delivery-plan.md) 0.7 领域表（0.7.4 唯一交付特性：跨 Harness 续办——原生会话不可用时仍能恢复工作）。
 
 ## 背景与问题
@@ -44,6 +44,13 @@ type CheckpointFacts struct {
 ### 5. 测试与验证
 
 execctx UT（层装入/漂移标记/无检查点 omitted/预算截断/digest 稳定）、checkpoint UT（LatestOfMission 跨 Run 取最新）、run UT（终态自动落盘 best-effort——正常写入/写失败不阻断终态）、IT（执行→终态→新 Run 清单含 checkpoint 层端到端）、真机冒烟（落盘业务 checkpoint → 手动新 Run → 清单/回执含 resume 层）。
+
+## 审校修订记录
+
+- v0.2（2026-11-08）：一审 3 项（1 P1 + 2 P2）修复——
+  1. **系统摘要与业务快照分流（#1 P1）**：checkpoints += `source` 列（migration v35——"" = 业务快照 / "system" = 终态自动摘要）；`LatestOfMission` 排除 system 条（sqlite WHERE / memstore 过滤同语义）——终态摘要不再遮蔽业务快照（历史仍含系统条可查）；域校验 source 枚举。
+  2. **预算扣减检查点（#2 P2）**：execctx 可选配额计算 `-= checkpointBytes(layers)`——检查点与必需内容本可放入 256KiB 时不再误阻断续办（先扣检查点再裁超额房间消息）。
+  3. **停止路径补落盘（#3 P2）**：`saveTerminalCkpt` helper 统一——finalizeRun（既有）、finalizeStopped（暂停/取消/墙钟停止）、finalizeFailed 全路径在终态写入成功后、租约释放前调用（best-effort；保持租约/执行器退出顺序）。
 
 ## 后果
 

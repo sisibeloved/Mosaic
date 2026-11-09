@@ -108,6 +108,19 @@ func newResumeRun(t *testing.T, svc *Service) (Run, Lease) {
 	return r, lease
 }
 
+// 一审 #3：失败路径（finalizeFailed）同样落系统摘要。
+func TestFinalizeFailedSavesCheckpoint(t *testing.T) {
+	saver := &fakeCkptSaver{}
+	svc := newResumeService(t, saver)
+	r, _ := newResumeRun(t, svc)
+	if err := svc.finalizeFailed(context.Background(), &r, "执行错误", r.LeaseID); err != nil {
+		t.Fatal(err)
+	}
+	if len(saver.calls) != 1 || !strings.Contains(saver.calls[0], "failed") {
+		t.Fatalf("失败路径应落摘要：%v", saver.calls)
+	}
+}
+
 // noopExec 空 Agent 执行器（finalize 单测不用到）。
 type noopExec struct{}
 

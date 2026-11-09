@@ -42,7 +42,11 @@ type Checkpoint struct {
 	WaitingConditions []string
 	SourceWatermarks  map[string]string
 	ProgressSummary   string
-	CreatedAt         string
+	// Source 落盘来源（一审 #1）："" = 显式业务快照（执行面/人工）；
+	// "system" = Run 终态自动摘要——不参与 LatestOfMission 选取（不遮蔽
+	// 业务快照；历史仍可查）。
+	Source    string
+	CreatedAt string
 }
 
 // CreateCmd 落盘命令（显式写入面）。
@@ -59,6 +63,7 @@ type CreateCmd struct {
 	WaitingConditions []string
 	SourceWatermarks  map[string]string
 	ProgressSummary   string
+	Source            string
 }
 
 // Anchors 双锚闭包（app 装配组合——checkpoint 不 import run 域）。
@@ -71,8 +76,8 @@ type Anchors struct {
 type Store interface {
 	CreateCheckpoint(ctx context.Context, cp Checkpoint) (Checkpoint, error)
 	CheckpointsOfRun(ctx context.Context, runID string) ([]Checkpoint, error) // 降序（最新在前）
-	// LatestOfMission 按任务取最新检查点（跨 Run——0.7.4 续办：新 Run ≠
-	// 旧 Run，续办取任务级最新；ok=false = 无落盘）。
+	// LatestOfMission 按任务取最新**业务快照**检查点（跨 Run；一审 #1：
+	// 排除 system 终态摘要——不遮蔽业务字段；ok=false = 无业务快照）。
 	LatestOfMission(ctx context.Context, missionID string) (Checkpoint, bool, error)
 }
 
@@ -131,6 +136,12 @@ func (c CreateCmd) validate() error {
 	if utf8.RuneCountInString(c.ProgressSummary) > maxSummaryRunes {
 		return invalidErr("progress_summary 至多 500 字")
 	}
+	// 一审 #1：source 枚举（system 仅供运行域终态摘要适配器使用）。
+	switch c.Source {
+	case "", "system":
+	default:
+		return invalidErr("source 只接受空（业务快照）或 system（终态摘要）")
+	}
 	for k, v := range c.SourceWatermarks {
 		if k == "" || utf8.RuneCountInString(k) > 64 || utf8.RuneCountInString(v) > 128 {
 			return invalidErr("source_watermarks 键值须为 1–64/1–128 字符")
@@ -184,6 +195,7 @@ func (s *Service) Create(ctx context.Context, cmd CreateCmd) (Checkpoint, error)
 		WaitingConditions: append([]string{}, cTrim(cmd.WaitingConditions)...),
 		SourceWatermarks:  copyWatermarks(cmd.SourceWatermarks),
 		ProgressSummary:   cmd.ProgressSummary,
+		Source:            cmd.Source,
 		CreatedAt:         s.now(),
 	}
 	return s.store.CreateCheckpoint(ctx, cp)

@@ -131,6 +131,47 @@ func TestLatestOfMission(t *testing.T) {
 	}
 }
 
+// 一审 #1：系统终态摘要不遮蔽业务快照——LatestOfMission 取最新**业务**条。
+func TestSystemSummaryDoesNotShadowBusiness(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMemStore(), anchorFor("m_1", true), fixedNow)
+	biz := okCmd()
+	biz.CompletedSteps = []string{"采集", "清洗"}
+	if _, err := svc.Create(ctx, biz); err != nil {
+		t.Fatal(err)
+	}
+	sys := okCmd()
+	sys.RunID = "run_1"
+	sys.Source = "system"
+	sys.CompletedSteps = nil
+	sys.PendingSteps = nil
+	sys.ProgressSummary = "Run run_1 终态 completed"
+	if _, err := svc.Create(ctx, sys); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := svc.LatestOfMission(ctx, "m_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cp.CompletedSteps) != 2 {
+		t.Fatalf("系统摘要遮蔽业务快照：%+v", cp)
+	}
+	if cp.Source == "system" {
+		t.Fatal("LatestOfMission 不得返回系统条")
+	}
+	// 历史仍可查（CheckpointsOfRun 含系统条）。
+	list, _ := svc.ListOfRun(ctx, "run_1")
+	if len(list) != 2 {
+		t.Fatalf("历史应含系统条：%d", len(list))
+	}
+	// 非法 source 拒。
+	bad := okCmd()
+	bad.Source = "other"
+	if _, err := svc.Create(ctx, bad); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("source 非法应拒：%v", err)
+	}
+}
+
 func TestVersionAllocationAndOrder(t *testing.T) {
 	ctx := context.Background()
 	svc := NewService(NewMemStore(), anchorFor("m_1", true), fixedNow)

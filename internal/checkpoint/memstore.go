@@ -34,7 +34,7 @@ func (m *MemStore) LatestOfMission(_ context.Context, missionID string) (Checkpo
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i := len(m.seq) - 1; i >= 0; i-- {
-		if m.seq[i].MissionID == missionID {
+		if m.seq[i].MissionID == missionID && m.seq[i].Source != "system" {
 			return m.seq[i], true, nil
 		}
 	}

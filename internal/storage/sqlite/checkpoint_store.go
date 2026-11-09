@@ -17,14 +17,14 @@ var _ checkpoint.Store = (*Store)(nil)
 const checkpointCols = `checkpoint_id, run_id, mission_id, mission_version,
  checkpoint_version, work_item_id, completed_steps, pending_steps, artifact_refs,
  action_receipts, uncertain_actions, waiting_conditions, source_watermarks,
- progress_summary, created_at`
+ progress_summary, source, created_at`
 
 func scanCheckpoint(row rowScanner) (checkpoint.Checkpoint, error) {
 	var cp checkpoint.Checkpoint
 	var completed, pending, arts, receipts, uncertain, waiting, marks string
 	if err := row.Scan(&cp.CheckpointID, &cp.RunID, &cp.MissionID, &cp.MissionVersion,
 		&cp.CheckpointVersion, &cp.WorkItemID, &completed, &pending, &arts,
-		&receipts, &uncertain, &waiting, &marks, &cp.ProgressSummary, &cp.CreatedAt); err != nil {
+		&receipts, &uncertain, &waiting, &marks, &cp.ProgressSummary, &cp.Source, &cp.CreatedAt); err != nil {
 		return checkpoint.Checkpoint{}, err
 	}
 	if err := json.Unmarshal([]byte(completed), &cp.CompletedSteps); err != nil {
@@ -100,10 +100,10 @@ func (s *Store) CreateCheckpoint(ctx context.Context, cp checkpoint.Checkpoint) 
 	_, err = s.db.ExecContext(ctx, `INSERT INTO checkpoints (`+checkpointCols+`)
  VALUES (?, ?, ?, ?,
   (SELECT COALESCE(MAX(checkpoint_version), 0) + 1 FROM checkpoints WHERE run_id = ?),
-  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		cp.CheckpointID, cp.RunID, cp.MissionID, cp.MissionVersion, cp.RunID,
 		cp.WorkItemID, completed, pending, arts,
-		receipts, uncertain, waiting, string(marks), cp.ProgressSummary, cp.CreatedAt)
+		receipts, uncertain, waiting, string(marks), cp.ProgressSummary, cp.Source, cp.CreatedAt)
 	if err != nil {
 		return checkpoint.Checkpoint{}, fmt.Errorf("sqlite: insert checkpoint: %w", err)
 	}
@@ -119,7 +119,7 @@ func (s *Store) CreateCheckpoint(ctx context.Context, cp checkpoint.Checkpoint) 
 // LatestOfMission 任务级最新（跨 Run——rowid DESC 取最新插入行）。
 func (s *Store) LatestOfMission(ctx context.Context, missionID string) (checkpoint.Checkpoint, bool, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+checkpointCols+` FROM checkpoints WHERE mission_id = ?
+		`SELECT `+checkpointCols+` FROM checkpoints WHERE mission_id = ? AND source != 'system'
  ORDER BY rowid DESC LIMIT 1`, missionID)
 	cp, err := scanCheckpoint(row)
 	if errors.Is(err, sql.ErrNoRows) {
