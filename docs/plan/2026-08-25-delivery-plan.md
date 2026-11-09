@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v3.00 |
+| 版本 | v3.01 |
 | 日期 | 2026-11-02 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -26,7 +26,7 @@
 
 ## 0.2 当前 Roadmap
 
-当前产品版本为 **v0.7.3**（0.7 领域已交付四件：0.7.3 Checkpoint 可恢复业务状态（ADR-0040）；0.7.2 记忆召回（ADR-0039——FTS5 与授权过滤先行）；0.7.1 记忆策展与纠错（ADR-0038——接受/修订/否决/替代 + 版本留痕 + 时效口径）；0.7.0 分域记忆基石（ADR-0037）；0.6 领域已交付 0.6.0–0.6.13——十四件全部定版收官（0.6.13 域收口：网关续接、Slot 职责寻址与墙钟强制——AT-14/15/18 落差收口；此前 0.6.0–0.6.12 定版：MissionContract、房间交办/网关首切片、执行上下文清单、本地 Environment/Runtime、RuntimeLease、单 Agent Mission 执行、Mission 暂停/恢复/取消、Run 崩溃恢复、DeliveryPackage 成果提交、Mission 验收、执行结果回房、决策重开请求与 Mission 责任交接；Mission 责任交接；0.7 余件 0.7.4–0.7.9 未开工）；0.5 领域线已收官；0.6 的 RFC 已于 2026-10-30 增补内嵌轻量级智能体网关设计（§0.6 说明，尚未实现）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
+当前产品版本为 **v0.7.4**（0.7 领域已交付五件：0.7.4 跨 Harness 续办（ADR-0041——Checkpoint 注入执行上下文）；0.7.3 Checkpoint 可恢复业务状态（ADR-0040）；0.7.2 记忆召回（ADR-0039——FTS5 与授权过滤先行）；0.7.1 记忆策展与纠错（ADR-0038——接受/修订/否决/替代 + 版本留痕 + 时效口径）；0.7.0 分域记忆基石（ADR-0037）；0.6 领域已交付 0.6.0–0.6.13——十四件全部定版收官（0.6.13 域收口：网关续接、Slot 职责寻址与墙钟强制——AT-14/15/18 落差收口；此前 0.6.0–0.6.12 定版：MissionContract、房间交办/网关首切片、执行上下文清单、本地 Environment/Runtime、RuntimeLease、单 Agent Mission 执行、Mission 暂停/恢复/取消、Run 崩溃恢复、DeliveryPackage 成果提交、Mission 验收、执行结果回房、决策重开请求与 Mission 责任交接；Mission 责任交接；0.7 余件 0.7.5–0.7.9 未开工）；0.5 领域线已收官；0.6 的 RFC 已于 2026-10-30 增补内嵌轻量级智能体网关设计（§0.6 说明，尚未实现）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
 
 | 版本线 | 领域 / 产品目标 | 设计来源 / RFC-0018 阶段映射 |
 |---|---|---|
@@ -205,6 +205,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v3.01 | 2026-11-08 | Mosaic 项目组 / ZCode | **定版 v0.7.4（负责人指令："发布"）——0.7 记忆与可移植恢复领域第五件：跨 Harness 续办（Checkpoint 注入执行上下文）**。CHANGELOG [Unreleased]（Added 续办主功能 + Fixed 两轮审校 3+1=4 项）定版 **[0.7.4] - 2026-11-08**（Added 前置、两段 Fixed 合并一节），保留空 [Unreleased]；README 当前版本推进 v0.7.4、路线图 0.7 行标注 0.7.0–0.7.4 已交付（余 0.7.5–0.7.9）；版本字样同步；发布链：定版 docs 提交 + tag v0.7.4 + GitHub Release 发布说明与 Windows 产物（productVersion 断言防错版）；CI 三平台绿基线（e0f1680 已验，定版提交复验） |
 | v3.00 | 2026-11-08 | Mosaic 项目组 / ZCode | **0.7.4 二审修复（1 P2；ADR-0041 v0.3）**。LatestForResume——业务快照优先、无业务时回退系统终态摘要（停止/完成/失败后续办层不丢；CheckpointFacts += source 透传标记）。验证：域/sqlite 回归（回退与优先序）+ vet/-race 四包 + 真机冒烟（暂停后系统摘要 → 新 Run 清单 included 含摘要）ALL-PASS |
 | v2.99 | 2026-11-08 | Mosaic 项目组 / ZCode | **0.7.4 一审修复（1 P1 + 2 P2；ADR-0041 v0.2）**。source 分流（v35 + LatestOfMission 排除 system——终态摘要不遮蔽业务快照）+ execctx 预算扣减 checkpoint 层（不误阻断续办）+ 停止路径统一落盘（saveTerminalCkpt helper——全终态路径）。验证：域/IT/run UT 回归 + vet/-race + it/st + SPA + 真机冒烟（G1 系统条后落清单仍业务字段/G2 v35）ALL-PASS |
 | v2.98 | 2026-11-06 | Mosaic 项目组 / ZCode | **0.7.4 跨 Harness 续办开工实施（负责人指令："开工0.7.4"；ADR-0041 Accepted）——清单 checkpoint 层接线（漂移标记/首跑 omitted/读错阻断）+ LatestOfMission（任务级跨 Run）+ Run 终态自动落盘（best-effort）+ Inline resume_checkpoint 透传**。零 HTTP 契约变更（内部接线）；换 Harness/重启后新会话 Boot 即收续办状态。验证：execctx/checkpoint/run UT + vet/-race + it/st + SPA + 真机冒烟（含漂移场景与终态自动落盘）ALL-PASS |

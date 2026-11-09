@@ -4,17 +4,7 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- **0.7.4 二审修复（1 P2，ADR-0041 v0.3）**：
-  - **无业务快照时续办层丢失（一审 #1 修法回归）**：`LatestForResume`——业务快照优先，无业务条时**回退最新系统终态摘要**——暂停/超时/完成/失败后没有业务快照的场景，新会话的 `resume_checkpoint` 仍可达（层 included 携终态摘要与 `source` 标记）；有业务条时系统条永不入选（一审"不遮蔽"语义保持）。
-
-### Fixed
-
-- **0.7.4 一审修复（1 P1 + 2 P2，ADR-0041 v0.2）**：
-  - **终态摘要遮蔽业务快照（#1 P1）**：checkpoints += `source` 列（migration v35）；`LatestOfMission` 排除 system 终态摘要——Run 完成后下次续办仍收业务字段（采集/清洗步骤保留，不再被自动摘要清空）；系统条历史可查。
-  - **预算计算遗漏检查点（#2 P2）**：execctx 可选配额扣减已装入的 checkpoint 层字节数——检查点与必需内容本可放入 256 KiB 时，房间消息按收缩后配额装窗，不再误阻断续办。
-  - **运行中停止缺少续办摘要（#3 P2）**：`saveTerminalCkpt` 统一全终态路径（完成/失败/暂停/取消/墙钟停止/围栏拒绝）——停止后无更早检查点时续办仍可见停止事实；保持租约释放与执行器退出顺序。
+## [0.7.4] - 2026-11-08
 
 ### Added
 
@@ -24,6 +14,16 @@
   - **Run 终态自动落盘**（0.7.3 预留兑现）：`run.Service` += `CheckpointSaver` 端口（`WithCheckpointSaver`）；`finalizeRun` 在终态写入成功后落系统检查点（`progress_summary = "Run {id} 终态 {state}"`，≤500 字）；**best-effort**（失败不阻断终态——终态是权威事实）。执行面显式落盘（业务步骤）仍走 0.7.3 API。
   - **Inline 透传**：`manifestInline` 为 checkpoint 层抽 `resume_checkpoint` 键 → `supervisorExecutor` 既有 `Context{Inline}` 全量重递——新会话 Boot 即收到续办状态，换 Harness/重启后工作上下文不丢。
   - 验证：execctx UT（层装入/漂移/首跑 omitted/读错阻断）+ checkpoint UT（LatestOfMission 跨 Run 取最新）+ run UT（终态自动落盘/best-effort 不阻断/nil 兼容/Inline 透传）+ vet/-race + it/st + 生成物幂等 + SPA；真机冒烟（显式落盘含漂移 → 新 Run 清单含 checkpoint 层 + contract_drift → 终态自动落盘摘要入表）ALL-PASS。
+
+### Fixed
+
+- **0.7.4 二审修复（1 P2，ADR-0041 v0.3）**：
+  - **无业务快照时续办层丢失（一审 #1 修法回归）**：`LatestForResume`——业务快照优先，无业务条时**回退最新系统终态摘要**——暂停/超时/完成/失败后没有业务快照的场景，新会话的 `resume_checkpoint` 仍可达（层 included 携终态摘要与 `source` 标记）；有业务条时系统条永不入选（一审"不遮蔽"语义保持）。
+
+- **0.7.4 一审修复（1 P1 + 2 P2，ADR-0041 v0.2）**：
+  - **终态摘要遮蔽业务快照（#1 P1）**：checkpoints += `source` 列（migration v35）；`LatestOfMission` 排除 system 终态摘要——Run 完成后下次续办仍收业务字段（采集/清洗步骤保留，不再被自动摘要清空）；系统条历史可查。
+  - **预算计算遗漏检查点（#2 P2）**：execctx 可选配额扣减已装入的 checkpoint 层字节数——检查点与必需内容本可放入 256 KiB 时，房间消息按收缩后配额装窗，不再误阻断续办。
+  - **运行中停止缺少续办摘要（#3 P2）**：`saveTerminalCkpt` 统一全终态路径（完成/失败/暂停/取消/墙钟停止/围栏拒绝）——停止后无更早检查点时续办仍可见停止事实；保持租约释放与执行器退出顺序。
 
 ## [0.7.3] - 2026-11-06
 
