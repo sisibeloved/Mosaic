@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **0.7.5 Portable Agent Bundle 导出：范围选择、摘要与脱敏报告**（0.7 领域线第六件 / ADR-0042，RFC-0018 §8——跨实例可移植首环）：
+  - **范围选择**：`POST /v1/agents/{agent_id}/bundle-exports`——命名空间 ⊆ `agent|workspace|mission`（缺省 agent+workspace；room/slot 授权口径未建 v1 不开放，显式拒绝）；`mission_ids` 缺省 = 自动圈定非终态在册任务（draft 不带走），显式数组逐条校验归属、不符整体拒绝（透明不静默缩圈）；`include_sensitive` 缺省 false。
+  - **摘要与水位**：包内 `manifest.json` 逐文件 sha256 + 字节数（完整性检查用——不等同于可信签名；manifest 自身不在 files 内）+ 任务级 `{contract_version, checkpoint_version, checkpoint_source}` 水位与命名空间入包计数（导入预检 0.7.6 判陈旧的依据）；来源实例只记产品版本（最小事实面）。
+  - **脱敏报告**（包内 `redaction-report.json` 同构内联在响应）：敏感省略（默认省略、只 ID 不内容/标题——审计可用且不泄敏感面）、口径排除计数（时效过期/策展未决/已终结——0.7.1/0.7.2 同一 WHERE 口径的导出侧应用，未授权 scope 结构性不查询）、逐任务恢复限制（无检查点——导入后从契约裸启动）、`artifact_policy: refs_only`（v1 引用保留不携文件，目标侧可访问性未判定）与设计边界 notes（凭据/令牌/原生会话材料不随包）。
+  - **包布局 v1**（RFC §8.2，zip 内相对路径）：`agent/profile.json`（身份+三向别名+可执行项引用）、`slots/specs.json`（现任 active 任职 + 钉版模板内容）、`memory/items.ndjson`、`work/checkpoints.ndjson`（每选中任务一条——0.7.4 LatestForResume 口径复用：业务快照优先回退系统终态摘要）、`work/commitments.json`（契约快照 + 原对象映射 + 导入默认暂停标记）、`context/manifests.ndjson`（引用与证据清单）、`dependencies.json`、`redaction-report.json`、`manifest.json`。
+  - **域与装配**：`internal/bundle` 新包（Ports 全闭包 + 域内投影类型——不 import personalagent/slot/mission/checkpoint/memory，依赖方向同 execctx）；产物落数据目录 `bundles/<bundle_id>/`（zip + export.json 边车，**零 migration**——backup 同例）；列表/详情端点（`GET /v1/agents/{agent_id}/bundle-exports`、`GET /v1/bundle-exports/{bundle_id}`——bundle_id 白名单防穿越）；设置页新增"迁移包"面板（Agent 选择/命名空间勾选/任务口径/敏感开关/脱敏报告内联展示/导出历史）。
+  - 验证：bundle UT（范围校验族/默认范围与自动圈定/敏感省略与显式携带/时效与状态口径/mission 记忆随任务/检查点选取与恢复限制/zip 布局与摘要逐一相符/边车读取与防穿越）+ httpapi IT（三端点全语义）+ gofmt/vet 双标签 + UT/-race/it/st + 生成物幂等 + SPA；真机冒烟（默认范围导出→敏感/过期/未决排除计数→zip 九文件布局→manifest 摘要逐文件核对→水位→显式圈定含恢复限制→列表/详情→越权任务 400）ALL-PASS。
+
 ## [0.7.4] - 2026-11-08
 
 ### Added

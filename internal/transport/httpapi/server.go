@@ -22,6 +22,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/agent"
 	"github.com/sisibeloved/Mosaic/internal/attach"
 	"github.com/sisibeloved/Mosaic/internal/backup"
+	"github.com/sisibeloved/Mosaic/internal/bundle"
 	"github.com/sisibeloved/Mosaic/internal/checkpoint"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/dispatch"
@@ -158,6 +159,9 @@ type Deps struct {
 	CheckpointSVC *checkpoint.Service
 	// MemorySVC 分域记忆服务（0.7.0 / ADR-0037）：nil = 记忆端点 503（测试装配）。
 	MemorySVC *memory.Service
+	// BundleSVC Portable Agent Bundle 导出服务（0.7.5 / ADR-0042）：nil =
+	// bundle 端点 503（测试装配）。
+	BundleSVC *bundle.Service
 	// ShellOpenURL 桌面壳系统浏览器打开面（手工注册路由 POST /v1/shell/open-external，
 	// 非 apigen 契约）：nil = 端点不注册（服务端形态）。WebView 不处理 window.open，
 	// SPA 的外链兜底经此请壳调系统浏览器；回调纪律见 shell.go。

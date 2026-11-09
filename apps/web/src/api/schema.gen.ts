@@ -2737,6 +2737,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/agents/{agent_id}/bundle-exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 该 Agent 的导出列表（新→旧；0.7.5） */
+        get: operations["listAgentBundleExports"];
+        put?: never;
+        /**
+         * 创建 Portable Agent Bundle 导出（0.7.5 / ADR-0042，RFC-0018 §8.2）
+         * @description 范围选择 + 摘要 + 脱敏报告。只读快照导出（不停源 Agent、不加锁）；
+         *     产物 = 数据目录 bundles/<bundle_id>/mosaic-agent-bundle.zip（§8.2
+         *     布局，v1 不携 artifacts 实体文件——引用保留，见脱敏报告
+         *     artifact_policy）+ export.json 边车。记忆入包口径与 0.7.1/0.7.2
+         *     同源：active 且时效有效；sensitive 默认省略（include_sensitive
+         *     显式携带）；room/slot 命名空间 v1 不开放（授权口径未建）。mission_ids
+         *     缺省 = 自动圈定该 Agent 全部非终态在册任务；显式数组逐条校验
+         *     存在且当前 owner 一致，不符整体拒绝（透明不静默缩圈）。
+         */
+        post: operations["createAgentBundleExport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/bundle-exports/{bundle_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 导出详情（传输前核对脱敏报告；0.7.5） */
+        get: operations["getAgentBundleExport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4336,6 +4381,98 @@ export interface components {
         /** @description 检查点列表（checkpoint_version 降序——最新在前）。 */
         RunCheckpointListView: {
             checkpoints: components["schemas"]["RunCheckpointView"][];
+        };
+        /**
+         * @description 导出范围选择（0.7.5 / ADR-0042 §2）。缺省 namespaces =
+         *     [agent, workspace]；mission_ids 缺省 = 自动圈定（该 Agent 全部
+         *     非终态在册任务）；include_sensitive 缺省 false（敏感记忆省略并
+         *     计入脱敏报告）。
+         */
+        AgentBundleExportRequest: {
+            namespaces?: ("agent" | "workspace" | "mission")[];
+            mission_ids?: string[];
+            include_sensitive?: boolean;
+        };
+        /**
+         * @description 脱敏报告（包内 redaction-report.json 同构内联——省略项、口径排除
+         *     计数、恢复限制、工件策略与边界说明；范围外不记——那是选择不是省略）。
+         */
+        AgentBundleRedactionReport: {
+            /** @description 敏感省略（只 ID 不内容/标题——审计可用且不泄敏感面）。 */
+            omitted_sensitive: {
+                count: number;
+                item_ids: string[];
+            };
+            /** @description 口径排除计数（时效过期 / 策展未决 / 已终结——替代品为现行项）。 */
+            excluded_by_rule: {
+                expired: number;
+                proposed: number;
+                superseded: number;
+            };
+            /** @description 逐任务恢复限制（如无任何检查点——导入后从契约裸启动）。 */
+            recovery_limits: string[];
+            /**
+             * @description v1 引用保留不携文件——目标侧可访问性未判定。
+             * @enum {string}
+             */
+            artifact_policy: "refs_only";
+            /** @description 设计边界说明（凭据/令牌/原生会话不随包、无 embedding 随包等）。 */
+            notes: string[];
+        };
+        /**
+         * @description 导出全量视图（创建响应/详情；包内 manifest.json 同源）。files 含
+         *     逐文件 sha256（完整性检查用——不等同于可信签名）；manifest 自身
+         *     不在 files 内。
+         */
+        AgentBundleExportView: {
+            bundle_id: string;
+            agent_id: string;
+            /** @enum {string} */
+            format: "mosaic-agent-bundle/1";
+            created_at: string;
+            /** @description zip 文件字节数 */
+            size_bytes: number;
+            /** @description 相对数据目录的 zip 路径（bundles/<id>/mosaic-agent-bundle.zip） */
+            zip_path: string;
+            /** @description 来源实例产品版本（最小事实面——不记主机/用户） */
+            product_version?: string;
+            /** @description 实际导出范围（mission_ids 为解析后的实际集合——自动圈定也展开）。 */
+            scope: {
+                namespaces: ("agent" | "workspace" | "mission")[];
+                /** @enum {string} */
+                mission_selection: "auto" | "explicit";
+                mission_ids: string[];
+                include_sensitive: boolean;
+            };
+            /** @description 入包计数（被排除/省略项不入——只计随包事实）。 */
+            counts: {
+                memories: number;
+                missions: number;
+                checkpoints: number;
+            };
+            files: {
+                /** @description 包内相对路径（/ 分隔） */
+                path: string;
+                bytes: number;
+                sha256: string;
+            }[];
+            redaction: components["schemas"]["AgentBundleRedactionReport"];
+        };
+        /** @description 导出摘要（列表元素）。 */
+        AgentBundleSummary: {
+            bundle_id: string;
+            agent_id: string;
+            created_at: string;
+            size_bytes: number;
+            counts: {
+                memories: number;
+                missions: number;
+                checkpoints: number;
+            };
+        };
+        /** @description 导出列表（新→旧）。 */
+        AgentBundleExportListView: {
+            exports: components["schemas"]["AgentBundleSummary"][];
         };
         /** @description 版本留痕记录（0.7.1 / ADR-0038 §2——append-only，恰一条/次）。 */
         MemoryEditRecordView: {
@@ -11467,6 +11604,139 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    listAgentBundleExports: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 导出摘要列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentBundleExportListView"];
+                };
+            };
+            /** @description Agent 不存在（agent_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Bundle 域未装配（bundle_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createAgentBundleExport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentBundleExportRequest"];
+            };
+        };
+        responses: {
+            /** @description 已导出（脱敏报告内联） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentBundleExportView"];
+                };
+            };
+            /** @description 范围不合法（invalid_request——未知/重复命名空间、room/slot 不开放、任务不存在或非当前负责、owner_token 缺失） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Agent 不存在（agent_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Bundle 域未装配（bundle_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getAgentBundleExport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bundle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 导出全量视图（含脱敏报告与文件摘要） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentBundleExportView"];
+                };
+            };
+            /** @description 导出不存在（bundle_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Bundle 域未装配（bundle_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
             };
         };
     };

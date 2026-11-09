@@ -15,6 +15,96 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for AgentBundleExportRequestNamespaces.
+const (
+	AgentBundleExportRequestNamespacesAgent     AgentBundleExportRequestNamespaces = "agent"
+	AgentBundleExportRequestNamespacesMission   AgentBundleExportRequestNamespaces = "mission"
+	AgentBundleExportRequestNamespacesWorkspace AgentBundleExportRequestNamespaces = "workspace"
+)
+
+// Valid indicates whether the value is a known member of the AgentBundleExportRequestNamespaces enum.
+func (e AgentBundleExportRequestNamespaces) Valid() bool {
+	switch e {
+	case AgentBundleExportRequestNamespacesAgent:
+		return true
+	case AgentBundleExportRequestNamespacesMission:
+		return true
+	case AgentBundleExportRequestNamespacesWorkspace:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AgentBundleExportViewFormat.
+const (
+	MosaicAgentBundle1 AgentBundleExportViewFormat = "mosaic-agent-bundle/1"
+)
+
+// Valid indicates whether the value is a known member of the AgentBundleExportViewFormat enum.
+func (e AgentBundleExportViewFormat) Valid() bool {
+	switch e {
+	case MosaicAgentBundle1:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AgentBundleExportViewScopeMissionSelection.
+const (
+	AgentBundleExportViewScopeMissionSelectionAuto     AgentBundleExportViewScopeMissionSelection = "auto"
+	AgentBundleExportViewScopeMissionSelectionExplicit AgentBundleExportViewScopeMissionSelection = "explicit"
+)
+
+// Valid indicates whether the value is a known member of the AgentBundleExportViewScopeMissionSelection enum.
+func (e AgentBundleExportViewScopeMissionSelection) Valid() bool {
+	switch e {
+	case AgentBundleExportViewScopeMissionSelectionAuto:
+		return true
+	case AgentBundleExportViewScopeMissionSelectionExplicit:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AgentBundleExportViewScopeNamespaces.
+const (
+	AgentBundleExportViewScopeNamespacesAgent     AgentBundleExportViewScopeNamespaces = "agent"
+	AgentBundleExportViewScopeNamespacesMission   AgentBundleExportViewScopeNamespaces = "mission"
+	AgentBundleExportViewScopeNamespacesWorkspace AgentBundleExportViewScopeNamespaces = "workspace"
+)
+
+// Valid indicates whether the value is a known member of the AgentBundleExportViewScopeNamespaces enum.
+func (e AgentBundleExportViewScopeNamespaces) Valid() bool {
+	switch e {
+	case AgentBundleExportViewScopeNamespacesAgent:
+		return true
+	case AgentBundleExportViewScopeNamespacesMission:
+		return true
+	case AgentBundleExportViewScopeNamespacesWorkspace:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AgentBundleRedactionReportArtifactPolicy.
+const (
+	RefsOnly AgentBundleRedactionReportArtifactPolicy = "refs_only"
+)
+
+// Valid indicates whether the value is a known member of the AgentBundleRedactionReportArtifactPolicy enum.
+func (e AgentBundleRedactionReportArtifactPolicy) Valid() bool {
+	switch e {
+	case RefsOnly:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AgentEventEventType.
 const (
 	AgentEventEventTypeCreated       AgentEventEventType = "created"
@@ -1814,16 +1904,16 @@ func (e SearchHitActorKind) Valid() bool {
 
 // Defines values for SettingsDocReplyOrPassMode.
 const (
-	Auto SettingsDocReplyOrPassMode = "auto"
-	Off  SettingsDocReplyOrPassMode = "off"
+	SettingsDocReplyOrPassModeAuto SettingsDocReplyOrPassMode = "auto"
+	SettingsDocReplyOrPassModeOff  SettingsDocReplyOrPassMode = "off"
 )
 
 // Valid indicates whether the value is a known member of the SettingsDocReplyOrPassMode enum.
 func (e SettingsDocReplyOrPassMode) Valid() bool {
 	switch e {
-	case Auto:
+	case SettingsDocReplyOrPassModeAuto:
 		return true
-	case Off:
+	case SettingsDocReplyOrPassModeOff:
 		return true
 	default:
 		return false
@@ -2446,6 +2536,120 @@ func (e RequestRestoreJSONBodyConfirm) Valid() bool {
 type AcceptanceMappingEntry struct {
 	Criterion string `json:"criterion"`
 	Evidence  string `json:"evidence"`
+}
+
+// AgentBundleExportListView 导出列表（新→旧）。
+type AgentBundleExportListView struct {
+	Exports []AgentBundleSummary `json:"exports"`
+}
+
+// AgentBundleExportRequest 导出范围选择（0.7.5 / ADR-0042 §2）。缺省 namespaces =
+// [agent, workspace]；mission_ids 缺省 = 自动圈定（该 Agent 全部
+// 非终态在册任务）；include_sensitive 缺省 false（敏感记忆省略并
+// 计入脱敏报告）。
+type AgentBundleExportRequest struct {
+	IncludeSensitive *bool                                 `json:"include_sensitive,omitempty"`
+	MissionIds       *[]string                             `json:"mission_ids,omitempty"`
+	Namespaces       *[]AgentBundleExportRequestNamespaces `json:"namespaces,omitempty"`
+}
+
+// AgentBundleExportRequestNamespaces defines model for AgentBundleExportRequest.Namespaces.
+type AgentBundleExportRequestNamespaces string
+
+// AgentBundleExportView 导出全量视图（创建响应/详情；包内 manifest.json 同源）。files 含
+// 逐文件 sha256（完整性检查用——不等同于可信签名）；manifest 自身
+// 不在 files 内。
+type AgentBundleExportView struct {
+	AgentId  string `json:"agent_id"`
+	BundleId string `json:"bundle_id"`
+
+	// Counts 入包计数（被排除/省略项不入——只计随包事实）。
+	Counts struct {
+		Checkpoints int `json:"checkpoints"`
+		Memories    int `json:"memories"`
+		Missions    int `json:"missions"`
+	} `json:"counts"`
+	CreatedAt string `json:"created_at"`
+	Files     []struct {
+		Bytes int `json:"bytes"`
+
+		// Path 包内相对路径（/ 分隔）
+		Path   string `json:"path"`
+		Sha256 string `json:"sha256"`
+	} `json:"files"`
+	Format AgentBundleExportViewFormat `json:"format"`
+
+	// ProductVersion 来源实例产品版本（最小事实面——不记主机/用户）
+	ProductVersion *string `json:"product_version,omitempty"`
+
+	// Redaction 脱敏报告（包内 redaction-report.json 同构内联——省略项、口径排除
+	// 计数、恢复限制、工件策略与边界说明；范围外不记——那是选择不是省略）。
+	Redaction AgentBundleRedactionReport `json:"redaction"`
+
+	// Scope 实际导出范围（mission_ids 为解析后的实际集合——自动圈定也展开）。
+	Scope struct {
+		IncludeSensitive bool                                       `json:"include_sensitive"`
+		MissionIds       []string                                   `json:"mission_ids"`
+		MissionSelection AgentBundleExportViewScopeMissionSelection `json:"mission_selection"`
+		Namespaces       []AgentBundleExportViewScopeNamespaces     `json:"namespaces"`
+	} `json:"scope"`
+
+	// SizeBytes zip 文件字节数
+	SizeBytes int `json:"size_bytes"`
+
+	// ZipPath 相对数据目录的 zip 路径（bundles/<id>/mosaic-agent-bundle.zip）
+	ZipPath string `json:"zip_path"`
+}
+
+// AgentBundleExportViewFormat defines model for AgentBundleExportView.Format.
+type AgentBundleExportViewFormat string
+
+// AgentBundleExportViewScopeMissionSelection defines model for AgentBundleExportView.Scope.MissionSelection.
+type AgentBundleExportViewScopeMissionSelection string
+
+// AgentBundleExportViewScopeNamespaces defines model for AgentBundleExportView.Scope.Namespaces.
+type AgentBundleExportViewScopeNamespaces string
+
+// AgentBundleRedactionReport 脱敏报告（包内 redaction-report.json 同构内联——省略项、口径排除
+// 计数、恢复限制、工件策略与边界说明；范围外不记——那是选择不是省略）。
+type AgentBundleRedactionReport struct {
+	// ArtifactPolicy v1 引用保留不携文件——目标侧可访问性未判定。
+	ArtifactPolicy AgentBundleRedactionReportArtifactPolicy `json:"artifact_policy"`
+
+	// ExcludedByRule 口径排除计数（时效过期 / 策展未决 / 已终结——替代品为现行项）。
+	ExcludedByRule struct {
+		Expired    int `json:"expired"`
+		Proposed   int `json:"proposed"`
+		Superseded int `json:"superseded"`
+	} `json:"excluded_by_rule"`
+
+	// Notes 设计边界说明（凭据/令牌/原生会话不随包、无 embedding 随包等）。
+	Notes []string `json:"notes"`
+
+	// OmittedSensitive 敏感省略（只 ID 不内容/标题——审计可用且不泄敏感面）。
+	OmittedSensitive struct {
+		Count   int      `json:"count"`
+		ItemIds []string `json:"item_ids"`
+	} `json:"omitted_sensitive"`
+
+	// RecoveryLimits 逐任务恢复限制（如无任何检查点——导入后从契约裸启动）。
+	RecoveryLimits []string `json:"recovery_limits"`
+}
+
+// AgentBundleRedactionReportArtifactPolicy v1 引用保留不携文件——目标侧可访问性未判定。
+type AgentBundleRedactionReportArtifactPolicy string
+
+// AgentBundleSummary 导出摘要（列表元素）。
+type AgentBundleSummary struct {
+	AgentId  string `json:"agent_id"`
+	BundleId string `json:"bundle_id"`
+	Counts   struct {
+		Checkpoints int `json:"checkpoints"`
+		Memories    int `json:"memories"`
+		Missions    int `json:"missions"`
+	} `json:"counts"`
+	CreatedAt string `json:"created_at"`
+	SizeBytes int    `json:"size_bytes"`
 }
 
 // AgentEvent agent_events 流事件（migration v8；seq 升序即流序）。
@@ -5708,6 +5912,9 @@ type RequestRestoreJSONBody struct {
 // RequestRestoreJSONBodyConfirm defines parameters for RequestRestore.
 type RequestRestoreJSONBodyConfirm bool
 
+// CreateAgentBundleExportJSONRequestBody defines body for CreateAgentBundleExport for application/json ContentType.
+type CreateAgentBundleExportJSONRequestBody = AgentBundleExportRequest
+
 // ReleaseDispatchClaimJSONRequestBody defines body for ReleaseDispatchClaim for application/json ContentType.
 type ReleaseDispatchClaimJSONRequestBody = DispatchClaimReleaseRequest
 
@@ -5881,6 +6088,15 @@ type ServerInterface interface {
 	// ListAgents 当前在席 Agent 座位（建房选择的候选集）+ 已发现未启用项
 	// (GET /v1/agents)
 	ListAgents(w http.ResponseWriter, r *http.Request)
+	// ListAgentBundleExports 该 Agent 的导出列表（新→旧；0.7.5）
+	// (GET /v1/agents/{agent_id}/bundle-exports)
+	ListAgentBundleExports(w http.ResponseWriter, r *http.Request, agentId string)
+	// CreateAgentBundleExport 创建 Portable Agent Bundle 导出（0.7.5 / ADR-0042，RFC-0018 §8.2）
+	// (POST /v1/agents/{agent_id}/bundle-exports)
+	CreateAgentBundleExport(w http.ResponseWriter, r *http.Request, agentId string)
+	// GetAgentBundleExport 导出详情（传输前核对脱敏报告；0.7.5）
+	// (GET /v1/bundle-exports/{bundle_id})
+	GetAgentBundleExport(w http.ResponseWriter, r *http.Request, bundleId string)
 	// GetContextManifest 执行上下文清单详情（含层内容块与 Receipt）
 	// (GET /v1/context-manifests/{manifest_id})
 	GetContextManifest(w http.ResponseWriter, r *http.Request, manifestId string)
@@ -6346,6 +6562,84 @@ func (siw *ServerInterfaceWrapper) ListAgents(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListAgents(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListAgentBundleExports operation middleware
+func (siw *ServerInterfaceWrapper) ListAgentBundleExports(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "agent_id" -------------
+	var agentId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "agent_id", r.PathValue("agent_id"), &agentId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agent_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListAgentBundleExports(w, r, agentId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateAgentBundleExport operation middleware
+func (siw *ServerInterfaceWrapper) CreateAgentBundleExport(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "agent_id" -------------
+	var agentId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "agent_id", r.PathValue("agent_id"), &agentId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agent_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateAgentBundleExport(w, r, agentId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetAgentBundleExport operation middleware
+func (siw *ServerInterfaceWrapper) GetAgentBundleExport(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "bundle_id" -------------
+	var bundleId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bundle_id", r.PathValue("bundle_id"), &bundleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "bundle_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetAgentBundleExport(w, r, bundleId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -10298,6 +10592,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/mission-runs/{run_id}/checkpoints", wrapper.ListRunCheckpoints)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/mission-runs/{run_id}/checkpoints", wrapper.CreateRunCheckpoint)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/mission-runs/{run_id}/checkpoints/latest", wrapper.GetLatestRunCheckpoint)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/agents/{agent_id}/bundle-exports", wrapper.ListAgentBundleExports)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/agents/{agent_id}/bundle-exports", wrapper.CreateAgentBundleExport)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/bundle-exports/{bundle_id}", wrapper.GetAgentBundleExport)
 
 	return m
 }

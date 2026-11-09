@@ -300,6 +300,11 @@ export interface BackupSummary {
 /** OQ-B 设置族文档（M4-1 首员 run_timeout_seconds）。 */
 export type SettingsDoc = Schemas["SettingsDoc"];
 
+/** 0.7.5 Portable Agent Bundle 导出（范围选择 + 摘要 + 脱敏报告）。 */
+export type AgentBundleExportView = Schemas["AgentBundleExportView"];
+export type AgentBundleSummary = Schemas["AgentBundleSummary"];
+export type AgentBundleExportRequest = Schemas["AgentBundleExportRequest"];
+
 /** M4-5 监控源 + 运行态视图。 */
 export type MonitorView = Schemas["MonitorView"];
 export type MonitorCreate = Schemas["MonitorCreate"];
@@ -307,6 +312,16 @@ export type MonitorCreate = Schemas["MonitorCreate"];
 export const api = {
   agents(): Promise<{ agents: AgentSeatInfo[]; disabled?: DisabledAgentInfo[] }> {
     return request<{ agents: AgentSeatInfo[]; disabled?: DisabledAgentInfo[] }>("/v1/agents");
+  },
+  /** 0.7.5 Portable Agent Bundle 导出（ADR-0042）：创建（范围选择）/ 列表 / 详情。 */
+  createAgentBundleExport(agentID: string, req: AgentBundleExportRequest): Promise<AgentBundleExportView> {
+    return post(`/v1/agents/${encodeURIComponent(agentID)}/bundle-exports`, req);
+  },
+  listAgentBundleExports(agentID: string): Promise<{ exports: AgentBundleSummary[] }> {
+    return request(`/v1/agents/${encodeURIComponent(agentID)}/bundle-exports`);
+  },
+  getAgentBundleExport(bundleID: string): Promise<AgentBundleExportView> {
+    return request(`/v1/bundle-exports/${encodeURIComponent(bundleID)}`);
   },
   listBackups(): Promise<{ backups: BackupSummary[] }> {
     return request<{ backups: BackupSummary[] }>("/v1/system/backups");

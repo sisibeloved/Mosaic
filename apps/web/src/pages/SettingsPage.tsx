@@ -5,7 +5,7 @@
 // 分层规矩：房间讨论策略在房间内调（右侧信息面板）；本页子导航纯前端态（刷新回
 // 默认 Agent 区）。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type BackupSummary, type Executable, type IdentityAgent, type MonitorView, type SettingsDoc, type SlotSpecContent, type SlotSpecSummary, type SlotSpecView, type SlotInstanceView, type BindingView, type ReadinessReportView } from "../api/client";
+import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type AgentBundleExportView, type AgentBundleSummary, type BackupSummary, type Executable, type IdentityAgent, type MissionSummary, type MonitorView, type SettingsDoc, type SlotSpecContent, type SlotSpecSummary, type SlotSpecView, type SlotInstanceView, type BindingView, type ReadinessReportView } from "../api/client";
 import { AppLogo } from "../components/AppLogo";
 import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
 import { UpdateEditor } from "../components/UpdateEditor";
@@ -15,13 +15,14 @@ import { useTheme } from "../state/theme";
 import { adapterLabel, channelLabel } from "../lib/copy";
 import { absoluteTime, truncate } from "../lib/ui";
 
-type Section = "agent" | "slots" | "automation" | "data" | "appearance" | "integration" | "general";
+type Section = "agent" | "slots" | "automation" | "data" | "bundles" | "appearance" | "integration" | "general";
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "agent", label: "Agent" },
   { id: "slots", label: "职责" },
   { id: "automation", label: "自动化" },
   { id: "data", label: "数据" },
+  { id: "bundles", label: "迁移包" },
   { id: "appearance", label: "外观" },
   { id: "integration", label: "集成" },
   { id: "general", label: "通用" },
@@ -1515,6 +1516,8 @@ export function SettingsPage() {
             </section>
           )}
 
+          {section === "bundles" && <AgentBundleExports />}
+
           {section === "appearance" && (
             <section>
               <h2 className="mb-1 text-sm font-medium">外观</h2>
@@ -2138,6 +2141,253 @@ function AgentGrants() {
         )}
       </div>
     </details>
+  );
+}
+
+/** AgentBundleExports 0.7.5 Portable Agent Bundle 导出面板（ADR-0042）：
+ * 范围选择（命名空间/任务口径/敏感开关）→ 导出 → 脱敏报告内联展示 + 历史
+ * 列表。换 Agent 即重置范围与结果（表单归属纪律同 AgentGrants——切档残留
+ * 绝无机会覆盖别人的导出上下文）。 */
+function AgentBundleExports() {
+  const [agents, setAgents] = useState<{ agent_id: string; display_name: string; status: string }[]>([]);
+  const [agentID, setAgentID] = useState("");
+  const [nsAgent, setNsAgent] = useState(true);
+  const [nsWorkspace, setNsWorkspace] = useState(true);
+  const [nsMission, setNsMission] = useState(false);
+  const [missionMode, setMissionMode] = useState<"auto" | "explicit">("auto");
+  const [missions, setMissions] = useState<MissionSummary[]>([]);
+  const [pickedMissions, setPickedMissions] = useState<Set<string>>(new Set());
+  const [includeSensitive, setIncludeSensitive] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [result, setResult] = useState<AgentBundleExportView | null>(null);
+  const [history, setHistory] = useState<AgentBundleSummary[] | null>(null);
+
+  useEffect(() => {
+    api
+      .identityAgents()
+      .then((a) => setAgents(a.agents.map((x) => ({ agent_id: x.agent_id, display_name: x.display_name, status: x.status }))))
+      .catch(() => setAgents([]));
+  }, []);
+
+  // 换 Agent：重置范围与结果；任务清单与历史随 Agent 重载。
+  useEffect(() => {
+    setResult(null);
+    setMsg(null);
+    setPickedMissions(new Set());
+    setHistory(null);
+    if (!agentID) return;
+    api
+      .listMissions()
+      .then((m) => setMissions(m.missions.filter((x) => x.owner_agent_id === agentID)))
+      .catch(() => setMissions([]));
+    api
+      .listAgentBundleExports(agentID)
+      .then((r) => setHistory(r.exports))
+      .catch(() => setHistory(null));
+  }, [agentID]);
+
+  const ownedMissions = missions;
+  const toggleMission = (id: string) => {
+    setPickedMissions((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const onExport = async () => {
+    if (!agentID) return;
+    setBusy(true);
+    setMsg(null);
+    const namespaces: string[] = [];
+    if (nsAgent) namespaces.push("agent");
+    if (nsWorkspace) namespaces.push("workspace");
+    if (nsMission) namespaces.push("mission");
+    const req: Record<string, unknown> = { namespaces, include_sensitive: includeSensitive };
+    if (missionMode === "explicit") {
+      req.mission_ids = Array.from(pickedMissions);
+    }
+    try {
+      const view = await api.createAgentBundleExport(agentID, req);
+      setResult(view);
+      setMsg(`已导出 ${view.bundle_id}（${(view.size_bytes / 1024).toFixed(0)} KiB）`);
+      const r = await api.listAgentBundleExports(agentID);
+      setHistory(r.exports);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section>
+      <h2 className="mb-1 text-sm font-medium">Agent 迁移包（Portable Agent Bundle）</h2>
+      <p className="mb-3 text-xs text-faint">
+        把 Agent 的授权记忆、任务承诺与续办检查点打成便携 zip（RFC-0018 §8）——供跨实例导入
+        （导入预检随后续版本）。包不含凭据/令牌/原生会话材料；敏感记忆默认不随包（脱敏报告逐项说明）。
+      </p>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <select
+          value={agentID}
+          onChange={(e) => setAgentID(e.target.value)}
+          className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-xs text-text"
+        >
+          <option value="">选择 Agent…</option>
+          {agents.map((a) => (
+            <option key={a.agent_id} value={a.agent_id}>
+              {a.display_name}（{a.agent_id} · {agentStatusLabel(a.status)}）
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          disabled={busy || !agentID}
+          onClick={() => void onExport()}
+          className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast transition-opacity hover:opacity-90 disabled:opacity-40"
+        >
+          {busy ? "导出中…" : "导出迁移包"}
+        </button>
+        {msg && <span className="text-xs text-dim">{msg}</span>}
+      </div>
+      {agentID && (
+        <div className="mb-3 space-y-2 rounded-xl border border-border p-3 text-xs">
+          <div className="flex flex-wrap items-center gap-4">
+            <span className="text-dim">记忆命名空间：</span>
+            <label className="flex items-center gap-1.5">
+              <input type="checkbox" checked={nsAgent} onChange={(e) => setNsAgent(e.target.checked)} /> agent（私有）
+            </label>
+            <label className="flex items-center gap-1.5">
+              <input type="checkbox" checked={nsWorkspace} onChange={(e) => setNsWorkspace(e.target.checked)} /> workspace（共享）
+            </label>
+            <label className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={nsMission}
+                onChange={(e) => {
+                  setNsMission(e.target.checked);
+                  if (!e.target.checked) setMissionMode("auto");
+                }}
+              />{" "}
+              mission（随所选任务）
+            </label>
+          </div>
+          <div className="flex flex-wrap items-center gap-4">
+            <span className="text-dim">任务承诺：</span>
+            <label className="flex items-center gap-1.5">
+              <input
+                type="radio"
+                checked={missionMode === "auto"}
+                onChange={() => setMissionMode("auto")}
+                disabled={!nsMission}
+              />{" "}
+              自动（全部在办任务）
+            </label>
+            <label className="flex items-center gap-1.5">
+              <input
+                type="radio"
+                checked={missionMode === "explicit"}
+                onChange={() => setMissionMode("explicit")}
+                disabled={!nsMission}
+              />{" "}
+              显式选择
+            </label>
+            <label className="flex items-center gap-1.5" title="敏感记忆默认省略并计入脱敏报告；勾选即随包（注意接收方信任）">
+              <input type="checkbox" checked={includeSensitive} onChange={(e) => setIncludeSensitive(e.target.checked)} />{" "}
+              携带敏感记忆
+            </label>
+          </div>
+          {nsMission && missionMode === "explicit" && (
+            <div className="rounded-lg border border-border bg-surface-2 p-2">
+              {ownedMissions.length === 0 ? (
+                <p className="text-faint">该 Agent 名下没有任务。</p>
+              ) : (
+                <ul className="max-h-40 space-y-1 overflow-y-auto">
+                  {ownedMissions.map((m) => (
+                    <li key={m.mission_id}>
+                      <label className="flex items-center gap-1.5">
+                        <input
+                          type="checkbox"
+                          checked={pickedMissions.has(m.mission_id)}
+                          onChange={() => toggleMission(m.mission_id)}
+                        />
+                        <span className="min-w-0 flex-1 truncate" title={m.objective}>
+                          {m.objective || m.mission_id}
+                        </span>
+                        <span className="text-faint">
+                          {m.status} · v{m.contract_version}
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      {result && (
+        <div className="mb-3 rounded-xl border border-border p-3 text-xs">
+          <div className="mb-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span className="font-medium text-text">{result.bundle_id}</span>
+            <span className="text-faint">{absoluteTime(result.created_at)}</span>
+            <span className="text-faint">{(result.size_bytes / 1024).toFixed(0)} KiB</span>
+            <span className="text-dim">
+              记忆 {result.counts.memories} · 任务 {result.counts.missions} · 检查点 {result.counts.checkpoints}
+            </span>
+          </div>
+          <p className="mb-1.5 text-faint">
+            zip 位于数据目录 <code className="text-dim">{result.zip_path}</code>（manifest 含逐文件 sha256 摘要与水位）。
+          </p>
+          <div className="rounded-lg bg-surface-2 p-2 leading-5">
+            <p className="mb-1 font-medium text-dim">脱敏报告</p>
+            <p>
+              敏感省略 {result.redaction.omitted_sensitive.count} 条
+              {result.redaction.omitted_sensitive.item_ids.length > 0 && (
+                <span className="text-faint">（{result.redaction.omitted_sensitive.item_ids.join("、")}）</span>
+              )}
+              　· 过期 {result.redaction.excluded_by_rule.expired} · 策展未决 {result.redaction.excluded_by_rule.proposed} ·
+              已终结 {result.redaction.excluded_by_rule.superseded}
+            </p>
+            {result.redaction.recovery_limits.length > 0 && (
+              <p className="text-faint">恢复限制：{result.redaction.recovery_limits.join("；")}</p>
+            )}
+            <ul className="mt-1 list-disc pl-4 text-faint">
+              {result.redaction.notes.map((n) => (
+                <li key={n}>{n}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+      {agentID && history !== null && (
+        <div>
+          <p className="mb-1.5 text-xs text-dim">导出历史（新→旧）</p>
+          {history.length === 0 ? (
+            <p className="text-xs text-faint">还没有导出。</p>
+          ) : (
+            <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border">
+              {history.map((b) => (
+                <li key={b.bundle_id} className="flex items-center gap-3 px-3 py-2 text-xs">
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-text">{absoluteTime(b.created_at)}</span>
+                    <span className="block text-faint">
+                      {b.bundle_id} · {(b.size_bytes / 1024).toFixed(0)} KiB · 记忆 {b.counts.memories} · 任务{" "}
+                      {b.counts.missions} · 检查点 {b.counts.checkpoints}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 

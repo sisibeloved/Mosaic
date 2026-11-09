@@ -36,6 +36,7 @@ import (
 	"github.com/sisibeloved/Mosaic/internal/agent/slowrun"
 	"github.com/sisibeloved/Mosaic/internal/attach"
 	"github.com/sisibeloved/Mosaic/internal/backup"
+	"github.com/sisibeloved/Mosaic/internal/bundle"
 	"github.com/sisibeloved/Mosaic/internal/checkpoint"
 	"github.com/sisibeloved/Mosaic/internal/contextx"
 	"github.com/sisibeloved/Mosaic/internal/delivery"
@@ -388,6 +389,11 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		}, true, nil
 	}
 	runCkptSaver := runCheckpointSaver{svc: checkpointSvc, missions: missionSvc}
+	// 0.7.5 Portable Agent Bundle 导出（ADR-0042）：只读快照打 zip——端口
+	// 闭包组合各域投影（bundlewiring.go；bundle 不 import 各域）；产物落数据
+	// 目录 bundles/（库外文件系统——零 migration，backup 同例）。
+	bundleSvc := bundle.New(bundlePorts(identitySvc, slotSvc, missionSvc, checkpointSvc, memorySvc),
+		opts.DataDir, buildVersion(), bundle.WithNow(clock))
 	// 执行上下文清单域（RFC-0018 §7.3 / ADR-0025，0.6.2）：确定性装配存档
 	// （digest 即身份——重建重放，状态变化追加）；任职事实（binding → 实例
 	// → 钉版本模板行）与房间事件经端口适配注入。readiness 经 ADR-0022
@@ -533,6 +539,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Settings:         settingsStore,
 		CheckpointSVC:    checkpointSvc,
 		MemorySVC:        memorySvc,
+		BundleSVC:        bundleSvc,
 		Monitors:         monitorMgr,
 		DocSVC:           docSvc,
 		DocReader:        store, // doc:{id} 频道 SSE 追平读路径
