@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/sisibeloved/Mosaic/internal/bundle"
 	"github.com/sisibeloved/Mosaic/internal/checkpoint"
@@ -26,11 +27,13 @@ func bundlePorts(identitySvc *personalagent.Service, slotSvc *slot.Service,
 			f := bundle.AgentFacts{
 				AgentID: v.AgentID, DisplayName: v.DisplayName, Adapter: v.Adapter,
 				Status: v.Status, Source: v.Source, CreatedAt: v.CreatedAt,
-				Aliases: bundle.AliasFacts{
+				// 二审 #4：别名三元组整体投影（BotID 切路径段 + 派生 ID 重算）
+				//——原始路径型 BotID/嵌入用户名的派生 ID 不随包。
+				Aliases: portableAliases(v.Adapter, bundle.AliasFacts{
 					BotID:          v.Aliases.BotID,
 					ProfileIDs:     v.Aliases.ProfileIDs,
 					ParticipantIDs: v.Aliases.ParticipantIDs,
-				},
+				}),
 			}
 			for _, e := range v.Executables {
 				// 一审 #4：注册表 ExeID 含安装路径（adapter@runtime[:distro]:path
@@ -168,6 +171,38 @@ func portableExeID(adapter, runtime, distro string) string {
 		host += ":" + distro
 	}
 	return adapter + "@" + host
+}
+
+// portableAliases 身份别名三元组的 Bundle 投影（二审 #4）：BotIDOf 回退 =
+// ExeID（含路径），且 profileKey 仅把 / 换 _——用户名仍嵌入派生 ID。投影：
+// BotID 切掉 ":/" 起的路径段（无路径特征的原样透传）；ProfileID/
+// ParticipantID 由脱敏后 BotID 经 personalagent 单源派生重算——包内别名
+// 体系自洽（bot ↔ prof ↔ par 派生关系保持；与源实例原始派生的映射归
+// 0.7.6 导入侧按 agent_id 主键处理）。
+func portableAliases(adapter string, a bundle.AliasFacts) bundle.AliasFacts {
+	out := bundle.AliasFacts{ProfileIDs: []string{}, ParticipantIDs: []string{}}
+	if a.BotID == "" {
+		return out
+	}
+	bot := a.BotID
+	if i := strings.LastIndex(bot, ":/"); i > 0 {
+		// 路径型（BotIDOf 回退 = ExeID）：切路径段，且原派生 ID 已被路径
+		// 污染（profileKey 仅换 / 不去用户名）——由脱敏后 BotID 单源重算。
+		bot = bot[:i]
+		out.BotID = bot
+		if len(a.ProfileIDs) > 0 {
+			out.ProfileIDs = []string{personalagent.ProfileIDOf(adapter, bot)}
+		}
+		if len(a.ParticipantIDs) > 0 {
+			out.ParticipantIDs = []string{personalagent.ParticipantIDOf(adapter, bot)}
+		}
+		return out
+	}
+	// 非路径型：原始事实本就可移植——原样透传（重算反而丢源实例自有派生）。
+	out.BotID = a.BotID
+	out.ProfileIDs = append(out.ProfileIDs, a.ProfileIDs...)
+	out.ParticipantIDs = append(out.ParticipantIDs, a.ParticipantIDs...)
+	return out
 }
 
 // bundleSpecOf slot.SpecContent → 中性投影。

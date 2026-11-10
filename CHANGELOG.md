@@ -22,6 +22,9 @@
   - **任务选择依赖记忆开关**：任务口径（自动/显式/不携带——显式空集 = 不带任务）与 mission 命名空间勾选解耦；承诺与检查点随任务口径独立入包。
   - **导出包含源安装路径**：注册表 ExeID 含安装路径（暴露本机用户名/目录）——wiring 投影为可移植标识 `adapter@runtime[:distro]`（portableExeID，单测钉住无路径分隔符）。
   - **交接后的任务仍归入原 Agent**：wiring Get 详情后复核 owner（窗口收窄）+ 域级权威复核（自动圈定跳过非所属、显式圈定整体拒绝；已交接任务的 mission 记忆不被查询——UT 钉住）。
+- **0.7.5 二审修复（2 P2，ADR-0042 v0.3）**：
+  - **路径脱敏遗漏身份别名**：一审只投影 ExecutableID——`BotIDOf` 回退 = ExeID（含路径）且派生 ID 嵌入用户名（profileKey 仅换 `/`），agent/profile.json 与 manifest.json 仍泄漏。`portableAliases` 三元组整体投影：BotID 切路径段、派生 ID 由脱敏后 BotID 单源重算（包内自洽；非路径型原样透传）；补整包脱敏断言（投影后身份进 zip 全文本无路径/用户名——`TestPortableIdentityIntoBundle`）。
+  - **清空选择后迟到结果回填**：代次递增移到空值判断之前——A → "选择 Agent…" 同样作废在途响应（原空值分支提前返回未递增，A 的导出结果/成功消息会回填空选择页面）。
 
 ## [0.7.4] - 2026-11-08
 

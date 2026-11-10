@@ -1,6 +1,6 @@
 # ADR-0042：0.7.5 Portable Agent Bundle 导出——范围选择、摘要与脱敏报告
 
-- 状态：Accepted（2026-11-09，随 0.7.5 实施；v0.2 一轮审校修订）
+- 状态：Accepted（2026-11-09，随 0.7.5 实施；v0.2–v0.3 两轮审校修订）
 - 关联：[RFC-0018](../rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)（§8 可迁移 Agent 与交接协议——§8.1 三种迁移分别承诺、§8.2 Portable Agent Bundle v1 候选格式、§8.3 导出语义"普通备份/导出可在一致水位快照上进行，不停止源 Agent"）；[ADR-0037](ADR-0037-domained-memory-items.md)（0.7.0 基石——sensitivity 列"0.7.5 Bundle 脱敏消费"、supersedes/derived_from 血缘预留、"导出范围按 namespace×scope 组合"）；[ADR-0038](ADR-0038-memory-curation-timeliness-superseded.md)（0.7.1 时效口径——active 排除 valid_to < now）；[ADR-0039](ADR-0039-memory-recall-fts-authz.md)（0.7.2 授权过滤先行——"他域命中不入结果与计数"）；[ADR-0040](ADR-0040-run-checkpoints.md)/[ADR-0041](ADR-0041-cross-harness-resume.md)（Checkpoint 事实源与 LatestForResume 选取口径）；[交付计划](../../plan/2026-08-25-delivery-plan.md) 0.7 领域表（0.7.5 唯一交付特性：Portable Agent Bundle 导出——范围选择、摘要与脱敏报告）。
 
 ## 背景与问题
@@ -122,6 +122,9 @@ bundle UT（fake Ports + 临时目录）：范围校验族（未知/重复/room/
 
 ## 审校修订记录
 
+- v0.3（2026-11-09）：二审 2 项 P2 修复——
+  1. **路径脱敏遗漏身份别名（#4 深化）**：一审只投影了 ExecutableID；`BotIDOf` 回退 = ExeID（含路径），且 `profileKey` 仅把 `/` 换 `_`——用户名仍嵌入 BotID/ProfileID/ParticipantID 三元组（agent/profile.json 与 manifest.json 双双泄漏）。`portableAliases`：BotID 切 `":/"` 起的路径段；原派生 ID 已被路径污染——由脱敏后 BotID 经 personalagent 单源派生重算（包内别名体系自洽；与源实例原始派生的映射归 0.7.6 导入侧按 agent_id 主键处理）；非路径型 BotID 原样透传（重算反丢源实例自有事实）。补**整包脱敏断言**（`TestPortableIdentityIntoBundle`：投影后身份事实进 zip，全包文本无路径/用户名特征）。
+  2. **清空选择后迟到结果回填（#2 深化）**：A → "选择 Agent…"（空值）分支在递增 seq 前返回——A 的在途导出响应仍能回填成功消息与结果卡。代次递增移到空值判断之前（清空选择同样作废在途）；普通 A→B 切换语义不变（已复验）。
 - v0.2（2026-11-09）：一审 5 项 P2 修复——
   1. **敏感选项跨 Agent 保留（#1）**：换 Agent 重置面补齐——include_sensitive 与命名空间勾选/任务口径一并回缺省（原只重置结果与历史——为 A 开启的敏感开关不得替 B 做导出决策）。
   2. **迟到响应覆盖当前 Agent（#2）**：面板所有异步响应（任务清单/历史/导出结果/失败消息）按 Agent 代次（seq ref）校验，旧代次迟到回包整体丢弃；切档同时清空旧任务清单（MissionsPage 代次模式平移）。

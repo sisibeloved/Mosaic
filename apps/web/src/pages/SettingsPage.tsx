@@ -2187,8 +2187,10 @@ function AgentBundleExports() {
     setNsWorkspace(true);
     setNsMission(false);
     setMissionMode("auto");
-    if (!agentID) return;
+    // 二审 #2：代次递增先于空值判断——清空选择（A → "选择 Agent…"）也要
+    // 作废在途响应；否则 A 的迟到导出结果/成功消息会回填到空选择页面。
     const cur = ++seq.current;
+    if (!agentID) return;
     api
       .listMissions()
       .then((m) => {
