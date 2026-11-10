@@ -83,7 +83,7 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 文档
 
-- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.7.4）
+- [CHANGELOG](CHANGELOG.md)（版本历史，当前 v0.7.5）
 - [架构设计说明书](docs/design/2026-08-13-mosaic-architecture-design.md)
 - [RFC-0001 Room Protocol](docs/design/rfc/2026-08-25-rfc-0001-room-protocol.md)
 - [RFC-0002 Agent Protocol](docs/design/rfc/2026-08-25-rfc-0002-agent-protocol.md)
@@ -95,13 +95,13 @@ docs/                     架构设计、RFC 与交付计划
 
 ## 当前状态与路线图
 
-当前版本 **v0.7.4**（2026-11-08，0.7 记忆与可移植恢复领域第五件——跨 Harness 续办：Checkpoint 注入执行上下文（RFC-0018 §1/§7.3/§7.4 / ADR-0041，零 HTTP 契约变更——内部接线））：**清单 checkpoint 层接线**（架构预留位启用——漂移不阻断携 `contract_drift` 标记/首跑 omitted/读错阻断）；**续办事实选取 LatestForResume**（业务快照优先，无业务时回退系统终态摘要——不遮蔽业务字段）；**Run 终态自动落盘**（全终态路径——完成/失败/暂停/取消/墙钟/围栏拒绝；`source=system` 分流；best-effort）；**Inline 透传**（`resume_checkpoint` → supervisor 全量重递——换 Harness/重启后工作上下文不丢）；预算裁剪；migration v35；两轮独立审校 4 项全关闭，见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收；0.6 已收官；**0.7 已交付 0.7.0–0.7.4**（余 0.7.5–0.7.9：Bundle 导出/导入/激活/删除、Slot 换 Agent 交接）。
+当前版本 **v0.7.5**（2026-11-09，0.7 记忆与可移植恢复领域第六件——Portable Agent Bundle 导出：范围选择、摘要与脱敏报告（RFC-0018 §8 / ADR-0042，三端点：创建/列表/详情））：**范围选择**（命名空间 ⊆ agent|workspace|mission；任务口径自动圈定/显式选择/不携带；敏感记忆默认不随包——显式 opt-in）；**摘要与水位**（manifest.json 逐文件 sha256 + 任务级契约/检查点版本——0.7.6 导入预检判陈旧的依据；来源实例最小事实面）；**脱敏报告**（敏感省略只 ID 不内容、口径排除计数、逐任务恢复限制、refs_only 与设计边界 notes——0.7.0 敏感度标记与 0.7.2 过滤先行口径的导出侧消费：未授权 scope 结构性不查询）；**包布局 v1**（§8.2 九文件 zip，产物落数据目录 bundles/——零 DB migration）；**身份标识全链脱敏**（可执行项与别名三元组投影 adapter@runtime[:distro]——安装路径/用户名不随包，整包断言钉住）；设置页"迁移包"面板；两轮独立审校 5+2 项全关闭，见 [CHANGELOG](CHANGELOG.md)）：核心讨论闭环、收束与记忆、产品化功能面（M0–M4）已完成并验收；0.6 已收官；**0.7 已交付 0.7.0–0.7.5**（余 0.7.6–0.7.9：Bundle 导入预检、激活接管、删除传播、Slot 换 Agent 交接）。
 
 后续版本采用 `大版本.领域中版本.特性小版本`（`X.Y.Z`）：**第三段每次只交付一个特性，第二段按领域聚合成系统能力**。领域中版本是版本线，不另发只用于汇总的版本；各小版本及验收口径见[交付与进度规划](docs/plan/2026-08-25-delivery-plan.md#02-当前-roadmap)。
 
 - **0.5 长期 Agent 与职责领域**（`0.5.0–0.5.5`，**0.5.0–0.5.5 已全部交付（领域收官）**）：独立 Agent 身份与生命周期、SlotSpec / SlotInstance、Binding 与职责准入。
 - **0.6 Mission 与本地执行领域**（`0.6.0–0.6.13`，**0.6.0–0.6.13 已交付——0.6 线收官**）：独立 Mission、房间交办、本地 Runtime / Lease、单 Agent 执行、交付验收、责任交接与网关/寻址/墙钟域收口。
-- **0.7 记忆与可移植恢复领域**（`0.7.0–0.7.4` 已交付——分域记忆基石（MemoryItem 五命名空间）、策展与纠错（接受/修订/否决/superseded 与时效口径）、召回（FTS5 与授权过滤先行）、Checkpoint（可恢复业务状态）、跨 Harness 续办（Checkpoint 注入执行上下文）；余 `0.7.5–0.7.9`）：Portable Agent Bundle 与删除传播、Slot 换 Agent 交接。
+- **0.7 记忆与可移植恢复领域**（`0.7.0–0.7.5` 已交付——分域记忆基石（MemoryItem 五命名空间）、策展与纠错（接受/修订/否决/superseded 与时效口径）、召回（FTS5 与授权过滤先行）、Checkpoint（可恢复业务状态）、跨 Harness 续办（Checkpoint 注入执行上下文）、Portable Agent Bundle 导出（范围选择、摘要与脱敏报告）；余 `0.7.6–0.7.9`）：Bundle 导入预检与激活接管、删除传播、Slot 换 Agent 交接。
 - **0.8 有界 Swarm 协作领域**（`0.8.0–0.8.8`）：WorkItem DAG、长期 Agent 委派、临时 Worker、配额、取消隔离与结果汇总。
 - **0.9 持续事务与环境维护领域**（`0.9.0–0.9.8`）：Goal、持久唤醒、离线恢复、Runtime 排空升级与环境管理员。
 - **0.10 个人数据备份与多设备同步领域**（`0.10.0–0.10.13`）：先交付全量加密备份、导入合并与冲突处理，再逐项交付设备信任、增量交换、可恢复传输、离线追赶、冲突与删除传播、执行权防护及同步诊断；同步部分须另立 RFC 批准后实施。
