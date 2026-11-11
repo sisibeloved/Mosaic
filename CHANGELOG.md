@@ -4,6 +4,30 @@
 
 ## [Unreleased]
 
+### Added
+
+- **0.7.6 Bundle 导入预检：安全校验、兼容性报告及默认 inactive**（0.7 领域线第七件 / ADR-0043，RFC-0018 §8.2/§8.3——迁移链"目标实例接收"环）：
+  - **安全校验（RFC"导入先检查"六项，任一违规 422 整体拒绝、不留记录）**：格式（manifest 严格解码 DisallowUnknownFields——"不理解即拒绝"；仅同版本 `mosaic-agent-bundle/1`，前向迁移待定义即拒绝）、大小与压缩展开上限（压缩体 64MiB / 展开总量 256MiB / 条目 64 / 单文件 256MiB / ndjson 20 万行——声明量与实际读取双向计量，UncompressedSize64 可伪造）、路径穿越（包内相对路径白名单前置校验）、符号链接（条目须普通文件——symlink/目录/设备全拒）、布局（恰 0.7.5 九文件精确集合，未知/缺少/重复拒绝）、引用闭包（检查点/上下文/水位/任务域记忆 ⊆ 承诺任务集、记忆恒 active、承诺默认暂停、身份跨文件一致）；违规明细聚合一并返回。
+  - **兼容性报告（分级 findings，非阻断——`POST /v1/bundle-imports` multipart 上传即预检）**：检查面 = 安全门通过摘要三行 + 逐项对照本实例事实（`identity_conflict` 同 ID 已存在 → block（同身份双写防线起点）；`mission_conflict` 任务漂移 block / 同版重复 warn；`harness_availability` 包内可执行引用本实例缺失 → block（"必要证据缺失就阻止激活"；凭据本就不随包）；`expired_in_transit` 途中过期 warn；`sensitive_payload`/`recovery_limits` warn；`room_source_unbound`/`source_version`/`alias_projection` info）；verdict ∈ eligible / eligible_with_warnings / blocked，`blockers[]` 为 0.7.7 激活的输入契约。
+  - **默认 inactive（RFC §8.3）**：导入产物 = 待核验只读副本（数据目录 `bundle-imports/<bdi_>/`——zip 原子入位 + import.json 边车，零 migration）；不进库、不建 Agent/任务/记忆行、不动调度、不执行包内代码、不启用 MCP/工具/自动唤醒；`status` 恒 inactive（0.7.6 无改态路径——激活与执行权接管归 0.7.7）。同源 bundle_id 重复导入 409 `bundle_already_imported`（指向既有 import_id）。
+  - **域与装配**：`internal/bundle` 增导入面（`ImportService` + `ImportPorts` 对照闭包——AgentExists/MissionState/Harnesses 本实例事实投影，Harnesses 与导出 `portableExeID` 同源口径）；三端点（`POST /v1/bundle-imports` 上传 multipart、`GET /v1/bundle-imports` 列表、`GET /v1/bundle-imports/{import_id}` 详情——bdi_ 白名单防穿越）；设置页"迁移包"面板新增"导入与预检"区（文件选择 → verdict 徽标 + 检查表 check·result·detail + blockers + 脱敏报告透传 + 导入历史）。
+  - 验证：bundle UT（安全门族改包注入十六例/符号链接条目/上限族 caps 收窄/导出→导入往返 eligible/兼容族身份冲突-漂移-同版重复-依赖缺失-途中过期-敏感携带/重复导入 409/查面白名单）+ httpapi IT（导出→上传端到端/422/409/400/401/503/列表/详情）+ gofmt/vet 双标签 + UT/-race/it/st + 生成物幂等 + SPA。
+
+### Fixed
+
+- **0.7.6 一审修复（1 P1 + 6 P2，ADR-0043 v0.2）**：
+  - **空行载荷内存放大（P1）**：ndjson 行计数/解析原用 bytes.Split——每行一个切片头，1 MiB 纯换行计 0 行却分配约 24 MiB，近 256 MiB 展开上限的高压缩空行包可放大数 GiB 并绕过 20 万行门。改扫描式切行（切片引用零分配）；`TestNDJSONCountNoAlloc`（AllocsPerRun=0）钉住。
+  - **受保护 GET 不带令牌**：前端 request 只在有 method 时附 X-Owner-Token——导入列表/详情恒 401 且重试仍不带，导入历史被静默吞掉。四处调用显式 `method: "GET"`（导入两处 + 导出列表/详情两处——0.7.5 存量同病一并修）。
+  - **并发导入绕过查重**：查重与登记间无锁——两并发请求可同时查空并各自登记双记录。查重~登记段（含 rename 与边车）加互斥临界区（staging/安全门留锁外）；`TestImportConcurrentDuplicate`（-race）钉住恰一成功一 409。
+  - **闭包未验上下文检查点引用**：清空 checkpoints.ndjson（重算摘要）后上下文仍引用 ck_1、水位仍声明 v3，断链包以 eligible 过关。闭包门补双向核验：上下文 checkpoint 引用须在包内且 ID/版本一致；水位声明版本与包内相符（未声明而包内有亦断链）。
+  - **敏感判定只信 manifest 开关**：scope.include_sensitive 是导出侧声明不能证明载荷——注入 sensitive 记忆 + 开关 false 仍报"无敏感记忆随包"。改以包内实际载荷判定：有敏感即 warn，与声明不一致时 detail 明示（来源可疑或包被改动），不静默放行。
+  - **redaction 缺必需字段崩消费端**：`{}` 可过严格解码（不查必需字段），View 序列化 null 数组、前端 `.length` 抛异常。门 7 解码后校验 item_ids/recovery_limits/notes 须为数组，缺失即拒。
+  - **必要对照失败降级 warn**：AgentExists/Harnesses 查询失败原记 warn（界面显示"可激活"）——此时身份冲突与依赖可用性均不可知。改 block 并入 blockers，注明"激活前须重跑预检"（必要证据缺失口径）。
+- **0.7.6 二审修复（3 P2，ADR-0043 v0.3；上轮 7 项复测关闭）**：
+  - **依赖清单缺失绕过依赖对照**：依赖检查只读 dependencies.harness——清空 harness（重算摘要）后即使目标无任何 Harness 仍 eligible 并报"包内无可执行项引用"。闭包门新增一致性核验（dependencies.harness 与 profile.executables 标识集合须相等——两处导出侧同源，矛盾即结构性拒绝）；兼容对照面改两处并集（清单被清空也不得静默缩圈）。
+  - **严格解码漏检非法尾随内容**：`Decoder.More()` 遇 `]`/`}` 恒 false（"容器还有没有元素"语义）——合法 manifest 后追加 `]` 与额外对象仍过关。`decodeStrict` 尾随判定改为第二次 Decode 严格 `io.EOF`。
+  - **导入历史无法重开完整报告**：完整报告只在组件态，切分区/刷新即失、重复上传 409。历史行新增"查看报告"（经详情端点恢复检查明细/阻断原因/脱敏报告展示）。
+
 ## [0.7.5] - 2026-11-09
 
 ### Added

@@ -38,13 +38,13 @@ func (e AgentBundleExportRequestNamespaces) Valid() bool {
 
 // Defines values for AgentBundleExportViewFormat.
 const (
-	MosaicAgentBundle1 AgentBundleExportViewFormat = "mosaic-agent-bundle/1"
+	AgentBundleExportViewFormatMosaicAgentBundle1 AgentBundleExportViewFormat = "mosaic-agent-bundle/1"
 )
 
 // Valid indicates whether the value is a known member of the AgentBundleExportViewFormat enum.
 func (e AgentBundleExportViewFormat) Valid() bool {
 	switch e {
-	case MosaicAgentBundle1:
+	case AgentBundleExportViewFormatMosaicAgentBundle1:
 		return true
 	default:
 		return false
@@ -180,6 +180,156 @@ func (e BindingViewStatus) Valid() bool {
 	case BindingViewStatusReady:
 		return true
 	case BindingViewStatusReleased:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BundleImportCheckResult.
+const (
+	BundleImportCheckResultBlock BundleImportCheckResult = "block"
+	BundleImportCheckResultInfo  BundleImportCheckResult = "info"
+	BundleImportCheckResultPass  BundleImportCheckResult = "pass"
+	BundleImportCheckResultWarn  BundleImportCheckResult = "warn"
+)
+
+// Valid indicates whether the value is a known member of the BundleImportCheckResult enum.
+func (e BundleImportCheckResult) Valid() bool {
+	switch e {
+	case BundleImportCheckResultBlock:
+		return true
+	case BundleImportCheckResultInfo:
+		return true
+	case BundleImportCheckResultPass:
+		return true
+	case BundleImportCheckResultWarn:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BundleImportSourceFormat.
+const (
+	BundleImportSourceFormatMosaicAgentBundle1 BundleImportSourceFormat = "mosaic-agent-bundle/1"
+)
+
+// Valid indicates whether the value is a known member of the BundleImportSourceFormat enum.
+func (e BundleImportSourceFormat) Valid() bool {
+	switch e {
+	case BundleImportSourceFormatMosaicAgentBundle1:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BundleImportSummaryStatus.
+const (
+	BundleImportSummaryStatusInactive BundleImportSummaryStatus = "inactive"
+)
+
+// Valid indicates whether the value is a known member of the BundleImportSummaryStatus enum.
+func (e BundleImportSummaryStatus) Valid() bool {
+	switch e {
+	case BundleImportSummaryStatusInactive:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BundleImportSummaryVerdict.
+const (
+	BundleImportSummaryVerdictBlocked              BundleImportSummaryVerdict = "blocked"
+	BundleImportSummaryVerdictEligible             BundleImportSummaryVerdict = "eligible"
+	BundleImportSummaryVerdictEligibleWithWarnings BundleImportSummaryVerdict = "eligible_with_warnings"
+)
+
+// Valid indicates whether the value is a known member of the BundleImportSummaryVerdict enum.
+func (e BundleImportSummaryVerdict) Valid() bool {
+	switch e {
+	case BundleImportSummaryVerdictBlocked:
+		return true
+	case BundleImportSummaryVerdictEligible:
+		return true
+	case BundleImportSummaryVerdictEligibleWithWarnings:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BundleImportViewScopeMissionSelection.
+const (
+	BundleImportViewScopeMissionSelectionAuto     BundleImportViewScopeMissionSelection = "auto"
+	BundleImportViewScopeMissionSelectionExplicit BundleImportViewScopeMissionSelection = "explicit"
+)
+
+// Valid indicates whether the value is a known member of the BundleImportViewScopeMissionSelection enum.
+func (e BundleImportViewScopeMissionSelection) Valid() bool {
+	switch e {
+	case BundleImportViewScopeMissionSelectionAuto:
+		return true
+	case BundleImportViewScopeMissionSelectionExplicit:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BundleImportViewScopeNamespaces.
+const (
+	BundleImportViewScopeNamespacesAgent     BundleImportViewScopeNamespaces = "agent"
+	BundleImportViewScopeNamespacesMission   BundleImportViewScopeNamespaces = "mission"
+	BundleImportViewScopeNamespacesWorkspace BundleImportViewScopeNamespaces = "workspace"
+)
+
+// Valid indicates whether the value is a known member of the BundleImportViewScopeNamespaces enum.
+func (e BundleImportViewScopeNamespaces) Valid() bool {
+	switch e {
+	case BundleImportViewScopeNamespacesAgent:
+		return true
+	case BundleImportViewScopeNamespacesMission:
+		return true
+	case BundleImportViewScopeNamespacesWorkspace:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BundleImportViewStatus.
+const (
+	BundleImportViewStatusInactive BundleImportViewStatus = "inactive"
+)
+
+// Valid indicates whether the value is a known member of the BundleImportViewStatus enum.
+func (e BundleImportViewStatus) Valid() bool {
+	switch e {
+	case BundleImportViewStatusInactive:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BundleImportViewVerdict.
+const (
+	BundleImportViewVerdictBlocked              BundleImportViewVerdict = "blocked"
+	BundleImportViewVerdictEligible             BundleImportViewVerdict = "eligible"
+	BundleImportViewVerdictEligibleWithWarnings BundleImportViewVerdict = "eligible_with_warnings"
+)
+
+// Valid indicates whether the value is a known member of the BundleImportViewVerdict enum.
+func (e BundleImportViewVerdict) Valid() bool {
+	switch e {
+	case BundleImportViewVerdictBlocked:
+		return true
+	case BundleImportViewVerdictEligible:
+		return true
+	case BundleImportViewVerdictEligibleWithWarnings:
 		return true
 	default:
 		return false
@@ -2802,6 +2952,120 @@ type BindingViewScope string
 
 // BindingViewStatus defines model for BindingView.Status.
 type BindingViewStatus string
+
+// BundleImportCheck 预检单项（0.7.6 / ADR-0043 §4）。check 键：zip_structure /
+// integrity / reference_closure（安全门通过摘要，恒 pass）与
+// source_version / identity_conflict / mission_conflict /
+// harness_availability / expired_in_transit / sensitive_payload /
+// recovery_limits / room_source_unbound / alias_projection（兼容 findings）。
+type BundleImportCheck struct {
+	Check  string `json:"check"`
+	Detail string `json:"detail"`
+
+	// Result block = 激活前必须解决（非导入失败——0.7.7 消费 blockers）
+	Result BundleImportCheckResult `json:"result"`
+}
+
+// BundleImportCheckResult block = 激活前必须解决（非导入失败——0.7.7 消费 blockers）
+type BundleImportCheckResult string
+
+// BundleImportListView 导入列表（新→旧；实例级）。
+type BundleImportListView struct {
+	Imports []BundleImportSummary `json:"imports"`
+}
+
+// BundleImportSource 包来源事实（格式/来源实例版本/导出时刻——最小事实面）。
+type BundleImportSource struct {
+	// ExportedAt RFC3339
+	ExportedAt string                   `json:"exported_at"`
+	Format     BundleImportSourceFormat `json:"format"`
+
+	// ProductVersion 来源实例产品版本
+	ProductVersion string `json:"product_version"`
+}
+
+// BundleImportSourceFormat defines model for BundleImportSource.Format.
+type BundleImportSourceFormat string
+
+// BundleImportSummary 导入摘要（列表元素）。
+type BundleImportSummary struct {
+	AgentId  string `json:"agent_id"`
+	BundleId string `json:"bundle_id"`
+	Counts   struct {
+		Checkpoints int `json:"checkpoints"`
+		Memories    int `json:"memories"`
+		Missions    int `json:"missions"`
+	} `json:"counts"`
+	ImportId   string                     `json:"import_id"`
+	ImportedAt string                     `json:"imported_at"`
+	SizeBytes  int                        `json:"size_bytes"`
+	Status     BundleImportSummaryStatus  `json:"status"`
+	Verdict    BundleImportSummaryVerdict `json:"verdict"`
+}
+
+// BundleImportSummaryStatus defines model for BundleImportSummary.Status.
+type BundleImportSummaryStatus string
+
+// BundleImportSummaryVerdict defines model for BundleImportSummary.Verdict.
+type BundleImportSummaryVerdict string
+
+// BundleImportView 导入登记全量视图（创建响应/详情；边车 import.json 即其序列化）。
+// status 恒 inactive（0.7.6 无改态路径——激活归 0.7.7）；verdict
+// blocked = 有 block 级 findings（激活受阻——导入本身已登记）。
+type BundleImportView struct {
+	AgentId string `json:"agent_id"`
+
+	// Blockers block 级 check 键（激活前必须解决——0.7.7 输入契约）
+	Blockers []string `json:"blockers"`
+
+	// BundleId 源导出 ID（重复导入幂等依据）
+	BundleId string              `json:"bundle_id"`
+	Checks   []BundleImportCheck `json:"checks"`
+
+	// Counts 包内计数（解析后事实）。
+	Counts struct {
+		Checkpoints int `json:"checkpoints"`
+		Memories    int `json:"memories"`
+		Missions    int `json:"missions"`
+	} `json:"counts"`
+	ImportId   string `json:"import_id"`
+	ImportedAt string `json:"imported_at"`
+
+	// Redaction 脱敏报告（包内 redaction-report.json 同构内联——省略项、口径排除
+	// 计数、恢复限制、工件策略与边界说明；范围外不记——那是选择不是省略）。
+	Redaction AgentBundleRedactionReport `json:"redaction"`
+
+	// Scope 包内导出范围原文（manifest.scope 透传）。
+	Scope struct {
+		IncludeSensitive bool                                  `json:"include_sensitive"`
+		MissionIds       []string                              `json:"mission_ids"`
+		MissionSelection BundleImportViewScopeMissionSelection `json:"mission_selection"`
+		Namespaces       []BundleImportViewScopeNamespaces     `json:"namespaces"`
+	} `json:"scope"`
+
+	// SizeBytes zip 文件字节数
+	SizeBytes int `json:"size_bytes"`
+
+	// Source 包来源事实（格式/来源实例版本/导出时刻——最小事实面）。
+	Source  BundleImportSource      `json:"source"`
+	Status  BundleImportViewStatus  `json:"status"`
+	Verdict BundleImportViewVerdict `json:"verdict"`
+
+	// ZipPath 相对数据目录路径（bundle-imports/<id>/mosaic-agent-bundle.zip）
+	ZipPath string `json:"zip_path"`
+}
+
+// BundleImportViewScopeMissionSelection defines model for BundleImportView.Scope.MissionSelection.
+type BundleImportViewScopeMissionSelection string
+
+// BundleImportViewScopeNamespaces defines model for BundleImportView.Scope.Namespaces.
+type BundleImportViewScopeNamespaces string
+
+// BundleImportViewStatus defines model for BundleImportView.Status.
+type BundleImportViewStatus string
+
+// BundleImportViewVerdict defines model for BundleImportView.Verdict.
+type BundleImportViewVerdict string
 
 // CapabilityList 能力/上下文域要求分层——required 缺失即 blocked、optional 缺失按声明降级（AT-07 准入预埋）；两者不得相交。
 type CapabilityList struct {
@@ -5740,6 +6004,11 @@ type UnsupportedMediaType = Error
 // GetHealthz200JSONResponseBodyStatus defines parameters for GetHealthz.
 type GetHealthz200JSONResponseBodyStatus string
 
+// CreateBundleImportMultipartBody defines parameters for CreateBundleImport.
+type CreateBundleImportMultipartBody struct {
+	File openapi_types.File `json:"file"`
+}
+
 // GetDispatchReceiptParams defines parameters for GetDispatchReceipt.
 type GetDispatchReceiptParams struct {
 	IdempotencyKey string `form:"idempotency_key" json:"idempotency_key"`
@@ -5914,6 +6183,9 @@ type RequestRestoreJSONBodyConfirm bool
 
 // CreateAgentBundleExportJSONRequestBody defines body for CreateAgentBundleExport for application/json ContentType.
 type CreateAgentBundleExportJSONRequestBody = AgentBundleExportRequest
+
+// CreateBundleImportMultipartRequestBody defines body for CreateBundleImport for multipart/form-data ContentType.
+type CreateBundleImportMultipartRequestBody CreateBundleImportMultipartBody
 
 // ReleaseDispatchClaimJSONRequestBody defines body for ReleaseDispatchClaim for application/json ContentType.
 type ReleaseDispatchClaimJSONRequestBody = DispatchClaimReleaseRequest
@@ -6097,6 +6369,15 @@ type ServerInterface interface {
 	// GetAgentBundleExport 导出详情（传输前核对脱敏报告；0.7.5）
 	// (GET /v1/bundle-exports/{bundle_id})
 	GetAgentBundleExport(w http.ResponseWriter, r *http.Request, bundleId string)
+	// ListBundleImports 导入列表（新→旧；实例级——导入不隶属某 Agent；0.7.6）
+	// (GET /v1/bundle-imports)
+	ListBundleImports(w http.ResponseWriter, r *http.Request)
+	// CreateBundleImport 上传 Portable Agent Bundle 并预检登记（0.7.6 / ADR-0043，RFC-0018 §8.2/§8.3）
+	// (POST /v1/bundle-imports)
+	CreateBundleImport(w http.ResponseWriter, r *http.Request)
+	// GetBundleImport 导入详情（激活决策前的复核面；0.7.6）
+	// (GET /v1/bundle-imports/{import_id})
+	GetBundleImport(w http.ResponseWriter, r *http.Request, importId string)
 	// GetContextManifest 执行上下文清单详情（含层内容块与 Receipt）
 	// (GET /v1/context-manifests/{manifest_id})
 	GetContextManifest(w http.ResponseWriter, r *http.Request, manifestId string)
@@ -6640,6 +6921,60 @@ func (siw *ServerInterfaceWrapper) GetAgentBundleExport(w http.ResponseWriter, r
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetAgentBundleExport(w, r, bundleId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListBundleImports operation middleware
+func (siw *ServerInterfaceWrapper) ListBundleImports(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListBundleImports(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateBundleImport operation middleware
+func (siw *ServerInterfaceWrapper) CreateBundleImport(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateBundleImport(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetBundleImport operation middleware
+func (siw *ServerInterfaceWrapper) GetBundleImport(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "import_id" -------------
+	var importId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "import_id", r.PathValue("import_id"), &importId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "import_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetBundleImport(w, r, importId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -10595,6 +10930,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/agents/{agent_id}/bundle-exports", wrapper.ListAgentBundleExports)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/agents/{agent_id}/bundle-exports", wrapper.CreateAgentBundleExport)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/bundle-exports/{bundle_id}", wrapper.GetAgentBundleExport)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/bundle-imports", wrapper.ListBundleImports)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/bundle-imports", wrapper.CreateBundleImport)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/bundle-imports/{import_id}", wrapper.GetBundleImport)
 
 	return m
 }

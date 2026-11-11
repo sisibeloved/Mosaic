@@ -305,6 +305,10 @@ export type AgentBundleExportView = Schemas["AgentBundleExportView"];
 export type AgentBundleSummary = Schemas["AgentBundleSummary"];
 export type AgentBundleExportRequest = Schemas["AgentBundleExportRequest"];
 
+/** 0.7.6 Bundle 导入预检（安全校验 + 兼容性报告 + inactive 登记）。 */
+export type BundleImportView = Schemas["BundleImportView"];
+export type BundleImportSummary = Schemas["BundleImportSummary"];
+
 /** M4-5 监控源 + 运行态视图。 */
 export type MonitorView = Schemas["MonitorView"];
 export type MonitorCreate = Schemas["MonitorCreate"];
@@ -318,10 +322,27 @@ export const api = {
     return post(`/v1/agents/${encodeURIComponent(agentID)}/bundle-exports`, req);
   },
   listAgentBundleExports(agentID: string): Promise<{ exports: AgentBundleSummary[] }> {
-    return request(`/v1/agents/${encodeURIComponent(agentID)}/bundle-exports`);
+    // method 显式携带——request 只在有 method 时附 X-Owner-Token，而这两面
+    // 是 token 门内的受保护 GET（一审 #1：不带则 401 且重试也不带）。
+    return request(`/v1/agents/${encodeURIComponent(agentID)}/bundle-exports`, { method: "GET" });
   },
   getAgentBundleExport(bundleID: string): Promise<AgentBundleExportView> {
-    return request(`/v1/bundle-exports/${encodeURIComponent(bundleID)}`);
+    return request(`/v1/bundle-exports/${encodeURIComponent(bundleID)}`, { method: "GET" });
+  },
+  /** 0.7.6 Bundle 导入预检（ADR-0043）：上传 multipart（安全门→报告→inactive）/ 列表 / 详情。 */
+  uploadBundleImport(file: File): Promise<BundleImportView> {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request("/v1/bundle-imports", {
+      method: "POST",
+      body: fd, // Content-Type 由浏览器带 multipart boundary；不经 JSON 序列化
+    });
+  },
+  listBundleImports(): Promise<{ imports: BundleImportSummary[] }> {
+    return request("/v1/bundle-imports", { method: "GET" });
+  },
+  getBundleImport(importID: string): Promise<BundleImportView> {
+    return request(`/v1/bundle-imports/${encodeURIComponent(importID)}`, { method: "GET" });
   },
   listBackups(): Promise<{ backups: BackupSummary[] }> {
     return request<{ backups: BackupSummary[] }>("/v1/system/backups");

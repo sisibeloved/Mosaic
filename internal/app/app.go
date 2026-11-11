@@ -394,6 +394,11 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	// 目录 bundles/（库外文件系统——零 migration，backup 同例）。
 	bundleSvc := bundle.New(bundlePorts(identitySvc, slotSvc, missionSvc, checkpointSvc, memorySvc),
 		opts.DataDir, buildVersion(), bundle.WithNow(clock))
+	// 0.7.6 Bundle 导入预检（ADR-0043）：上传 → 安全校验 → 兼容性报告 →
+	// inactive 登记（对照端口 = 本实例事实投影；产物落数据目录
+	// bundle-imports/——同零 migration）。
+	bundleImportSvc := bundle.NewImporter(bundleImportPorts(identitySvc, missionSvc),
+		opts.DataDir, buildVersion(), bundle.WithImporterNow(clock))
 	// 执行上下文清单域（RFC-0018 §7.3 / ADR-0025，0.6.2）：确定性装配存档
 	// （digest 即身份——重建重放，状态变化追加）；任职事实（binding → 实例
 	// → 钉版本模板行）与房间事件经端口适配注入。readiness 经 ADR-0022
@@ -540,6 +545,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		CheckpointSVC:    checkpointSvc,
 		MemorySVC:        memorySvc,
 		BundleSVC:        bundleSvc,
+		BundleImportSVC:  bundleImportSvc,
 		Monitors:         monitorMgr,
 		DocSVC:           docSvc,
 		DocReader:        store, // doc:{id} 频道 SSE 追平读路径

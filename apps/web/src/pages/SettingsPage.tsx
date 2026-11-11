@@ -5,7 +5,7 @@
 // 分层规矩：房间讨论策略在房间内调（右侧信息面板）；本页子导航纯前端态（刷新回
 // 默认 Agent 区）。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type AgentBundleExportView, type AgentBundleSummary, type BackupSummary, type Executable, type IdentityAgent, type MissionSummary, type MonitorView, type SettingsDoc, type SlotSpecContent, type SlotSpecSummary, type SlotSpecView, type SlotInstanceView, type BindingView, type ReadinessReportView } from "../api/client";
+import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type AgentBundleExportView, type AgentBundleSummary, type BundleImportView, type BundleImportSummary, type BackupSummary, type Executable, type IdentityAgent, type MissionSummary, type MonitorView, type SettingsDoc, type SlotSpecContent, type SlotSpecSummary, type SlotSpecView, type SlotInstanceView, type BindingView, type ReadinessReportView } from "../api/client";
 import { AppLogo } from "../components/AppLogo";
 import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
 import { UpdateEditor } from "../components/UpdateEditor";
@@ -1516,7 +1516,12 @@ export function SettingsPage() {
             </section>
           )}
 
-          {section === "bundles" && <AgentBundleExports />}
+          {section === "bundles" && (
+            <>
+              <AgentBundleExports />
+              <BundleImports />
+            </>
+          )}
 
           {section === "appearance" && (
             <section>
@@ -2261,8 +2266,8 @@ function AgentBundleExports() {
     <section>
       <h2 className="mb-1 text-sm font-medium">Agent 迁移包（Portable Agent Bundle）</h2>
       <p className="mb-3 text-xs text-faint">
-        把 Agent 的授权记忆、任务承诺与续办检查点打成便携 zip（RFC-0018 §8）——供跨实例导入
-        （导入预检随后续版本）。包不含凭据/令牌/原生会话材料；敏感记忆默认不随包（脱敏报告逐项说明）。
+        把 Agent 的授权记忆、任务承诺与续办检查点打成便携 zip（RFC-0018 §8）——供跨实例导入（下方"导入与
+        预检"面板上传）。包不含凭据/令牌/原生会话材料；敏感记忆默认不随包（脱敏报告逐项说明）。
       </p>
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <select
@@ -2410,6 +2415,204 @@ function AgentBundleExports() {
       )}
     </section>
   );
+}
+
+/** BundleImports 0.7.6 Bundle 导入与预检面板（ADR-0043）：文件选择 → 上传
+ * （multipart）→ 预检结果卡（verdict 徽标 / 检查表 check·result·detail /
+ * blockers / 计数与脱敏报告透传）+ 导入历史（新→旧，status 恒 inactive——
+ * 激活与执行权接管归 0.7.7，导入不建域状态、不启用工具/唤醒）。导入是
+ * 实例级操作，不依赖上方导出面板的 Agent 选择。 */
+function BundleImports() {
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [result, setResult] = useState<BundleImportView | null>(null);
+  const [history, setHistory] = useState<BundleImportSummary[] | null>(null);
+  const [detailBusy, setDetailBusy] = useState<string | null>(null); // 历史行报告载入（二审 #3）
+
+  const reload = useCallback(() => {
+    api
+      .listBundleImports()
+      .then((r) => setHistory(r.imports))
+      .catch(() => setHistory(null));
+  }, []);
+  useEffect(() => reload(), [reload]);
+
+  const onImport = async () => {
+    if (!file) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const view = await api.uploadBundleImport(file);
+      setResult(view);
+      setMsg(`已登记 ${view.import_id}（inactive——激活随后续版本）`);
+      reload();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // 历史行重开完整报告（二审 #3）：完整报告只在 result 态，切分区/刷新即失；
+  // 重复上传又 409——经详情端点恢复检查明细/阻断原因/脱敏报告展示。
+  const openReport = async (importID: string) => {
+    setDetailBusy(importID);
+    setMsg(null);
+    try {
+      const view = await api.getBundleImport(importID);
+      setResult(view);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDetailBusy(null);
+    }
+  };
+
+  return (
+    <section>
+      <h2 className="mb-1 text-sm font-medium">导入与预检（Bundle Import Precheck）</h2>
+      <p className="mb-3 text-xs text-faint">
+        上传迁移包 zip → 安全校验（格式/大小/路径穿越/符号链接/引用闭包——不过即整体拒绝）→ 兼容性报告（身份
+        冲突/任务漂移/依赖可用性——block 级只阻止激活）→ 登记为 inactive 只读副本。不执行包内代码、不启用 MCP/
+        工具/唤醒；同源包重复导入会被拒绝。
+      </p>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <input
+          type="file"
+          accept=".zip"
+          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          className="text-xs text-dim file:mr-2 file:rounded-lg file:border-0 file:bg-surface-2 file:px-2 file:py-1.5 file:text-xs file:text-text"
+        />
+        <button
+          type="button"
+          disabled={busy || !file}
+          onClick={() => void onImport()}
+          className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast transition-opacity hover:opacity-90 disabled:opacity-40"
+        >
+          {busy ? "预检中…" : "上传并预检"}
+        </button>
+        {msg && <span className="text-xs text-dim">{msg}</span>}
+      </div>
+      {result && (
+        <div className="mb-3 rounded-xl border border-border p-3 text-xs">
+          <div className="mb-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span className="font-medium text-text">{result.import_id}</span>
+            <VerdictBadge verdict={result.verdict} />
+            <span className="text-faint">{absoluteTime(result.imported_at)}</span>
+            <span className="text-faint">{(result.size_bytes / 1024).toFixed(0)} KiB</span>
+            <span className="text-dim">
+              记忆 {result.counts.memories} · 任务 {result.counts.missions} · 检查点 {result.counts.checkpoints}
+            </span>
+          </div>
+          <p className="mb-1.5 text-faint">
+            源导出 {result.bundle_id}（{result.agent_id}，导出于 {absoluteTime(result.source.exported_at)}，来源版本{" "}
+            {result.source.product_version || "未记录"}）；zip 位于 <code className="text-dim">{result.zip_path}</code>。
+          </p>
+          {result.blockers.length > 0 && (
+            <p className="mb-1.5 text-warn">激活前必须解决：{result.blockers.join("、")}（激活归后续版本）</p>
+          )}
+          <div className="overflow-hidden rounded-lg border border-border">
+            {result.checks.map((c) => (
+              <div key={c.check} className="flex items-start gap-2 border-b border-border px-2 py-1 last:border-b-0">
+                <span className="w-36 shrink-0 text-dim">{checkLabel(c.check)}</span>
+                <span className="w-12 shrink-0 font-medium">{resultLabel(c.result)}</span>
+                <span className="min-w-0 flex-1 leading-4">{c.detail}</span>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 rounded-lg bg-surface-2 p-2 leading-5">
+            <p className="mb-1 font-medium text-dim">脱敏报告（包内透传）</p>
+            <p>
+              敏感省略 {result.redaction.omitted_sensitive.count} 条
+              {result.redaction.omitted_sensitive.item_ids.length > 0 && (
+                <span className="text-faint">（{result.redaction.omitted_sensitive.item_ids.join("、")}）</span>
+              )}
+              　· 过期 {result.redaction.excluded_by_rule.expired} · 策展未决 {result.redaction.excluded_by_rule.proposed} ·
+              已终结 {result.redaction.excluded_by_rule.superseded}
+            </p>
+            {result.redaction.recovery_limits.length > 0 && (
+              <p className="text-faint">恢复限制：{result.redaction.recovery_limits.join("；")}</p>
+            )}
+          </div>
+        </div>
+      )}
+      {history !== null && (
+        <div>
+          <p className="mb-1.5 text-xs text-dim">导入历史（新→旧，均未激活）</p>
+          {history.length === 0 ? (
+            <p className="text-xs text-faint">还没有导入。</p>
+          ) : (
+            <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border">
+              {history.map((b) => (
+                <li key={b.import_id} className="flex items-center gap-3 px-3 py-2 text-xs">
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-text">
+                      {absoluteTime(b.imported_at)} · {b.agent_id}
+                    </span>
+                    <span className="block text-faint">
+                      {b.bundle_id} · {(b.size_bytes / 1024).toFixed(0)} KiB · 记忆 {b.counts.memories} · 任务{" "}
+                      {b.counts.missions} · 检查点 {b.counts.checkpoints}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    disabled={detailBusy === b.import_id}
+                    onClick={() => void openReport(b.import_id)}
+                    className="shrink-0 rounded-lg border border-border bg-surface-2 px-2 py-1 text-[11px] text-dim transition-colors hover:text-text disabled:opacity-40"
+                  >
+                    {detailBusy === b.import_id ? "载入中…" : "查看报告"}
+                  </button>
+                  <VerdictBadge verdict={b.verdict} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** VerdictBadge 预检总裁定徽标（eligible / eligible_with_warnings / blocked）。 */
+function VerdictBadge({ verdict }: { verdict: string }) {
+  const map: Record<string, [string, string]> = {
+    eligible: ["bg-[color-mix(in_srgb,var(--ok)_14%,transparent)] text-ok", "可激活"],
+    eligible_with_warnings: ["bg-[color-mix(in_srgb,var(--warn)_14%,transparent)] text-warn", "可激活（有警告）"],
+    blocked: ["bg-[color-mix(in_srgb,var(--danger)_14%,transparent)] text-danger", "激活受阻"],
+  };
+  const [cls, label] = map[verdict] ?? ["bg-surface-3 text-dim", verdict];
+  return <span className={`rounded px-1.5 py-px text-[10px] leading-4 ${cls}`}>{label}</span>;
+}
+
+/** checkLabel 检查键的中文短标（表宽收口——detail 原文即事实）。 */
+function checkLabel(check: string): string {
+  const labels: Record<string, string> = {
+    zip_structure: "包结构",
+    integrity: "完整性摘要",
+    reference_closure: "引用闭包",
+    source_version: "来源版本",
+    identity_conflict: "身份冲突",
+    mission_conflict: "任务冲突",
+    harness_availability: "依赖可用性",
+    expired_in_transit: "途中时效",
+    sensitive_payload: "敏感携带",
+    recovery_limits: "恢复限制",
+    room_source_unbound: "房间交办来源",
+    alias_projection: "别名投影",
+  };
+  return labels[check] ?? check;
+}
+
+/** resultLabel 检查结果短标。 */
+function resultLabel(result: string): string {
+  const labels: Record<string, string> = {
+    pass: "通过",
+    info: "说明",
+    warn: "警告",
+    block: "阻断",
+  };
+  return labels[result] ?? result;
 }
 
 /** parseSpecVersion 钉版本输入三态（审校 P2#4，与后端同规则）：空 = 最新

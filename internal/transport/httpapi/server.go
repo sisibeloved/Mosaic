@@ -162,6 +162,9 @@ type Deps struct {
 	// BundleSVC Portable Agent Bundle 导出服务（0.7.5 / ADR-0042）：nil =
 	// bundle 端点 503（测试装配）。
 	BundleSVC *bundle.Service
+	// BundleImportSVC Bundle 导入预检服务（0.7.6 / ADR-0043）：nil = 导入
+	// 端点 503（测试装配）。
+	BundleImportSVC *bundle.ImportService
 	// ShellOpenURL 桌面壳系统浏览器打开面（手工注册路由 POST /v1/shell/open-external，
 	// 非 apigen 契约）：nil = 端点不注册（服务端形态）。WebView 不处理 window.open，
 	// SPA 的外链兜底经此请壳调系统浏览器；回调纪律见 shell.go。

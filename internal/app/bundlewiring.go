@@ -1,10 +1,12 @@
 // bundlewiring.go —— 0.7.5 / ADR-0042：Portable Agent Bundle 导出的端口
-// 组合（bundle 不 import 各域——投影闭包在此映射，依赖方向同 execctx.Ports）。
+// 组合（bundle 不 import 各域——投影闭包在此映射，依赖方向同 execctx.Ports）；
+// 0.7.6 / ADR-0043：导入预检的对照端口组合（本实例事实投影）。
 package app
 
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 
 	"github.com/sisibeloved/Mosaic/internal/bundle"
@@ -156,6 +158,43 @@ func bundlePorts(identitySvc *personalagent.Service, slotSvc *slot.Service,
 					before = res.NextCursor
 				}
 			}
+			return out, nil
+		},
+	}
+}
+
+// bundleImportPorts 0.7.6 / ADR-0043：导入预检的对照端口组合（本实例事实
+// ——身份冲突/任务漂移/依赖可用性三面；导入不读包源实例数据）。
+func bundleImportPorts(identitySvc *personalagent.Service, missionSvc *mission.Service) bundle.ImportPorts {
+	return bundle.ImportPorts{
+		AgentExists: func(ctx context.Context, agentID string) (bool, error) {
+			_, ok, err := identitySvc.Get(ctx, agentID)
+			return ok, err
+		},
+		MissionState: func(ctx context.Context, missionID string) (bundle.MissionState, bool, error) {
+			m, ok, err := missionSvc.Get(ctx, missionID)
+			if err != nil || !ok {
+				return bundle.MissionState{}, ok, err
+			}
+			return bundle.MissionState{ContractVersion: m.ContractVersion, Status: m.Status}, true, nil
+		},
+		Harnesses: func(ctx context.Context) ([]string, error) {
+			// 本实例可执行项 portable 标识集（与导出投影同源——比较两侧同口径）。
+			views, err := identitySvc.List(ctx)
+			if err != nil {
+				return nil, err
+			}
+			set := map[string]bool{}
+			for _, v := range views {
+				for _, e := range v.Executables {
+					set[portableExeID(v.Adapter, e.Runtime, e.Distro)] = true
+				}
+			}
+			out := make([]string, 0, len(set))
+			for id := range set {
+				out = append(out, id)
+			}
+			sort.Strings(out)
 			return out, nil
 		},
 	}

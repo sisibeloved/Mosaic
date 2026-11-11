@@ -2782,6 +2782,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/bundle-imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 导入列表（新→旧；实例级——导入不隶属某 Agent；0.7.6） */
+        get: operations["listBundleImports"];
+        put?: never;
+        /**
+         * 上传 Portable Agent Bundle 并预检登记（0.7.6 / ADR-0043，RFC-0018 §8.2/§8.3）
+         * @description multipart/form-data（字段 file，单文件）。安全校验（格式/大小/展开
+         *     上限/路径穿越/符号链接/引用闭包——任一违规 422 整体拒绝、不留记录）
+         *     → 兼容性报告（身份冲突/任务漂移/依赖可用性等分级 findings——block
+         *     级只阻止激活不阻止导入）→ 登记为 inactive 只读副本（数据目录
+         *     bundle-imports/——不进库、不执行包内代码、不启用 MCP/工具/唤醒）。
+         *     激活与执行权接管归 0.7.7。同源 bundle_id 重复导入 409（指向既有
+         *     import_id）。压缩体上限 64MiB、展开上限 256MiB（413）。
+         */
+        post: operations["createBundleImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/bundle-imports/{import_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 导入详情（激活决策前的复核面；0.7.6） */
+        get: operations["getBundleImport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4473,6 +4517,91 @@ export interface components {
         /** @description 导出列表（新→旧）。 */
         AgentBundleExportListView: {
             exports: components["schemas"]["AgentBundleSummary"][];
+        };
+        /**
+         * @description 预检单项（0.7.6 / ADR-0043 §4）。check 键：zip_structure /
+         *     integrity / reference_closure（安全门通过摘要，恒 pass）与
+         *     source_version / identity_conflict / mission_conflict /
+         *     harness_availability / expired_in_transit / sensitive_payload /
+         *     recovery_limits / room_source_unbound / alias_projection（兼容 findings）。
+         */
+        BundleImportCheck: {
+            check: string;
+            /**
+             * @description block = 激活前必须解决（非导入失败——0.7.7 消费 blockers）
+             * @enum {string}
+             */
+            result: "pass" | "info" | "warn" | "block";
+            detail: string;
+        };
+        /** @description 包来源事实（格式/来源实例版本/导出时刻——最小事实面）。 */
+        BundleImportSource: {
+            /** @enum {string} */
+            format: "mosaic-agent-bundle/1";
+            /** @description 来源实例产品版本 */
+            product_version: string;
+            /** @description RFC3339 */
+            exported_at: string;
+        };
+        /**
+         * @description 导入登记全量视图（创建响应/详情；边车 import.json 即其序列化）。
+         *     status 恒 inactive（0.7.6 无改态路径——激活归 0.7.7）；verdict
+         *     blocked = 有 block 级 findings（激活受阻——导入本身已登记）。
+         */
+        BundleImportView: {
+            import_id: string;
+            /** @description 源导出 ID（重复导入幂等依据） */
+            bundle_id: string;
+            agent_id: string;
+            /** @enum {string} */
+            status: "inactive";
+            /** @enum {string} */
+            verdict: "eligible" | "eligible_with_warnings" | "blocked";
+            /** @description block 级 check 键（激活前必须解决——0.7.7 输入契约） */
+            blockers: string[];
+            imported_at: string;
+            /** @description zip 文件字节数 */
+            size_bytes: number;
+            /** @description 相对数据目录路径（bundle-imports/<id>/mosaic-agent-bundle.zip） */
+            zip_path: string;
+            source: components["schemas"]["BundleImportSource"];
+            /** @description 包内导出范围原文（manifest.scope 透传）。 */
+            scope: {
+                namespaces: ("agent" | "workspace" | "mission")[];
+                /** @enum {string} */
+                mission_selection: "auto" | "explicit";
+                mission_ids: string[];
+                include_sensitive: boolean;
+            };
+            /** @description 包内计数（解析后事实）。 */
+            counts: {
+                memories: number;
+                missions: number;
+                checkpoints: number;
+            };
+            checks: components["schemas"]["BundleImportCheck"][];
+            redaction: components["schemas"]["AgentBundleRedactionReport"];
+        };
+        /** @description 导入摘要（列表元素）。 */
+        BundleImportSummary: {
+            import_id: string;
+            bundle_id: string;
+            agent_id: string;
+            /** @enum {string} */
+            status: "inactive";
+            /** @enum {string} */
+            verdict: "eligible" | "eligible_with_warnings" | "blocked";
+            imported_at: string;
+            size_bytes: number;
+            counts: {
+                memories: number;
+                missions: number;
+                checkpoints: number;
+            };
+        };
+        /** @description 导入列表（新→旧；实例级）。 */
+        BundleImportListView: {
+            imports: components["schemas"]["BundleImportSummary"][];
         };
         /** @description 版本留痕记录（0.7.1 / ADR-0038 §2——append-only，恰一条/次）。 */
         MemoryEditRecordView: {
@@ -11730,6 +11859,147 @@ export interface operations {
                 };
             };
             /** @description Bundle 域未装配（bundle_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listBundleImports: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 导入摘要列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BundleImportListView"];
+                };
+            };
+            /** @description Bundle 导入面未装配（bundle_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createBundleImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 已登记（status 恒 inactive；checks 为安全门通过摘要 + 兼容 findings） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BundleImportView"];
+                };
+            };
+            /** @description 请求不合法（multipart_required / file_field_required / multipart_invalid） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 同源包重复导入（bundle_already_imported——message 含既有 import_id） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 压缩体超上限（bundle_too_large） */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 安全校验不过（bundle_unsafe——message 聚合全部违规明细：zip_corrupt/layout/path/symlink/expansion/format/digest/content/closure） */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Bundle 导入面未装配（bundle_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getBundleImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                import_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 导入全量视图（checks 全量 + 脱敏报告透传） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BundleImportView"];
+                };
+            };
+            /** @description 导入不存在（bundle_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Bundle 导入面未装配（bundle_unavailable） */
             503: {
                 headers: {
                     [name: string]: unknown;

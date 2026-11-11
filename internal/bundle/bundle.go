@@ -1,6 +1,7 @@
-// Package bundle Portable Agent Bundle 导出（0.7.5 / ADR-0042，RFC-0018 §8）。
+// Package bundle Portable Agent Bundle 导出（0.7.5 / ADR-0042，RFC-0018 §8）
+// 与导入预检（0.7.6 / ADR-0043——import.go）。
 //
-// 语义与边界：
+// 导出语义与边界：
 //   - 导出 = 只读快照打 zip（不停源 Agent、不加锁、不改任何域状态——
 //     RFC §8.3"普通备份/导出"行）；各源顺序独立读取，水位记录合并时刻
 //     （非单事务快照——导入侧 0.7.6 以任务级 version 比对治理，ADR §5）；
