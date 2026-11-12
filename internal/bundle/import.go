@@ -231,6 +231,9 @@ type ImportPorts struct {
 	AgentExists  func(ctx context.Context, agentID string) (bool, error)
 	MissionState func(ctx context.Context, missionID string) (MissionState, bool, error)
 	Harnesses    func(ctx context.Context) ([]string, error) // 本实例可执行项 portable 标识集
+	// MemoryTombstoneHits 墓碑命中核对（0.7.8 / ADR-0045 §3——防复活）：
+	// keys = 包内记忆原 ID；返回命中子集（nil 端口 = 无墓碑面，finding 略）。
+	MemoryTombstoneHits func(ctx context.Context, keys []string) ([]string, error)
 }
 
 // importCaps 大小边界（生产取常量；UT 可收窄触发门）。
@@ -814,6 +817,24 @@ func (s *ImportService) compatibility(ctx context.Context, c *safeContent) ([]Ch
 			default:
 				add("harness_availability", "pass", fmt.Sprintf("包内 %d 项可执行引用本实例均已注册", len(wanted)))
 			}
+		}
+	}
+
+	// 墓碑命中（warn——0.7.8 / ADR-0045 §3：包内记忆已在本实例 Forget——
+	// "受管理副本不复活已删正文"，激活时将拒绝复活；列 ID 待确认）。
+	if s.ports.MemoryTombstoneHits != nil {
+		ids := make([]string, 0, len(c.memories))
+		for _, it := range c.memories {
+			ids = append(ids, it.MemoryID)
+		}
+		hits, err := s.ports.MemoryTombstoneHits(ctx, ids)
+		if err != nil {
+			add("tombstone_hits", "warn", fmt.Sprintf("墓碑核对失败：%v", err))
+		} else if len(hits) > 0 {
+			add("tombstone_hits", "warn",
+				fmt.Sprintf("%d 条已在本实例遗忘（%s）——激活时拒绝复活（不复活已删正文）", len(hits), strings.Join(hits, "、")))
+		} else {
+			add("tombstone_hits", "pass", "无墓碑命中")
 		}
 	}
 

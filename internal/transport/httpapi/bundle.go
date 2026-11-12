@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/sisibeloved/Mosaic/internal/memory"
+
 	"github.com/sisibeloved/Mosaic/internal/bundle"
 	"github.com/sisibeloved/Mosaic/internal/transport/httpapi/apigen"
 )
@@ -281,4 +283,71 @@ func (s *server) writeBundleActivationError(w http.ResponseWriter, err error) {
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 	}
+}
+
+// ---- Forget 与包删除（0.7.8 / ADR-0045）----
+
+// ForgetMemoryItem 记忆 Forget（apigen.ServerInterface）——编排闭包
+// （墓碑化 + 托管包扫描 → 影响报告）。
+func (s *server) ForgetMemoryItem(w http.ResponseWriter, r *http.Request, memoryID string) {
+	if s.deps.MemoryForget == nil {
+		writeError(w, http.StatusServiceUnavailable, "memory_unavailable", "Forget 编排面未装配")
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	var req apigen.MemoryForgetRequest
+	if !decodeMemoryBody(w, r, &req) { // 同款严格解码（MaxBytes + 拒收未知字段）
+		return
+	}
+	note := ""
+	if req.Note != nil {
+		note = *req.Note
+	}
+	rep, err := s.deps.MemoryForget(r.Context(), memoryID, note)
+	if err != nil {
+		switch {
+		case errors.Is(err, memory.ErrNotFound):
+			writeError(w, http.StatusNotFound, "memory_not_found", "记忆不存在")
+		case errors.Is(err, memory.ErrInvalid):
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
+}
+
+// DeleteBundleExport 删除导出包（apigen.ServerInterface）。
+func (s *server) DeleteBundleExport(w http.ResponseWriter, r *http.Request, bundleID string) {
+	if s.writeBundleUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, false) {
+		return
+	}
+	view, err := s.deps.BundleSVC.DeleteExport(r.Context(), bundleID)
+	if err != nil {
+		s.writeBundleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// DeleteBundleImport 删除导入记录（apigen.ServerInterface——activated 409）。
+func (s *server) DeleteBundleImport(w http.ResponseWriter, r *http.Request, importID string) {
+	if s.writeBundleImportUnavailable(w) {
+		return
+	}
+	if !s.guardWrite(w, r, false) {
+		return
+	}
+	view, err := s.deps.BundleImportSVC.Delete(importID)
+	if err != nil {
+		s.writeBundleImportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
 }

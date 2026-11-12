@@ -194,6 +194,30 @@ export function MemoryPage() {
     })();
   };
 
+  // 0.7.8 Forget（ADR-0045）：隐私删除——墓碑化 + 影响报告（托管包/不可达
+  // 面如实列出——确认框醒目警示不可全域擦除）。
+  const [forgetReport, setForgetReport] = useState<import("../api/client").MemoryDeletionReport | null>(null);
+  const forget = (item: MemoryItemView) => {
+    if (actionBusy) return;
+    const note = window.prompt("遗忘原因（留入审计留痕，可选）：") ?? null;
+    if (note === null) return; // 取消
+    if (!window.confirm(`遗忘「${item.title || item.memory_id}」？
+正文与检索索引将清除（墓碑留痕）；托管导出包内副本无法抹除——影响报告将如实列出。`)) return;
+    setActionBusy(item.memory_id + "forget");
+    setMsg(null);
+    void (async () => {
+      try {
+        const rep = await api.forgetMemoryItem(item.memory_id, note || undefined);
+        setForgetReport(rep);
+        setRefreshTick((t) => t + 1);
+      } catch (e) {
+        setMsg(e instanceof Error ? e.message : String(e));
+      } finally {
+        setActionBusy(null);
+      }
+    })();
+  };
+
   // 修订 / 替代提交。
   const submitEdit = () => {
     if (!editing || actionBusy) return;
@@ -273,6 +297,39 @@ export function MemoryPage() {
       </header>
 
       {msg && <p className="rounded-lg bg-surface-2 px-3 py-2 text-xs">{msg}</p>}
+
+      {forgetReport && (
+        <section className="flex flex-col gap-1.5 rounded-xl border border-line bg-surface-1 p-3 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="font-medium">遗忘影响报告：{forgetReport.memory_id}</span>
+            <button type="button" className="ml-auto rounded border border-line px-2 py-0.5 text-faint" onClick={() => setForgetReport(null)}>关闭</button>
+          </div>
+          <p className="text-faint">
+            正文与检索索引已清除（墓碑留痕）。托管导出包内副本为定版快照无法抹除，如实列出：
+          </p>
+          {(forgetReport.contained_in_bundles ?? []).length > 0 ? (
+            <ul className="list-disc pl-4 text-faint">
+              {forgetReport.contained_in_bundles.map((b) => (
+                <li key={b}>导出包 {b}（可在设置页"迁移包"删除）</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-faint">无托管导出包含该条目。</p>
+          )}
+          {(forgetReport.contained_in_imports ?? []).length > 0 && (
+            <ul className="list-disc pl-4 text-faint">
+              {forgetReport.contained_in_imports.map((i) => (
+                <li key={i}>本机导入 {i}（activated 记录不可删——正文随记录保留直至治理）</li>
+              ))}
+            </ul>
+          )}
+          <ul className="list-disc pl-4 text-faint">
+            {forgetReport.out_of_reach.map((o) => (
+              <li key={o}>{o}</li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {formOpen && (
         <section className="flex flex-col gap-2 rounded-xl border border-line bg-surface-1 p-3">
@@ -483,6 +540,12 @@ export function MemoryPage() {
                 </button>
                 <button type="button" className={btnGhostCls} disabled={actionBusy !== null} onClick={() => openEdit("revise", it)}>修订</button>
                 <button type="button" className={btnGhostCls} disabled={actionBusy !== null} onClick={() => openEdit("supersede", it)}>替代</button>
+                <button type="button" className={btnGhostCls + " !text-red-400"} disabled={actionBusy !== null} onClick={() => forget(it)}>遗忘</button>
+              </div>
+            )}
+            {it.status === "superseded" && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <button type="button" className={btnGhostCls + " !text-red-400"} disabled={actionBusy !== null} onClick={() => forget(it)}>遗忘</button>
               </div>
             )}
             {expanded === it.memory_id && (

@@ -47,7 +47,8 @@ func (s *Service) Accept(ctx context.Context, memoryID string) (Item, error) {
 	switch it.Status {
 	case StatusActive:
 		return it, nil // 幂等（策展重复确认无害）
-	case StatusSuperseded:
+	case StatusSuperseded, StatusDeleted:
+		// 0.7.8 审校 #1：墓碑同拦——策展接口不得消除墓碑（防复活依据）。
 		return Item{}, ErrTerminal
 	}
 	now := s.now()
@@ -82,7 +83,7 @@ func (s *Service) Reject(ctx context.Context, memoryID, note string) (Item, erro
 	if err != nil {
 		return Item{}, err
 	}
-	if it.Status == StatusSuperseded {
+	if it.Status == StatusSuperseded || it.Status == StatusDeleted { // 0.7.8 审校 #1：墓碑同拦
 		return Item{}, ErrTerminal
 	}
 	cause := CauseReject
@@ -133,7 +134,7 @@ func (s *Service) Revise(ctx context.Context, memoryID string, cmd ReviseCmd) (I
 	if err != nil {
 		return Item{}, err
 	}
-	if it.Status == StatusSuperseded {
+	if it.Status == StatusSuperseded || it.Status == StatusDeleted { // 0.7.8 审校 #1：墓碑同拦
 		return Item{}, ErrTerminal
 	}
 	// 一审 #1：请求版本必须与读取快照一致（绑定快照提交）——快照已落后
@@ -213,7 +214,7 @@ func (s *Service) Supersede(ctx context.Context, oldID string, expectedVersion i
 	if err != nil {
 		return Item{}, Item{}, err
 	}
-	if old.Status == StatusSuperseded {
+	if old.Status == StatusSuperseded || old.Status == StatusDeleted { // 0.7.8 审校 #1：墓碑同拦
 		return Item{}, Item{}, ErrTerminal
 	}
 	// 一审 #1：请求版本与读取快照一致才提交（绑定快照）。

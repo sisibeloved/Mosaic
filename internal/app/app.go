@@ -403,12 +403,34 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	// 0.7.6 Bundle 导入预检（ADR-0043）：上传 → 安全校验 → 兼容性报告 →
 	// inactive 登记（对照端口 = 本实例事实投影；产物落数据目录
 	// bundle-imports/——同零 migration）。
-	bundleImportSvc := bundle.NewImporter(bundleImportPorts(identitySvc, missionSvc),
+	bundleImportSvc := bundle.NewImporter(bundleImportPorts(identitySvc, missionSvc, memorySvc),
 		opts.DataDir, buildVersion(), bundle.WithImporterNow(clock))
 	// 0.7.7 Bundle 激活与执行权接管（ADR-0044）：inactive 副本 → 域写入
 	// （takeover 确认门/copy 新身份；origin 标记幂等——attempt.json 留痕）。
 	bundleActivationSvc := bundle.NewActivation(bundleImportSvc,
 		bundleActivationPorts(identitySvc, missionSvc, checkpointSvc, memorySvc))
+	// 0.7.8 记忆 Forget 编排（ADR-0045 §2）：墓碑化（memory 域）+ 托管
+	// 包扫描（bundle 域）→ 影响报告（不宣称全域擦除——不可达面如实列出）。
+	memoryForget := func(ctx context.Context, memoryID, note string) (memory.DeletionReport, error) {
+		gone, err := memorySvc.Forget(ctx, memoryID, note)
+		if err != nil {
+			return memory.DeletionReport{}, err
+		}
+		// 复审 #3：多键扫描——本地墓碑 ID + 来源标记尾段（源 zip 内存
+		// 源实例 ID，只按本地新 ID 扫描会漏报已激活 zip）。
+		keys := append([]string{gone.MemoryID}, bundleOriginTails(gone.SourceRefs)...)
+		contained, err := bundleSvc.ExportsContaining(ctx, keys)
+		if err != nil {
+			return memory.DeletionReport{}, err
+		}
+		// 审校 #4：本机导入 zip 同为受管理副本——漏列会把本机残留误报为
+		// 仅有外部副本。
+		imports, err := bundleImportSvc.ImportsContaining(ctx, keys)
+		if err != nil {
+			return memory.DeletionReport{}, err
+		}
+		return memory.DeletionReportOf(gone, contained, imports), nil
+	}
 	// 执行上下文清单域（RFC-0018 §7.3 / ADR-0025，0.6.2）：确定性装配存档
 	// （digest 即身份——重建重放，状态变化追加）；任职事实（binding → 实例
 	// → 钉版本模板行）与房间事件经端口适配注入。readiness 经 ADR-0022
@@ -557,6 +579,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		BundleSVC:           bundleSvc,
 		BundleImportSVC:     bundleImportSvc,
 		BundleActivationSVC: bundleActivationSvc,
+		MemoryForget:        memoryForget,
 		Monitors:            monitorMgr,
 		DocSVC:              docSvc,
 		DocReader:           store, // doc:{id} 频道 SSE 追平读路径
@@ -1644,4 +1667,17 @@ func (l identityAgentLookup) AgentStatus(ctx context.Context, agentID string) (s
 		return "", ok, err
 	}
 	return a.Status, true, nil
+}
+
+// bundleOriginTails 来源标记（bundle:<bdl>:<mem>）的尾段记忆 ID 集。
+func bundleOriginTails(refs []string) []string {
+	var out []string
+	for _, r := range refs {
+		if strings.HasPrefix(r, "bundle:") {
+			if i := strings.LastIndex(r, ":"); i > 0 && i < len(r)-1 {
+				out = append(out, r[i+1:])
+			}
+		}
+	}
+	return out
 }

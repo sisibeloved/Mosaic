@@ -4,6 +4,28 @@
 
 ## [Unreleased]
 
+### Added
+
+- **0.7.8 派生删除与旧包防复活：墓碑、删除传播与影响报告**（0.7 领域线第九件 / ADR-0045，RFC-0018 §11.4/AT-06——0.7 领域出口 AT-06 落地）：
+  - **记忆 Forget（隐私删除）**：`POST /v1/memory/items/{id}/forget`——**墓碑化而非删行**（status=deleted、Title/Content 置空——"审计仅保留不含正文的墓碑"；归属/来源引用/敏感度/留痕保留；EditRecord 追加 cause=delete 即删除代次事实源）；FTS 经 v33 AU 触发器随正文置空同步 + 召回 status 过滤——**双保险结构性不可达**（sqlite it 实测）；幂等（再删 no-op）；active/proposed/superseded 三态皆可删；不跨条目级联（无 derived_from 显式血缘——显式边界）。
+  - **删除传播与影响报告**：编排闭包（墓碑化 + `ExportsContaining` 托管包扫描）→ `MemoryDeletionReport`（cleared 正文/索引；**contained_in_bundles**——zip 是定版快照不重写、如实列出可经包删除端点处置；**out_of_reach**——"已在他实例激活的副本无法召回"，不宣称全域擦除——RFC §11.4 原文口径）。
+  - **旧包防复活（两把键 × 两道门）**：预检新 finding `tombstone_hits`（包内记忆 ID 命中墓碑 → warn 列 ID）；激活 MemoryCreate 前查**两把键**（包内原 ID / 激活 origin 标记 bundle:<bdl>:<mem>）——命中跳过不复活（"受管理副本不复活已删正文"）；`memory.TombstoneHits` 逐域扫描（0.7.0 分域隔离纪律——List 命名空间必填）。
+  - **包生命周期删除端点（0.7.5/0.7.6 两处欠账兑现）**：`DELETE /v1/bundle-exports/{id}`（目录清除 + 不可达注记）/ `DELETE /v1/bundle-imports/{id}`（inactive 删除含 attempt；**activated → 409**——激活产物是独立域状态，撤销激活另行交付）。
+  - **域与 UI**：零 migration（status 字符串枚举扩展 + 触发器既有）；记忆页"遗忘"操作（确认警示 + 影响报告卡：托管包清单/不可达注记）；迁移包面板导出/导入历史行删除（activated 行"不可删"注明）。
+  - 验证（TDD——测试先行红→实现绿）：memory UT（墓碑语义/三态/幂等/留痕/查面口径）+ bundle UT（包扫描/两端点生命周期/预检 finding/激活防复活两把键）+ sqlite it（FTS 清除实测）+ httpapi IT + 真机冒烟（Forget→报告列托管包→旧包预检 warn→takeover 激活跳过不复活→导出包删除→activated 409→幂等）ALL-PASS。
+
+### Fixed
+
+- **0.7.8 一审修复（3 P1 + 1 P2，ADR-0045 v0.2）**：
+  - **策展未拦 deleted（P1）**：Accept/Reject/Revise/Supersede 只拦 superseded——墓碑可被改回 active、正文可被 Revise 重写（防复活依据被普通策展接口消除）。四动作统一拦截（ErrTerminal）——墓碑是策展不可达终态。
+  - **跨导出包绕过墓碑（P1）**：激活产物新 memory_id + 含 bundle_id 的来源标记——不同 bundle_id 的另一份旧包激活时两把键均不命中（已删正文复活）。防复活键**归一到稳定记忆身份**（bundle 标记尾段——跨导出/跨跳不变），TombstoneHits 双侧归一交集。
+  - **核对与写入间复活窗口（P1）**：墓碑查询/创建分离且 Forget 不受导入锁保护——查后 Forget 插入、激活仍写回 active。`CreateGuarded`（核对与创建同 forgetMu 边界——Forget 持同锁，交错窗口结构性消除）；激活端口改 guarded 语义。
+  - **报告漏列本机导入 zip（P2）**：只扫导出包忽略 bundle-imports/——本机残留误报为仅有外部副本。`ImportsContaining` + 报告新字段 `contained_in_imports`（activated 不可删注记）。
+- **0.7.8 复审修复（1 P1 + 2 P2，ADR-0045 v0.3；上轮墓碑终态/跨包防复活复测关闭）**：
+  - **Forget 未持互斥锁（P1）**：forgetMu 只在 CreateGuarded 获取——持锁查询后 Forget 仍可提交、创建继续写 active。Forget 读取与提交全程持同锁；50 轮真实并发交错测试 + 末态不变式（墓碑后创建必拒）钉住。
+  - **导入包扫描用本地新 ID 漏报源 zip（P2）**：zip 内存源实例 ID——按墓碑本地 ID 扫描恒空。扫描改多键（本地 ID + 来源标记尾段），ExportsContaining/ImportsContaining 统一 keys 化。
+  - **证据引用误当记忆身份（P2）**：全部 SourceRefs 计入键集——共享 ev_1 的两条记忆互相误命中（激活静默跳过）。键归一只认 mem_ 裸 ID 与 bundle 标记尾段，证据引用丢弃。
+
 ## [0.7.7] - 2026-11-12
 
 ### Added

@@ -37,8 +37,9 @@ type fakeActPorts struct {
 	memWrites []string                // MemoryCreate 留痕（memoryID）
 	harnesses []string
 
-	memFailOn string // MemoryCreate 失败注入（该 memory_id 一次）
-	memFailed bool
+	memFailOn     string   // MemoryCreate 失败注入（该 memory_id 一次）
+	tombstoneKeys []string // 墓碑命中注入（0.7.8 防复活测试）
+	memFailed     bool
 }
 
 func (f *fakeActPorts) ports() ActivationPorts {
@@ -131,10 +132,15 @@ func (f *fakeActPorts) ports() ActivationPorts {
 			f.ckptImports = append(f.ckptImports, stored)
 			return nil
 		},
-		MemoryCreate: func(_ context.Context, item MemoryFact, scopeID, originRef string) error {
+		MemoryCreate: func(_ context.Context, item MemoryFact, scopeID, originRef string, tombstoneKeys []string) (bool, error) {
 			if item.MemoryID == f.memFailOn && !f.memFailed {
 				f.memFailed = true
-				return errors.New("injected failure")
+				return false, errors.New("injected failure")
+			}
+			// 模拟域面 CreateGuarded（审校 #3）：命中注入键集 → false 跳过；
+			// 键归一（bundle 标记尾段）同 memory 域单源语义。
+			if len(tombstoneHit(f.tombstoneKeys, tombstoneKeys)) > 0 {
+				return false, nil
 			}
 			if f.memories == nil {
 				f.memories = map[string][]MemoryFact{}
@@ -144,13 +150,38 @@ func (f *fakeActPorts) ports() ActivationPorts {
 			stored.SourceRefs = append(append([]string{}, item.SourceRefs...), originRef)
 			f.memories[item.Namespace+"|"+scopeID] = append(f.memories[item.Namespace+"|"+scopeID], stored)
 			f.memWrites = append(f.memWrites, item.MemoryID)
-			return nil
+			return true, nil
 		},
 		MemoryList: func(_ context.Context, ns, scopeID string) ([]MemoryFact, error) {
 			return f.memories[ns+"|"+scopeID], nil
 		},
 		Harnesses: func(context.Context) ([]string, error) { return f.harnesses, nil },
 	}
+}
+
+// tombstoneHit fake 键归一命中（bundle 标记尾段——同 memory.normalizeMemoryKeys）。
+func tombstoneHit(injected, keys []string) []string {
+	norm := func(k string) string {
+		if strings.HasPrefix(k, "bundle:") {
+			if i := strings.LastIndex(k, ":"); i > 0 && i < len(k)-1 {
+				return k[i+1:]
+			}
+		}
+		return k
+	}
+	set := map[string]bool{}
+	for _, k := range injected {
+		if k != "" {
+			set[norm(k)] = true
+		}
+	}
+	var out []string
+	for _, k := range keys {
+		if k != "" && set[norm(k)] {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // mergeWatermarks 源水位与 marks 合并（测试同 wiring 语义）。

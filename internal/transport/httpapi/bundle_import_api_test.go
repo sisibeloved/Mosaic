@@ -293,7 +293,7 @@ func (f *fakeBundleActivationPorts) ports() bundle.ActivationPorts {
 		CheckpointImport: func(_ context.Context, _ bundle.CheckpointFact, _ string, _ int, _ map[string]string) error {
 			return nil
 		},
-		MemoryCreate: func(context.Context, bundle.MemoryFact, string, string) error { return nil },
+		MemoryCreate: func(_ context.Context, _ bundle.MemoryFact, _, _ string, _ []string) (bool, error) { return true, nil },
 		MemoryList:   func(context.Context, string, string) ([]bundle.MemoryFact, error) { return nil, nil },
 		Harnesses:    func(context.Context) ([]string, error) { return nil, nil },
 	}

@@ -127,8 +127,10 @@ type ActivationPorts struct {
 	// checkpoint_version 存储原子分配；targetMissionID/targetVersion 为目标
 	// 新任务锚，marks 携 bundle.origin_* 溯源与幂等水位。
 	CheckpointImport func(ctx context.Context, ckpt CheckpointFact, targetMissionID string, targetVersion int, marks map[string]string) error
-	// MemoryCreate 写记忆（scope 重锚 + origin 标记——域生成新 mem_* ID）。
-	MemoryCreate func(ctx context.Context, item MemoryFact, scopeID, originRef string) error
+	// MemoryCreate 墓碑守卫写入（0.7.8 审校 #3：tombstoneKeys 核对与创建在
+	// 域 forgetMu 同一边界——无"查后 Forget 插入仍写回"交错窗口）：
+	// scope 重锚 + origin 标记；命中墓碑返回 created=false（跳过计）。
+	MemoryCreate func(ctx context.Context, item MemoryFact, scopeID, originRef string, tombstoneKeys []string) (bool, error)
 	// MemoryList scope 记忆全量（幂等查重——SourceRefs 比对）。
 	MemoryList func(ctx context.Context, namespace, scopeID string) ([]MemoryFact, error)
 	// Harnesses 本实例可执行项集（复核——0.7.6 口径复用）。
@@ -408,6 +410,10 @@ func (s *ActivationService) Activate(ctx context.Context, importID string, req A
 			return fail(fmt.Errorf("%w: 记忆类型未知（%s：%s）", ErrInvalid, it.MemoryID, it.Kind))
 		}
 		originMemRef := "bundle:" + content.manifest.BundleID + ":" + it.MemoryID
+		// 防复活键集（审校 #2/#3）：包内条目 ID + 其携带的来源标记（跨跳
+		// 稳定身份经尾段归一在 memory 域单源）+ 本跳 origin 标记——
+		// 与创建同边界核验（MemoryCreate guarded），无复活交错窗口。
+		tombstoneKeys := append(append([]string{it.MemoryID}, it.SourceRefs...), originMemRef)
 		written, err := s.memoryWritten(ctx, it.Namespace, scope, originMemRef)
 		if err != nil {
 			return fail(err)
@@ -416,8 +422,13 @@ func (s *ActivationService) Activate(ctx context.Context, importID string, req A
 			out.Counts.MemoriesSkipped++
 			continue
 		}
-		if err := s.ports.MemoryCreate(ctx, it, scope, originMemRef); err != nil {
+		created, err := s.ports.MemoryCreate(ctx, it, scope, originMemRef, tombstoneKeys)
+		if err != nil {
 			return fail(fmt.Errorf("bundle: 写记忆 %s: %w", it.MemoryID, err))
+		}
+		if !created { // 墓碑命中——守卫创建内拒（"不复活已删正文"）
+			out.Counts.MemoriesSkipped++
+			continue
 		}
 		out.Counts.MemoriesCreated++
 	}

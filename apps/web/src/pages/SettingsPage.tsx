@@ -2262,6 +2262,24 @@ function AgentBundleExports() {
     }
   };
 
+  // 0.7.8 删除导出包（ADR-0045——0.7.5 欠账兑现；已离开本实例的副本不可召回）。
+  const onDeleteExport = async (bundleID: string) => {
+    if (!window.confirm(`删除导出包 ${bundleID}？
+已传输或已在他实例激活的副本无法召回。`)) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.deleteBundleExport(bundleID);
+      setMsg(`已删除导出包 ${bundleID}`);
+      const r = await api.listAgentBundleExports(agentID);
+      setHistory(r.exports);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <section>
       <h2 className="mb-1 text-sm font-medium">Agent 迁移包（Portable Agent Bundle）</h2>
@@ -2407,6 +2425,13 @@ function AgentBundleExports() {
                       {b.counts.missions} · 检查点 {b.counts.checkpoints}
                     </span>
                   </span>
+                  <button
+                    type="button"
+                    onClick={() => void onDeleteExport(b.bundle_id)}
+                    className="shrink-0 rounded-lg border border-border px-2 py-1 text-[11px] text-red-400 transition-opacity hover:opacity-80"
+                  >
+                    删除
+                  </button>
                 </li>
               ))}
             </ul>
@@ -2466,6 +2491,19 @@ function BundleImports() {
       setMsg(e instanceof Error ? e.message : String(e));
     } finally {
       setDetailBusy(null);
+    }
+  };
+
+  // 0.7.8 删除导入记录（ADR-0045——0.7.6 欠账兑现；activated 409 由服务端拒）。
+  const onDeleteImport = async (importID: string) => {
+    if (!window.confirm(`删除导入记录 ${importID}？`)) return;
+    setMsg(null);
+    try {
+      await api.deleteBundleImport(importID);
+      setMsg(`已删除导入记录 ${importID}`);
+      reload();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -2635,18 +2673,30 @@ function BundleImports() {
                     {detailBusy === b.import_id ? "载入中…" : "查看报告"}
                   </button>
                   {b.status === "inactive" ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActFor(actFor === b.import_id ? null : b.import_id);
-                        setConfirmStop(false);
-                      }}
-                      className="shrink-0 rounded-lg bg-accent px-2 py-1 text-[11px] font-medium text-accent-contrast transition-opacity hover:opacity-90"
-                    >
-                      激活
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActFor(actFor === b.import_id ? null : b.import_id);
+                          setConfirmStop(false);
+                        }}
+                        className="shrink-0 rounded-lg bg-accent px-2 py-1 text-[11px] font-medium text-accent-contrast transition-opacity hover:opacity-90"
+                      >
+                        激活
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void onDeleteImport(b.import_id)}
+                        className="shrink-0 rounded-lg border border-border px-2 py-1 text-[11px] text-red-400 transition-opacity hover:opacity-80"
+                      >
+                        删除
+                      </button>
+                    </>
                   ) : (
-                    <span className="shrink-0 rounded bg-[color-mix(in_srgb,var(--ok)_14%,transparent)] px-1.5 py-px text-[10px] leading-4 text-ok">已激活</span>
+                    <>
+                      <span className="shrink-0 rounded bg-[color-mix(in_srgb,var(--ok)_14%,transparent)] px-1.5 py-px text-[10px] leading-4 text-ok">已激活</span>
+                      <span className="shrink-0 text-[10px] text-faint" title="激活产物是独立域状态——须先治理产物">不可删</span>
+                    </>
                   )}
                   <VerdictBadge verdict={b.verdict} />
                 </li>

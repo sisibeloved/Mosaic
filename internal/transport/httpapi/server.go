@@ -159,6 +159,9 @@ type Deps struct {
 	CheckpointSVC *checkpoint.Service
 	// MemorySVC 分域记忆服务（0.7.0 / ADR-0037）：nil = 记忆端点 503（测试装配）。
 	MemorySVC *memory.Service
+	// MemoryForget 记忆 Forget 编排闭包（0.7.8 / ADR-0045）：墓碑化 + 托管
+	// 包扫描 → 影响报告；nil = forget 端点 503（测试装配）。
+	MemoryForget func(ctx context.Context, memoryID, note string) (memory.DeletionReport, error)
 	// BundleSVC Portable Agent Bundle 导出服务（0.7.5 / ADR-0042）：nil =
 	// bundle 端点 503（测试装配）。
 	BundleSVC *bundle.Service

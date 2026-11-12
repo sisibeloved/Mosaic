@@ -673,3 +673,40 @@ func TestMemoryItemsIdempotentReopenIT(t *testing.T) {
 		t.Fatalf("重放后读回错：%v %v", err, ok)
 	}
 }
+
+// TestForgetClearsFTS 0.7.8 / ADR-0045：Forget 后墓碑行不删、FTS 经 AU 触发器
+// 随正文置空同步——召回（MATCH + status 过滤双保险）结构性不可达。
+func TestForgetClearsFTS(t *testing.T) {
+	store := openMemItStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	svc := memory.NewService(store, memory.Anchors{}, func() string { return "2026-11-12T00:00:00Z" })
+	it, err := svc.Create(ctx, memory.CreateCmd{
+		Namespace: memory.NSAgent, ScopeID: "ag_1", Kind: memory.KindSemantic,
+		Title: "独门暗号xyzq", Content: "正文含独门暗号xyzq隐私", ObservedAt: "2026-11-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 命中基线（召回模式）。
+	res, err := svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, ScopeID: "ag_1", Query: "独门暗号xyzq", Limit: 10})
+	if err != nil || res.TotalHits != 1 {
+		t.Fatalf("基线召回: %+v %v", res, err)
+	}
+	if _, err := svc.Forget(ctx, it.MemoryID, "隐私清除"); err != nil {
+		t.Fatal(err)
+	}
+	// 墓碑后：召回不命中（FTS 空 + status≠active 双保险）。
+	res, err = svc.List(ctx, memory.ListFilter{Namespace: memory.NSAgent, ScopeID: "ag_1", Query: "独门暗号xyzq", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TotalHits != 0 || len(res.Items) != 0 {
+		t.Fatalf("Forget 后召回须不可达: %+v", res)
+	}
+	// 行仍在（墓碑——审计保留不含正文的元数据）。
+	stored, ok, err := store.ItemByID(ctx, it.MemoryID)
+	if err != nil || !ok || stored.Status != memory.StatusDeleted || stored.Content != "" {
+		t.Fatalf("墓碑行: %+v %v %v", stored, ok, err)
+	}
+}

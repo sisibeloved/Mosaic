@@ -164,9 +164,17 @@ func bundlePorts(identitySvc *personalagent.Service, slotSvc *slot.Service,
 	}
 }
 
+// memoryTombstoneHitsClosure 防复活核对闭包（0.7.8 / ADR-0045 §3——
+// 导入预检与激活共用；key = mem_* 或 bundle:<bdl>:<mem>）。
+func memoryTombstoneHitsClosure(memSvc *memory.Service) func(ctx context.Context, keys []string) ([]string, error) {
+	return func(ctx context.Context, keys []string) ([]string, error) {
+		return memSvc.TombstoneHits(ctx, keys)
+	}
+}
+
 // bundleImportPorts 0.7.6 / ADR-0043：导入预检的对照端口组合（本实例事实
 // ——身份冲突/任务漂移/依赖可用性三面；导入不读包源实例数据）。
-func bundleImportPorts(identitySvc *personalagent.Service, missionSvc *mission.Service) bundle.ImportPorts {
+func bundleImportPorts(identitySvc *personalagent.Service, missionSvc *mission.Service, memSvc *memory.Service) bundle.ImportPorts {
 	return bundle.ImportPorts{
 		AgentExists: func(ctx context.Context, agentID string) (bool, error) {
 			_, ok, err := identitySvc.Get(ctx, agentID)
@@ -295,9 +303,11 @@ func bundleActivationPorts(identitySvc *personalagent.Service, missionSvc *missi
 			})
 			return err
 		},
-		MemoryCreate: func(ctx context.Context, item bundle.MemoryFact, scopeID, originRef string) error {
+		MemoryCreate: func(ctx context.Context, item bundle.MemoryFact, scopeID, originRef string, tombstoneKeys []string) (bool, error) {
 			conf := item.Confidence
-			_, err := memSvc.Create(ctx, memory.CreateCmd{
+			// 0.7.8 审校 #3：墓碑核对与创建在 memory 域 forgetMu 同一边界
+			//（CreateGuarded）——成功删除后不被在途激活写回。
+			return memSvc.CreateGuarded(ctx, tombstoneKeys, memory.CreateCmd{
 				Namespace: memory.Namespace(item.Namespace), ScopeID: scopeID,
 				Kind: memory.Kind(item.Kind), Title: item.Title, Content: item.Content,
 				SourceRefs: append(append([]string{}, item.SourceRefs...), originRef),
@@ -305,7 +315,6 @@ func bundleActivationPorts(identitySvc *personalagent.Service, missionSvc *missi
 				Confidence: &conf, Sensitivity: memory.Sensitivity(item.Sensitivity),
 				Status: memory.StatusActive, // 包内记忆恒 active（0.7.6 安全门口径）
 			})
-			return err
 		},
 		MemoryList: func(ctx context.Context, ns, scopeID string) ([]bundle.MemoryFact, error) {
 			var out []bundle.MemoryFact

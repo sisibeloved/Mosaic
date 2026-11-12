@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -183,6 +184,9 @@ type Service struct {
 	store   Store
 	anchors Anchors
 	now     func() string
+	// forgetMu Forget/墓碑核对+创建的同构同步边界（0.7.8 审校 #3：删除代次
+	// 核验与创建原子——成功删除之后不被在途激活写回；单进程个人实例口径）。
+	forgetMu sync.Mutex
 }
 
 // NewService now 为时钟单源（RFC3339 字符串）。
@@ -368,7 +372,7 @@ func (s *Service) List(ctx context.Context, f ListFilter) (ListResult, error) {
 		f.Status = StatusActive
 	}
 	switch f.Status {
-	case StatusActive, StatusProposed, StatusSuperseded:
+	case StatusActive, StatusProposed, StatusSuperseded, StatusDeleted: // deleted=墓碑（0.7.8——显式审计审视）
 	default:
 		return ListResult{}, invalidErr("status 未知：" + string(f.Status))
 	}

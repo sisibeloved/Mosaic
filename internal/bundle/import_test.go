@@ -25,6 +25,7 @@ type fakeImportPorts struct {
 	harnesses    []string
 	agentsErr    error
 	harnessesErr error
+	tombstones   []string // 墓碑命中注入（0.7.8 预检 finding 测试）
 }
 
 func (f *fakeImportPorts) ports() ImportPorts {
@@ -44,6 +45,19 @@ func (f *fakeImportPorts) ports() ImportPorts {
 				return nil, f.harnessesErr
 			}
 			return f.harnesses, nil
+		},
+		MemoryTombstoneHits: func(_ context.Context, keys []string) ([]string, error) {
+			set := map[string]bool{}
+			for _, t := range f.tombstones {
+				set[t] = true
+			}
+			var out []string
+			for _, k := range keys {
+				if set[k] {
+					out = append(out, k)
+				}
+			}
+			return out, nil
 		},
 	}
 }

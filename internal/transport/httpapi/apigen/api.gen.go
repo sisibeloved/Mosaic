@@ -3079,6 +3079,14 @@ type BundleActivationViewMode string
 // BundleActivationViewStatus defines model for BundleActivationView.Status.
 type BundleActivationViewStatus string
 
+// BundleExportDeletionView 导出包删除结果（0.7.8）。
+type BundleExportDeletionView struct {
+	BundleId     string   `json:"bundle_id"`
+	DeletedAt    string   `json:"deleted_at"`
+	DeletedFiles []string `json:"deleted_files"`
+	OutOfReach   []string `json:"out_of_reach"`
+}
+
 // BundleImportCheck 预检单项（0.7.6 / ADR-0043 §4）。check 键：zip_structure /
 // integrity / reference_closure（安全门通过摘要，恒 pass）与
 // source_version / identity_conflict / mission_conflict /
@@ -3094,6 +3102,14 @@ type BundleImportCheck struct {
 
 // BundleImportCheckResult block = 激活前必须解决（非导入失败——0.7.7 消费 blockers）
 type BundleImportCheckResult string
+
+// BundleImportDeletionView 导入记录删除结果（0.7.8——activated 409 不达此视图）。
+type BundleImportDeletionView struct {
+	DeletedAt    string   `json:"deleted_at"`
+	DeletedFiles []string `json:"deleted_files"`
+	ImportId     string   `json:"import_id"`
+	OutOfReach   []string `json:"out_of_reach"`
+}
 
 // BundleImportListView 导入列表（新→旧；实例级）。
 type BundleImportListView struct {
@@ -4314,6 +4330,28 @@ type ManualExecutableRequest struct {
 	Version *string `json:"version,omitempty"`
 }
 
+// MemoryDeletionReport Forget 影响报告（RFC §11.4"不能宣称全域擦除"——不可清除面如实列出）。
+type MemoryDeletionReport struct {
+	// Cleared 本实例已清除面（正文 + FTS——结构性不可达）。
+	Cleared struct {
+		Content bool `json:"content"`
+		Index   bool `json:"index"`
+	} `json:"cleared"`
+
+	// ContainedInBundles 托管导出包内仍有正文的清单（zip 定版快照不重写）
+	ContainedInBundles []string `json:"contained_in_bundles"`
+
+	// ContainedInImports 本机导入 zip 内仍有正文的清单（activated 记录不可删——正文随记录保留直至治理）
+	ContainedInImports []string `json:"contained_in_imports"`
+	DeletedAt          string   `json:"deleted_at"`
+	MemoryId           string   `json:"memory_id"`
+	Namespace          string   `json:"namespace"`
+
+	// OutOfReach 无法保证清除的面（已离开本实例的副本）
+	OutOfReach []string `json:"out_of_reach"`
+	ScopeId    string   `json:"scope_id"`
+}
+
 // MemoryEditRecordView 版本留痕记录（0.7.1 / ADR-0038 §2——append-only，恰一条/次）。
 type MemoryEditRecordView struct {
 	// Cause 候选否决 reject / active 撤回 withdraw / 显式替代 supersede / 原位修订 revise / 接受 accept
@@ -4334,6 +4372,12 @@ type MemoryEditRecordView struct {
 
 // MemoryEditRecordViewCause 候选否决 reject / active 撤回 withdraw / 显式替代 supersede / 原位修订 revise / 接受 accept
 type MemoryEditRecordViewCause string
+
+// MemoryForgetRequest Forget 请求（0.7.8 / ADR-0045——note 进 delete 留痕）。
+type MemoryForgetRequest struct {
+	// Note 删除原因（留痕——审计可读）
+	Note *string `json:"note,omitempty"`
+}
 
 // MemoryItemCreateRequest 分域记忆写入请求（0.7.0）：显式写入面——策展候选（proposed）与模型抽取随 0.7.1。
 type MemoryItemCreateRequest struct {
@@ -6393,6 +6437,9 @@ type TransitionAgentLifecycleJSONRequestBody = LifecycleTransitionRequest
 // CreateMemoryItemJSONRequestBody defines body for CreateMemoryItem for application/json ContentType.
 type CreateMemoryItemJSONRequestBody = MemoryItemCreateRequest
 
+// ForgetMemoryItemJSONRequestBody defines body for ForgetMemoryItem for application/json ContentType.
+type ForgetMemoryItemJSONRequestBody = MemoryForgetRequest
+
 // RejectMemoryItemJSONRequestBody defines body for RejectMemoryItem for application/json ContentType.
 type RejectMemoryItemJSONRequestBody = MemoryItemRejectRequest
 
@@ -6512,6 +6559,9 @@ type ServerInterface interface {
 	// CreateAgentBundleExport 创建 Portable Agent Bundle 导出（0.7.5 / ADR-0042，RFC-0018 §8.2）
 	// (POST /v1/agents/{agent_id}/bundle-exports)
 	CreateAgentBundleExport(w http.ResponseWriter, r *http.Request, agentId string)
+	// DeleteBundleExport 删除导出包（0.7.8 / ADR-0045——0.7.5 欠账兑现）
+	// (DELETE /v1/bundle-exports/{bundle_id})
+	DeleteBundleExport(w http.ResponseWriter, r *http.Request, bundleId string)
 	// GetAgentBundleExport 导出详情（传输前核对脱敏报告；0.7.5）
 	// (GET /v1/bundle-exports/{bundle_id})
 	GetAgentBundleExport(w http.ResponseWriter, r *http.Request, bundleId string)
@@ -6521,6 +6571,9 @@ type ServerInterface interface {
 	// CreateBundleImport 上传 Portable Agent Bundle 并预检登记（0.7.6 / ADR-0043，RFC-0018 §8.2/§8.3）
 	// (POST /v1/bundle-imports)
 	CreateBundleImport(w http.ResponseWriter, r *http.Request)
+	// DeleteBundleImport 删除导入记录（0.7.8 / ADR-0045——0.7.6 欠账兑现）
+	// (DELETE /v1/bundle-imports/{import_id})
+	DeleteBundleImport(w http.ResponseWriter, r *http.Request, importId string)
 	// GetBundleImport 导入详情（激活决策前的复核面；0.7.6）
 	// (GET /v1/bundle-imports/{import_id})
 	GetBundleImport(w http.ResponseWriter, r *http.Request, importId string)
@@ -6695,6 +6748,9 @@ type ServerInterface interface {
 	// AcceptMemoryItem 策展接受（0.7.1 / ADR-0038 §2）
 	// (POST /v1/memory/items/{memory_id}/accept)
 	AcceptMemoryItem(w http.ResponseWriter, r *http.Request, memoryId string)
+	// ForgetMemoryItem 记忆 Forget——隐私删除（0.7.8 / ADR-0045，RFC-0018 §11.4/AT-06）
+	// (POST /v1/memory/items/{memory_id}/forget)
+	ForgetMemoryItem(w http.ResponseWriter, r *http.Request, memoryId string)
 	// RejectMemoryItem 候选否决 / 撤回（0.7.1 / ADR-0038 §2）
 	// (POST /v1/memory/items/{memory_id}/reject)
 	RejectMemoryItem(w http.ResponseWriter, r *http.Request, memoryId string)
@@ -7053,6 +7109,32 @@ func (siw *ServerInterfaceWrapper) CreateAgentBundleExport(w http.ResponseWriter
 	handler.ServeHTTP(w, r)
 }
 
+// DeleteBundleExport operation middleware
+func (siw *ServerInterfaceWrapper) DeleteBundleExport(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "bundle_id" -------------
+	var bundleId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bundle_id", r.PathValue("bundle_id"), &bundleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "bundle_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteBundleExport(w, r, bundleId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetAgentBundleExport operation middleware
 func (siw *ServerInterfaceWrapper) GetAgentBundleExport(w http.ResponseWriter, r *http.Request) {
 
@@ -7098,6 +7180,32 @@ func (siw *ServerInterfaceWrapper) CreateBundleImport(w http.ResponseWriter, r *
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateBundleImport(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteBundleImport operation middleware
+func (siw *ServerInterfaceWrapper) DeleteBundleImport(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "import_id" -------------
+	var importId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "import_id", r.PathValue("import_id"), &importId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "import_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteBundleImport(w, r, importId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8637,6 +8745,32 @@ func (siw *ServerInterfaceWrapper) AcceptMemoryItem(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.AcceptMemoryItem(w, r, memoryId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ForgetMemoryItem operation middleware
+func (siw *ServerInterfaceWrapper) ForgetMemoryItem(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "memory_id" -------------
+	var memoryId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "memory_id", r.PathValue("memory_id"), &memoryId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "memory_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ForgetMemoryItem(w, r, memoryId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -11095,6 +11229,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/memory/items", wrapper.ListMemoryItems)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/memory/items", wrapper.CreateMemoryItem)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/memory/items/{memory_id}", wrapper.GetMemoryItem)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/memory/items/{memory_id}/forget", wrapper.ForgetMemoryItem)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/memory/items/{memory_id}/accept", wrapper.AcceptMemoryItem)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/memory/items/{memory_id}/reject", wrapper.RejectMemoryItem)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/memory/items/{memory_id}/revise", wrapper.ReviseMemoryItem)
@@ -11104,9 +11239,11 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/mission-runs/{run_id}/checkpoints/latest", wrapper.GetLatestRunCheckpoint)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/agents/{agent_id}/bundle-exports", wrapper.ListAgentBundleExports)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/agents/{agent_id}/bundle-exports", wrapper.CreateAgentBundleExport)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/bundle-exports/{bundle_id}", wrapper.DeleteBundleExport)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/bundle-exports/{bundle_id}", wrapper.GetAgentBundleExport)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/bundle-imports", wrapper.ListBundleImports)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/bundle-imports", wrapper.CreateBundleImport)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/bundle-imports/{import_id}", wrapper.DeleteBundleImport)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/bundle-imports/{import_id}", wrapper.GetBundleImport)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/bundle-imports/{import_id}/activation", wrapper.ActivateBundleImport)
 

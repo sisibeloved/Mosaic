@@ -155,3 +155,15 @@ func TestOriginDriftOf(t *testing.T) {
 		}
 	}
 }
+
+// TestBundleOriginTails 0.7.8 复审 #3：来源标记尾段提取（多键扫描输入——
+// 源 zip 内存源实例 ID，本地墓碑 ID 不匹配）。
+func TestBundleOriginTails(t *testing.T) {
+	got := bundleOriginTails([]string{"ev_1", "bundle:bdl_A:mem_x", "bundle:bdl_B:mem_y", "plain"})
+	if len(got) != 2 || got[0] != "mem_x" || got[1] != "mem_y" {
+		t.Fatalf("tails: %v", got)
+	}
+	if bundleOriginTails(nil) != nil {
+		t.Fatal("nil in nil out")
+	}
+}

@@ -2600,6 +2600,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/memory/items/{memory_id}/forget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 记忆 Forget——隐私删除（0.7.8 / ADR-0045，RFC-0018 §11.4/AT-06）
+         * @description 墓碑化：status=deleted、Title/Content 置空（审计保留不含正文的元数据——
+         *     归属/来源引用/敏感度/留痕）、留痕 cause=delete；FTS 经触发器随正文置空
+         *     同步 + 召回 status 过滤——结构性不可达。影响报告如实列出托管导出包内
+         *     副本（zip 定版快照不重写——可经包删除端点处置）与不可达面（不宣称全域
+         *     擦除）；墓碑为旧包防复活依据（预检 tombstone_hits / 激活拒绝复活）。
+         *     幂等：已遗忘条目返回当前墓碑（no-op）。
+         */
+        post: operations["forgetMemoryItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/memory/items/{memory_id}/accept": {
         parameters: {
             query?: never;
@@ -2776,7 +2801,12 @@ export interface paths {
         get: operations["getAgentBundleExport"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * 删除导出包（0.7.8 / ADR-0045——0.7.5 欠账兑现）
+         * @description 数据目录 bundles/<id>/ 整目录清除（zip + 边车）。已传输或已在他实例
+         *     激活的副本无法召回——视图如实注记（不宣称全域擦除）。
+         */
+        delete: operations["deleteBundleExport"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2820,7 +2850,12 @@ export interface paths {
         get: operations["getBundleImport"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * 删除导入记录（0.7.8 / ADR-0045——0.7.6 欠账兑现）
+         * @description inactive → 清除（zip/边车/attempt）；activated → 409（激活产物是
+         *     独立域状态——撤销激活另行交付，本删除不级联）。
+         */
+        delete: operations["deleteBundleImport"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4544,6 +4579,43 @@ export interface components {
         /** @description 导出列表（新→旧）。 */
         AgentBundleExportListView: {
             exports: components["schemas"]["AgentBundleSummary"][];
+        };
+        /** @description Forget 请求（0.7.8 / ADR-0045——note 进 delete 留痕）。 */
+        MemoryForgetRequest: {
+            /** @description 删除原因（留痕——审计可读） */
+            note?: string;
+        };
+        /** @description Forget 影响报告（RFC §11.4"不能宣称全域擦除"——不可清除面如实列出）。 */
+        MemoryDeletionReport: {
+            memory_id: string;
+            namespace: string;
+            scope_id: string;
+            deleted_at: string;
+            /** @description 本实例已清除面（正文 + FTS——结构性不可达）。 */
+            cleared: {
+                content: boolean;
+                index: boolean;
+            };
+            /** @description 托管导出包内仍有正文的清单（zip 定版快照不重写） */
+            contained_in_bundles: string[];
+            /** @description 本机导入 zip 内仍有正文的清单（activated 记录不可删——正文随记录保留直至治理） */
+            contained_in_imports: string[];
+            /** @description 无法保证清除的面（已离开本实例的副本） */
+            out_of_reach: string[];
+        };
+        /** @description 导出包删除结果（0.7.8）。 */
+        BundleExportDeletionView: {
+            bundle_id: string;
+            deleted_at: string;
+            deleted_files: string[];
+            out_of_reach: string[];
+        };
+        /** @description 导入记录删除结果（0.7.8——activated 409 不达此视图）。 */
+        BundleImportDeletionView: {
+            import_id: string;
+            deleted_at: string;
+            deleted_files: string[];
+            out_of_reach: string[];
         };
         /**
          * @description 激活请求（0.7.7 / ADR-0044 §1）。模式与实例事实必须匹配：目标已有
@@ -11482,6 +11554,59 @@ export interface operations {
             };
         };
     };
+    forgetMemoryItem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["MemoryForgetRequest"];
+            };
+        };
+        responses: {
+            /** @description 影响报告（cleared / contained_in_bundles / out_of_reach） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryDeletionReport"];
+                };
+            };
+            /** @description note 超长（invalid_request） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 记忆不存在（memory_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Forget 编排面未装配（memory_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     acceptMemoryItem: {
         parameters: {
             query?: never;
@@ -11951,6 +12076,46 @@ export interface operations {
             };
         };
     };
+    deleteBundleExport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bundle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除（deleted 文件清单 + 不可达注记） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BundleExportDeletionView"];
+                };
+            };
+            /** @description 导出不存在（bundle_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Bundle 域未装配（bundle_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     listBundleImports: {
         parameters: {
             query?: never;
@@ -12074,6 +12239,55 @@ export interface operations {
             };
             /** @description 导入不存在（bundle_not_found） */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Bundle 导入面未装配（bundle_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deleteBundleImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                import_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除（deleted 文件清单） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BundleImportDeletionView"];
+                };
+            };
+            /** @description 导入不存在（bundle_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 导入已激活（bundle_activated——激活产物须先治理） */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

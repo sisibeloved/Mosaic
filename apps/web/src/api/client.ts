@@ -313,6 +313,9 @@ export type BundleImportSummary = Schemas["BundleImportSummary"];
 export type BundleActivationView = Schemas["BundleActivationView"];
 export type BundleActivationRequest = Schemas["BundleActivationRequest"];
 
+/** 0.7.8 Forget 影响报告与包删除视图。 */
+export type MemoryDeletionReport = Schemas["MemoryDeletionReport"];
+
 /** M4-5 监控源 + 运行态视图。 */
 export type MonitorView = Schemas["MonitorView"];
 export type MonitorCreate = Schemas["MonitorCreate"];
@@ -351,6 +354,17 @@ export const api = {
   /** 0.7.7 激活（ADR-0044）：takeover 须 confirm；已激活幂等返回既有结果。 */
   activateBundleImport(importID: string, req: BundleActivationRequest): Promise<BundleActivationView> {
     return post(`/v1/bundle-imports/${encodeURIComponent(importID)}/activation`, req);
+  },
+  /** 0.7.8 Forget（ADR-0045）：墓碑化 + 托管包扫描 → 影响报告。 */
+  forgetMemoryItem(memoryID: string, note?: string): Promise<MemoryDeletionReport> {
+    return post(`/v1/memory/items/${encodeURIComponent(memoryID)}/forget`, note ? { note } : {});
+  },
+  /** 0.7.8 包生命周期删除（ADR-0045）。 */
+  deleteBundleExport(bundleID: string): Promise<unknown> {
+    return request(`/v1/bundle-exports/${encodeURIComponent(bundleID)}`, { method: "DELETE" });
+  },
+  deleteBundleImport(importID: string): Promise<unknown> {
+    return request(`/v1/bundle-imports/${encodeURIComponent(importID)}`, { method: "DELETE" });
   },
   listBackups(): Promise<{ backups: BackupSummary[] }> {
     return request<{ backups: BackupSummary[] }>("/v1/system/backups");
