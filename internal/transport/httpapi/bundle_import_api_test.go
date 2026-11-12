@@ -30,7 +30,7 @@ func newBundleImportTestServer(t *testing.T, ownerToken string, withSvc bool) (*
 		}}},
 		memories: map[string][]bundle.MemoryFact{
 			"agent|ag_ok": {
-				{MemoryID: "mem_n", Namespace: "agent", ScopeID: "ag_ok", Status: "active", Sensitivity: "normal"},
+				{MemoryID: "mem_n", Namespace: "agent", ScopeID: "ag_ok", Kind: "semantic", Status: "active", Sensitivity: "normal"},
 			},
 		},
 	}
@@ -256,4 +256,167 @@ func TestBundleImportUnavailable(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("未装配 503: %d", resp.StatusCode)
 	}
+}
+
+// ---- 激活端点（0.7.7 / ADR-0044）----
+
+// fakeBundleActivationPorts IT 激活写入桩：域级深测在 bundle UT——此处验证
+// 端点语义（请求解码/错误族/幂等/边车状态）。
+type fakeBundleActivationPorts struct {
+	agents   map[string]bool
+	created  int
+	missions map[string]bundle.MissionState // 同 ID 任务（422 注入）
+}
+
+func (f *fakeBundleActivationPorts) ports() bundle.ActivationPorts {
+	return bundle.ActivationPorts{
+		AgentEnsureImported: func(_ context.Context, _, _, agentID, _ string) (string, error) {
+			f.created++
+			if agentID == "" {
+				return "ag_local1", nil
+			}
+			return agentID, nil
+		},
+		AgentExists: func(_ context.Context, id string) (bool, error) { return f.agents[id], nil },
+		MissionCreate: func(_ context.Context, owner string, _ bundle.ContractFacts, originRef, _ string) (bundle.MissionRef, error) {
+			return bundle.MissionRef{MissionID: "mi_local_it", ContractVersion: 1, Status: "paused"}, nil
+		},
+		MissionPause: func(context.Context, string, int, string) error { return nil },
+		MissionState: func(_ context.Context, id string) (bundle.MissionState, bool, error) {
+			st, ok := f.missions[id]
+			return st, ok, nil
+		},
+		MissionsOfOwner: func(context.Context, string) ([]bundle.MissionFact, error) { return nil, nil },
+		CheckpointImported: func(context.Context, string, string) (bool, error) {
+			return false, nil
+		},
+		CheckpointImport: func(_ context.Context, _ bundle.CheckpointFact, _ string, _ int, _ map[string]string) error {
+			return nil
+		},
+		MemoryCreate: func(context.Context, bundle.MemoryFact, string, string) error { return nil },
+		MemoryList:   func(context.Context, string, string) ([]bundle.MemoryFact, error) { return nil, nil },
+		Harnesses:    func(context.Context) ([]string, error) { return nil, nil },
+	}
+}
+
+func TestBundleActivationEndpoints(t *testing.T) {
+	ts, dir := newBundleImportTestServer(t, "tok", true)
+	// 先经导出端点产包（bdl_api01——夹具见 TestBundleImportEndpoints）。
+	zipBytes := exportForImport(t, ts, dir)
+	if r := bundleUpload(t, ts.URL+"/v1/bundle-imports", "tok", zipBytes); r.StatusCode != http.StatusCreated {
+		t.Fatalf("import: %d", r.StatusCode)
+	}
+	actPorts := fakeBundleActivationPorts{agents: map[string]bool{}, missions: map[string]bundle.MissionState{}}
+	act := bundle.NewActivation(mustImporterForIT(t, dir), actPorts.ports())
+	ts.Config.Handler = New(Deps{
+		Actor:               room.Actor{ParticipantID: "par_owner", Kind: "human"},
+		OwnerToken:          "tok",
+		BundleImportSVC:     mustImporterForIT(t, dir),
+		BundleActivationSVC: act,
+	})
+
+	// copy 激活 → 200：视图结构与幂等。
+	resp := bundlePost(t, ts.URL+"/v1/bundle-imports/bdi_it01/activation", "tok", map[string]any{"mode": "copy"})
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("activate: %d %s", resp.StatusCode, body)
+	}
+	var av map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&av); err != nil {
+		t.Fatal(err)
+	}
+	if av["mode"] != "copy" || av["status"] != "activated" || av["local_agent_id"] != "ag_local1" {
+		t.Fatalf("view: %v", av)
+	}
+	missions, _ := av["missions"].([]any)
+	if len(missions) != 1 {
+		t.Fatalf("missions: %v", missions)
+	}
+	// 幂等：再激活同结果。
+	resp2 := bundlePost(t, ts.URL+"/v1/bundle-imports/bdi_it01/activation", "tok", map[string]any{"mode": "copy"})
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("idempotent: %d", resp2.StatusCode)
+	}
+
+	// 详情/列表状态推进。
+	dresp, err := bundleGet(ts.URL+"/v1/bundle-imports/bdi_it01", "tok")
+	if err != nil || dresp.StatusCode != http.StatusOK {
+		t.Fatalf("detail: %v %d", err, dresp.StatusCode)
+	}
+	t.Cleanup(func() { dresp.Body.Close() })
+	var dv map[string]any
+	_ = json.NewDecoder(dresp.Body).Decode(&dv)
+	if dv["status"] != "activated" {
+		t.Fatalf("status: %v", dv["status"])
+	}
+
+	// 模式错配（已激活幂等返回在模式校验后——换新导入记录测 409）。
+	if r := bundleUpload(t, ts.URL+"/v1/bundle-imports", "tok", zipBytes); r.StatusCode != http.StatusConflict {
+		t.Fatalf("重复导入应 409: %d", r.StatusCode)
+	}
+}
+
+func TestBundleActivationGates(t *testing.T) {
+	ts, dir := newBundleImportTestServer(t, "tok", true)
+	zipBytes := exportForImport(t, ts, dir)
+	if r := bundleUpload(t, ts.URL+"/v1/bundle-imports", "tok", zipBytes); r.StatusCode != http.StatusCreated {
+		t.Fatalf("import: %d", r.StatusCode)
+	}
+	fake := fakeBundleActivationPorts{agents: map[string]bool{"ag_ok": true}, missions: map[string]bundle.MissionState{}}
+	imp := mustImporterForIT(t, dir)
+	act := bundle.NewActivation(imp, fake.ports())
+	ts.Config.Handler = New(Deps{
+		Actor:               room.Actor{ParticipantID: "par_owner", Kind: "human"},
+		OwnerToken:          "tok",
+		BundleImportSVC:     imp,
+		BundleActivationSVC: act,
+	})
+
+	// takeover 未确认 → 400 source_stop_confirmation_required。
+	resp := bundlePost(t, ts.URL+"/v1/bundle-imports/bdi_it01/activation", "tok", map[string]any{"mode": "takeover"})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("confirm: %d", resp.StatusCode)
+	}
+	if code := errorCode(t, resp); code != "source_stop_confirmation_required" {
+		t.Fatalf("code: %v", code)
+	}
+	// copy 遇已存在同 ID → 409 activation_mode_mismatch。
+	resp = bundlePost(t, ts.URL+"/v1/bundle-imports/bdi_it01/activation", "tok", map[string]any{"mode": "copy"})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("mismatch: %d", resp.StatusCode)
+	}
+	if code := errorCode(t, resp); code != "activation_mode_mismatch" {
+		t.Fatalf("code: %v", code)
+	}
+	// 模式不合法 → 400。
+	resp = bundlePost(t, ts.URL+"/v1/bundle-imports/bdi_it01/activation", "tok", map[string]any{"mode": "auto"})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("mode enum: %d", resp.StatusCode)
+	}
+	// 不存在 → 404。
+	resp = bundlePost(t, ts.URL+"/v1/bundle-imports/bdi_nope/activation", "tok", map[string]any{"mode": "copy"})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("404: %d", resp.StatusCode)
+	}
+	// 无 token → 401。
+	resp = bundlePost(t, ts.URL+"/v1/bundle-imports/bdi_it01/activation", "", map[string]any{"mode": "copy"})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("token: %d", resp.StatusCode)
+	}
+}
+
+func TestBundleActivationUnavailable(t *testing.T) {
+	ts, _ := newBundleImportTestServer(t, "tok", false)
+	resp := bundlePost(t, ts.URL+"/v1/bundle-imports/bdi_x/activation", "tok", map[string]any{"mode": "copy"})
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("未装配 503: %d", resp.StatusCode)
+	}
+}
+
+// mustImporterForIT 与 newBundleImportTestServer 同款装配的导入服务（共享数据目录）。
+func mustImporterForIT(t *testing.T, dir string) *bundle.ImportService {
+	t.Helper()
+	return bundle.NewImporter(fakeBundleImportPorts{}.ports(), dir, "0.7.7-dev",
+		bundle.WithImporterNow(func() string { return "2026-11-11T12:00:00Z" }),
+		bundle.WithImporterNewID(func() string { return "bdi_it01" }))
 }

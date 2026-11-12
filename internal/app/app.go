@@ -379,9 +379,15 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			}
 			return nil, false, err
 		}
+		// 0.7.7 复审 #3：导入检查点的源侧契约漂移经水位传导进续办上下文
+		//（bundle.origin_versions="checkpoint=v1:contract=v2"——目标版本
+		// 空间重映射后版本差不可表达，源证据不因导入丢失）。
+		originVersions := cp.SourceWatermarks["bundle.origin_versions"]
 		return &execctx.CheckpointFacts{
 			CheckpointID: cp.CheckpointID, RunID: cp.RunID, Source: cp.Source,
 			CheckpointVersion: cp.CheckpointVersion, MissionVersion: cp.MissionVersion,
+			OriginDrift:    originDriftOf(originVersions),
+			OriginVersions: originVersions,
 			CompletedSteps: cp.CompletedSteps, PendingSteps: cp.PendingSteps,
 			ArtifactRefs: cp.ArtifactRefs, ActionReceipts: cp.ActionReceipts,
 			UncertainActions: cp.UncertainActions, WaitingConditions: cp.WaitingConditions,
@@ -399,6 +405,10 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	// bundle-imports/——同零 migration）。
 	bundleImportSvc := bundle.NewImporter(bundleImportPorts(identitySvc, missionSvc),
 		opts.DataDir, buildVersion(), bundle.WithImporterNow(clock))
+	// 0.7.7 Bundle 激活与执行权接管（ADR-0044）：inactive 副本 → 域写入
+	// （takeover 确认门/copy 新身份；origin 标记幂等——attempt.json 留痕）。
+	bundleActivationSvc := bundle.NewActivation(bundleImportSvc,
+		bundleActivationPorts(identitySvc, missionSvc, checkpointSvc, memorySvc))
 	// 执行上下文清单域（RFC-0018 §7.3 / ADR-0025，0.6.2）：确定性装配存档
 	// （digest 即身份——重建重放，状态变化追加）；任职事实（binding → 实例
 	// → 钉版本模板行）与房间事件经端口适配注入。readiness 经 ADR-0022
@@ -511,46 +521,47 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	go returnWorker.Run(ctx)
 
 	deps := httpapi.Deps{
-		SVC:              svc,
-		Reader:           store,
-		Hub:              hub,
-		Actor:            room.Actor{ParticipantID: "par_owner", Kind: "human"}, // 本地 owner（ADR-0009）
-		Harness:          harnessRegistry,
-		ProbeRunner:      harness.NewHostRunner(),
-		Identity:         identitySvc,
-		Slots:            slotSvc,
-		Missions:         missionSvc,
-		Dispatch:         dispatchSvc,
-		Execctx:          execCtxSvc,
-		Runtimes:         runtimeSvc,
-		MissionRuns:      runSvc,
-		MissionControl:   missioncontrol.New(missionSvc, runSvc),
-		Delivery:         deliverySvc,
-		Review:           review.New(missionSvc, deliveryPackagesAdapter{deliverySvc}, reviewRunsAdapter{runSvc}),
-		ReturnNotices:    returnStore,
-		Reopen:           reopenSvc,
-		Logger:           logger,
-		Dev:              opts.Dev,
-		Budget:           budgetLimits,
-		Outbox:           store,
-		Searcher:         store, // M3-3 按需平面：FTS5 trigram（SQLite 实现端口）
-		ReceiptLister:    store, // v1.70 展示对齐：回执流水正式面
-		ExtraOriginHosts: opts.ExtraOriginHosts,
-		ShellOpenURL:     opts.ShellOpenURL,
-		OwnerToken:       ownerToken,
-		UI:               ui,
-		Backups:          backupMgr,
-		Attachments:      attachStore,
-		Settings:         settingsStore,
-		CheckpointSVC:    checkpointSvc,
-		MemorySVC:        memorySvc,
-		BundleSVC:        bundleSvc,
-		BundleImportSVC:  bundleImportSvc,
-		Monitors:         monitorMgr,
-		DocSVC:           docSvc,
-		DocReader:        store, // doc:{id} 频道 SSE 追平读路径
-		ExtDocs:          extSvc,
-		SheetTransfers:   sheetTransfers,
+		SVC:                 svc,
+		Reader:              store,
+		Hub:                 hub,
+		Actor:               room.Actor{ParticipantID: "par_owner", Kind: "human"}, // 本地 owner（ADR-0009）
+		Harness:             harnessRegistry,
+		ProbeRunner:         harness.NewHostRunner(),
+		Identity:            identitySvc,
+		Slots:               slotSvc,
+		Missions:            missionSvc,
+		Dispatch:            dispatchSvc,
+		Execctx:             execCtxSvc,
+		Runtimes:            runtimeSvc,
+		MissionRuns:         runSvc,
+		MissionControl:      missioncontrol.New(missionSvc, runSvc),
+		Delivery:            deliverySvc,
+		Review:              review.New(missionSvc, deliveryPackagesAdapter{deliverySvc}, reviewRunsAdapter{runSvc}),
+		ReturnNotices:       returnStore,
+		Reopen:              reopenSvc,
+		Logger:              logger,
+		Dev:                 opts.Dev,
+		Budget:              budgetLimits,
+		Outbox:              store,
+		Searcher:            store, // M3-3 按需平面：FTS5 trigram（SQLite 实现端口）
+		ReceiptLister:       store, // v1.70 展示对齐：回执流水正式面
+		ExtraOriginHosts:    opts.ExtraOriginHosts,
+		ShellOpenURL:        opts.ShellOpenURL,
+		OwnerToken:          ownerToken,
+		UI:                  ui,
+		Backups:             backupMgr,
+		Attachments:         attachStore,
+		Settings:            settingsStore,
+		CheckpointSVC:       checkpointSvc,
+		MemorySVC:           memorySvc,
+		BundleSVC:           bundleSvc,
+		BundleImportSVC:     bundleImportSvc,
+		BundleActivationSVC: bundleActivationSvc,
+		Monitors:            monitorMgr,
+		DocSVC:              docSvc,
+		DocReader:           store, // doc:{id} 频道 SSE 追平读路径
+		ExtDocs:             extSvc,
+		SheetTransfers:      sheetTransfers,
 		Diagnostics: diagnosticsBundle(opts.DataDir,
 			func() (int, error) { return countRooms(store) },
 			func() int {

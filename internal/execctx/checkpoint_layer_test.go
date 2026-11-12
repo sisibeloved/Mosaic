@@ -90,3 +90,29 @@ func TestCheckpointLayerReadErrorBlocks(t *testing.T) {
 		t.Fatal("读取失败应报错（不静默 omitted——§7.3 恢复面不能丢事实）")
 	}
 }
+
+// TestOriginDriftMergesIntoContractDrift 0.7.7 复审 #3：导入检查点的源侧
+// 契约漂移（版本重映射后差值不可表达）经 OriginDrift 传导——续办上下文
+// 的 contract_drift 为真且源版本证据随层携带（testMission 契约 v3 ==
+// MissionVersion v3 → 重映射无漂移，仅源侧漂移成立）。
+func TestOriginDriftMergesIntoContractDrift(t *testing.T) {
+	facts := &CheckpointFacts{
+		CheckpointID: "ckp_new1", MissionVersion: 3, // == 契约版本（重映射后无差）
+		OriginDrift: true, OriginVersions: "checkpoint=v1:contract=v2",
+	}
+	svc := fixtureWithCheckpoint(t, facts, false)
+	res, err := svc.Build(context.Background(), "mi_1", "bd_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf, ok := layerOf(t, res.Manifest, LayerCheckpoint).Content.(CheckpointFacts)
+	if !ok {
+		t.Fatalf("层内容应 CheckpointFacts")
+	}
+	if !cf.ContractDrift {
+		t.Fatalf("源侧漂移须并入 contract_drift：%+v", cf)
+	}
+	if cf.OriginVersions != "checkpoint=v1:contract=v2" {
+		t.Fatalf("源版本证据随层携带：%+v", cf)
+	}
+}

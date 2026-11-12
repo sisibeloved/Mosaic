@@ -134,3 +134,24 @@ func TestPortableIdentityIntoBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestOriginDriftOf 0.7.7 复审 #3：源版本水位解析（源快照落后源契约即
+// 源侧漂移——传导进续办上下文的 ContractDrift）。
+func TestOriginDriftOf(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"checkpoint=v1:contract=v2", true},
+		{"checkpoint=v2:contract=v2", false},
+		{"checkpoint=v3:contract=v2", false},
+		{"", false},
+		{"garbage", false},
+		{"checkpoint=v1:contract=", false},
+	}
+	for _, tc := range cases {
+		if got := originDriftOf(tc.in); got != tc.want {
+			t.Fatalf("originDriftOf(%q)=%v want %v", tc.in, got, tc.want)
+		}
+	}
+}

@@ -135,6 +135,35 @@ func (s *Service) CreateManual(ctx context.Context, displayName, adapter string)
 	return view, nil
 }
 
+// CreateImported Bundle 激活的复制模式建身份（0.7.7 / ADR-0044 §1）：新
+// AgentID（agentID 非空 = 激活重试复用映射），source 记 origin 引用（RFC
+// §8.3"复制生成新 AgentID、记录 origin_agent_id"）；EnsureAgent 幂等——
+// 同 ID 已存在 no-op（重试安全）。授权与唤醒不继承（包内本就无——0.7.5 边界）。
+func (s *Service) CreateImported(ctx context.Context, displayName, adapter, agentID, originRef string) (string, error) {
+	name := strings.TrimSpace(displayName)
+	if n := utf8.RuneCountInString(name); n < 1 || n > 64 {
+		return "", fmt.Errorf("%w: display_name 须 1–64 字", ErrInvalidAgent)
+	}
+	adapter = strings.TrimSpace(adapter)
+	if utf8.RuneCountInString(adapter) > 32 {
+		return "", fmt.Errorf("%w: adapter 过长（≤32 字）", ErrInvalidAgent)
+	}
+	ref := strings.TrimSpace(originRef)
+	if ref == "" || utf8.RuneCountInString(ref) > 128 {
+		return "", fmt.Errorf("%w: origin 引用须 1–128 字", ErrInvalidAgent)
+	}
+	if agentID == "" {
+		agentID = s.newAgentID()
+	}
+	if _, err := s.store.EnsureAgent(ctx, Agent{
+		AgentID: agentID, DisplayName: name, Adapter: adapter,
+		Status: StatusActive, Source: ref, CreatedAt: s.now(),
+	}); err != nil {
+		return "", fmt.Errorf("personalagent: 导入建身份: %w", err)
+	}
+	return agentID, nil
+}
+
 // Events 事件流读取（found=false = 身份不存在）。
 func (s *Service) Events(ctx context.Context, agentID string) ([]AgentEvent, bool, error) {
 	if _, ok, err := s.store.AgentByID(ctx, agentID); err != nil {

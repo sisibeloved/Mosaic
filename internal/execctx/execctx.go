@@ -74,11 +74,17 @@ type CheckpointFacts struct {
 	CheckpointID string `json:"checkpoint_id"`
 	// Source 落盘来源（二审 #1）："" = 业务快照 / "system" = 终态摘要——
 	// 消费方据此区分续办输入形态。
-	Source            string   `json:"source"`
-	RunID             string   `json:"run_id"`
-	CheckpointVersion int      `json:"checkpoint_version"`
-	MissionVersion    int      `json:"mission_version"`
-	ContractDrift     bool     `json:"contract_drift"`
+	Source            string `json:"source"`
+	RunID             string `json:"run_id"`
+	CheckpointVersion int    `json:"checkpoint_version"`
+	MissionVersion    int    `json:"mission_version"`
+	ContractDrift     bool   `json:"contract_drift"`
+	// OriginDrift/OriginVersions 0.7.7 复审 #3：Bundle 导入检查点的源侧契约
+	// 漂移（源快照版本落后源契约版本——目标版本空间重映射后版本差不可
+	// 表达，源证据经水位传导）；OriginVersions 为机器可读原文
+	//（"checkpoint=v1:contract=v2"）。漂移判定合并两者（任一即 drift）。
+	OriginDrift       bool     `json:"origin_drift"`
+	OriginVersions    string   `json:"origin_versions,omitempty"`
 	CompletedSteps    []string `json:"completed_steps"`
 	PendingSteps      []string `json:"pending_steps"`
 	ArtifactRefs      []string `json:"artifact_refs"`
@@ -538,7 +544,7 @@ func (s *Service) assemble(ctx context.Context, m mission.Mission, facts Binding
 		if ck, ok, err := s.ports.Checkpoints(ctx, m.MissionID); err != nil {
 			return nil, nil, slot.ReadinessReport{}, fmt.Errorf("execctx: 读最新检查点失败：%w", err)
 		} else if ok {
-			ck.ContractDrift = ck.MissionVersion != m.ContractVersion
+			ck.ContractDrift = ck.MissionVersion != m.ContractVersion || ck.OriginDrift
 			for i := range layers {
 				if layers[i].Name == LayerCheckpoint {
 					layers[i] = includedLayer(LayerCheckpoint, RoleOptional, *ck)

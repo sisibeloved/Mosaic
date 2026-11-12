@@ -3332,6 +3332,40 @@ func (s *Store) CreateMission(ctx context.Context, m mission.Mission, src *missi
 	return s.CreateMissionGated(ctx, m, src, nil)
 }
 
+// CreateMissionPaused 原子创建为 paused（0.7.7 / ADR-0044 一审 #1）：投影行
+// （status=paused）+ 版本行 + created + status_changed（ready→paused 携
+// reason）单事务——不存在可被调度器认领的 ready 窗口。
+func (s *Store) CreateMissionPaused(ctx context.Context, m mission.Mission, reason string) (mission.Mission, error) {
+	raw, err := json.Marshal(m.Content)
+	if err != nil {
+		return mission.Mission{}, fmt.Errorf("sqlite: mission content marshal: %w", err)
+	}
+	m.Status = mission.StatusPaused
+	err = s.identityWriteTx(ctx, func(q identityExec) error {
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO missions (`+missionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.MissionID, m.ContractVersion, m.Status, m.OwnerAgentID, m.Requester,
+			m.Objective, string(raw), m.CreatedAt, m.UpdatedAt, m.WaitingReason, m.ReviewPackageID, m.ReviewRound, m.PendingOwnerAgentID, m.PendingOfferID, m.SlotInstanceID); err != nil {
+			return fmt.Errorf("sqlite: create mission (paused): %w", err)
+		}
+		if err := insertMissionVersion(ctx, q, m, string(raw)); err != nil {
+			return err
+		}
+		if err := appendMissionEvent(ctx, q, m.MissionID, mission.EventCreated, map[string]string{
+			"contract_version": strconv.Itoa(m.ContractVersion), "status": m.Status,
+		}, m.CreatedAt); err != nil {
+			return err
+		}
+		return appendMissionEvent(ctx, q, m.MissionID, mission.EventStatusChanged, map[string]string{
+			"from": mission.StatusReady, "to": mission.StatusPaused, "reason": reason,
+		}, m.UpdatedAt)
+	})
+	if err != nil {
+		return mission.Mission{}, err
+	}
+	return m, nil
+}
+
 // CreateMissionGated 带事务门建单（0.6.13 审校 #1/#2 + 复审 #3/#5/#7）：门在
 // **同一写事务**内核对——slot 意图五核（实例在册 / active 任职 == 预期 /
 // 负责人 active / 授权准入**含 workspace_access** / 模板唯一性锚）+

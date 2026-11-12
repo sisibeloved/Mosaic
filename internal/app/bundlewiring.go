@@ -6,6 +6,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -200,6 +201,184 @@ func bundleImportPorts(identitySvc *personalagent.Service, missionSvc *mission.S
 	}
 }
 
+// bundleActivationPorts 0.7.7 / ADR-0044：激活写入端口组合（四域闭包投影
+// ——身份/任务/检查点/记忆；对照面复用导入端口口径）。
+func bundleActivationPorts(identitySvc *personalagent.Service, missionSvc *mission.Service,
+	ckptSvc *checkpoint.Service, memSvc *memory.Service) bundle.ActivationPorts {
+	return bundle.ActivationPorts{
+		AgentEnsureImported: func(ctx context.Context, displayName, adapter, agentID, originRef string) (string, error) {
+			// 一审 #3：先按持久 origin 关联找回——身份行已落库（source=originRef）
+			// 即可恢复（进程中断时 attempt 未写不产生重复身份；任务查重随找回的
+			// owner 一并恢复）。复审 #2：查重失败必须上抛——查询故障时把已存在
+			// 身份当不存在会造成同 origin 双身份（宁中止勿重复）。
+			views, err := identitySvc.List(ctx)
+			if err != nil {
+				return "", fmt.Errorf("bundle: origin 身份查重: %w", err)
+			}
+			for _, v := range views {
+				if v.Source == originRef {
+					return v.AgentID, nil
+				}
+			}
+			return identitySvc.CreateImported(ctx, displayName, adapter, agentID, originRef)
+		},
+		AgentExists: func(ctx context.Context, agentID string) (bool, error) {
+			_, ok, err := identitySvc.Get(ctx, agentID)
+			return ok, err
+		},
+		MissionCreate: func(ctx context.Context, ownerAgentID string, c bundle.ContractFacts, originRef, pauseReason string) (bundle.MissionRef, error) {
+			content := missionContentOf(c)
+			content.SourceRefs = append(append([]string{}, c.SourceRefs...), originRef)
+			// 一审 #1：原子创建为 paused（完备契约无 ready 调度窗口）。
+			m, err := missionSvc.CreateImported(ctx, ownerAgentID, content, pauseReason)
+			if err != nil {
+				return bundle.MissionRef{}, err
+			}
+			return bundle.MissionRef{MissionID: m.MissionID, ContractVersion: m.ContractVersion, Status: m.Status}, nil
+		},
+		MissionPause: func(ctx context.Context, missionID string, version int, reason string) error {
+			_, err := missionSvc.Pause(ctx, missionID, version, reason)
+			return err
+		},
+		MissionState: func(ctx context.Context, missionID string) (bundle.MissionState, bool, error) {
+			m, ok, err := missionSvc.Get(ctx, missionID)
+			if err != nil || !ok {
+				return bundle.MissionState{}, ok, err
+			}
+			return bundle.MissionState{ContractVersion: m.ContractVersion, Status: m.Status}, true, nil
+		},
+		MissionsOfOwner: func(ctx context.Context, ownerAgentID string) ([]bundle.MissionFact, error) {
+			sums, err := missionSvc.ListMissions(ctx)
+			if err != nil {
+				return nil, err
+			}
+			var out []bundle.MissionFact
+			for _, sm := range sums {
+				if sm.OwnerAgentID != ownerAgentID {
+					continue
+				}
+				m, ok, err := missionSvc.Get(ctx, sm.MissionID)
+				if err != nil {
+					return nil, err
+				}
+				if !ok || m.OwnerAgentID != ownerAgentID {
+					continue
+				}
+				out = append(out, bundleMissionOf(m))
+			}
+			return out, nil
+		},
+		CheckpointImported: func(ctx context.Context, missionID, originCheckpointID string) (bool, error) {
+			// 复审 #4：全量覆盖业务与系统两类（LatestOfMission 排除 system——
+			// system 导入条会漏检致重试重复落库）；按水位比对来源幂等标记。
+			cps, err := ckptSvc.CheckpointsOfMission(ctx, missionID)
+			if err != nil {
+				return false, err
+			}
+			for _, cp := range cps {
+				if cp.SourceWatermarks["bundle.origin_checkpoint"] == originCheckpointID {
+					return true, nil
+				}
+			}
+			return false, nil
+		},
+		CheckpointImport: func(ctx context.Context, c bundle.CheckpointFact, targetMissionID string, targetVersion int, marks map[string]string) error {
+			wm := copyWatermarksFor(c.SourceWatermarks, marks)
+			_, err := ckptSvc.CreateImported(ctx, checkpoint.CreateCmd{
+				MissionID:      targetMissionID,
+				MissionVersion: targetVersion,
+				CompletedSteps: c.CompletedSteps, PendingSteps: c.PendingSteps,
+				ArtifactRefs: c.ArtifactRefs, ActionReceipts: c.ActionReceipts,
+				UncertainActions: c.UncertainActions, WaitingConditions: c.WaitingConditions,
+				SourceWatermarks: wm, ProgressSummary: c.ProgressSummary,
+				Source: c.Source, // 保留源语义（""/system——一审 #6）
+			})
+			return err
+		},
+		MemoryCreate: func(ctx context.Context, item bundle.MemoryFact, scopeID, originRef string) error {
+			conf := item.Confidence
+			_, err := memSvc.Create(ctx, memory.CreateCmd{
+				Namespace: memory.Namespace(item.Namespace), ScopeID: scopeID,
+				Kind: memory.Kind(item.Kind), Title: item.Title, Content: item.Content,
+				SourceRefs: append(append([]string{}, item.SourceRefs...), originRef),
+				ObservedAt: item.ObservedAt, ValidFrom: item.ValidFrom, ValidTo: item.ValidTo,
+				Confidence: &conf, Sensitivity: memory.Sensitivity(item.Sensitivity),
+				Status: memory.StatusActive, // 包内记忆恒 active（0.7.6 安全门口径）
+			})
+			return err
+		},
+		MemoryList: func(ctx context.Context, ns, scopeID string) ([]bundle.MemoryFact, error) {
+			var out []bundle.MemoryFact
+			for _, st := range []memory.Status{memory.StatusActive, memory.StatusProposed, memory.StatusSuperseded} {
+				before := ""
+				for {
+					res, err := memSvc.List(ctx, memory.ListFilter{
+						Namespace: memory.Namespace(ns), ScopeID: scopeID, Status: st,
+						Limit: 100, Before: before, IncludeExpired: true,
+					})
+					if err != nil {
+						return nil, err
+					}
+					for _, it := range res.Items {
+						out = append(out, bundleMemoryOf(it))
+					}
+					if res.NextCursor == "" {
+						break
+					}
+					before = res.NextCursor
+				}
+			}
+			return out, nil
+		},
+		Harnesses: func(ctx context.Context) ([]string, error) {
+			views, err := identitySvc.List(ctx)
+			if err != nil {
+				return nil, err
+			}
+			set := map[string]bool{}
+			for _, v := range views {
+				for _, e := range v.Executables {
+					set[portableExeID(v.Adapter, e.Runtime, e.Distro)] = true
+				}
+			}
+			out := make([]string, 0, len(set))
+			for id := range set {
+				out = append(out, id)
+			}
+			sort.Strings(out)
+			return out, nil
+		},
+	}
+}
+
+// copyWatermarksFor 源水位与 origin 标记合并（后者覆盖同键）。
+func copyWatermarksFor(src, marks map[string]string) map[string]string {
+	out := make(map[string]string, len(src)+len(marks))
+	for k, v := range src {
+		out[k] = v
+	}
+	for k, v := range marks {
+		out[k] = v
+	}
+	return out
+}
+
+// missionContentOf bundle.ContractFacts → mission.Content（bundleMissionOf 反向）。
+func missionContentOf(c bundle.ContractFacts) mission.Content {
+	return mission.Content{
+		Objective: c.Objective, Scope: c.Scope,
+		Constraints: c.Constraints, AcceptanceCriteria: c.AcceptanceCriteria,
+		DeliverableSpecs: c.DeliverableSpecs, SourceRefs: c.SourceRefs, ReturnTargets: c.ReturnTargets,
+		Budget: mission.Budget{
+			Concurrency: c.Budget.Concurrency, MaxRuns: c.Budget.MaxRuns,
+			MaxWallClockSeconds: c.Budget.MaxWallClockSeconds,
+			MaxRetries:          c.Budget.MaxRetries, MaxDelegationDepth: c.Budget.MaxDelegationDepth,
+		},
+		Delegation: mission.DelegationPolicy{Allowed: c.Delegation.Allowed, MaxDepth: c.Delegation.MaxDepth},
+		Reviewer:   c.Reviewer,
+	}
+}
+
 // portableExeID 可执行项的 Bundle 投影标识（一审 #4）：注册表 ExeID 为
 // adapter@runtime[:distro]:path（含安装路径——暴露本机用户名/目录结构），
 // 导出面统一去路径段，形如 codex@wsl:openEuler-24.03；runtime/distro/
@@ -316,4 +495,14 @@ func bundleMemoryOf(it memory.Item) bundle.MemoryFact {
 		})
 	}
 	return out
+}
+
+// originDriftOf 解析 bundle.origin_versions 水位（"checkpoint=v1:contract=v2"）
+// ——源快照落后源契约即源侧漂移（解析失败保守 false：水位缺省非导入条目）。
+func originDriftOf(v string) bool {
+	var ck, ct int
+	if n, _ := fmt.Sscanf(v, "checkpoint=v%d:contract=v%d", &ck, &ct); n != 2 {
+		return false
+	}
+	return ck < ct
 }

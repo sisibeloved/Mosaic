@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **0.7.7 导入激活与执行权接管：防止同身份双写**（0.7 领域线第八件 / ADR-0044，RFC-0018 §8.3——迁移链"目标实例接收"收官环）：
+  - **两种激活模式**（RFC §8.3 两分支）：`takeover`（同身份承接——本实例已有同 ID Agent，**必须 `confirm_source_stopped` 人工确认源端已撤销执行权**；服务端不验证只记录声明——"不能靠包内一个'已停机'字段证明外部执行者已经停止"）/ `copy`（新身份复制——新 AgentID + `source` 记 `bundle:<bundle_id>:<origin_agent_id>`（RFC"记录 origin_agent_id"），无须确认）；模式与实例事实不匹配 409（不自动推断——显式声明是防双写第一道门）。
+  - **激活时实时复核**（blockers 是预检快照）：重解析包（完整性顺带重验）+ 同 ID 任务冲突（同库重复激活防线）+ 依赖可用性——任一存在 422 `activation_blocked`。
+  - **跨域顺序写入 + origin 标记幂等**（无跨域事务）：任务以**新 mission_id** 承接（RFC"显式承接和对象映射"——origin 标记 `bundle:<bdl>:<mi_x>` 进契约 SourceRefs；映射是激活结果一等公民）+ 完备契约 **paused** 承接（draft 留 draft——均不自动入调度）；检查点经 checkpoint 域新导入面 `CreateImported` 落库（**保留源 checkpoint_id/run_id、Source="import"**——业务快照类，LatestForResume 续办口径不变；mission_version 对齐新任务）；记忆三命名空间重锚（agent→目标身份 / workspace→default / mission→映射后新任务）+ 新 mem_* ID + origin 标记；`attempt.json` 落进行中映射——**失败保持 inactive，重激活不重复写**（身份/任务/检查点/记忆四层幂等）。
+  - **域与装配**：`bundle.ActivationService`（复用 ImportService 记录面与互斥锁）+ `ActivationPorts` 四域闭包投影；personalagent += `CreateImported`（EnsureAgent 幂等路径，source 记 origin——零 migration）；checkpoint += `CreateImported`（免 run 双锚——锚定语义由激活编排保证，(run_id, checkpoint_version) 唯一索引兜底——零 migration）；mission/memory 无域改动。Slot 任职不恢复（0.7.9 题目）、授权与唤醒不继承（包内本就无）。
+  - **HTTP 与 UI**：`POST /v1/bundle-imports/{import_id}/activation`（200 含幂等返回 / 400 确认缺失 / 409 模式错配 / 422 复检不过）；导入记录 `status: inactive → activated` + `activation` 块（ID 映射/计数/确认声明时间——边车同构）；历史行"激活"操作（模式选择 + takeover 确认勾选醒目警示）+ 已激活徽标 + 报告内激活结果展示。
+  - 验证：bundle UT（copy/takeover 全语义/防双写门/实时复核三源/幂等返回/失败重试四层不重复/三命名空间重锚/检查点源 ID 保留）+ personalagent/checkpoint 域 UT（CreateImported）+ httpapi IT（激活端点全语义）+ 真机冒烟。
+
 ## [0.7.6] - 2026-11-11
 
 ### Added
@@ -29,6 +39,21 @@
   - **依赖清单缺失绕过依赖对照**：依赖检查只读 dependencies.harness——清空 harness（重算摘要）后即使目标无任何 Harness 仍 eligible 并报"包内无可执行项引用"。闭包门新增一致性核验（dependencies.harness 与 profile.executables 标识集合须相等——两处导出侧同源，矛盾即结构性拒绝）；兼容对照面改两处并集（清单被清空也不得静默缩圈）。
   - **严格解码漏检非法尾随内容**：`Decoder.More()` 遇 `]`/`}` 恒 false（"容器还有没有元素"语义）——合法 manifest 后追加 `]` 与额外对象仍过关。`decodeStrict` 尾随判定改为第二次 Decode 严格 `io.EOF`。
   - **导入历史无法重开完整报告**：完整报告只在组件态，切分区/刷新即失、重复上传 409。历史行新增"查看报告"（经详情端点恢复检查明细/阻断原因/脱敏报告展示）。
+- **0.7.7 一审修复（3 P1 + 4 P2，ADR-0044 v0.2）**：
+  - **ready 调度窗口（P1）**：任务承接原为 Create(ready)+Pause 两事务——调度器可在两步间认领（复现：激活报 paused 而任务已被认领执行）。mission 域新增 `CreateMissionPaused`（投影 paused + created + status_changed 事件对**单事务**），激活原子创建为 paused——无 ready 窗口。
+  - **重试漏补暂停（P1）**：origin 查重命中原只读状态即跳过——"创建成功、暂停失败"的 ready 残留任务不补暂停（复现：激活成功、状态 ready、暂停零次）。found 后按实时状态补做 Pause（ready/running/waiting）。
+  - **中断丢映射重复建身份（P1）**：attempt.json 只在 fail 时写且 best-effort——副作用后进程中断则映射丢失（复现两个身份两份任务）。`AgentEnsureImported` 改为先按**持久 origin 关联**找回（身份行 source=originRef 即事实——域内幂等不依赖中间文件）。
+  - **版本重映射抹源漂移（P2）**：检查点版本无条件对齐新任务——源"快照 v1 vs 契约 v2"的漂移事实丢失（续办 drift 误 false）。源版本入 `bundle.origin_versions` 水位（机器可读）。
+  - **沿用检查点主键撞 UNIQUE（P2）**：同源任务两包（不同 bundle_id）携同一 checkpoint_id——第二包落库失败（复现 UNIQUE checkpoints.checkpoint_id）。`CreateImported` 全新 checkpoint_id/run_id 域生成；幂等键改 `bundle.origin_checkpoint` 水位。
+  - **导入检查点绕过内容校验（P2）**：交集/长度/摘要/水位校验与普通创建同源复用（复现 completed∩pending 非空仍落库）——免的只是源 run 存在性锚。
+  - **Source=import 遮蔽新摘要（P2）**：源 system 终态摘要被改写为业务快照优先选取（复现：旧 paused 摘要遮蔽新 succeeded 摘要）。Source 保留包内源语义（""/system——0.7.4 选取口径不变），导入事实记 `bundle.import` 水位。
+- **0.7.7 复审修复（2 P1 + 2 P2，ADR-0044 v0.3；上轮四项已验证关闭）**：
+  - **恢复路径跳过暂停核验（P1）**：状态查询失败/不存在时保留默认 paused 继续激活（实际 ready 未暂停也报 activated）；attempt 映射命中完全不查实时状态。两条恢复路径统一 `ensureMissionPaused` 实时核验——查询失败/不存在即中止，ready/running/waiting 补做暂停。
+  - **身份查重失败仍建重复身份（P1）**：origin 找回吞掉 List 错误——查询故障时已存在身份被当不存在（复现同 origin 双身份）。查重失败上抛中止。
+  - **源漂移未进续办上下文（P2）**：origin_versions 只落库水位、投影不携带（复现 drift 误 false）。CheckpointFacts += `OriginDrift/OriginVersions`；execctx 漂移判定合并（重映射差值 ‖ 源侧漂移），源版本证据随 checkpoint 层携带。
+  - **system 检查点查重漏检（P2）**：查重用 LatestOfMission（排除 system）——system 条已写后重试重复落库（真实 SQLite 复现）。checkpoint += `CheckpointsOfMission`（全量任意 source）；查重端口改 `CheckpointImported` 全量水位比对。
+- **0.7.7 三审修复（1 P2，ADR-0044 v0.4；上轮 4 项复测关闭）**：
+  - **连续迁移覆盖未解决源契约漂移**：每次激活重算 origin_versions 覆盖已有水位——A→B→C 链上 A 的 checkpoint=v1:contract=v2 被 B 跳重映射后的 v1:contract=v1 抹平（C 侧漂移误 false）。漂移证据**保最早未解决记录**（包内检查点自带证据且快照未更新 → 原样保留；新快照按本跳事实生成）；溯源定位水位仍记最近一跳——两类水位分工。
 
 ## [0.7.5] - 2026-11-09
 

@@ -186,6 +186,57 @@ func (e BindingViewStatus) Valid() bool {
 	}
 }
 
+// Defines values for BundleActivationRequestMode.
+const (
+	BundleActivationRequestModeCopy     BundleActivationRequestMode = "copy"
+	BundleActivationRequestModeTakeover BundleActivationRequestMode = "takeover"
+)
+
+// Valid indicates whether the value is a known member of the BundleActivationRequestMode enum.
+func (e BundleActivationRequestMode) Valid() bool {
+	switch e {
+	case BundleActivationRequestModeCopy:
+		return true
+	case BundleActivationRequestModeTakeover:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BundleActivationViewMode.
+const (
+	BundleActivationViewModeCopy     BundleActivationViewMode = "copy"
+	BundleActivationViewModeTakeover BundleActivationViewMode = "takeover"
+)
+
+// Valid indicates whether the value is a known member of the BundleActivationViewMode enum.
+func (e BundleActivationViewMode) Valid() bool {
+	switch e {
+	case BundleActivationViewModeCopy:
+		return true
+	case BundleActivationViewModeTakeover:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BundleActivationViewStatus.
+const (
+	BundleActivationViewStatusActivated BundleActivationViewStatus = "activated"
+)
+
+// Valid indicates whether the value is a known member of the BundleActivationViewStatus enum.
+func (e BundleActivationViewStatus) Valid() bool {
+	switch e {
+	case BundleActivationViewStatusActivated:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for BundleImportCheckResult.
 const (
 	BundleImportCheckResultBlock BundleImportCheckResult = "block"
@@ -227,12 +278,15 @@ func (e BundleImportSourceFormat) Valid() bool {
 
 // Defines values for BundleImportSummaryStatus.
 const (
-	BundleImportSummaryStatusInactive BundleImportSummaryStatus = "inactive"
+	BundleImportSummaryStatusActivated BundleImportSummaryStatus = "activated"
+	BundleImportSummaryStatusInactive  BundleImportSummaryStatus = "inactive"
 )
 
 // Valid indicates whether the value is a known member of the BundleImportSummaryStatus enum.
 func (e BundleImportSummaryStatus) Valid() bool {
 	switch e {
+	case BundleImportSummaryStatusActivated:
+		return true
 	case BundleImportSummaryStatusInactive:
 		return true
 	default:
@@ -302,12 +356,15 @@ func (e BundleImportViewScopeNamespaces) Valid() bool {
 
 // Defines values for BundleImportViewStatus.
 const (
-	BundleImportViewStatusInactive BundleImportViewStatus = "inactive"
+	BundleImportViewStatusActivated BundleImportViewStatus = "activated"
+	BundleImportViewStatusInactive  BundleImportViewStatus = "inactive"
 )
 
 // Valid indicates whether the value is a known member of the BundleImportViewStatus enum.
 func (e BundleImportViewStatus) Valid() bool {
 	switch e {
+	case BundleImportViewStatusActivated:
+		return true
 	case BundleImportViewStatusInactive:
 		return true
 	default:
@@ -330,6 +387,24 @@ func (e BundleImportViewVerdict) Valid() bool {
 	case BundleImportViewVerdictEligible:
 		return true
 	case BundleImportViewVerdictEligibleWithWarnings:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BundleMissionMappingStatus.
+const (
+	BundleMissionMappingStatusDraft  BundleMissionMappingStatus = "draft"
+	BundleMissionMappingStatusPaused BundleMissionMappingStatus = "paused"
+)
+
+// Valid indicates whether the value is a known member of the BundleMissionMappingStatus enum.
+func (e BundleMissionMappingStatus) Valid() bool {
+	switch e {
+	case BundleMissionMappingStatusDraft:
+		return true
+	case BundleMissionMappingStatusPaused:
 		return true
 	default:
 		return false
@@ -2953,6 +3028,57 @@ type BindingViewScope string
 // BindingViewStatus defines model for BindingView.Status.
 type BindingViewStatus string
 
+// BundleActivationCounts 激活写入计数（skipped = 幂等已写或口径排除——如未承接任务的 mission 域记忆）。
+type BundleActivationCounts struct {
+	CheckpointsCreated int `json:"checkpoints_created"`
+	CheckpointsSkipped int `json:"checkpoints_skipped"`
+	MemoriesCreated    int `json:"memories_created"`
+	MemoriesSkipped    int `json:"memories_skipped"`
+	MissionsCreated    int `json:"missions_created"`
+	MissionsSkipped    int `json:"missions_skipped"`
+}
+
+// BundleActivationRequest 激活请求（0.7.7 / ADR-0044 §1）。模式与实例事实必须匹配：目标已有
+// 同 ID Agent → takeover（须 confirm_source_stopped——人工声明源端已
+// 撤销执行权，服务端不验证只记录）；目标无 → copy（新 AgentID）。
+type BundleActivationRequest struct {
+	// ConfirmSourceStopped takeover 必填 true——同身份双写防线的人工确认门
+	ConfirmSourceStopped *bool                       `json:"confirm_source_stopped,omitempty"`
+	Mode                 BundleActivationRequestMode `json:"mode"`
+}
+
+// BundleActivationRequestMode defines model for BundleActivationRequest.Mode.
+type BundleActivationRequestMode string
+
+// BundleActivationView 激活结果（成功响应与导入详情 activation 块同构）。ID 映射是一等公民
+// （续办与 0.7.9 交接的事实源）；takeover 的确认时间入档（人工声明非验证）。
+type BundleActivationView struct {
+	ActivatedAt string `json:"activated_at"`
+	BundleId    string `json:"bundle_id"`
+
+	// ConfirmSourceStoppedAt takeover 人工确认时间（声明源端已撤销执行权）
+	ConfirmSourceStoppedAt *string `json:"confirm_source_stopped_at,omitempty"`
+
+	// Counts 激活写入计数（skipped = 幂等已写或口径排除——如未承接任务的 mission 域记忆）。
+	Counts   BundleActivationCounts `json:"counts"`
+	ImportId string                 `json:"import_id"`
+
+	// LocalAgentId 本实例承接身份（copy = 新 AgentID；takeover = 沿用）
+	LocalAgentId string                   `json:"local_agent_id"`
+	Missions     []BundleMissionMapping   `json:"missions"`
+	Mode         BundleActivationViewMode `json:"mode"`
+
+	// OriginAgentId 包内源身份
+	OriginAgentId string                     `json:"origin_agent_id"`
+	Status        BundleActivationViewStatus `json:"status"`
+}
+
+// BundleActivationViewMode defines model for BundleActivationView.Mode.
+type BundleActivationViewMode string
+
+// BundleActivationViewStatus defines model for BundleActivationView.Status.
+type BundleActivationViewStatus string
+
 // BundleImportCheck 预检单项（0.7.6 / ADR-0043 §4）。check 键：zip_structure /
 // integrity / reference_closure（安全门通过摘要，恒 pass）与
 // source_version / identity_conflict / mission_conflict /
@@ -3010,10 +3136,12 @@ type BundleImportSummaryStatus string
 type BundleImportSummaryVerdict string
 
 // BundleImportView 导入登记全量视图（创建响应/详情；边车 import.json 即其序列化）。
-// status 恒 inactive（0.7.6 无改态路径——激活归 0.7.7）；verdict
-// blocked = 有 block 级 findings（激活受阻——导入本身已登记）。
+// status inactive → activated（0.7.7 激活后；verdict 是登记时预检快照）；
+// verdict blocked = 有 block 级 findings（激活受阻——导入本身已登记）。
 type BundleImportView struct {
-	AgentId string `json:"agent_id"`
+	// Activation 激活结果（0.7.7——已激活时存在）
+	Activation *BundleActivationView `json:"activation,omitempty"`
+	AgentId    string                `json:"agent_id"`
 
 	// Blockers block 级 check 键（激活前必须解决——0.7.7 输入契约）
 	Blockers []string `json:"blockers"`
@@ -3066,6 +3194,21 @@ type BundleImportViewStatus string
 
 // BundleImportViewVerdict defines model for BundleImportView.Verdict.
 type BundleImportViewVerdict string
+
+// BundleMissionMapping 任务 ID 映射（RFC §8.3"显式承接和对象映射"——跨库对象一律新 ID）。
+type BundleMissionMapping struct {
+	// LocalMissionId 本实例承接任务 ID（域新生成）
+	LocalMissionId string `json:"local_mission_id"`
+
+	// OriginMissionId 源实例任务 ID
+	OriginMissionId string `json:"origin_mission_id"`
+
+	// Status 承接态（ready→paused 承接；draft 留 draft——本就未入调度）
+	Status BundleMissionMappingStatus `json:"status"`
+}
+
+// BundleMissionMappingStatus 承接态（ready→paused 承接；draft 留 draft——本就未入调度）
+type BundleMissionMappingStatus string
 
 // CapabilityList 能力/上下文域要求分层——required 缺失即 blocked、optional 缺失按声明降级（AT-07 准入预埋）；两者不得相交。
 type CapabilityList struct {
@@ -6187,6 +6330,9 @@ type CreateAgentBundleExportJSONRequestBody = AgentBundleExportRequest
 // CreateBundleImportMultipartRequestBody defines body for CreateBundleImport for multipart/form-data ContentType.
 type CreateBundleImportMultipartRequestBody CreateBundleImportMultipartBody
 
+// ActivateBundleImportJSONRequestBody defines body for ActivateBundleImport for application/json ContentType.
+type ActivateBundleImportJSONRequestBody = BundleActivationRequest
+
 // ReleaseDispatchClaimJSONRequestBody defines body for ReleaseDispatchClaim for application/json ContentType.
 type ReleaseDispatchClaimJSONRequestBody = DispatchClaimReleaseRequest
 
@@ -6378,6 +6524,9 @@ type ServerInterface interface {
 	// GetBundleImport 导入详情（激活决策前的复核面；0.7.6）
 	// (GET /v1/bundle-imports/{import_id})
 	GetBundleImport(w http.ResponseWriter, r *http.Request, importId string)
+	// ActivateBundleImport 导入激活与执行权接管（0.7.7 / ADR-0044，RFC-0018 §8.3）
+	// (POST /v1/bundle-imports/{import_id}/activation)
+	ActivateBundleImport(w http.ResponseWriter, r *http.Request, importId string)
 	// GetContextManifest 执行上下文清单详情（含层内容块与 Receipt）
 	// (GET /v1/context-manifests/{manifest_id})
 	GetContextManifest(w http.ResponseWriter, r *http.Request, manifestId string)
@@ -6975,6 +7124,32 @@ func (siw *ServerInterfaceWrapper) GetBundleImport(w http.ResponseWriter, r *htt
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetBundleImport(w, r, importId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ActivateBundleImport operation middleware
+func (siw *ServerInterfaceWrapper) ActivateBundleImport(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "import_id" -------------
+	var importId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "import_id", r.PathValue("import_id"), &importId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "import_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ActivateBundleImport(w, r, importId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -10933,6 +11108,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/bundle-imports", wrapper.ListBundleImports)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/bundle-imports", wrapper.CreateBundleImport)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/bundle-imports/{import_id}", wrapper.GetBundleImport)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/bundle-imports/{import_id}/activation", wrapper.ActivateBundleImport)
 
 	return m
 }

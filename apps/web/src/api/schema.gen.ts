@@ -2826,6 +2826,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/bundle-imports/{import_id}/activation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 导入激活与执行权接管（0.7.7 / ADR-0044，RFC-0018 §8.3）
+         * @description inactive 只读副本 → 域写入（身份/任务承诺/检查点/记忆）。两种模式：
+         *     takeover（同身份承接——本实例已有同 ID Agent，必须 confirm_source_stopped
+         *     人工确认源端已撤销执行权——服务端不验证，记录声明）；copy（新身份复制
+         *     ——新 AgentID + source 记 origin 引用，无须确认）。模式与实例事实不匹配
+         *     409。激活时实时复核（重解析包 + 同 ID 任务冲突 + 依赖可用性——任一存在
+         *     422）。跨库对象一律新 ID + origin 映射（SourceRefs 标记幂等——重激活
+         *     不重复写）；承诺一律非活跃承接（ready→paused、draft 留 draft）；Slot
+         *     任职不恢复（0.7.9）、授权与唤醒不继承。已激活幂等返回既有结果。
+         */
+        post: operations["activateBundleImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4519,6 +4546,59 @@ export interface components {
             exports: components["schemas"]["AgentBundleSummary"][];
         };
         /**
+         * @description 激活请求（0.7.7 / ADR-0044 §1）。模式与实例事实必须匹配：目标已有
+         *     同 ID Agent → takeover（须 confirm_source_stopped——人工声明源端已
+         *     撤销执行权，服务端不验证只记录）；目标无 → copy（新 AgentID）。
+         */
+        BundleActivationRequest: {
+            /** @enum {string} */
+            mode: "takeover" | "copy";
+            /** @description takeover 必填 true——同身份双写防线的人工确认门 */
+            confirm_source_stopped?: boolean;
+        };
+        /** @description 任务 ID 映射（RFC §8.3"显式承接和对象映射"——跨库对象一律新 ID）。 */
+        BundleMissionMapping: {
+            /** @description 源实例任务 ID */
+            origin_mission_id: string;
+            /** @description 本实例承接任务 ID（域新生成） */
+            local_mission_id: string;
+            /**
+             * @description 承接态（ready→paused 承接；draft 留 draft——本就未入调度）
+             * @enum {string}
+             */
+            status: "paused" | "draft";
+        };
+        /** @description 激活写入计数（skipped = 幂等已写或口径排除——如未承接任务的 mission 域记忆）。 */
+        BundleActivationCounts: {
+            memories_created: number;
+            memories_skipped: number;
+            missions_created: number;
+            missions_skipped: number;
+            checkpoints_created: number;
+            checkpoints_skipped: number;
+        };
+        /**
+         * @description 激活结果（成功响应与导入详情 activation 块同构）。ID 映射是一等公民
+         *     （续办与 0.7.9 交接的事实源）；takeover 的确认时间入档（人工声明非验证）。
+         */
+        BundleActivationView: {
+            import_id: string;
+            bundle_id: string;
+            /** @enum {string} */
+            mode: "takeover" | "copy";
+            /** @enum {string} */
+            status: "activated";
+            activated_at: string;
+            /** @description 包内源身份 */
+            origin_agent_id: string;
+            /** @description 本实例承接身份（copy = 新 AgentID；takeover = 沿用） */
+            local_agent_id: string;
+            /** @description takeover 人工确认时间（声明源端已撤销执行权） */
+            confirm_source_stopped_at?: string;
+            missions: components["schemas"]["BundleMissionMapping"][];
+            counts: components["schemas"]["BundleActivationCounts"];
+        };
+        /**
          * @description 预检单项（0.7.6 / ADR-0043 §4）。check 键：zip_structure /
          *     integrity / reference_closure（安全门通过摘要，恒 pass）与
          *     source_version / identity_conflict / mission_conflict /
@@ -4545,8 +4625,8 @@ export interface components {
         };
         /**
          * @description 导入登记全量视图（创建响应/详情；边车 import.json 即其序列化）。
-         *     status 恒 inactive（0.7.6 无改态路径——激活归 0.7.7）；verdict
-         *     blocked = 有 block 级 findings（激活受阻——导入本身已登记）。
+         *     status inactive → activated（0.7.7 激活后；verdict 是登记时预检快照）；
+         *     verdict blocked = 有 block 级 findings（激活受阻——导入本身已登记）。
          */
         BundleImportView: {
             import_id: string;
@@ -4554,7 +4634,7 @@ export interface components {
             bundle_id: string;
             agent_id: string;
             /** @enum {string} */
-            status: "inactive";
+            status: "inactive" | "activated";
             /** @enum {string} */
             verdict: "eligible" | "eligible_with_warnings" | "blocked";
             /** @description block 级 check 键（激活前必须解决——0.7.7 输入契约） */
@@ -4581,6 +4661,8 @@ export interface components {
             };
             checks: components["schemas"]["BundleImportCheck"][];
             redaction: components["schemas"]["AgentBundleRedactionReport"];
+            /** @description 激活结果（0.7.7——已激活时存在） */
+            activation?: components["schemas"]["BundleActivationView"];
         };
         /** @description 导入摘要（列表元素）。 */
         BundleImportSummary: {
@@ -4588,7 +4670,7 @@ export interface components {
             bundle_id: string;
             agent_id: string;
             /** @enum {string} */
-            status: "inactive";
+            status: "inactive" | "activated";
             /** @enum {string} */
             verdict: "eligible" | "eligible_with_warnings" | "blocked";
             imported_at: string;
@@ -11981,7 +12063,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 导入全量视图（checks 全量 + 脱敏报告透传） */
+            /** @description 导入全量视图（checks 全量 + 脱敏报告透传 + 激活结果） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -12000,6 +12082,77 @@ export interface operations {
                 };
             };
             /** @description Bundle 导入面未装配（bundle_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    activateBundleImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                import_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BundleActivationRequest"];
+            };
+        };
+        responses: {
+            /** @description 已激活（或幂等返回既有激活结果——含 ID 映射与计数） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BundleActivationView"];
+                };
+            };
+            /** @description 模式不合法（invalid_request）/ takeover 未确认源端已停（source_stop_confirmation_required） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 导入不存在（bundle_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 模式与实例事实不匹配（activation_mode_mismatch——message 指出可用模式） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 实时复核不过（activation_blocked——同 ID 任务冲突/依赖缺失/包重校验不过，明细聚合） */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Bundle 激活面未装配（bundle_unavailable） */
             503: {
                 headers: {
                     [name: string]: unknown;

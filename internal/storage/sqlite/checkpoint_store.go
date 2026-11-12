@@ -131,6 +131,26 @@ func (s *Store) LatestOfMission(ctx context.Context, missionID string) (checkpoi
 	return cp, true, nil
 }
 
+// CheckpointsOfMission 任务级全量（任意 source 含 system，降序——
+// 0.7.7 复审 #4：导入幂等查重按水位比对须覆盖两类）。
+func (s *Store) CheckpointsOfMission(ctx context.Context, missionID string) ([]checkpoint.Checkpoint, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+checkpointCols+` FROM checkpoints WHERE mission_id = ? ORDER BY rowid DESC`, missionID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: checkpoints of mission: %w", err)
+	}
+	defer rows.Close()
+	var out []checkpoint.Checkpoint
+	for rows.Next() {
+		cp, err := scanCheckpoint(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: scan checkpoint: %w", err)
+		}
+		out = append(out, cp)
+	}
+	return out, rows.Err()
+}
+
 // LatestSystemOfMission 最新系统终态摘要（二审 #1 回退面）。
 func (s *Store) LatestSystemOfMission(ctx context.Context, missionID string) (checkpoint.Checkpoint, bool, error) {
 	row := s.db.QueryRowContext(ctx,

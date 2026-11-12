@@ -5,7 +5,7 @@
 // 分层规矩：房间讨论策略在房间内调（右侧信息面板）；本页子导航纯前端态（刷新回
 // 默认 Agent 区）。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type AgentBundleExportView, type AgentBundleSummary, type BundleImportView, type BundleImportSummary, type BackupSummary, type Executable, type IdentityAgent, type MissionSummary, type MonitorView, type SettingsDoc, type SlotSpecContent, type SlotSpecSummary, type SlotSpecView, type SlotInstanceView, type BindingView, type ReadinessReportView } from "../api/client";
+import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type AgentBundleExportView, type AgentBundleSummary, type BundleImportView, type BundleImportSummary, type BundleActivationView, type BackupSummary, type Executable, type IdentityAgent, type MissionSummary, type MonitorView, type SettingsDoc, type SlotSpecContent, type SlotSpecSummary, type SlotSpecView, type SlotInstanceView, type BindingView, type ReadinessReportView } from "../api/client";
 import { AppLogo } from "../components/AppLogo";
 import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
 import { UpdateEditor } from "../components/UpdateEditor";
@@ -2445,7 +2445,7 @@ function BundleImports() {
     try {
       const view = await api.uploadBundleImport(file);
       setResult(view);
-      setMsg(`已登记 ${view.import_id}（inactive——激活随后续版本）`);
+      setMsg(`已登记 ${view.import_id}（inactive——下方历史行可激活）`);
       reload();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
@@ -2466,6 +2466,35 @@ function BundleImports() {
       setMsg(e instanceof Error ? e.message : String(e));
     } finally {
       setDetailBusy(null);
+    }
+  };
+
+  // 0.7.7 激活（ADR-0044）：takeover = 同身份承接（须人工确认源端已撤销
+  // 执行权——服务端不验证只记录声明）；copy = 新身份复制（新 AgentID）。
+  const [actFor, setActFor] = useState<string | null>(null); // 展开激活操作的行
+  const [actMode, setActMode] = useState<"takeover" | "copy">("copy");
+  const [confirmStop, setConfirmStop] = useState(false);
+  const [actBusy, setActBusy] = useState(false);
+  const [actResult, setActResult] = useState<BundleActivationView | null>(null);
+
+  const onActivate = async (importID: string) => {
+    setActBusy(true);
+    setMsg(null);
+    try {
+      const view = await api.activateBundleImport(importID, {
+        mode: actMode,
+        confirm_source_stopped: actMode === "takeover" ? confirmStop : undefined,
+      });
+      setActResult(view);
+      setActFor(null);
+      setMsg(`已激活 ${view.import_id}（${view.mode === "takeover" ? "同身份承接" : "新身份复制"} → ${view.local_agent_id}）`);
+      reload();
+      const detail = await api.getBundleImport(importID);
+      setResult(detail);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setActBusy(false);
     }
   };
 
@@ -2535,6 +2564,47 @@ function BundleImports() {
               <p className="text-faint">恢复限制：{result.redaction.recovery_limits.join("；")}</p>
             )}
           </div>
+          {result.activation && (
+            <div className="mt-2 rounded-lg border border-border bg-surface-2 p-2 leading-5">
+              <p className="mb-1 font-medium text-dim">
+                激活结果（{result.activation.mode === "takeover" ? "同身份承接" : "新身份复制"} · {absoluteTime(result.activation.activated_at)}）
+              </p>
+              <p className="text-faint">
+                身份 {result.activation.origin_agent_id} → <span className="text-dim">{result.activation.local_agent_id}</span>
+                {result.activation.confirm_source_stopped_at && (
+                  <span className="text-faint">（源端停止确认于 {absoluteTime(result.activation.confirm_source_stopped_at)}）</span>
+                )}
+              </p>
+              <ul className="mt-1 list-disc pl-4 text-faint">
+                {result.activation.missions.map((m) => (
+                  <li key={m.origin_mission_id}>
+                    任务 {m.origin_mission_id} → {m.local_mission_id}（{m.status === "paused" ? "暂停承接" : "草稿"}）
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1 text-faint">
+                记忆 {result.activation.counts.memories_created} 建/{result.activation.counts.memories_skipped} 略 · 任务{" "}
+                {result.activation.counts.missions_created} 建/{result.activation.counts.missions_skipped} 略 · 检查点{" "}
+                {result.activation.counts.checkpoints_created} 建/{result.activation.counts.checkpoints_skipped} 略
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+      {actResult && (
+        <div className="mb-3 rounded-xl border border-border p-3 text-xs">
+          <div className="mb-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span className="font-medium text-text">激活完成：{actResult.import_id}</span>
+            <span className="text-faint">{actResult.mode === "takeover" ? "同身份承接" : "新身份复制"}</span>
+            <span className="text-dim">{actResult.origin_agent_id} → {actResult.local_agent_id}</span>
+          </div>
+          <ul className="mb-1 list-disc pl-4 text-faint">
+            {actResult.missions.map((m) => (
+              <li key={m.origin_mission_id}>
+                任务 {m.origin_mission_id} → {m.local_mission_id}（{m.status === "paused" ? "暂停承接" : "草稿"}）
+              </li>
+            ))}
+          </ul>
         </div>
       )}
       {history !== null && (
@@ -2545,6 +2615,7 @@ function BundleImports() {
           ) : (
             <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border">
               {history.map((b) => (
+                <>
                 <li key={b.import_id} className="flex items-center gap-3 px-3 py-2 text-xs">
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-text">
@@ -2563,8 +2634,55 @@ function BundleImports() {
                   >
                     {detailBusy === b.import_id ? "载入中…" : "查看报告"}
                   </button>
+                  {b.status === "inactive" ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActFor(actFor === b.import_id ? null : b.import_id);
+                        setConfirmStop(false);
+                      }}
+                      className="shrink-0 rounded-lg bg-accent px-2 py-1 text-[11px] font-medium text-accent-contrast transition-opacity hover:opacity-90"
+                    >
+                      激活
+                    </button>
+                  ) : (
+                    <span className="shrink-0 rounded bg-[color-mix(in_srgb,var(--ok)_14%,transparent)] px-1.5 py-px text-[10px] leading-4 text-ok">已激活</span>
+                  )}
                   <VerdictBadge verdict={b.verdict} />
                 </li>
+                {actFor === b.import_id && (
+                  <li className="border-t border-border bg-surface-2 px-3 py-2 text-xs">
+                    <div className="mb-1.5 flex flex-wrap items-center gap-4">
+                      <span className="text-dim">激活模式：</span>
+                      <label className="flex items-center gap-1.5">
+                        <input type="radio" checked={actMode === "copy"} onChange={() => setActMode("copy")} /> copy（新身份复制
+                        ——新 AgentID，无须确认）
+                      </label>
+                      <label className="flex items-center gap-1.5">
+                        <input type="radio" checked={actMode === "takeover"} onChange={() => setActMode("takeover")} /> takeover
+                        （同身份承接——本实例已有该 Agent）
+                      </label>
+                    </div>
+                    {actMode === "takeover" && (
+                      <label className="mb-1.5 flex items-start gap-1.5 text-warn">
+                        <input type="checkbox" checked={confirmStop} onChange={(e) => setConfirmStop(e.target.checked)} className="mt-0.5" />
+                        我确认源实例已撤销该 Agent（{b.agent_id}）的执行权——同身份双写会造成对外写入冲突，此确认是人工声明（服务端不验证）。
+                      </label>
+                    )}
+                    <button
+                      type="button"
+                      disabled={actBusy || (actMode === "takeover" && !confirmStop)}
+                      onClick={() => void onActivate(b.import_id)}
+                      className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast transition-opacity hover:opacity-90 disabled:opacity-40"
+                    >
+                      {actBusy ? "激活中…" : "确认激活"}
+                    </button>
+                    <p className="mt-1 text-[11px] leading-4 text-faint">
+                      任务以新 ID 承接（暂停态）、检查点与记忆随映射落库；授权/唤醒不继承；Slot 任职不恢复（归 0.7.9）。
+                    </p>
+                  </li>
+                )}
+                </>
               ))}
             </ul>
           )}

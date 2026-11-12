@@ -81,6 +81,9 @@ type Store interface {
 	LatestOfMission(ctx context.Context, missionID string) (Checkpoint, bool, error)
 	// LatestSystemOfMission 最新系统终态摘要（二审 #1 回退面）。
 	LatestSystemOfMission(ctx context.Context, missionID string) (Checkpoint, bool, error)
+	// CheckpointsOfMission 任务级全量（任意 source 含 system，降序）——
+	// 0.7.7 复审 #4：导入幂等查重按水位比对须覆盖业务与系统两类。
+	CheckpointsOfMission(ctx context.Context, missionID string) ([]Checkpoint, error)
 }
 
 const (
@@ -203,6 +206,40 @@ func (s *Service) Create(ctx context.Context, cmd CreateCmd) (Checkpoint, error)
 	return s.store.CreateCheckpoint(ctx, cp)
 }
 
+// CreateImported Bundle 激活的检查点写入面（0.7.7 / ADR-0044；一审 #4/#5/#6
+// 重写）：目标侧**全新 checkpoint_id 与 run_id**（域生成——同源任务的两次
+// 导出可携同一源 checkpoint_id，沿用主键会在第二包撞 UNIQUE；源标识经
+// SourceWatermarks 由调用方注入 bundle.origin_* 供溯源与幂等）；**Source
+// 保留包内源语义**（""=业务快照 / "system"=终态摘要——0.7.4
+// LatestForResume"业务优先、无业务回退最新 system"口径不因导入改变，
+// 导入的旧 system 摘要不遮蔽目标新摘要）；内容约束与普通创建同源校验
+// （步骤交集空/列表长度/摘要/水位键值——免的只是源 run 存在性锚）；
+// checkpoint_version 由存储按新 run 原子分配。幂等由调用方按
+// bundle.origin_checkpoint 水位先查后写。
+func (s *Service) CreateImported(ctx context.Context, cmd CreateCmd) (Checkpoint, error) {
+	if err := cmd.validate(); err != nil {
+		return Checkpoint{}, err
+	}
+	cp := Checkpoint{
+		CheckpointID:      "ckp_" + newToken(),
+		RunID:             "run_" + newToken(), // 目标占位 run（源 run 进 watermarks 溯源）
+		MissionID:         strings.TrimSpace(cmd.MissionID),
+		MissionVersion:    cmd.MissionVersion,
+		WorkItemID:        strings.TrimSpace(cmd.WorkItemID),
+		CompletedSteps:    append([]string{}, cTrim(cmd.CompletedSteps)...),
+		PendingSteps:      append([]string{}, cTrim(cmd.PendingSteps)...),
+		ArtifactRefs:      append([]string{}, cTrim(cmd.ArtifactRefs)...),
+		ActionReceipts:    append([]string{}, cTrim(cmd.ActionReceipts)...),
+		UncertainActions:  append([]string{}, cTrim(cmd.UncertainActions)...),
+		WaitingConditions: append([]string{}, cTrim(cmd.WaitingConditions)...),
+		SourceWatermarks:  copyWatermarks(cmd.SourceWatermarks),
+		ProgressSummary:   cmd.ProgressSummary,
+		Source:            cmd.Source, // 保留源语义（""/system）
+		CreatedAt:         s.now(),
+	}
+	return s.store.CreateCheckpoint(ctx, cp)
+}
+
 // ListOfRun 列表（降序——最新在前；run 未知空列表由锚语义决定——本面先查锚）。
 func (s *Service) ListOfRun(ctx context.Context, runID string) ([]Checkpoint, error) {
 	if s.anchors.RunMission != nil {
@@ -225,6 +262,13 @@ func (s *Service) LatestOfMission(ctx context.Context, missionID string) (Checkp
 		return Checkpoint{}, ErrNotFound
 	}
 	return cp, nil
+}
+
+// CheckpointsOfMission 任务级全量（任意 source 含 system，降序）——导入
+// 幂等查重面（复审 #4：system 条不在 LatestOfMission 选取内，按水位比对
+// 须全量覆盖）。
+func (s *Service) CheckpointsOfMission(ctx context.Context, missionID string) ([]Checkpoint, error) {
+	return s.store.CheckpointsOfMission(ctx, missionID)
 }
 
 // LatestForResume 续办装配入口（二审 #1）：**业务快照优先**——无业务快照

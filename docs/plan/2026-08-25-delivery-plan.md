@@ -5,8 +5,8 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v3.09 |
-| 日期 | 2026-11-11 |
+| 版本 | v3.13 |
+| 日期 | 2026-11-12 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
 | 交付目标 | **个人完全可用的 App**：单用户本地运行，一等公民支持 Windows 与 macOS；不是验证性半成品 |
@@ -26,7 +26,7 @@
 
 ## 0.2 当前 Roadmap
 
-当前产品版本为 **v0.7.6**（0.7 领域已交付七件：0.7.6 Bundle 导入预检（ADR-0043——安全校验、兼容性报告及默认 inactive）；0.7.5 Portable Agent Bundle 导出（ADR-0042——范围选择、摘要与脱敏报告）；0.7.4 跨 Harness 续办（ADR-0041——Checkpoint 注入执行上下文）；0.7.3 Checkpoint 可恢复业务状态（ADR-0040）；0.7.2 记忆召回（ADR-0039——FTS5 与授权过滤先行）；0.7.1 记忆策展与纠错（ADR-0038——接受/修订/否决/替代 + 版本留痕 + 时效口径）；0.7.0 分域记忆基石（ADR-0037）；0.6 领域已交付 0.6.0–0.6.13——十四件全部定版收官（0.6.13 域收口：网关续接、Slot 职责寻址与墙钟强制——AT-14/15/18 落差收口；此前 0.6.0–0.6.12 定版：MissionContract、房间交办/网关首切片、执行上下文清单、本地 Environment/Runtime、RuntimeLease、单 Agent Mission 执行、Mission 暂停/恢复/取消、Run 崩溃恢复、DeliveryPackage 成果提交、Mission 验收、执行结果回房、决策重开请求与 Mission 责任交接；Mission 责任交接；0.7 余件 0.7.7–0.7.9 未开工）；0.5 领域线已收官；0.6 的 RFC 已于 2026-10-30 增补内嵌轻量级智能体网关设计（§0.6 说明，尚未实现）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
+当前产品版本为 **v0.7.6**（0.7 领域已交付八件：0.7.7 导入激活与执行权接管（ADR-0044——takeover 确认门/copy 新身份、防同身份双写）；0.7.6 Bundle 导入预检（ADR-0043——安全校验、兼容性报告及默认 inactive）；0.7.5 Portable Agent Bundle 导出（ADR-0042——范围选择、摘要与脱敏报告）；0.7.4 跨 Harness 续办（ADR-0041——Checkpoint 注入执行上下文）；0.7.3 Checkpoint 可恢复业务状态（ADR-0040）；0.7.2 记忆召回（ADR-0039——FTS5 与授权过滤先行）；0.7.1 记忆策展与纠错（ADR-0038——接受/修订/否决/替代 + 版本留痕 + 时效口径）；0.7.0 分域记忆基石（ADR-0037）；0.6 领域已交付 0.6.0–0.6.13——十四件全部定版收官（0.6.13 域收口：网关续接、Slot 职责寻址与墙钟强制——AT-14/15/18 落差收口；此前 0.6.0–0.6.12 定版：MissionContract、房间交办/网关首切片、执行上下文清单、本地 Environment/Runtime、RuntimeLease、单 Agent Mission 执行、Mission 暂停/恢复/取消、Run 崩溃恢复、DeliveryPackage 成果提交、Mission 验收、执行结果回房、决策重开请求与 Mission 责任交接；Mission 责任交接；0.7 余件 0.7.8–0.7.9 未开工）；0.5 领域线已收官；0.6 的 RFC 已于 2026-10-30 增补内嵌轻量级智能体网关设计（§0.6 说明，尚未实现）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
 
 | 版本线 | 领域 / 产品目标 | 设计来源 / RFC-0018 阶段映射 |
 |---|---|---|
@@ -205,6 +205,10 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v3.13 | 2026-11-12 | Mosaic 项目组 / ZCode | **0.7.7 三审修复（独立审校 1 P2，ADR-0044 v0.4；上轮 4 项复测关闭）**。连续迁移（A→B→C）覆盖未解决源契约漂移——每次激活重算 bundle.origin_versions 覆盖已有水位，A 的 checkpoint=v1:contract=v2 被 B 跳重映射抹平（C 侧漂移误 false）：漂移证据保最早未解决记录（包内自带且快照未更新即原样保留，新快照才按本跳生成）；溯源定位水位仍记最近跳（两类水位分工）。反例钉住（链保留/新快照生成）+ 触及包全绿 |
+| v3.12 | 2026-11-12 | Mosaic 项目组 / ZCode | **0.7.7 复审修复（独立审校 2 P1 + 2 P2，ADR-0044 v0.3；上轮四项复测关闭）**。P1×2——#1 恢复路径跳过暂停核验（状态查询失败/不存在默认 paused 继续、attempt 映射不查实时态）：ensureMissionPaused 统一两条路径实时核验（失败/不存在中止、ready/running/waiting 补暂停）；#2 origin 身份查重吞错（查询故障时重复建身份）：查重失败上抛。P2×2——#3 源契约漂移未进续办上下文：CheckpointFacts += OriginDrift/OriginVersions + execctx 漂移判定合并 + 源版本证据随层携带；#4 system 检查点查重漏检（LatestOfMission 排除 system——重试重复落库）：checkpoint += CheckpointsOfMission 全量水位查重。触及包 UT/-race 全绿；真机冒烟复跑 ALL-PASS |
+| v3.11 | 2026-11-12 | Mosaic 项目组 / ZCode | **0.7.7 一审修复（独立审校 3 P1 + 4 P2，ADR-0044 v0.2）**。P1×3——#1 任务承接 Create(ready)+Pause 两事务的 ready 调度窗口：mission += CreateMissionPaused（单事务原子 paused，事件对）；#2 重试 origin 查重命中不补暂停：found 后按实时状态补做 Pause；#3 attempt 中断丢失映射重复建身份：AgentEnsureImported 先按持久 origin 关联（source=originRef）找回。P2×4——#4 检查点版本对齐抹源漂移：源版本事实入 bundle.origin_versions 水位；#5 沿用源 checkpoint 主键在第二包撞 UNIQUE：CreateImported 全新 ID/run + 幂等键改 origin 水位；#6 导入检查点绕过内容校验：validate 单源复用；#7 Source=import 遮蔽新 system 摘要：Source 保留源语义（""/system）+ bundle.import 水位。触及包 UT/-race + IT 全绿；真机冒烟复跑 ALL-PASS |
+| v3.10 | 2026-11-11 | Mosaic 项目组 / ZCode | **开工 v0.7.7（负责人指令："开工0.7.7"）——0.7 记忆与可移植恢复领域第八件：导入激活与执行权接管（防止同身份双写；ADR-0044）**。bundle 增激活面（ActivationService——复用导入记录面与互斥锁）：takeover（同身份承接，confirm_source_stopped 人工确认门——服务端不验证只记录）/ copy（新 AgentID + source 记 origin）双模式 + 激活时实时复核（重解析包/同 ID 任务冲突/依赖可用性）；跨域顺序写入 + origin 标记幂等（任务新 ID paused 承接、检查点 CreateImported 源 ID 保留 Source=import、记忆三命名空间重锚、attempt.json 失败留痕重试不重复写）；personalagent/checkpoint 各 += CreateImported（零 migration）；激活端点 + 历史行激活操作（模式/确认勾选）；契约冻结生成物幂等；UT/IT 全绿 + -race + SPA；真机冒烟 ALL-PASS |
 | v3.09 | 2026-11-11 | Mosaic 项目组 / ZCode | **定版 v0.7.6（负责人指令："发布"）——0.7 记忆与可移植恢复领域第七件：Bundle 导入预检（安全校验、兼容性报告及默认 inactive）**。CHANGELOG [Unreleased]（Added 导入主功能 + Fixed 两轮审校 7+3=10 项）定版 **[0.7.6] - 2026-11-11**（Added 前置 + 两段 Fixed 合并一节），保留空 [Unreleased]；README 当前版本推进 v0.7.6、路线图 0.7 行标注 0.7.0–0.7.6 已交付（余 0.7.7–0.7.9）；版本字样同步（关于区/wails.json）；发布链：定版 docs 提交 + tag v0.7.6 + GitHub Release 发布说明与 Windows 产物（productVersion 断言防错版）；CI 三平台绿基线（二审终态已验，定版提交复验） |
 | v3.08 | 2026-11-11 | Mosaic 项目组 / ZCode | **0.7.6 二审修复（独立审校 3 P2，ADR-0043 v0.3；上轮 7 项复测关闭）**。#1 依赖清单缺失绕过依赖对照（清空 dependencies.harness 仍 eligible）——闭包门新增 dependencies.harness 与 profile.executables 标识集一致性核验（同源两处，矛盾即结构性拒绝）+ 兼容对照面改并集；#2 严格解码漏检非法尾随内容（More() 遇 ] 恒 false）——尾随判定改二次 Decode 严格 io.EOF；#3 导入历史无法重开完整报告（切分区/刷新即失、重复上传 409）——历史行新增"查看报告"（经详情端点恢复展示）。触及包 UT/-race + 前端 tsc/build 全绿；真机冒烟复跑 ALL-PASS |
 | v3.07 | 2026-11-11 | Mosaic 项目组 / ZCode | **0.7.6 一审修复（独立审校 1 P1 + 6 P2，ADR-0043 v0.2）**。P1——ndjson 空行载荷内存放大（bytes.Split 每行一切片头，高压缩空行包可放大数 GiB 绕行数门）：扫描式切行零分配 + AllocsPerRun=0 钉住；#1 受保护 GET 不带令牌（导入列表/详情恒 401 被静默——四处显式 method GET，含 0.7.5 存量导出两处）；#2 并发导入绕过查重（查重~登记段互斥，-race 并发 UT 钉住恰一 409）；#3 闭包补上下文检查点引用与水位版本双向核验（断链包拒绝）；#4 敏感判定以实际载荷为准（与 scope 声明不一致明示不静默）；#5 redaction 必需字段校验（{} 不再产生 null 数组打崩前端）；#6 必要对照（身份/依赖）失败 warn→block（必要证据缺失口径，注明重跑预检）。触及包 UT/-race + 前端 tsc/build 全绿；真机冒烟复跑 ALL-PASS |

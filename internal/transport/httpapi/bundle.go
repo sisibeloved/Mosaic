@@ -236,3 +236,49 @@ func (s *server) writeBundleImportError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 	}
 }
+
+// ---- 激活（0.7.7 / ADR-0044）----
+
+// ActivateBundleImport 激活与执行权接管（apigen.ServerInterface）。
+//
+// 响应体直接序列化 bundle.ActivationView（域视图形状即契约形状，零转换）。
+func (s *server) ActivateBundleImport(w http.ResponseWriter, r *http.Request, importID string) {
+	if s.deps.BundleActivationSVC == nil {
+		writeError(w, http.StatusServiceUnavailable, "bundle_unavailable", "Bundle 激活面未装配")
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	var req apigen.BundleActivationRequest
+	if !decodeMemoryBody(w, r, &req) { // 同款严格解码（MaxBytes + 拒收未知字段）
+		return
+	}
+	view, err := s.deps.BundleActivationSVC.Activate(r.Context(), importID, bundle.ActivationRequest{
+		Mode:                 string(req.Mode),
+		ConfirmSourceStopped: req.ConfirmSourceStopped != nil && *req.ConfirmSourceStopped,
+	})
+	if err != nil {
+		s.writeBundleActivationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// writeBundleActivationError 激活错误族映射（409 模式错配 / 422 复核不过）。
+func (s *server) writeBundleActivationError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, bundle.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	case errors.Is(err, bundle.ErrConfirmRequired):
+		writeError(w, http.StatusBadRequest, "source_stop_confirmation_required", err.Error())
+	case errors.Is(err, bundle.ErrModeMismatch):
+		writeError(w, http.StatusConflict, "activation_mode_mismatch", err.Error())
+	case errors.Is(err, bundle.ErrActivationBlocked):
+		writeError(w, http.StatusUnprocessableEntity, "activation_blocked", err.Error())
+	case errors.Is(err, bundle.ErrNotFound):
+		writeError(w, http.StatusNotFound, "bundle_not_found", "导入不存在")
+	default:
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+}

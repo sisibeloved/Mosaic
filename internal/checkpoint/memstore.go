@@ -42,6 +42,19 @@ func (m *MemStore) LatestSystemOfMission(_ context.Context, missionID string) (C
 }
 
 // LatestOfMission 任务级最新（插入序末位——与 sqlite rowid DESC 同语义）。
+// CheckpointsOfMission 任务级全量（任意 source，降序——复审 #4）。
+func (m *MemStore) CheckpointsOfMission(_ context.Context, missionID string) ([]Checkpoint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []Checkpoint
+	for i := len(m.seq) - 1; i >= 0; i-- {
+		if m.seq[i].MissionID == missionID {
+			out = append(out, m.seq[i])
+		}
+	}
+	return out, nil
+}
+
 func (m *MemStore) LatestOfMission(_ context.Context, missionID string) (Checkpoint, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

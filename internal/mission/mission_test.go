@@ -5,6 +5,7 @@ package mission
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -288,4 +289,52 @@ func repeat(n int, s string) []string {
 		out[i] = s
 	}
 	return out
+}
+
+// TestCreateImportedAtomicPaused 0.7.7 / ADR-0044 一审 #1：激活承接的完备契约
+// **原子创建为 paused**——无 ready 调度窗口（普通 Create+Pause 两事务间可被
+// 调度器认领是审校反例）；事件流 created(status=paused) + status_changed 对。
+func TestCreateImportedAtomicPaused(t *testing.T) {
+	svc, mem := newSvc(t, fakeAgents{ids: map[string]bool{"ag_a": true}})
+	ctx := context.Background()
+
+	m, err := svc.CreateImported(ctx, "ag_a", fullContent(), "bundle-import:bdi_x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Status != StatusPaused {
+		t.Fatalf("完备契约须原子 paused: %s", m.Status)
+	}
+	got, ok, err := mem.MissionByID(ctx, m.MissionID)
+	if err != nil || !ok || got.Status != StatusPaused {
+		t.Fatalf("投影 paused: %+v %v", got, err)
+	}
+	evs, _, _ := mem.MissionEvents(ctx, m.MissionID)
+	if len(evs) != 2 || evs[0].EventType != EventCreated || evs[1].EventType != EventStatusChanged {
+		t.Fatalf("事件对: %+v", evs)
+	}
+	var p2 map[string]string
+	if json.Unmarshal(evs[1].Payload, &p2) != nil || p2["to"] != StatusPaused || p2["reason"] != "bundle-import:bdi_x" {
+		t.Fatalf("paused 事件: %s", evs[1].Payload)
+	}
+
+	// 不完备契约保持 draft（本就未入调度）。
+	c := fullContent()
+	c.AcceptanceCriteria = nil
+	m2, err := svc.CreateImported(ctx, "ag_a", c, "bundle-import:bdi_x")
+	if err != nil || m2.Status != StatusDraft {
+		t.Fatalf("不完备应 draft: %+v %v", m2, err)
+	}
+	if len(mustEvents(t, mem, m2.MissionID)) != 1 {
+		t.Fatalf("draft 无 paused 事件")
+	}
+}
+
+func mustEvents(t *testing.T, mem *MemStore, id string) []Event {
+	t.Helper()
+	evs, _, err := mem.MissionEvents(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return evs
 }

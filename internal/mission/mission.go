@@ -282,6 +282,11 @@ type Store interface {
 	// CreateMission 投影 v1 + 不可变版本行 + created 事件（+ 可选房间来源
 	// 映射），单事务；来源撞键 → ErrSourceAlreadyMapped（携已映射 mission_id）。
 	CreateMission(ctx context.Context, m Mission, src *RoomSource) (Mission, error)
+	// CreateMissionPaused 原子创建为 paused（0.7.7 / ADR-0044 一审 #1）：
+	// 投影行（status=paused）+ 版本行 + created 事件 + status_changed
+	//（ready→paused 携 reason）单事务——不存在可被调度器认领的 ready 窗口
+	//（普通 Create + Pause 两事务之间的窗口是审校反例）。
+	CreateMissionPaused(ctx context.Context, m Mission, reason string) (Mission, error)
 	// CreateMissionGated 带事务门的建单（0.6.13 审校 #1/#2 + 复审 #3/#7）：
 	// SlotInstanceID 随投影落列；gate 的职责意图四核（实例/任职/身份/授权）
 	// 与模板唯一性锚、RequireOwnerActive 身份门在**同一写事务**内核对——
@@ -489,6 +494,39 @@ func (s *Service) CreateGated(ctx context.Context, ownerAgentID string, c Conten
 		out.RoomSource = &roomSrc
 	}
 	return out, nil
+}
+
+// CreateImported Bundle 激活的承诺承接（0.7.7 / ADR-0044 一审 #1）：完备
+// 契约**原子创建为 paused**（CreateMissionPaused 单事务——无 ready 调度
+// 窗口）；不完备保持 draft（本就未入调度）。owner 校验同 Create；房间
+// 来源不映射（目标无原房间——0.7.6 预检 room_source_unbound 已声明）。
+func (s *Service) CreateImported(ctx context.Context, ownerAgentID string, c Content, reason string) (Mission, error) {
+	if err := ValidateContent(c); err != nil {
+		return Mission{}, err
+	}
+	if ownerAgentID != "" {
+		if err := s.checkOwner(ctx, ownerAgentID); err != nil {
+			return Mission{}, err
+		}
+	}
+	if utf8.RuneCountInString(reason) > 200 {
+		return Mission{}, fmt.Errorf("%w: reason ≤200 字", ErrInvalidMission)
+	}
+	now := s.now()
+	m := Mission{
+		MissionID:       s.newMissionID(),
+		ContractVersion: 1,
+		Status:          StatusDraft,
+		OwnerAgentID:    strings.TrimSpace(ownerAgentID),
+		Requester:       RequesterOwner,
+		Content:         normalizeContent(c),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if statusOf(m) == StatusReady {
+		return s.store.CreateMissionPaused(ctx, m, reason)
+	}
+	return s.store.CreateMission(ctx, m, nil)
 }
 
 // checkSource 房间来源校验（ADR-0024）：task_id 形如 tsk_*；房间任务卡须

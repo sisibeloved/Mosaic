@@ -62,6 +62,23 @@ func (m *MemStore) CreateMission(_ context.Context, ms Mission, src *RoomSource)
 	return ms, nil
 }
 
+// CreateMissionPaused 原子创建为 paused（0.7.7 / ADR-0044 一审 #1）：行 +
+// 版本 + created + status_changed 事件一次落（无 ready 窗口）。
+func (m *MemStore) CreateMissionPaused(_ context.Context, ms Mission, reason string) (Mission, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ms.Status = StatusPaused
+	m.missions = append(m.missions, ms)
+	m.versions[ms.MissionID] = append(m.versions[ms.MissionID], snapshot(ms))
+	m.appendEventLocked(ms.MissionID, EventCreated, map[string]string{
+		"contract_version": strconv.Itoa(ms.ContractVersion), "status": ms.Status,
+	}, ms.CreatedAt)
+	m.appendEventLocked(ms.MissionID, EventStatusChanged, map[string]string{
+		"from": StatusReady, "to": StatusPaused, "reason": reason,
+	}, ms.UpdatedAt)
+	return ms, nil
+}
+
 // MissionIDBySource 来源映射查询；未映射 ok=false。
 func (m *MemStore) MissionIDBySource(_ context.Context, roomID, taskID string) (string, bool, error) {
 	m.mu.Lock()

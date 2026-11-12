@@ -4739,7 +4739,7 @@ paths:
           schema: { type: string, pattern: "^bdi_[0-9a-z_]+$" }
       responses:
         "200":
-          description: 导入全量视图（checks 全量 + 脱敏报告透传）
+          description: 导入全量视图（checks 全量 + 脱敏报告透传 + 激活结果）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/BundleImportView" }
@@ -4750,6 +4750,61 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "503":
           description: Bundle 导入面未装配（bundle_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/bundle-imports/{import_id}/activation:
+    post:
+      operationId: activateBundleImport
+      summary: 导入激活与执行权接管（0.7.7 / ADR-0044，RFC-0018 §8.3）
+      description: |
+        inactive 只读副本 → 域写入（身份/任务承诺/检查点/记忆）。两种模式：
+        takeover（同身份承接——本实例已有同 ID Agent，必须 confirm_source_stopped
+        人工确认源端已撤销执行权——服务端不验证，记录声明）；copy（新身份复制
+        ——新 AgentID + source 记 origin 引用，无须确认）。模式与实例事实不匹配
+        409。激活时实时复核（重解析包 + 同 ID 任务冲突 + 依赖可用性——任一存在
+        422）。跨库对象一律新 ID + origin 映射（SourceRefs 标记幂等——重激活
+        不重复写）；承诺一律非活跃承接（ready→paused、draft 留 draft）；Slot
+        任职不恢复（0.7.9）、授权与唤醒不继承。已激活幂等返回既有结果。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: import_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^bdi_[0-9a-z_]+$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BundleActivationRequest" }
+      responses:
+        "200":
+          description: 已激活（或幂等返回既有激活结果——含 ID 映射与计数）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BundleActivationView" }
+        "400":
+          description: 模式不合法（invalid_request）/ takeover 未确认源端已停（source_stop_confirmation_required）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: 导入不存在（bundle_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 模式与实例事实不匹配（activation_mode_mismatch——message 指出可用模式）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: 实时复核不过（activation_blocked——同 ID 任务冲突/依赖缺失/包重校验不过，明细聚合）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: Bundle 激活面未装配（bundle_unavailable）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -6801,6 +6856,53 @@ components:
       description: 导出列表（新→旧）。
       properties:
         exports: { type: array, items: { $ref: "#/components/schemas/AgentBundleSummary" } }
+    BundleActivationRequest:
+      type: object
+      required: [mode]
+      additionalProperties: false
+      description: |
+        激活请求（0.7.7 / ADR-0044 §1）。模式与实例事实必须匹配：目标已有
+        同 ID Agent → takeover（须 confirm_source_stopped——人工声明源端已
+        撤销执行权，服务端不验证只记录）；目标无 → copy（新 AgentID）。
+      properties:
+        mode: { type: string, enum: [takeover, copy] }
+        confirm_source_stopped: { type: boolean, description: takeover 必填 true——同身份双写防线的人工确认门 }
+    BundleMissionMapping:
+      type: object
+      required: [origin_mission_id, local_mission_id, status]
+      description: 任务 ID 映射（RFC §8.3"显式承接和对象映射"——跨库对象一律新 ID）。
+      properties:
+        origin_mission_id: { type: string, description: 源实例任务 ID }
+        local_mission_id: { type: string, description: 本实例承接任务 ID（域新生成） }
+        status: { type: string, enum: [paused, draft], description: 承接态（ready→paused 承接；draft 留 draft——本就未入调度） }
+    BundleActivationCounts:
+      type: object
+      required: [memories_created, memories_skipped, missions_created, missions_skipped, checkpoints_created, checkpoints_skipped]
+      description: 激活写入计数（skipped = 幂等已写或口径排除——如未承接任务的 mission 域记忆）。
+      properties:
+        memories_created: { type: integer }
+        memories_skipped: { type: integer }
+        missions_created: { type: integer }
+        missions_skipped: { type: integer }
+        checkpoints_created: { type: integer }
+        checkpoints_skipped: { type: integer }
+    BundleActivationView:
+      type: object
+      required: [import_id, bundle_id, mode, status, activated_at, origin_agent_id, local_agent_id, missions, counts]
+      description: |
+        激活结果（成功响应与导入详情 activation 块同构）。ID 映射是一等公民
+        （续办与 0.7.9 交接的事实源）；takeover 的确认时间入档（人工声明非验证）。
+      properties:
+        import_id: { type: string }
+        bundle_id: { type: string }
+        mode: { type: string, enum: [takeover, copy] }
+        status: { type: string, enum: [activated] }
+        activated_at: { type: string }
+        origin_agent_id: { type: string, description: 包内源身份 }
+        local_agent_id: { type: string, description: 本实例承接身份（copy = 新 AgentID；takeover = 沿用） }
+        confirm_source_stopped_at: { type: string, description: takeover 人工确认时间（声明源端已撤销执行权） }
+        missions: { type: array, items: { $ref: "#/components/schemas/BundleMissionMapping" } }
+        counts: { $ref: "#/components/schemas/BundleActivationCounts" }
     BundleImportCheck:
       type: object
       required: [check, result, detail]
@@ -6827,13 +6929,13 @@ components:
       required: [import_id, bundle_id, agent_id, status, verdict, blockers, imported_at, size_bytes, zip_path, source, scope, counts, checks, redaction]
       description: |
         导入登记全量视图（创建响应/详情；边车 import.json 即其序列化）。
-        status 恒 inactive（0.7.6 无改态路径——激活归 0.7.7）；verdict
-        blocked = 有 block 级 findings（激活受阻——导入本身已登记）。
+        status inactive → activated（0.7.7 激活后；verdict 是登记时预检快照）；
+        verdict blocked = 有 block 级 findings（激活受阻——导入本身已登记）。
       properties:
         import_id: { type: string, pattern: "^bdi_[0-9a-z_]+$" }
         bundle_id: { type: string, pattern: "^bdl_[0-9a-z_]+$", description: 源导出 ID（重复导入幂等依据） }
         agent_id: { type: string }
-        status: { type: string, enum: [inactive] }
+        status: { type: string, enum: [inactive, activated] }
         verdict: { type: string, enum: [eligible, eligible_with_warnings, blocked] }
         blockers: { type: array, items: { type: string }, description: block 级 check 键（激活前必须解决——0.7.7 输入契约） }
         imported_at: { type: string }
@@ -6859,6 +6961,7 @@ components:
             checkpoints: { type: integer }
         checks: { type: array, items: { $ref: "#/components/schemas/BundleImportCheck" } }
         redaction: { $ref: "#/components/schemas/AgentBundleRedactionReport" }
+        activation: { $ref: "#/components/schemas/BundleActivationView", description: 激活结果（0.7.7——已激活时存在） }
     BundleImportSummary:
       type: object
       required: [import_id, bundle_id, agent_id, status, verdict, imported_at, size_bytes, counts]
@@ -6867,7 +6970,7 @@ components:
         import_id: { type: string }
         bundle_id: { type: string }
         agent_id: { type: string }
-        status: { type: string, enum: [inactive] }
+        status: { type: string, enum: [inactive, activated] }
         verdict: { type: string, enum: [eligible, eligible_with_warnings, blocked] }
         imported_at: { type: string }
         size_bytes: { type: integer }

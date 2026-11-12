@@ -192,7 +192,7 @@ type ImportView struct {
 	ImportID   string          `json:"import_id"`
 	BundleID   string          `json:"bundle_id"`
 	AgentID    string          `json:"agent_id"`
-	Status     string          `json:"status"` // 恒 inactive（0.7.6）
+	Status     string          `json:"status"` // inactive | activated（0.7.7 激活后）
 	Verdict    string          `json:"verdict"`
 	Blockers   []string        `json:"blockers"`
 	ImportedAt string          `json:"imported_at"`
@@ -203,6 +203,7 @@ type ImportView struct {
 	Counts     CountsView      `json:"counts"`
 	Checks     []CheckResult   `json:"checks"`
 	Redaction  RedactionReport `json:"redaction"`
+	Activation *ActivationView `json:"activation,omitempty"` // 0.7.7 激活结果（ID 映射一等公民）
 }
 
 // ImportSummary 导入摘要（列表元素）。
@@ -341,14 +342,9 @@ func (s *ImportService) Import(ctx context.Context, r io.Reader) (ImportView, er
 		Counts: CountsView{Memories: len(content.memories), Missions: len(content.commitments.Missions), Checkpoints: len(content.ckpts)},
 		Checks: checks, Redaction: content.redaction,
 	}
-	sidecar, err := json.MarshalIndent(view, "", "  ")
-	if err != nil {
+	if err := writeImportSidecar(filepath.Join(bdir, importSidecarName), view); err != nil {
 		_ = os.RemoveAll(bdir)
 		return ImportView{}, err
-	}
-	if err := os.WriteFile(filepath.Join(bdir, importSidecarName), append(sidecar, '\n'), 0o600); err != nil {
-		_ = os.RemoveAll(bdir)
-		return ImportView{}, fmt.Errorf("bundle: import sidecar: %w", err)
 	}
 	return view, nil
 }
@@ -932,6 +928,23 @@ func (s *ImportService) Get(importID string) (ImportView, error) {
 		return ImportView{}, ErrNotFound
 	}
 	return v, nil
+}
+
+// writeSidecar 回写边车（激活面消费——status/activation 更新）。
+func (s *ImportService) writeSidecar(importID string, view ImportView) error {
+	return writeImportSidecar(filepath.Join(s.dir, importDirName, importID, importSidecarName), view)
+}
+
+// writeImportSidecar 边车落盘（0600 + 尾换行）。
+func writeImportSidecar(path string, view ImportView) error {
+	raw, err := json.MarshalIndent(view, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
+		return fmt.Errorf("bundle: import sidecar: %w", err)
+	}
+	return nil
 }
 
 // readSidecar 读边车；ok=false = 记录不存在。

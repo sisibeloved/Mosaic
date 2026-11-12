@@ -309,6 +309,10 @@ export type AgentBundleExportRequest = Schemas["AgentBundleExportRequest"];
 export type BundleImportView = Schemas["BundleImportView"];
 export type BundleImportSummary = Schemas["BundleImportSummary"];
 
+/** 0.7.7 Bundle 激活（takeover/copy + ID 映射 + 计数）。 */
+export type BundleActivationView = Schemas["BundleActivationView"];
+export type BundleActivationRequest = Schemas["BundleActivationRequest"];
+
 /** M4-5 监控源 + 运行态视图。 */
 export type MonitorView = Schemas["MonitorView"];
 export type MonitorCreate = Schemas["MonitorCreate"];
@@ -343,6 +347,10 @@ export const api = {
   },
   getBundleImport(importID: string): Promise<BundleImportView> {
     return request(`/v1/bundle-imports/${encodeURIComponent(importID)}`, { method: "GET" });
+  },
+  /** 0.7.7 激活（ADR-0044）：takeover 须 confirm；已激活幂等返回既有结果。 */
+  activateBundleImport(importID: string, req: BundleActivationRequest): Promise<BundleActivationView> {
+    return post(`/v1/bundle-imports/${encodeURIComponent(importID)}/activation`, req);
   },
   listBackups(): Promise<{ backups: BackupSummary[] }> {
     return request<{ backups: BackupSummary[] }>("/v1/system/backups");

@@ -259,3 +259,74 @@ func TestVersionAllocationAndOrder(t *testing.T) {
 		t.Fatalf("Latest 应 v23，得 %d %v", lat.CheckpointVersion, err)
 	}
 }
+
+// ---- CreateImported（0.7.7 / ADR-0044；一审 #4/#5/#6 语义钉住）----
+
+func TestCreateImported(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("全新 ID/run 域生成 + Source 保留源语义 + 水位合并", func(t *testing.T) {
+		svc := NewService(NewMemStore(), anchorFor("m_1", true), fixedNow)
+		cmd := okCmd()
+		cmd.SourceWatermarks = map[string]string{"room.events": "e9"}
+		cp, err := svc.CreateImported(ctx, cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(cp.CheckpointID, "ckp_") || !strings.HasPrefix(cp.RunID, "run_") {
+			t.Fatalf("目标全新 ID/run: %s %s", cp.CheckpointID, cp.RunID)
+		}
+		if cp.Source != cmd.Source {
+			t.Fatalf("Source 保留源语义: %q", cp.Source)
+		}
+		if cp.SourceWatermarks["room.events"] != "e9" {
+			t.Fatalf("源水位: %v", cp.SourceWatermarks)
+		}
+		// 版本由存储按新 run 原子分配（首条 v1）。
+		if cp.CheckpointVersion != 1 {
+			t.Fatalf("checkpoint_version: %d", cp.CheckpointVersion)
+		}
+	})
+
+	t.Run("system 终态摘要语义保留（不遮蔽目标新摘要）", func(t *testing.T) {
+		svc := NewService(NewMemStore(), anchorFor("m_1", true), fixedNow)
+		cmd := okCmd()
+		cmd.Source = "system"
+		cp, err := svc.CreateImported(ctx, cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cp.Source != "system" {
+			t.Fatalf("system 语义保留: %q", cp.Source)
+		}
+	})
+
+	t.Run("内容校验同源（一审 #5：免源 run 锚不免内容约束）", func(t *testing.T) {
+		svc := NewService(NewMemStore(), anchorFor("m_1", true), fixedNow)
+		cmd := okCmd()
+		cmd.PendingSteps = append(cmd.PendingSteps, cmd.CompletedSteps[0]) // 交集
+		if _, err := svc.CreateImported(ctx, cmd); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("交集应拒: %v", err)
+		}
+		bad := okCmd()
+		bad.Source = "import" // 未知 source 枚举
+		if _, err := svc.CreateImported(ctx, bad); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("source 枚举应拒: %v", err)
+		}
+	})
+
+	t.Run("同源两条并存（不同目标 run 不撞）", func(t *testing.T) {
+		svc := NewService(NewMemStore(), anchorFor("m_1", true), fixedNow)
+		a, err := svc.CreateImported(ctx, okCmd())
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := svc.CreateImported(ctx, okCmd())
+		if err != nil {
+			t.Fatalf("第二条须并存（一审 #5 反例：源主键沿用会撞 UNIQUE）: %v", err)
+		}
+		if a.CheckpointID == b.CheckpointID || a.RunID == b.RunID {
+			t.Fatalf("全新 ID/run: %s %s", a.CheckpointID, b.CheckpointID)
+		}
+	})
+}
