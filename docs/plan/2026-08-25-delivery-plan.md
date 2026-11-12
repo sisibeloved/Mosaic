@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |---|---|
 | 文档类型 | 交付与进度规划（进度归进度：本文不改设计结论，只裁定交付范围与顺序；设计变更走 RFC/ADR） |
-| 版本 | v3.17 |
+| 版本 | v3.18 |
 | 日期 | 2026-11-12 |
 | 拟制 | Mosaic 项目组 / ZCode |
 | 上游 | [架构设计说明书](../design/2026-08-13-mosaic-architecture-design.md) v0.9；[RFC-0001～0011](../design/rfc/)；[RFC-0018](../design/rfc/2026-10-28-rfc-0018-personal-agent-swarm.md)；[RFC-0019](../design/rfc/2026-10-28-rfc-0019-encrypted-backup-merge.md)；[ADR-0001～0007](../design/adr/)；[Harness 调研报告](../design/research/2026-08-25-harness-survey.md) |
@@ -26,7 +26,7 @@
 
 ## 0.2 当前 Roadmap
 
-当前产品版本为 **v0.7.7**（0.7 领域已交付九件：0.7.8 派生删除与旧包防复活（ADR-0045——墓碑、删除传播与影响报告）；0.7.7 导入激活与执行权接管（ADR-0044——takeover 确认门/copy 新身份、防同身份双写）；0.7.6 Bundle 导入预检（ADR-0043——安全校验、兼容性报告及默认 inactive）；0.7.5 Portable Agent Bundle 导出（ADR-0042——范围选择、摘要与脱敏报告）；0.7.4 跨 Harness 续办（ADR-0041——Checkpoint 注入执行上下文）；0.7.3 Checkpoint 可恢复业务状态（ADR-0040）；0.7.2 记忆召回（ADR-0039——FTS5 与授权过滤先行）；0.7.1 记忆策展与纠错（ADR-0038——接受/修订/否决/替代 + 版本留痕 + 时效口径）；0.7.0 分域记忆基石（ADR-0037）；0.6 领域已交付 0.6.0–0.6.13——十四件全部定版收官（0.6.13 域收口：网关续接、Slot 职责寻址与墙钟强制——AT-14/15/18 落差收口；此前 0.6.0–0.6.12 定版：MissionContract、房间交办/网关首切片、执行上下文清单、本地 Environment/Runtime、RuntimeLease、单 Agent Mission 执行、Mission 暂停/恢复/取消、Run 崩溃恢复、DeliveryPackage 成果提交、Mission 验收、执行结果回房、决策重开请求与 Mission 责任交接；Mission 责任交接；0.7 余件 0.7.9 未开工）；0.5 领域线已收官；0.6 的 RFC 已于 2026-10-30 增补内嵌轻量级智能体网关设计（§0.6 说明，尚未实现）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
+当前产品版本为 **v0.7.8**（0.7 领域已交付九件：0.7.8 派生删除与旧包防复活（ADR-0045——墓碑、删除传播与影响报告）；0.7.7 导入激活与执行权接管（ADR-0044——takeover 确认门/copy 新身份、防同身份双写）；0.7.6 Bundle 导入预检（ADR-0043——安全校验、兼容性报告及默认 inactive）；0.7.5 Portable Agent Bundle 导出（ADR-0042——范围选择、摘要与脱敏报告）；0.7.4 跨 Harness 续办（ADR-0041——Checkpoint 注入执行上下文）；0.7.3 Checkpoint 可恢复业务状态（ADR-0040）；0.7.2 记忆召回（ADR-0039——FTS5 与授权过滤先行）；0.7.1 记忆策展与纠错（ADR-0038——接受/修订/否决/替代 + 版本留痕 + 时效口径）；0.7.0 分域记忆基石（ADR-0037）；0.6 领域已交付 0.6.0–0.6.13——十四件全部定版收官（0.6.13 域收口：网关续接、Slot 职责寻址与墙钟强制——AT-14/15/18 落差收口；此前 0.6.0–0.6.12 定版：MissionContract、房间交办/网关首切片、执行上下文清单、本地 Environment/Runtime、RuntimeLease、单 Agent Mission 执行、Mission 暂停/恢复/取消、Run 崩溃恢复、DeliveryPackage 成果提交、Mission 验收、执行结果回房、决策重开请求与 Mission 责任交接；Mission 责任交接；0.7 余件 0.7.9 未开工）；0.5 领域线已收官；0.6 的 RFC 已于 2026-10-30 增补内嵌轻量级智能体网关设计（§0.6 说明，尚未实现）。RFC-0018 从 **0.5** 开始；P0 的 RFC 批准、契约冻结、基线数据与迁移 fixture 是 0.5 的开工门槛，不单独占用特性版本。**0.10 个人数据备份与多设备同步**承接 RFC-0019 并纳入后续同步能力；**0.11 对话优化是 1.0.0 前最后一个领域中版本**，其小版本在启动前按同一粒度拆分，不与 RFC-0018 混排。第 4 节 M0–M5 保留为里程碑交付记录，后续发行范围与顺序以本节为准。
 
 | 版本线 | 领域 / 产品目标 | 设计来源 / RFC-0018 阶段映射 |
 |---|---|---|
@@ -205,6 +205,7 @@ P5 不提前占用确定的小版本：
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v3.18 | 2026-11-12 | Mosaic 项目组 / ZCode | **定版 v0.7.8（负责人指令："发布"）——0.7 记忆与可移植恢复领域第九件：派生删除与旧包防复活（墓碑、删除传播与影响报告）**。CHANGELOG [Unreleased]（Added 主功能 + Fixed 两轮审校 4+3=7 项）定版 **[0.7.8] - 2026-11-12**（Added 前置 + 两段 Fixed 合并一节），保留空 [Unreleased]；README 当前版本推进 v0.7.8、路线图 0.7 行标注 0.7.0–0.7.8 已交付（余 0.7.9）；版本字样同步（关于区/wails.json）；发布链：定版 docs 提交 + tag v0.7.8 + GitHub Release 发布说明与 Windows 产物（productVersion 断言防错版）；CI 三平台绿基线（复审终态已验，定版提交复验） |
 | v3.17 | 2026-11-12 | Mosaic 项目组 / ZCode | **0.7.8 复审修复（独立审校 1 P1 + 2 P2，ADR-0045 v0.3；上轮墓碑终态/跨包防复活复测关闭）**。P1——Forget 未持 forgetMu（CreateGuarded 持锁查询后 Forget 仍可提交、创建写回 active）：Forget 读取与提交全程持同锁 + 50 轮真实并发交错测试。P2×2——#3 导入包扫描用本地新 ID 漏报源 zip（zip 内存源实例 ID）：多键扫描（本地 ID+来源尾段，scanContaining 单源）；#2 证据引用误当记忆身份（共享 ev_1 的记忆互相误命中静默跳过）：键归一只认 mem_/bundle 标记尾段。四包 UT/-race + 冒烟复验 ALL-PASS |
 | v3.16 | 2026-11-12 | Mosaic 项目组 / ZCode | **0.7.8 一审修复（独立审校 3 P1 + 1 P2，ADR-0045 v0.2）**。P1×3——#1 策展四动作未拦 deleted（墓碑可被改回 active/重写正文）：统一 ErrTerminal；#2 跨导出包绕过墓碑（不同 bundle_id 旧包激活复活已删正文）：防复活键归一到稳定记忆身份（bundle 标记尾段），TombstoneHits 双侧归一交集；#3 墓碑核对与写入间复活窗口（查后 Forget 插入仍写回）：CreateGuarded 核对与创建同 forgetMu 边界，激活端口 guarded 化。P2——报告漏列本机导入 zip：ImportsContaining + contained_in_imports 字段（activated 不可删注记）。反例钉住（策展拦截/归一键/guarded/跨包）+ 四包 UT/-race + it + 冒烟复验 ALL-PASS |
 | v3.15 | 2026-11-12 | Mosaic 项目组 / ZCode | **开工 v0.7.8（负责人指令："开工0.7.8"，流程：设计先行→测试先行 TDD→实现）——0.7 记忆与可移植恢复领域第九件：派生删除与旧包防复活（墓碑、删除传播与影响报告；ADR-0045，AT-06 落地）**。memory += Forget（墓碑化不删行——正文清空留痕 cause=delete；FTS 经 AU 触发器同步 + status 过滤双保险；sqlite it 实测）；影响报告（cleared/contained_in_bundles/out_of_reach——不宣称全域擦除）；防复活两把键（包内原 ID/激活 origin 标记）× 两道门（预检 tombstone_hits warn + 激活跳过）；DELETE 导出/导入端点（0.7.5/0.7.6 欠账兑现——activated 409）；TombstoneHits 逐域扫描（分域隔离纪律）；零 migration；记忆页遗忘操作 + 迁移包删除；真机冒烟全链 ALL-PASS |
