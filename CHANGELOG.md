@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-11-14
+
+### Added
+
+- **0.7.9 Slot 换 Agent 交接：职责知识与在办事项转移，不复制私有记忆**（0.7 领域线第十件·收官 / ADR-0046，RFC-0018 §8.1"同 Slot 换 Agent"——必须携带职责实例知识、Mission/WorkItem 状态与承接回执；不得复制整个人格）：
+  - **一次编排换将**：`POST /v1/slots/instances/{id}/handover`——七步幂等编排（前置核对零变更 → 新任就位 ready → 在办转移 → 旧任释放 → 新任激活 → 承接回执落流 → 报告）；**单写者不变量**（转移先于释放——owner 翻转即剥夺上任执行权；激活最后）；**无 attempt 持久化**——每步可核对，中断重跑按现势收敛（在任=新任 → 幂等返回当前态；新任 ready+旧任已释 → 续跑；新任 blocked → 修授权重跑走重试）。
+  - **在办转移**：mission 域新单事务 `ReassignMission`——事务内核对四项（归属锚 fromOwner / 状态族 HandoverOfferable 域单源 / 无在途 0.6.12 交接 / 承接人 active 直查 agents 表）→ owner 翻转（版本不递增）+ ready/running/waiting → paused（reason=slot_handover——新任核验检查点后续办）+ `handover_accepted` 承接回执事件（cause=slot_handover——复用 0.6.12 事件形制，枚举零新增）；reviewing/canceling 不转移（验收基线冻结/停止瞬态——回执如实列出）；**在途单任务交接整体 409**（换将不静默吞 0.6.12 承诺）。
+  - **职责知识不搬动 + 私有记忆显式排除**：slot 命名空间以实例为 scope 天然跨任职（ADR-0020 本意）——交接 = 确认 + 按 status 计数清单入回执；上任 agent 命名空间计数入排除面（"不得复制整个人格"的可审计呈现——仅计数不入正文）。
+  - **承接回执**：`SlotHandoverReceipt`（转移/不转移明细含原因、知识清单、排除面、绑定变迁）+ 新任绑定流 `slot_handover` 事件（BindingEvent 枚举扩展）。
+  - **域与 UI**：零 migration（binding_events/mission_events event_type 自由 TEXT，仅方法新增）；slot 域 `HandoverService`（Ports 闭包模式——app 装配连 mission/memory）；设置页实例任职块"换 Agent 交接"操作（确认警示 + 回执卡：转移明细/知识清单/排除面）。
+  - 验证（TDD——测试先行红→实现绿）：slot UT（七步全链/幂等重放/零变更失败族/中断续跑/部分转移重试收敛/blocked-then-retry/锚错配竞态分类）+ mission UT（状态族矩阵/锚与在途守卫/过滤口径）+ sqlite it（单事务核对面/事件落流）+ httpapi IT（全链 + 错误族 401/404/409）+ 真机冒烟 ALL-PASS。
+
 ### Fixed
 
 - **0.7.9 四审修复（1 P2，ADR-0046 v0.5；三审两项反例已复测通过）**：
@@ -21,16 +33,6 @@
   - **收集后仍可接入新任务（P1）**：清单只读一次、旧任仍 active——边界前进来的任务交接后悬空。**排空边界先行**（active→draining 单段——0.6.13 建单门此后拒新单），权威收集后置到边界之后；sqlite IT 钉住 draining 建单拒。
   - **按创建序猜旧任认错来源（P2）**：最新 released 可能是 ready 直释候选（从未在任）——Resume 误报"新任即在任"卡死。旧任识别按**曾任 active 证据**（事件流 to=active 转移）取最近释放者；UT 构造"直释候选更晚释放"反例钉住。
   - **回执落流失败后重试不补写（P2）**：激活与 AppendBindingEvent 分离——重试直入重放分支，回执永久缺失。新存储面 `TransitionBindingWithEvent`：**激活与承接回执同一事务一次提交**（未遂则两者皆无）；注入失败 UT 钉住原子性（激活无回执态不存在）。
-
-### Added
-
-- **0.7.9 Slot 换 Agent 交接：职责知识与在办事项转移，不复制私有记忆**（0.7 领域线第十件·收官 / ADR-0046，RFC-0018 §8.1"同 Slot 换 Agent"——必须携带职责实例知识、Mission/WorkItem 状态与承接回执；不得复制整个人格）：
-  - **一次编排换将**：`POST /v1/slots/instances/{id}/handover`——七步幂等编排（前置核对零变更 → 新任就位 ready → 在办转移 → 旧任释放 → 新任激活 → 承接回执落流 → 报告）；**单写者不变量**（转移先于释放——owner 翻转即剥夺上任执行权；激活最后）；**无 attempt 持久化**——每步可核对，中断重跑按现势收敛（在任=新任 → 幂等返回当前态；新任 ready+旧任已释 → 续跑；新任 blocked → 修授权重跑走重试）。
-  - **在办转移**：mission 域新单事务 `ReassignMission`——事务内核对四项（归属锚 fromOwner / 状态族 HandoverOfferable 域单源 / 无在途 0.6.12 交接 / 承接人 active 直查 agents 表）→ owner 翻转（版本不递增）+ ready/running/waiting → paused（reason=slot_handover——新任核验检查点后续办）+ `handover_accepted` 承接回执事件（cause=slot_handover——复用 0.6.12 事件形制，枚举零新增）；reviewing/canceling 不转移（验收基线冻结/停止瞬态——回执如实列出）；**在途单任务交接整体 409**（换将不静默吞 0.6.12 承诺）。
-  - **职责知识不搬动 + 私有记忆显式排除**：slot 命名空间以实例为 scope 天然跨任职（ADR-0020 本意）——交接 = 确认 + 按 status 计数清单入回执；上任 agent 命名空间计数入排除面（"不得复制整个人格"的可审计呈现——仅计数不入正文）。
-  - **承接回执**：`SlotHandoverReceipt`（转移/不转移明细含原因、知识清单、排除面、绑定变迁）+ 新任绑定流 `slot_handover` 事件（BindingEvent 枚举扩展）。
-  - **域与 UI**：零 migration（binding_events/mission_events event_type 自由 TEXT，仅方法新增）；slot 域 `HandoverService`（Ports 闭包模式——app 装配连 mission/memory）；设置页实例任职块"换 Agent 交接"操作（确认警示 + 回执卡：转移明细/知识清单/排除面）。
-  - 验证（TDD——测试先行红→实现绿）：slot UT（七步全链/幂等重放/零变更失败族/中断续跑/部分转移重试收敛/blocked-then-retry/锚错配竞态分类）+ mission UT（状态族矩阵/锚与在途守卫/过滤口径）+ sqlite it（单事务核对面/事件落流）+ httpapi IT（全链 + 错误族 401/404/409）+ 真机冒烟 ALL-PASS。
 
 ## [0.7.8] - 2026-11-12
 
