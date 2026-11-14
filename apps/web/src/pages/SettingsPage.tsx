@@ -5,7 +5,7 @@
 // 分层规矩：房间讨论策略在房间内调（右侧信息面板）；本页子导航纯前端态（刷新回
 // 默认 Agent 区）。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type AgentBundleExportView, type AgentBundleSummary, type BundleImportView, type BundleImportSummary, type BundleActivationView, type BackupSummary, type Executable, type IdentityAgent, type MissionSummary, type MonitorView, type SettingsDoc, type SlotSpecContent, type SlotSpecSummary, type SlotSpecView, type SlotInstanceView, type BindingView, type ReadinessReportView } from "../api/client";
+import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type AgentBundleExportView, type AgentBundleSummary, type BundleImportView, type BundleImportSummary, type BundleActivationView, type BackupSummary, type Executable, type IdentityAgent, type MissionSummary, type MonitorView, type SettingsDoc, type SlotSpecContent, type SlotSpecSummary, type SlotSpecView, type SlotInstanceView, type BindingView, type ReadinessReportView, type SlotHandoverReceipt } from "../api/client";
 import { AppLogo } from "../components/AppLogo";
 import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
 import { UpdateEditor } from "../components/UpdateEditor";
@@ -2728,7 +2728,7 @@ function BundleImports() {
                       {actBusy ? "激活中…" : "确认激活"}
                     </button>
                     <p className="mt-1 text-[11px] leading-4 text-faint">
-                      任务以新 ID 承接（暂停态）、检查点与记忆随映射落库；授权/唤醒不继承；Slot 任职不恢复（归 0.7.9）。
+                      任务以新 ID 承接（暂停态）、检查点与记忆随映射落库；授权/唤醒不继承；Slot 任职不自动恢复——目标实例经职责面板装机/换 Agent 交接（0.7.9）重建。
                     </p>
                   </li>
                 )}
@@ -2801,7 +2801,8 @@ function splitGrantLines(s: string): string[] {
 
 /** 实例任职管理（ADR-0021 / 0.5.4 + ADR-0022 准入 / 0.5.5）：展开即拉取；
  * 任职（Agent 下拉 + 钉版本 + 准入试算）、blocked 缺失展示与重试、激活
- * （单 active——冲突可见 409）、释放（交接备注输入）。 */
+ * （单 active——冲突可见 409）、释放（交接备注输入）；换 Agent 交接
+ * （0.7.9 / ADR-0046——在办转移 + 知识确认 + 回执卡）。 */
 function InstanceBindings({ instanceID, specLatest }: { instanceID: string; specLatest: number }) {
   const [open, setOpen] = useState(false);
   const [bindings, setBindings] = useState<BindingView[] | null>(null);
@@ -2819,6 +2820,8 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
   // 0.5.5 blocked 任职的事件取证（缺失/降级可见）
   const [blockedInfo, setBlockedInfo] = useState<Record<string, { missing?: string; degraded?: string }>>({});
   const seq = useRef(0);
+  // 0.7.9 换 Agent 交接回执（在任行的"换 Agent 交接"动作产出）
+  const [hoReceipt, setHoReceipt] = useState<SlotHandoverReceipt | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -2867,6 +2870,36 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
     } finally {
       setBusy(false);
     }
+  };
+
+  // 换 Agent 交接（0.7.9 / ADR-0046）：下拉所选 Agent 为新任；确认后七步编排
+  //（在办转移为暂停态 + 职责知识留实例 + 上任私有记忆不复制——回执如实呈现）。
+  // target 参数化（复审 P1：draining/ready 续跑入口以 ready 绑定的 Agent 为
+  // 原目标；缺省取下拉所选）。无在任时 from 由服务端按现势推导（draining 旧任）。
+  const handover = async (target?: string) => {
+    const to = target ?? agentID;
+    if (!to || (activeBinding && to === activeBinding.agent_id)) {
+      setMsg("新任须为其他 active Agent（下拉选择）");
+      return;
+    }
+    const fromName = activeBinding
+      ? agentNameOf(agents, activeBinding.agent_id)
+      : draining.length > 0
+        ? agentNameOf(agents, draining[0].agent_id)
+        : "（服务端按现势推导）";
+    const heads =
+      `换 Agent 交接：${fromName} → ${agentNameOf(agents, to)}？
+` +
+      "在办任务转移为暂停态（新任核验检查点后续办）；职责知识留实例随任职延续；上任私有记忆不随交接转移。";
+    if (!window.confirm(heads)) return;
+    setHoReceipt(null);
+    await act(async () => {
+      const rep = await api.handoverSlotInstance(instanceID, {
+        new_agent_id: to,
+        ...(note.trim() ? { notes: note.trim() } : {}),
+      });
+      setHoReceipt(rep);
+    });
   };
 
   // 准入试算：只读无副作用（不建任职记录）。共享版本解析（P2#4：空=最新，
@@ -2935,11 +2968,20 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
                 >
                   释放并排空
                 </button>
+                <button
+                  type="button"
+                  disabled={busy || !agentID || agentID === activeBinding.agent_id}
+                  onClick={() => void handover()}
+                  title="换 Agent 交接（0.7.9）：在办任务转移至所选 Agent（暂停态）；职责知识留实例；不复制私有记忆"
+                  className="rounded bg-accent px-2 py-px text-[11px] text-accent-contrast disabled:opacity-40"
+                >
+                  换 Agent 交接
+                </button>
               </div>
             )}
             {draining.map((b) => (
               <p key={b.binding_id} className="text-[11px] text-warn">
-                排空中（{agentNameOf(agents, b.agent_id)}）——在途工作清空后重试释放
+                排空中（{agentNameOf(agents, b.agent_id)}）——未完成换将交接：就绪候选行"继续换将交接"收敛，或释放该绑定后另行装任
               </p>
             ))}
             {blockedOnes.map((b) => (
@@ -2966,14 +3008,28 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
                   <div key={b.binding_id} className="flex items-center gap-1.5 text-[11px]">
                     <span>就绪：{agentNameOf(agents, b.agent_id)}</span>
                     <ExeBadge>v{b.slot_spec_version}</ExeBadge>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void act(() => api.activateSlotBinding(b.binding_id))}
-                      className="rounded bg-surface-3 px-2 py-px text-[11px] disabled:opacity-40"
-                    >
-                      激活{activeBinding ? "（需先释放现任）" : ""}
-                    </button>
+                    {draining.length > 0 ? (
+                      // 复审 P1：未完成换将批次（旧任排空中）——普通激活被服务端
+                      // 拒（绕行会遗留批次）；以该 ready 绑定为原目标续跑收敛。
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void handover(b.agent_id)}
+                        title="未完成换将交接（旧任排空中）——续跑收敛：在办补转、旧任释放、激活并出回执"
+                        className="rounded bg-accent px-2 py-px text-accent-contrast disabled:opacity-40"
+                      >
+                        继续换将交接
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void act(() => api.activateSlotBinding(b.binding_id))}
+                        className="rounded bg-surface-3 px-2 py-px text-[11px] disabled:opacity-40"
+                      >
+                        激活{activeBinding ? "（需先释放现任）" : ""}
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -2982,6 +3038,37 @@ function InstanceBindings({ instanceID, specLatest }: { instanceID: string; spec
               <p className="rounded bg-surface-2 px-2 py-1 text-[11px] text-dim" title={released[0].binding_id}>
                 最近交接（{agentNameOf(agents, released[0].agent_id)}）：{released[0].handoff_note}
               </p>
+            )}
+            {hoReceipt && (
+              <div
+                className="rounded-lg bg-surface-2 px-2 py-1.5 text-[11px]"
+                title={`绑定：${hoReceipt.released_binding_id} → ${hoReceipt.activated_binding_id}（知识命名空间 ${hoReceipt.knowledge_namespace}）`}
+              >
+                <span className="font-medium">交接回执</span>
+                （{agentNameOf(agents, hoReceipt.from_agent_id)} → {agentNameOf(agents, hoReceipt.to_agent_id)}）
+                {hoReceipt.notes && <p className="text-dim">备注：{hoReceipt.notes}</p>}
+                <p>
+                  在办转移 {hoReceipt.missions_transferred.length} 项
+                  {hoReceipt.missions_transferred.length > 0 && "（转移后一律暂停——新任核验检查点后续办）"}
+                  {hoReceipt.missions_not_transferred.length > 0 && `；未转移 ${hoReceipt.missions_not_transferred.length} 项`}
+                </p>
+                {hoReceipt.missions_transferred.map((m) => (
+                  <p key={m.mission_id} className="text-dim">
+                    · {m.objective}（{m.mission_id}）：{m.from_status} → {m.status}
+                  </p>
+                ))}
+                {hoReceipt.missions_not_transferred.map((m) => (
+                  <p key={m.mission_id} className="text-warn">
+                    · 未转移 {m.objective}（{m.mission_id}，{m.status}）：{m.reason}
+                  </p>
+                ))}
+                <p className="text-dim">
+                  职责知识（挂实例，随任职延续）：{Object.entries(hoReceipt.knowledge_inventory).filter(([, n]) => n > 0).map(([k, n]) => `${k} ${n}`).join(" · ") || "无"}
+                </p>
+                <p className="text-faint">
+                  排除面：上任私有记忆 {hoReceipt.excluded_private_count} 条不随交接转移（不复制人格）
+                </p>
+              </div>
             )}
             <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
               <select

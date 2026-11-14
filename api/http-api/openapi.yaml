@@ -1813,6 +1813,62 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /v1/slots/instances/{slot_instance_id}/handover:
+    post:
+      operationId: handoverSlotInstance
+      summary: Slot 换 Agent 交接（0.7.9 / ADR-0046）
+      description: |
+        一次编排换将：职责知识不搬动（slot 命名空间以实例为 scope 天然跨任职
+        ——回执确认与清单）；在办任务（owner=上任 ∧ 挂本实例 ∧ 非终态）转移
+        至新任——ready/running/waiting → paused（新任核验检查点后续办）+
+        handover_accepted 事件（cause=slot_handover）；reviewing/canceling
+        不转移（回执如实列出）；**上任私有记忆不复制**（排除面注记）。七步
+        幂等编排（前置核对零变更 → 新任就位 → 在办转移 → 旧任释放 → 新任
+        激活 → 承接回执落流 → 报告）——中断重跑按现势收敛。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - name: slot_instance_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^si_[0-9A-Za-z_-]+$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SlotHandoverRequest" }
+      responses:
+        "200":
+          description: 交接回执（幂等重放返回当前态）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SlotHandoverReceipt" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: 实例不存在（instance_not_found）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: |
+            换将冲突——无在任且无可恢复态 / 新任即在任 / 新任非 active
+            （agent_not_active）/ 准入预核不满足（readiness_not_met）/ 在途
+            单任务交接未了结（handover_conflict——先承接/婉拒/撤回）/ 新任
+            装机门未过 / 激活复核失败（状态保持可重跑收敛）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "422":
+          description: 参数不合法（notes 超 4096 字 / new_agent_id 缺失）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: 职责域未装配（slot_unavailable）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/slots/grants/{agent_id}:
     get:
       operationId: getSlotGrant
@@ -6428,11 +6484,72 @@ components:
       properties:
         seq: { type: integer, format: int64, description: 全表单调流序 }
         binding_id: { type: string }
-        event_type: { type: string, enum: [created, status_changed] }
+        event_type: { type: string, enum: [created, status_changed, slot_handover] }
         payload:
           type: object
-          description: "事件体——created: {agent_id, slot_instance_id, slot_spec_version}；status_changed: {from, to, handoff_note}；blocked 转移含 {missing, degraded}（0.5.5 准入门产出）"
+          description: "事件体——created: {agent_id, slot_instance_id, slot_spec_version}；status_changed: {from, to, handoff_note}；blocked 转移含 {missing, degraded}（0.5.5 准入门产出）；slot_handover（0.7.9 换将承接回执）: {from_agent, to_agent, transferred_count, slot_instance_id, notes}"
         occurred_at: { type: string, format: date-time }
+    SlotHandoverRequest:
+      type: object
+      required: [new_agent_id]
+      additionalProperties: false
+      description: 换 Agent 交接请求（0.7.9 / ADR-0046）。
+      properties:
+        new_agent_id: { type: string, pattern: "^ag_[0-9A-Za-z_-]+$" }
+        notes:
+          type: string
+          maxLength: 4096
+          description: 交接备注（旧任释放 handoff_note 同值入档）
+    SlotHandoverTransferredMission:
+      type: object
+      required: [mission_id, objective, from_status, status]
+      description: 已转移在办任务（含并发已移动按归属锚分类计入者）。
+      properties:
+        mission_id: { type: string }
+        objective: { type: string }
+        from_status: { type: string, description: 转移前状态 }
+        status: { type: string, description: "转移后（ready/running/waiting→paused；draft/paused 保持）" }
+    SlotHandoverNotTransferredMission:
+      type: object
+      required: [mission_id, objective, status, reason]
+      description: 未转移任务（reviewing/canceling 状态族外 / 归属已变化）。
+      properties:
+        mission_id: { type: string }
+        objective: { type: string }
+        status: { type: string }
+        reason: { type: string }
+    SlotHandoverReceipt:
+      type: object
+      required: [slot_instance_id, slot_title, knowledge_namespace, from_agent_id, to_agent_id, occurred_at, missions_transferred, missions_not_transferred, knowledge_inventory, excluded_private_count, excluded, released_binding_id, activated_binding_id, notes]
+      description: |
+        换 Agent 交接回执（0.7.9 / ADR-0046——审计面）：职责知识不搬动（以实例
+        知识命名空间承载，随实例跨任职保留——清单确认）；在办转移明细；排除面
+        （上任私有记忆不复制——RFC §8.1"不得复制整个人格"）。幂等重放返回当前态。
+      properties:
+        slot_instance_id: { type: string }
+        slot_title: { type: string }
+        knowledge_namespace: { type: string }
+        from_agent_id: { type: string }
+        to_agent_id: { type: string }
+        occurred_at: { type: string, format: date-time }
+        missions_transferred:
+          type: array
+          items: { $ref: "#/components/schemas/SlotHandoverTransferredMission" }
+        missions_not_transferred:
+          type: array
+          items: { $ref: "#/components/schemas/SlotHandoverNotTransferredMission" }
+        knowledge_inventory:
+          type: object
+          description: 职责知识清单（slot 命名空间按 status 计数）
+          additionalProperties: { type: integer }
+        excluded_private_count: { type: integer, description: 上任 agent 命名空间记忆计数（排除面——仅计数不入正文） }
+        excluded:
+          type: array
+          description: 排除面固定注记
+          items: { type: string }
+        released_binding_id: { type: string }
+        activated_binding_id: { type: string }
+        notes: { type: string }
     GrantRuntime:
       type: object
       required: [capabilities, workspace_access]
@@ -7819,7 +7936,7 @@ components:
         event_type: { type: string, enum: [created, contract_revised, status_changed, reopen_requested, handover_offered, handover_accepted, handover_declined, handover_revoked] }
         payload:
           type: object
-          description: "事件体——created: {contract_version, status}；contract_revised: {from_version, to_version}；status_changed: {from, to, reason}；reopen_requested: {request_id, decision_ref, evidence_refs, affected_mission_ids, reason, contract_version}；handover_offered: {from_owner, to_owner, notes, contract_version}；handover_accepted: {from_owner, to_owner, contract_version, status_at_accept, note}（承接回执）；handover_declined/handover_revoked: {from_owner, to_owner, reason, contract_version}"
+          description: "事件体——created: {contract_version, status}；contract_revised: {from_version, to_version}；status_changed: {from, to, reason}；reopen_requested: {request_id, decision_ref, evidence_refs, affected_mission_ids, reason, contract_version}；handover_offered: {from_owner, to_owner, notes, contract_version}；handover_accepted: {from_owner, to_owner, contract_version, status_at_accept, note}（承接回执；0.7.9 换将路径同事件类型——payload 增 cause=slot_handover, slot_instance_id, reason=slot_handover 的 status_changed）；handover_declined/handover_revoked: {from_owner, to_owner, reason, contract_version}"
         occurred_at: { type: string, format: date-time }
     SlotInstanceView:
       type: object

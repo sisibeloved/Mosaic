@@ -9,6 +9,7 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -138,6 +139,16 @@ type Store interface {
 	ReleaseBinding(ctx context.Context, bindingID string, handoffNote, occurredAt string) (from string, ok bool, err error)
 	// BindingEvents 任职事件流（seq 升序）。
 	BindingEvents(ctx context.Context, bindingID string) ([]BindingEvent, error)
+	// AppendBindingEvent 追加任职事件（0.7.9 / ADR-0046——换将承接回执
+	// slot_handover 事件落流；payload 原样）；绑定未知 ErrBindingNotFound。
+	AppendBindingEvent(ctx context.Context, bindingID, eventType string, payload json.RawMessage, occurredAt string) error
+	// ActivateBindingTx 激活写事务（0.7.9 三审 P1——**结构条件入事务**）：
+	// 状态 == expectFrom 且 **同实例无 draining 任职**（换将批次守卫——检查与
+	// 写入同一事务，并发绕行窗口结构性消除；违反 → ErrInvalidTransition）且
+	// 撞单 active 部分唯一索引兜底（ErrActiveBindingExists）才转移；evType
+	// 非空时**同一事务**追加该事件（审校 #6：激活与承接回执原子，不存在
+	// "激活成功回执缺失"态）；ok=false = 状态不匹配。
+	ActivateBindingTx(ctx context.Context, bindingID, expectFrom, evType string, evPayload json.RawMessage, occurredAt string) (from string, ok bool, err error)
 	// SpecByVersion 钉版本单查（0.5.5 准入取钉住版内容）；未知 ok=false。
 	SpecByVersion(ctx context.Context, slotSpecID string, version int) (SlotSpec, bool, error)
 	// PutGrant upsert 授权档案（ADR-0022；键 = agent_id，全量替换）。

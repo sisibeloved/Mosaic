@@ -1197,6 +1197,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/slots/instances/{slot_instance_id}/handover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Slot 换 Agent 交接（0.7.9 / ADR-0046）
+         * @description 一次编排换将：职责知识不搬动（slot 命名空间以实例为 scope 天然跨任职
+         *     ——回执确认与清单）；在办任务（owner=上任 ∧ 挂本实例 ∧ 非终态）转移
+         *     至新任——ready/running/waiting → paused（新任核验检查点后续办）+
+         *     handover_accepted 事件（cause=slot_handover）；reviewing/canceling
+         *     不转移（回执如实列出）；**上任私有记忆不复制**（排除面注记）。七步
+         *     幂等编排（前置核对零变更 → 新任就位 → 在办转移 → 旧任释放 → 新任
+         *     激活 → 承接回执落流 → 报告）——中断重跑按现势收敛。
+         */
+        post: operations["handoverSlotInstance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/slots/grants/{agent_id}": {
         parameters: {
             query?: never;
@@ -4073,11 +4099,60 @@ export interface components {
             seq: number;
             binding_id: string;
             /** @enum {string} */
-            event_type: "created" | "status_changed";
-            /** @description 事件体——created: {agent_id, slot_instance_id, slot_spec_version}；status_changed: {from, to, handoff_note}；blocked 转移含 {missing, degraded}（0.5.5 准入门产出） */
+            event_type: "created" | "status_changed" | "slot_handover";
+            /** @description 事件体——created: {agent_id, slot_instance_id, slot_spec_version}；status_changed: {from, to, handoff_note}；blocked 转移含 {missing, degraded}（0.5.5 准入门产出）；slot_handover（0.7.9 换将承接回执）: {from_agent, to_agent, transferred_count, slot_instance_id, notes} */
             payload: Record<string, never>;
             /** Format: date-time */
             occurred_at: string;
+        };
+        /** @description 换 Agent 交接请求（0.7.9 / ADR-0046）。 */
+        SlotHandoverRequest: {
+            new_agent_id: string;
+            /** @description 交接备注（旧任释放 handoff_note 同值入档） */
+            notes?: string;
+        };
+        /** @description 已转移在办任务（含并发已移动按归属锚分类计入者）。 */
+        SlotHandoverTransferredMission: {
+            mission_id: string;
+            objective: string;
+            /** @description 转移前状态 */
+            from_status: string;
+            /** @description 转移后（ready/running/waiting→paused；draft/paused 保持） */
+            status: string;
+        };
+        /** @description 未转移任务（reviewing/canceling 状态族外 / 归属已变化）。 */
+        SlotHandoverNotTransferredMission: {
+            mission_id: string;
+            objective: string;
+            status: string;
+            reason: string;
+        };
+        /**
+         * @description 换 Agent 交接回执（0.7.9 / ADR-0046——审计面）：职责知识不搬动（以实例
+         *     知识命名空间承载，随实例跨任职保留——清单确认）；在办转移明细；排除面
+         *     （上任私有记忆不复制——RFC §8.1"不得复制整个人格"）。幂等重放返回当前态。
+         */
+        SlotHandoverReceipt: {
+            slot_instance_id: string;
+            slot_title: string;
+            knowledge_namespace: string;
+            from_agent_id: string;
+            to_agent_id: string;
+            /** Format: date-time */
+            occurred_at: string;
+            missions_transferred: components["schemas"]["SlotHandoverTransferredMission"][];
+            missions_not_transferred: components["schemas"]["SlotHandoverNotTransferredMission"][];
+            /** @description 职责知识清单（slot 命名空间按 status 计数） */
+            knowledge_inventory: {
+                [key: string]: number;
+            };
+            /** @description 上任 agent 命名空间记忆计数（排除面——仅计数不入正文） */
+            excluded_private_count: number;
+            /** @description 排除面固定注记 */
+            excluded: string[];
+            released_binding_id: string;
+            activated_binding_id: string;
+            notes: string;
         };
         /** @description 授权侧运行能力（与模板 RuntimeRequirements 对偶：能力名集合 + 工作区权限级）。 */
         GrantRuntime: {
@@ -5475,7 +5550,7 @@ export interface components {
             mission_id: string;
             /** @enum {string} */
             event_type: "created" | "contract_revised" | "status_changed" | "reopen_requested" | "handover_offered" | "handover_accepted" | "handover_declined" | "handover_revoked";
-            /** @description 事件体——created: {contract_version, status}；contract_revised: {from_version, to_version}；status_changed: {from, to, reason}；reopen_requested: {request_id, decision_ref, evidence_refs, affected_mission_ids, reason, contract_version}；handover_offered: {from_owner, to_owner, notes, contract_version}；handover_accepted: {from_owner, to_owner, contract_version, status_at_accept, note}（承接回执）；handover_declined/handover_revoked: {from_owner, to_owner, reason, contract_version} */
+            /** @description 事件体——created: {contract_version, status}；contract_revised: {from_version, to_version}；status_changed: {from, to, reason}；reopen_requested: {request_id, decision_ref, evidence_refs, affected_mission_ids, reason, contract_version}；handover_offered: {from_owner, to_owner, notes, contract_version}；handover_accepted: {from_owner, to_owner, contract_version, status_at_accept, note}（承接回执；0.7.9 换将路径同事件类型——payload 增 cause=slot_handover, slot_instance_id, reason=slot_handover 的 status_changed）；handover_declined/handover_revoked: {from_owner, to_owner, reason, contract_version} */
             payload: Record<string, never>;
             /** Format: date-time */
             occurred_at: string;
@@ -8171,6 +8246,76 @@ export interface operations {
             };
             /** @description 显式版本越界（invalid_spec_version） */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 职责域未装配（slot_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    handoverSlotInstance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_instance_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlotHandoverRequest"];
+            };
+        };
+        responses: {
+            /** @description 交接回执（幂等重放返回当前态） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlotHandoverReceipt"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 实例不存在（instance_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /**
+             * @description 换将冲突——无在任且无可恢复态 / 新任即在任 / 新任非 active
+             *     （agent_not_active）/ 准入预核不满足（readiness_not_met）/ 在途
+             *     单任务交接未了结（handover_conflict——先承接/婉拒/撤回）/ 新任
+             *     装机门未过 / 激活复核失败（状态保持可重跑收敛）
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["TooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /** @description 参数不合法（notes 超 4096 字 / new_agent_id 缺失） */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

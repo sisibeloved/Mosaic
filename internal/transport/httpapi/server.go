@@ -82,6 +82,9 @@ type Deps struct {
 	Identity *personalagent.Service
 	// Slots 职责模板域（RFC-0018 §5 / ADR-0019，0.5.2；nil 时职责端点 503）。
 	Slots *slot.Service
+	// SlotHandover 换 Agent 交接编排（RFC-0018 §8.1 / ADR-0046，0.7.9；nil 时
+	// 交接端点 503）。
+	SlotHandover *slot.HandoverService
 	// Missions Mission 契约域（RFC-0018 §6.1 / ADR-0023，0.6.0；nil 时端点 503）。
 	Missions *mission.Service
 	// Dispatch 网关首切片域（RFC-0018 §11.2/§11.2.1 / ADR-0024，0.6.1；nil 时端点 503）。
@@ -1543,6 +1546,58 @@ func (s *server) GetSlotInstance(w http.ResponseWriter, r *http.Request, slotIns
 		return
 	}
 	writeJSON(w, http.StatusOK, inst)
+}
+
+// HandoverSlotInstance 换 Agent 交接（0.7.9 / ADR-0046）：七步幂等编排——
+// 职责知识确认清单 + 在办转移（paused + 承接回执）+ 私有记忆显式排除。
+func (s *server) HandoverSlotInstance(w http.ResponseWriter, r *http.Request, slotInstanceID string) {
+	if s.deps.Slots == nil || s.deps.SlotHandover == nil {
+		writeError(w, http.StatusServiceUnavailable, "slot_unavailable", "职责域未装配")
+		return
+	}
+	if !s.guardWrite(w, r, true) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req apigen.SlotHandoverRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 1MiB 上限")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不合法："+err.Error())
+		return
+	}
+	notes := ""
+	if req.Notes != nil {
+		notes = *req.Notes
+	}
+	rep, err := s.deps.SlotHandover.Handover(r.Context(), slotInstanceID, req.NewAgentId, notes)
+	if err != nil {
+		switch {
+		case errors.Is(err, slot.ErrInstanceNotFound):
+			writeError(w, http.StatusNotFound, "instance_not_found", "职责实例不存在")
+		case errors.Is(err, slot.ErrAgentNotFound):
+			writeError(w, http.StatusNotFound, "agent_not_found", "新任 Agent 不存在")
+		case errors.Is(err, slot.ErrHandoverConflict):
+			writeError(w, http.StatusConflict, "handover_conflict", err.Error())
+		case errors.Is(err, slot.ErrAgentNotActive):
+			writeError(w, http.StatusConflict, "agent_not_active", err.Error())
+		case errors.Is(err, slot.ErrReadinessNotMet):
+			writeError(w, http.StatusConflict, "readiness_not_met", err.Error())
+		case errors.Is(err, slot.ErrInvalidBinding):
+			writeError(w, http.StatusUnprocessableEntity, "invalid_binding", err.Error())
+		case errors.Is(err, slot.ErrActiveBindingExists), errors.Is(err, slot.ErrInvalidTransition):
+			writeError(w, http.StatusConflict, "invalid_transition", err.Error())
+		default:
+			s.writeDomainError(w, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 // ---- 任职面（RFC-0018 §3.2/§5.2 / ADR-0021，0.5.4）----

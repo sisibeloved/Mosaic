@@ -356,6 +356,8 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			return ok, err
 		},
 	}, clock)
+	// Slot 换 Agent 交接（RFC-0018 §8.1 / ADR-0046，0.7.9）：装配后置到
+	// runSvc 之后（在途 Run 停止信号面经端口注入——见 handoverPorts）。
 	// Run 检查点（0.7.3 / ADR-0040，RFC-0018 §7.3）：可恢复业务状态——双锚
 	//（Run 在册 + mission 归属一致）经 RunMission 闭包（checkpoint 不 import
 	// run 域——依赖方向同 memory.Anchors 模式）。
@@ -478,6 +480,12 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		logger.Info("Run 恢复：未终态按停止意图分派（无意图者 unknown + Mission waiting 待核验；不自动重跑）", "count", n)
 	}
 	runSvc.Start(ctx)
+	// Slot 换 Agent 交接（RFC-0018 §8.1 / ADR-0046，0.7.9）：换将编排——端口
+	// 闭包连 mission（在办收集/单事务转移）/ run（在途停止信号——审校 #1）与
+	// memory（知识清单/排除面）；提取为 handoverPorts 以供 app 级 UT 直测
+	//（Run 停止信号面经最小接口注入，生产接 run.Service）。
+	slotHandoverSvc := slot.NewHandoverService(slotSvc,
+		handoverPorts(missionSvc, runSvc, memorySvc), slot.WithHandoverNow(clock))
 	// 交付域（RFC-0018 §10.2 / ADR-0031，0.6.8）：submit_result 不自动送验——
 	// 只读 mission/run 事实 + Run 流回执；对 Mission 零副作用。
 	deliverySvc := delivery.New(store,
@@ -551,6 +559,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		ProbeRunner:         harness.NewHostRunner(),
 		Identity:            identitySvc,
 		Slots:               slotSvc,
+		SlotHandover:        slotHandoverSvc,
 		Missions:            missionSvc,
 		Dispatch:            dispatchSvc,
 		Execctx:             execCtxSvc,
@@ -1680,4 +1689,110 @@ func bundleOriginTails(refs []string) []string {
 		}
 	}
 	return out
+}
+
+// handoverRunStopper 换将在途 Run 停止面（0.7.9 审校 #1 / P1）：任务转移只翻
+// owner/暂停不停已启动执行——旧执行器仍 running。最小接口（生产接 run.Service；
+// app 级 UT 用 fake 注入）。
+type handoverRunStopper interface {
+	HasUnfinished(ctx context.Context, missionID string) (bool, error)
+	SignalStopByMission(ctx context.Context, missionID, cause string) (int, error)
+}
+
+// handoverPorts 换将编排端口装配（app 单源——生产装配与 app 级 UT 共用）。
+// ReassignMission 闭包**信号先行**（审校 #1）：转移前核未终态 Run 并发停止
+// 信号（ADR-0029 PauseMission 同款面）——先信号后翻转的次序保证重跑无空洞：
+// 未遂者重复发信号、已遂者首轮已收到，不存在"翻转成功而停止信号永不发出"。
+func handoverPorts(missions *mission.Service, runs handoverRunStopper, memSvc *memory.Service) slot.HandoverPorts {
+	return slot.HandoverPorts{
+		MissionsOfSlot: func(ctx context.Context, si string) ([]slot.HandoverMission, error) {
+			ms, err := missions.ListOfSlot(ctx, si)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]slot.HandoverMission, 0, len(ms))
+			for _, m := range ms {
+				out = append(out, handoverMissionOf(m))
+			}
+			return out, nil
+		},
+		ReassignMission: func(ctx context.Context, missionID, fromOwner, toOwner string) (string, bool, error) {
+			has, err := runs.HasUnfinished(ctx, missionID)
+			if err != nil {
+				return "", false, fmt.Errorf("app: 换将在途 Run 核验失败: %w", err)
+			}
+			if has {
+				if _, err := runs.SignalStopByMission(ctx, missionID, mission.SlotHandoverCause); err != nil {
+					return "", false, fmt.Errorf("app: 换将在途 Run 停止信号失败: %w", err)
+				}
+			}
+			out, ok, err := missions.ReassignForSlot(ctx, missionID, fromOwner, toOwner)
+			if err != nil || !ok {
+				return "", false, err
+			}
+			return out.Status, true, nil
+		},
+		MissionStatusOf: func(ctx context.Context, missionID string) (slot.HandoverMission, bool, error) {
+			m, ok, err := missions.Get(ctx, missionID)
+			if err != nil || !ok {
+				return slot.HandoverMission{}, false, err
+			}
+			return handoverMissionOf(m), true, nil
+		},
+		SlotKnowledgeCounts: func(ctx context.Context, scopeID string) (map[string]int, error) {
+			return memoryStatusCounts(ctx, memSvc, memory.NSSlot, scopeID)
+		},
+		AgentPrivateMemoryCount: func(ctx context.Context, agentID string) (int, error) {
+			counts, err := memoryStatusCounts(ctx, memSvc, memory.NSAgent, agentID)
+			if err != nil {
+				return 0, err
+			}
+			total := 0
+			for _, n := range counts {
+				total += n
+			}
+			return total, nil
+		},
+		// HandoverTransferFactsOfSlot 换将转移事实枚举（持久事件源——逐次
+		// 发生逐条含**当时转出人**；四审 P2：跨任期补偿按原始转出人归档；
+		// 不依赖任务当前状态/归属）。
+		HandoverTransferFactsOfSlot: func(ctx context.Context, slotInstanceID, ownerAgentID string) ([]slot.HandoverTransferFact, error) {
+			facts, err := missions.SlotHandoverTransfersOf(ctx, slotInstanceID, ownerAgentID)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]slot.HandoverTransferFact, 0, len(facts))
+			for _, f := range facts {
+				out = append(out, slot.HandoverTransferFact{MissionID: f.MissionID, FromOwner: f.FromOwner})
+			}
+			return out, nil
+		},
+	}
+}
+
+// handoverMissionOf mission 行 → 换将在办投影（Transferable 按 mission 域
+// 单源 HandoverOfferable 标注——slot 域不镜像状态族规则）。
+func handoverMissionOf(m mission.Mission) slot.HandoverMission {
+	return slot.HandoverMission{
+		MissionID: m.MissionID, Objective: m.Objective, OwnerAgentID: m.OwnerAgentID,
+		Status: m.Status, PendingOwnerAgentID: m.PendingOwnerAgentID, SlotInstanceID: m.SlotInstanceID,
+		Transferable: mission.HandoverOfferable(m.Status),
+	}
+}
+
+// memoryStatusCounts 命名空间 × scope 的记忆按 status 计数（换将知识清单/
+// 排除面单源——List 默认口径只看 active，计数须四态显式聚合；IncludeExpired
+// 含过期：知识清单如实反映在位事实）。
+func memoryStatusCounts(ctx context.Context, memSvc *memory.Service, ns memory.Namespace, scopeID string) (map[string]int, error) {
+	out := map[string]int{}
+	for _, st := range []memory.Status{memory.StatusActive, memory.StatusProposed, memory.StatusSuperseded, memory.StatusDeleted} {
+		res, err := memSvc.List(ctx, memory.ListFilter{
+			Namespace: ns, ScopeID: scopeID, Status: st, Limit: 1, IncludeExpired: true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out[string(st)] = res.TotalHits
+	}
+	return out, nil
 }

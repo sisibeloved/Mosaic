@@ -239,8 +239,10 @@ func (s *Service) ActivateBinding(ctx context.Context, bindingID string) (Bindin
 	if target == BindingBlocked {
 		return Binding{}, fmt.Errorf("%w: %s", ErrReadinessNotMet, payload["missing"])
 	}
-	_, done, err := s.store.TransitionBinding(ctx, bindingID,
-		[]string{BindingReady}, BindingActive, nil, s.now())
+	// 换将批次守卫（复审 P1 + 三审 P1）：同实例无 draining 与写入**同一事务**
+	//（ActivateBindingTx 内核对）——服务层预查与写入之间的并发绕行窗口结构性
+	// 消除（绕行会把在办批次遗留在旧任名下且交接重试被卡）。
+	_, done, err := s.store.ActivateBindingTx(ctx, bindingID, BindingReady, "", nil, s.now())
 	if err != nil {
 		return Binding{}, err
 	}
@@ -333,6 +335,83 @@ func (s *Service) ReleaseBinding(ctx context.Context, bindingID, handoffNote str
 // ListBindings 任职列表（创建序）；instanceID 非空时按实例过滤。
 func (s *Service) ListBindings(ctx context.Context, instanceID string) ([]Binding, error) {
 	return s.store.ListBindings(ctx, instanceID)
+}
+
+// BeginHandoverDraining 换将排空边界（0.7.9 审校 #4 / ADR-0046 v0.2）：
+// active → draining 单段。**停接新任务**：slot 寻址派发的建单门（0.6.13
+// CreateMissionGated 事务内核对 active 任职）此后拒绝——收集清单不再有"边
+// 收边进"（RFC §8.3"停接新任务"）。终段由 ReleaseBinding 的 draining 重试
+// 路径补齐（draining → released）；非 active ok=false（幂等重入按现势收敛）。
+func (s *Service) BeginHandoverDraining(ctx context.Context, bindingID, note string) (Binding, error) {
+	if len([]rune(note)) > 4096 {
+		return Binding{}, fmt.Errorf("%w: note ≤4096 字", ErrInvalidBinding)
+	}
+	b, ok, err := s.store.BindingByID(ctx, bindingID)
+	if err != nil {
+		return Binding{}, err
+	}
+	if !ok {
+		return Binding{}, ErrBindingNotFound
+	}
+	if b.Status != BindingActive {
+		// 已 draining（上轮边界）/其他态：编排按现势处理，非错误。
+		return b, nil
+	}
+	_, done, err := s.store.TransitionBinding(ctx, bindingID,
+		[]string{BindingActive}, BindingDraining, releasePayload(note), s.now())
+	if err != nil {
+		return Binding{}, err
+	}
+	if !done {
+		return Binding{}, fmt.Errorf("%w: active → draining", ErrInvalidTransition)
+	}
+	got, _, err := s.store.BindingByID(ctx, bindingID)
+	return got, err
+}
+
+// ActivateBindingWithReceipt 激活并附承接回执事件（0.7.9 审校 #6）：
+// 两时点复核（Agent active + readiness 钉住版重算）同 ActivateBinding，
+// 状态转移与 slot_handover 事件**同一事务一次提交**——激活成功则回执必在，
+// 回执落流失败则激活一并未遂（重跑收敛，不产生"在任而无回执"态）。
+func (s *Service) ActivateBindingWithReceipt(ctx context.Context, bindingID, receiptType string, receiptPayload json.RawMessage) (Binding, error) {
+	b, ok, err := s.store.BindingByID(ctx, bindingID)
+	if err != nil {
+		return Binding{}, err
+	}
+	if !ok {
+		return Binding{}, ErrBindingNotFound
+	}
+	status, ok, err := s.agentStatusOf(ctx, b.AgentID)
+	if err != nil {
+		return Binding{}, err
+	}
+	if !ok {
+		return Binding{}, ErrNotFound
+	}
+	if status != "active" {
+		return Binding{}, fmt.Errorf("%w: %s（%s）", ErrAgentNotActive, b.AgentID, status)
+	}
+	if b.Status != BindingReady {
+		return Binding{}, fmt.Errorf("%w: %s → active", ErrInvalidTransition, b.Status)
+	}
+	target, payload, err := s.runAdmission(ctx, b)
+	if err != nil {
+		return Binding{}, err
+	}
+	if target == BindingBlocked {
+		return Binding{}, fmt.Errorf("%w: %s", ErrReadinessNotMet, payload["missing"])
+	}
+	// 激活与承接回执同一事务（一审 #6），换将批次守卫亦同事务（三审 P1——
+	// 换将流程先释放 draining 旧任再激活，正常路径不触发守卫）。
+	_, done, err := s.store.ActivateBindingTx(ctx, bindingID, BindingReady, receiptType, receiptPayload, s.now())
+	if err != nil {
+		return Binding{}, err
+	}
+	if !done {
+		return Binding{}, fmt.Errorf("%w: %s → active", ErrInvalidTransition, b.Status)
+	}
+	got, _, err := s.store.BindingByID(ctx, bindingID)
+	return got, err
 }
 
 // GetBinding 单查；未知 ok=false。

@@ -291,6 +291,50 @@ func (m *MemStore) TransitionBinding(_ context.Context, bindingID string, allowe
 	return from, true, nil
 }
 
+// ActivateBindingTx 激活写事务（0.7.9 三审 P1：ready 锚 + 同实例无 draining
+// （换将批次守卫——临界区内核对，并发绕行窗口消除）+ 单 active 互斥 +
+// 可选同临界区附事件）。evType 空 = 无事件（普通激活路径）。
+func (m *MemStore) ActivateBindingTx(_ context.Context, bindingID, expectFrom, evType string, evPayload json.RawMessage, occurredAt string) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx := -1
+	for i, b := range m.bindings {
+		if b.BindingID == bindingID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return "", false, ErrNotFound
+	}
+	from := m.bindings[idx].Status
+	if from != expectFrom {
+		return "", false, nil
+	}
+	inst := m.bindings[idx].SlotInstanceID
+	for _, b := range m.bindings {
+		if b.SlotInstanceID == inst {
+			switch b.Status {
+			case BindingDraining:
+				return "", false, fmt.Errorf("%w: 实例存在排空中任职（%s/%s，未完成换将交接）——重跑换将交接收敛或先释放该绑定", ErrInvalidTransition, b.BindingID, b.AgentID)
+			case BindingActive:
+				return "", false, ErrActiveBindingExists
+			}
+		}
+	}
+	m.bindings[idx].Status = BindingActive
+	m.bindings[idx].UpdatedAt = occurredAt
+	m.appendBindingChangedLocked(bindingID, from, BindingActive, nil, occurredAt)
+	if evType != "" {
+		m.bseq++
+		m.bevents = append(m.bevents, BindingEvent{
+			Seq: m.bseq, BindingID: bindingID, EventType: evType,
+			Payload: evPayload, OccurredAt: occurredAt,
+		})
+	}
+	return from, true, nil
+}
+
 func (m *MemStore) ReleaseBinding(_ context.Context, bindingID string, handoffNote, occurredAt string) (string, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -330,6 +374,24 @@ func (m *MemStore) BindingEvents(_ context.Context, bindingID string) ([]Binding
 		}
 	}
 	return out, nil
+}
+
+// AppendBindingEvent 追加任职事件（0.7.9 / ADR-0046——换将承接回执落流）；
+// 绑定未知 ErrBindingNotFound。
+func (m *MemStore) AppendBindingEvent(_ context.Context, bindingID, eventType string, payload json.RawMessage, occurredAt string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, b := range m.bindings {
+		if b.BindingID == bindingID {
+			m.bseq++
+			m.bevents = append(m.bevents, BindingEvent{
+				Seq: m.bseq, BindingID: bindingID, EventType: eventType,
+				Payload: payload, OccurredAt: occurredAt,
+			})
+			return nil
+		}
+	}
+	return ErrBindingNotFound
 }
 
 func (m *MemStore) appendBindingChangedLocked(bindingID, from, to string, extras map[string]string, occurredAt string) {

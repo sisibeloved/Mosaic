@@ -483,6 +483,92 @@ func (m *MemStore) HandoverWithdraw(_ context.Context, missionID string, expecte
 	return cur, true, nil
 }
 
+// MissionsOfSlot 在办收集（0.7.9 / ADR-0046 审校 #3——全属）：slot 过滤、
+// 非终态全量（不论归属），创建序。
+func (m *MemStore) MissionsOfSlot(_ context.Context, slotInstanceID string) ([]Mission, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []Mission{}
+	for _, ms := range m.missions {
+		if ms.SlotInstanceID == slotInstanceID &&
+			ms.Status != StatusAccepted && ms.Status != StatusCanceled {
+			out = append(out, snapshot(ms))
+		}
+	}
+	return out, nil
+}
+
+// SlotHandoverTransfers 换将转移事实枚举（memstore——事件扫描逐条解析；
+// 不依赖任务当前状态/归属；每条含当时转出人——四审 P2）。
+func (m *MemStore) SlotHandoverTransfers(_ context.Context, slotInstanceID, owner string) ([]SlotTransferFact, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	slots := map[string]bool{}
+	for _, ms := range m.missions {
+		if ms.SlotInstanceID == slotInstanceID {
+			slots[ms.MissionID] = true
+		}
+	}
+	out := []SlotTransferFact{}
+	for id, evs := range m.events {
+		if !slots[id] {
+			continue
+		}
+		for _, e := range evs {
+			if e.EventType != EventHandoverAccepted {
+				continue
+			}
+			var p struct {
+				Cause     string `json:"cause"`
+				ToOwner   string `json:"to_owner"`
+				FromOwner string `json:"from_owner"`
+			}
+			if json.Unmarshal(e.Payload, &p) != nil ||
+				p.Cause != SlotHandoverCause || p.ToOwner != owner {
+				continue
+			}
+			// 每次发生一条（含当时转出人）。
+			out = append(out, SlotTransferFact{MissionID: id, FromOwner: p.FromOwner})
+		}
+	}
+	return out, nil
+}
+
+// ReassignMission 换将单任务转移（0.7.9 / ADR-0046；memstore——无 agents 表，
+// 承接人 active 由服务层先核；锚/状态族/在途核对与事件语义同 SQLite 实装）。
+func (m *MemStore) ReassignMission(_ context.Context, missionID, fromOwner, toOwner string, event Event) (Mission, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i, ok := m.indexOfLocked(missionID)
+	if !ok {
+		return Mission{}, false, ErrMissionNotFound
+	}
+	cur := m.missions[i]
+	if cur.OwnerAgentID != fromOwner || !HandoverOfferable(cur.Status) || cur.PendingOwnerAgentID != "" {
+		return Mission{}, false, nil
+	}
+	prev := cur.Status
+	prevOwner := cur.OwnerAgentID
+	cur.OwnerAgentID = toOwner
+	switch cur.Status {
+	case StatusReady, StatusRunning, StatusWaiting:
+		cur.Status = StatusPaused
+	}
+	cur.UpdatedAt = event.OccurredAt
+	m.missions[i] = cur
+	m.seq++
+	event.Seq = m.seq
+	event.Payload = InjectHandoverFacts(event.Payload, prevOwner)
+	event.Payload = InjectHandoverStatus(event.Payload, prev) // status_at_accept = 转移前态
+	m.events[missionID] = append(m.events[missionID], event)
+	if prev != cur.Status {
+		m.appendEventLocked(missionID, EventStatusChanged, map[string]string{
+			"from": prev, "to": cur.Status, "reason": SlotHandoverReason,
+		}, event.OccurredAt)
+	}
+	return cur, true, nil
+}
+
 func (m *MemStore) indexOfLocked(missionID string) (int, bool) {
 	for i, ms := range m.missions {
 		if ms.MissionID == missionID {

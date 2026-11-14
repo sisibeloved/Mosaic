@@ -370,6 +370,25 @@ type Store interface {
 	// expectOffer 且非空 → pending 清空 + 事件（declined | revoked 由 event 携带），
 	// 单事务；任何状态可了结在途交接（不应存在卡死路径）。
 	HandoverWithdraw(ctx context.Context, missionID string, expectedVersion int, expectOffer string, event Event) (Mission, bool, error)
+	// MissionsOfSlot 挂本实例的在办清单（0.7.9 / ADR-0046 审校 #3——全属收集：
+	// 不论归属，前轮未完成交接的遗留任务也在列）：非终态全量（reviewing/
+	// canceling 也在列——编排按域单源分类），创建序。
+	MissionsOfSlot(ctx context.Context, slotInstanceID string) ([]Mission, error)
+	// SlotHandoverTransfers 挂本实例且经换将转移至 owner 的**逐次转移事实**
+	//（每次发生一条，含**当时转出人** from_owner——四审 P2：补偿逐条归档，
+	// 跨任期补写不得以当前轮 from 顶替历史转出人；mission_events 扫描，
+	// **不依赖任务当前状态/归属**——终态或再改派的历史转移事实仍在列）。
+	SlotHandoverTransfers(ctx context.Context, slotInstanceID, ownerAgentID string) ([]SlotTransferFact, error)
+	// ReassignMission 换将单任务转移（0.7.9 / ADR-0046）：事务内核对——现行
+	// owner == fromOwner（归属锚——并发 0.6.12 承接/重复换将不冒领）、状态 ∈
+	// HandoverOfferable（域单源）、无在途交接、承接人 active（事务内直查
+	// agents 表——ADR-0035 审校 #3a 同例）→ owner = toOwner（contract_version
+	// 不递增——归属翻转非契约修订，0.6.12 同口径）+ ready/running/waiting →
+	// paused（status_changed reason=slot_handover）+ handover_accepted 事件
+	//（cause=slot_handover；from_owner/status_at_accept 按事务内核对后的实际值
+	// 注入——status_at_accept 记**转移前态**），单事务；ok=false = 任一核对
+	// 不符（服务方重读分类）。
+	ReassignMission(ctx context.Context, missionID, fromOwner, toOwner string, event Event) (Mission, bool, error)
 }
 
 // Service 契约服务：校验单源 + 完备性判定单源 + CAS 编排。
@@ -918,6 +937,66 @@ func (s *Service) HandoverHistory(ctx context.Context, missionID string) ([]Hand
 			Notes: p.Notes, Note: p.Note, Reason: p.Reason, StatusAtAccept: p.StatusAtAccept,
 			ContractVersion: p.ContractVersion, OccurredAt: e.OccurredAt,
 		})
+	}
+	return out, true, nil
+}
+
+// ---- Slot 换 Agent 交接（0.7.9 / ADR-0046；RFC-0018 §8.1"同 Slot 换 Agent"）----
+
+// SlotHandoverCause 换将承接回执的 cause 标记（事件体区分 0.6.12 点对点承接）。
+const SlotHandoverCause = "slot_handover"
+
+// SlotHandoverReason 换将暂停的 status_changed reason。
+const SlotHandoverReason = "slot_handover"
+
+// ListOfSlot 在办收集（换将编排输入——全属，审校 #3）：slot 过滤、非终态全量
+// （不论归属——前轮未完成交接已转出的遗留也在列；reviewing/canceling 也在列
+// ——编排按 HandoverOfferable 域单源分类）。
+func (s *Service) ListOfSlot(ctx context.Context, slotInstanceID string) ([]Mission, error) {
+	return s.store.MissionsOfSlot(ctx, strings.TrimSpace(slotInstanceID))
+}
+
+// SlotTransferFact 换将转移事实（一次发生一条——MissionID + 当时转出人；
+// 四审 P2：跨任期补偿按原始转出人归档）。
+type SlotTransferFact struct {
+	MissionID string
+	FromOwner string
+}
+
+// SlotHandoverTransfersOf 换将转移事实枚举（持久事件源——逐次发生逐条含
+// 当时转出人；终态/改派后的历史转移仍在；补偿对账输入）。
+func (s *Service) SlotHandoverTransfersOf(ctx context.Context, slotInstanceID, ownerAgentID string) ([]SlotTransferFact, error) {
+	return s.store.SlotHandoverTransfers(ctx, strings.TrimSpace(slotInstanceID), strings.TrimSpace(ownerAgentID))
+}
+
+// ReassignForSlot 换将单任务转移：服务层先核（归属锚/状态族/无在途/承接人
+// active——错误可读），存储事务内核对全量复核（竞态收口）；ok=false = 未转移
+// （锚不符/状态族外/在途——调用方重读分类：已移动 or 在途冲突）。
+func (s *Service) ReassignForSlot(ctx context.Context, missionID, fromOwner, toOwner string) (Mission, bool, error) {
+	cur, ok, err := s.store.MissionByID(ctx, missionID)
+	if err != nil || !ok {
+		return Mission{}, false, err
+	}
+	if cur.OwnerAgentID != fromOwner || !HandoverOfferable(cur.Status) || cur.PendingOwnerAgentID != "" {
+		return Mission{}, false, nil
+	}
+	if err := s.checkHandoverTarget(ctx, toOwner); err != nil {
+		return Mission{}, false, err
+	}
+	// 回执预填占位（from_owner/status_at_accept 由存储事务内核对后的实际值注入）。
+	payload, err := json.Marshal(map[string]any{
+		"from_owner": cur.OwnerAgentID, "to_owner": toOwner,
+		"contract_version": cur.ContractVersion, "status_at_accept": cur.Status,
+		"cause": SlotHandoverCause, "slot_instance_id": cur.SlotInstanceID,
+	})
+	if err != nil {
+		return Mission{}, false, fmt.Errorf("mission: 换将承接回执构造失败：%w", err)
+	}
+	out, ok2, err := s.store.ReassignMission(ctx, missionID, fromOwner, toOwner, Event{
+		MissionID: missionID, EventType: EventHandoverAccepted, Payload: payload, OccurredAt: s.now(),
+	})
+	if err != nil || !ok2 {
+		return Mission{}, false, err
 	}
 	return out, true, nil
 }

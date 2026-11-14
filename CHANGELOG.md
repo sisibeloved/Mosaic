@@ -4,6 +4,34 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **0.7.9 四审修复（1 P2，ADR-0046 v0.5；三审两项反例已复测通过）**：
+  - **跨任期补写归档错误交接双方（P2）**：补偿以当前轮 from 归档——同一任务两次 A→B、第二次回执失败后任务取消，实例再经 B→C→B 时补写记成 C→B（C 从未承接该任务）。对账改 **(任务, 当时转出人) 配对计数**：转移侧逐次事实含原始 from_owner（`SlotHandoverTransfers` 返回 `SlotTransferFact{MissionID, FromOwner}`——mission_events 逐条解析）；回执侧 (mission × 回执轮 from_agent) 计次；缺额按配对补记（from = 当时转出人；多轮丢失一次补齐）。跨任期反例 UT（补写 from=A 非 C、恰一条、幂等）+ sqlite IT（枚举含转出人）钉住。
+- **0.7.9 三审修复（1 P1 + 1 P2，ADR-0046 v0.4；复审两项直接反例已复测通过）**：
+  - **draining 检查与激活写入不原子（P1）**：守卫原在服务层查询——预查通过后并发置 draining，普通激活仍成功（新任 active + 旧任 draining + 任务遗留旧任）。守卫入**激活写事务**（新存储面 `ActivateBindingTx`：ready 锚 + 同实例无 draining + 单 active 索引 + 可选同事务回执事件，一次提交）；交错注入 UT（准入检查期置 draining → 激活仍拒）+ sqlite IT 钉住。
+  - **终态任务缺失回执无法补偿（P2）**：补偿原只遍历在办清单——补转成功、回执失败后任务取消，重试因收集排除而永久漏补。对账改**持久事件源**：`SlotHandoverTransfers`（mission_events 扫描——不依赖任务当前状态/归属，终态/改派后的历史转移仍在列）× 逐次转移计数 vs **实例全域**回执覆盖（各绑定 slot_handover 回执 to_agent 吻合者计次）。终态反例 UT + sqlite IT 钉住。
+- **0.7.9 复审修复（1 P1 + 1 P2，ADR-0046 v0.3；并发串行化/原目标恢复/接单边界/旧任识别/首次回执原子已复测通过）**：
+  - **普通激活绕过未完成交接批次（P1）**：交接部分失败后（旧任 draining、新任 ready、在办未转完）普通"激活"仍可用——直接激活使在办遗留旧任且交接重试被卡（新任已在任无从任证据）。`ActivateBinding`/`ActivateBindingWithReceipt` 增 **draining 守卫**（同实例存在排空中任职即 409，指明收敛路径；守卫使"一实例至多一 draining"成不变量）；守卫前绕行数据态由重放分支**回退 draining 自愈**（from 取遗留旧任——补转其在办并释放）；设置页 draining/ready 态以"继续换将交接"（原目标续跑）替代普通激活入口。
+  - **补转分支回执永久丢失（P2）**：漂移补转先转任务再单独 append 事件——append 失败后重试零转移不再补写（两轮转移只有首轮回执）。回执 payload 携 **missions 清单**，每轮交接按**逐次转移计数对账**（mission_events 中 cause=slot_handover 转移次数 vs 回执出现次数——漂移回流的再转移是新事实，不因首轮回执存在而视为已覆盖）缺额补记；0.6.12 承接不含 cause 不误记；对账平后零动作（幂等）。
+- **0.7.9 一审修复（4 P1 + 2 P2，ADR-0046 v0.2）**：
+  - **任务转移未停在途 Run（P1）**：转移只翻 owner/暂停——已启动执行继续跑（CreateRun 归属校验只拦新启动）。app 装配闭包（handoverPorts 单源）**信号先行**：核未终态 Run → 停止信号（cause=slot_handover，ADR-0029 PauseMission 同款面）→ 翻转；信号失败不翻转，重跑重发——无"翻转成功而停止信号永不发出"的空洞（app 级 3 例 UT 钉住调用序）。
+  - **并发换将批次分裂（P1）**：整个交接无互斥——两请求同读旧任各转不同目标，任务散落且失败方不恢复。HandoverService **服务级互斥**串行化（个人实例单进程，SQLite 单写者同界）；并发 UT 钉住"每条任务归最终在任者"不变量。
+  - **部分失败后改选接任者遗留悬空（P1）**：中断恢复无持久目标——A→B 半成改 A→C，已转任务挂在无任职的 B 名下且回执不列。**全属收集**（挂实例非终态任务不论归属）+ **遗留转移 409**（可转移任务归属第三方即拒，指明以原目标重跑收敛）；重跑回执列全批（含既成事实）。
+  - **收集后仍可接入新任务（P1）**：清单只读一次、旧任仍 active——边界前进来的任务交接后悬空。**排空边界先行**（active→draining 单段——0.6.13 建单门此后拒新单），权威收集后置到边界之后；sqlite IT 钉住 draining 建单拒。
+  - **按创建序猜旧任认错来源（P2）**：最新 released 可能是 ready 直释候选（从未在任）——Resume 误报"新任即在任"卡死。旧任识别按**曾任 active 证据**（事件流 to=active 转移）取最近释放者；UT 构造"直释候选更晚释放"反例钉住。
+  - **回执落流失败后重试不补写（P2）**：激活与 AppendBindingEvent 分离——重试直入重放分支，回执永久缺失。新存储面 `TransitionBindingWithEvent`：**激活与承接回执同一事务一次提交**（未遂则两者皆无）；注入失败 UT 钉住原子性（激活无回执态不存在）。
+
+### Added
+
+- **0.7.9 Slot 换 Agent 交接：职责知识与在办事项转移，不复制私有记忆**（0.7 领域线第十件·收官 / ADR-0046，RFC-0018 §8.1"同 Slot 换 Agent"——必须携带职责实例知识、Mission/WorkItem 状态与承接回执；不得复制整个人格）：
+  - **一次编排换将**：`POST /v1/slots/instances/{id}/handover`——七步幂等编排（前置核对零变更 → 新任就位 ready → 在办转移 → 旧任释放 → 新任激活 → 承接回执落流 → 报告）；**单写者不变量**（转移先于释放——owner 翻转即剥夺上任执行权；激活最后）；**无 attempt 持久化**——每步可核对，中断重跑按现势收敛（在任=新任 → 幂等返回当前态；新任 ready+旧任已释 → 续跑；新任 blocked → 修授权重跑走重试）。
+  - **在办转移**：mission 域新单事务 `ReassignMission`——事务内核对四项（归属锚 fromOwner / 状态族 HandoverOfferable 域单源 / 无在途 0.6.12 交接 / 承接人 active 直查 agents 表）→ owner 翻转（版本不递增）+ ready/running/waiting → paused（reason=slot_handover——新任核验检查点后续办）+ `handover_accepted` 承接回执事件（cause=slot_handover——复用 0.6.12 事件形制，枚举零新增）；reviewing/canceling 不转移（验收基线冻结/停止瞬态——回执如实列出）；**在途单任务交接整体 409**（换将不静默吞 0.6.12 承诺）。
+  - **职责知识不搬动 + 私有记忆显式排除**：slot 命名空间以实例为 scope 天然跨任职（ADR-0020 本意）——交接 = 确认 + 按 status 计数清单入回执；上任 agent 命名空间计数入排除面（"不得复制整个人格"的可审计呈现——仅计数不入正文）。
+  - **承接回执**：`SlotHandoverReceipt`（转移/不转移明细含原因、知识清单、排除面、绑定变迁）+ 新任绑定流 `slot_handover` 事件（BindingEvent 枚举扩展）。
+  - **域与 UI**：零 migration（binding_events/mission_events event_type 自由 TEXT，仅方法新增）；slot 域 `HandoverService`（Ports 闭包模式——app 装配连 mission/memory）；设置页实例任职块"换 Agent 交接"操作（确认警示 + 回执卡：转移明细/知识清单/排除面）。
+  - 验证（TDD——测试先行红→实现绿）：slot UT（七步全链/幂等重放/零变更失败族/中断续跑/部分转移重试收敛/blocked-then-retry/锚错配竞态分类）+ mission UT（状态族矩阵/锚与在途守卫/过滤口径）+ sqlite it（单事务核对面/事件落流）+ httpapi IT（全链 + 错误族 401/404/409）+ 真机冒烟 ALL-PASS。
+
 ## [0.7.8] - 2026-11-12
 
 ### Added

@@ -27,6 +27,10 @@ export type SlotInstanceView = Schemas["SlotInstanceView"];
 export type BindingView = Schemas["BindingView"];
 export type BindingReleaseResult = Schemas["BindingReleaseResult"];
 export type BindingEventView = Schemas["BindingEvent"];
+/** 0.7.9 Slot 换 Agent 交接（ADR-0046）。 */
+export type SlotHandoverReceipt = Schemas["SlotHandoverReceipt"];
+export type SlotHandoverTransferredMission = Schemas["SlotHandoverTransferredMission"];
+export type SlotHandoverNotTransferredMission = Schemas["SlotHandoverNotTransferredMission"];
 /** 0.6.0 Mission 契约（ADR-0023，契约 api/http-api/openapi.yaml）。 */
 export type MissionSummary = Schemas["MissionSummary"];
 export type MissionView = Schemas["MissionView"];
@@ -606,6 +610,10 @@ export const api = {
   },
   activateSlotBinding(bindingID: string): Promise<BindingView> {
     return post(`/v1/slots/bindings/${encodeURIComponent(bindingID)}/activate`, {});
+  },
+  /** 0.7.9 换 Agent 交接（ADR-0046：职责知识确认清单/在办转移 paused/私有记忆不复制；幂等重放返回当前态）。 */
+  handoverSlotInstance(slotInstanceID: string, req: { new_agent_id: string; notes?: string }): Promise<SlotHandoverReceipt> {
+    return post(`/v1/slots/instances/${encodeURIComponent(slotInstanceID)}/handover`, req);
   },
   releaseSlotBinding(bindingID: string, handoffNote?: string): Promise<BindingReleaseResult> {
     return post(`/v1/slots/bindings/${encodeURIComponent(bindingID)}/release`, handoffNote ? { handoff_note: handoffNote } : {});

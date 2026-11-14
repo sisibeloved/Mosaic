@@ -126,6 +126,7 @@ func (e AgentEventEventType) Valid() bool {
 // Defines values for BindingEventEventType.
 const (
 	BindingEventEventTypeCreated       BindingEventEventType = "created"
+	BindingEventEventTypeSlotHandover  BindingEventEventType = "slot_handover"
 	BindingEventEventTypeStatusChanged BindingEventEventType = "status_changed"
 )
 
@@ -133,6 +134,8 @@ const (
 func (e BindingEventEventType) Valid() bool {
 	switch e {
 	case BindingEventEventTypeCreated:
+		return true
+	case BindingEventEventTypeSlotHandover:
 		return true
 	case BindingEventEventTypeStatusChanged:
 		return true
@@ -2968,7 +2971,7 @@ type BindingEvent struct {
 	EventType  BindingEventEventType `json:"event_type"`
 	OccurredAt time.Time             `json:"occurred_at"`
 
-	// Payload 事件体——created: {agent_id, slot_instance_id, slot_spec_version}；status_changed: {from, to, handoff_note}；blocked 转移含 {missing, degraded}（0.5.5 准入门产出）
+	// Payload 事件体——created: {agent_id, slot_instance_id, slot_spec_version}；status_changed: {from, to, handoff_note}；blocked 转移含 {missing, degraded}（0.5.5 准入门产出）；slot_handover（0.7.9 换将承接回执）: {from_agent, to_agent, transferred_count, slot_instance_id, notes}
 	Payload map[string]interface{} `json:"payload"`
 
 	// Seq 全表单调流序
@@ -4657,7 +4660,7 @@ type MissionEvent struct {
 	MissionId  string                `json:"mission_id"`
 	OccurredAt time.Time             `json:"occurred_at"`
 
-	// Payload 事件体——created: {contract_version, status}；contract_revised: {from_version, to_version}；status_changed: {from, to, reason}；reopen_requested: {request_id, decision_ref, evidence_refs, affected_mission_ids, reason, contract_version}；handover_offered: {from_owner, to_owner, notes, contract_version}；handover_accepted: {from_owner, to_owner, contract_version, status_at_accept, note}（承接回执）；handover_declined/handover_revoked: {from_owner, to_owner, reason, contract_version}
+	// Payload 事件体——created: {contract_version, status}；contract_revised: {from_version, to_version}；status_changed: {from, to, reason}；reopen_requested: {request_id, decision_ref, evidence_refs, affected_mission_ids, reason, contract_version}；handover_offered: {from_owner, to_owner, notes, contract_version}；handover_accepted: {from_owner, to_owner, contract_version, status_at_accept, note}（承接回执；0.7.9 换将路径同事件类型——payload 增 cause=slot_handover, slot_instance_id, reason=slot_handover 的 status_changed）；handover_declined/handover_revoked: {from_owner, to_owner, reason, contract_version}
 	Payload map[string]interface{} `json:"payload"`
 
 	// Seq 全表单调流序
@@ -5873,6 +5876,59 @@ type SkillRef struct {
 	Version int    `json:"version"`
 }
 
+// SlotHandoverNotTransferredMission 未转移任务（reviewing/canceling 状态族外 / 归属已变化）。
+type SlotHandoverNotTransferredMission struct {
+	MissionId string `json:"mission_id"`
+	Objective string `json:"objective"`
+	Reason    string `json:"reason"`
+	Status    string `json:"status"`
+}
+
+// SlotHandoverReceipt 换 Agent 交接回执（0.7.9 / ADR-0046——审计面）：职责知识不搬动（以实例
+// 知识命名空间承载，随实例跨任职保留——清单确认）；在办转移明细；排除面
+// （上任私有记忆不复制——RFC §8.1"不得复制整个人格"）。幂等重放返回当前态。
+type SlotHandoverReceipt struct {
+	ActivatedBindingId string `json:"activated_binding_id"`
+
+	// Excluded 排除面固定注记
+	Excluded []string `json:"excluded"`
+
+	// ExcludedPrivateCount 上任 agent 命名空间记忆计数（排除面——仅计数不入正文）
+	ExcludedPrivateCount int    `json:"excluded_private_count"`
+	FromAgentId          string `json:"from_agent_id"`
+
+	// KnowledgeInventory 职责知识清单（slot 命名空间按 status 计数）
+	KnowledgeInventory     map[string]int                      `json:"knowledge_inventory"`
+	KnowledgeNamespace     string                              `json:"knowledge_namespace"`
+	MissionsNotTransferred []SlotHandoverNotTransferredMission `json:"missions_not_transferred"`
+	MissionsTransferred    []SlotHandoverTransferredMission    `json:"missions_transferred"`
+	Notes                  string                              `json:"notes"`
+	OccurredAt             time.Time                           `json:"occurred_at"`
+	ReleasedBindingId      string                              `json:"released_binding_id"`
+	SlotInstanceId         string                              `json:"slot_instance_id"`
+	SlotTitle              string                              `json:"slot_title"`
+	ToAgentId              string                              `json:"to_agent_id"`
+}
+
+// SlotHandoverRequest 换 Agent 交接请求（0.7.9 / ADR-0046）。
+type SlotHandoverRequest struct {
+	NewAgentId string `json:"new_agent_id"`
+
+	// Notes 交接备注（旧任释放 handoff_note 同值入档）
+	Notes *string `json:"notes,omitempty"`
+}
+
+// SlotHandoverTransferredMission 已转移在办任务（含并发已移动按归属锚分类计入者）。
+type SlotHandoverTransferredMission struct {
+	// FromStatus 转移前状态
+	FromStatus string `json:"from_status"`
+	MissionId  string `json:"mission_id"`
+	Objective  string `json:"objective"`
+
+	// Status 转移后（ready/running/waiting→paused；draft/paused 保持）
+	Status string `json:"status"`
+}
+
 // SlotInstanceCreate 实例化请求；title 缺省取模板最新版名称（创建时存档）。
 type SlotInstanceCreate struct {
 	SlotSpecId string `json:"slot_spec_id"`
@@ -6533,6 +6589,9 @@ type PutSlotGrantJSONRequestBody = AgentGrantPut
 // CreateSlotInstanceJSONRequestBody defines body for CreateSlotInstance for application/json ContentType.
 type CreateSlotInstanceJSONRequestBody = SlotInstanceCreate
 
+// HandoverSlotInstanceJSONRequestBody defines body for HandoverSlotInstance for application/json ContentType.
+type HandoverSlotInstanceJSONRequestBody = SlotHandoverRequest
+
 // CreateSlotSpecJSONRequestBody defines body for CreateSlotSpec for application/json ContentType.
 type CreateSlotSpecJSONRequestBody = SlotSpecCreate
 
@@ -6982,6 +7041,9 @@ type ServerInterface interface {
 	// GetSlotInstance 职责实例详情
 	// (GET /v1/slots/instances/{slot_instance_id})
 	GetSlotInstance(w http.ResponseWriter, r *http.Request, slotInstanceId string)
+	// HandoverSlotInstance Slot 换 Agent 交接（0.7.9 / ADR-0046）
+	// (POST /v1/slots/instances/{slot_instance_id}/handover)
+	HandoverSlotInstance(w http.ResponseWriter, r *http.Request, slotInstanceId string)
 	// GetSlotInstanceReadiness 准入试算（只读无副作用；0.5.5 / ADR-0022）
 	// (GET /v1/slots/instances/{slot_instance_id}/readiness)
 	GetSlotInstanceReadiness(w http.ResponseWriter, r *http.Request, slotInstanceId string, params GetSlotInstanceReadinessParams)
@@ -10724,6 +10786,32 @@ func (siw *ServerInterfaceWrapper) GetSlotInstance(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// HandoverSlotInstance operation middleware
+func (siw *ServerInterfaceWrapper) HandoverSlotInstance(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "slot_instance_id" -------------
+	var slotInstanceId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "slot_instance_id", r.PathValue("slot_instance_id"), &slotInstanceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "slot_instance_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.HandoverSlotInstance(w, r, slotInstanceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetSlotInstanceReadiness operation middleware
 func (siw *ServerInterfaceWrapper) GetSlotInstanceReadiness(w http.ResponseWriter, r *http.Request) {
 
@@ -11156,6 +11244,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/slots/instances", wrapper.CreateSlotInstance)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/instances/{slot_instance_id}", wrapper.GetSlotInstance)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/instances/{slot_instance_id}/readiness", wrapper.GetSlotInstanceReadiness)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/slots/instances/{slot_instance_id}/handover", wrapper.HandoverSlotInstance)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/grants/{agent_id}", wrapper.GetSlotGrant)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/v1/slots/grants/{agent_id}", wrapper.PutSlotGrant)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/slots/bindings", wrapper.ListSlotBindings)

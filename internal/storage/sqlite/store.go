@@ -4174,6 +4174,127 @@ INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES
 	return out, true, err
 }
 
+// MissionsOfSlot 在办收集（0.7.9 / ADR-0046 审校 #3——全属）：slot 过滤、
+// 非终态全量（不论归属——前轮未完成交接的遗留也在列），创建序。
+func (s *Store) MissionsOfSlot(ctx context.Context, slotInstanceID string) ([]mission.Mission, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT `+missionCols+` FROM missions
+ WHERE slot_instance_id = ?
+   AND status NOT IN ('accepted', 'canceled') ORDER BY rowid`, slotInstanceID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: missions of owner slot: %w", err)
+	}
+	defer rows.Close()
+	out := []mission.Mission{}
+	for rows.Next() {
+		m, err := scanMission(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: scan mission: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// SlotHandoverTransfers 换将转移事实枚举（0.7.9 三审 P2 + 四审 P2——事件扫描
+// 逐条解析，不依赖任务当前状态/归属；每条含**当时转出人**（跨任期补偿按
+// 原始转出人归档）。初筛 payload 双精确模式（生成侧 json.Marshal 键序稳定，
+// 值为受控 ID 串），from_owner 于 Go 侧解析。
+func (s *Store) SlotHandoverTransfers(ctx context.Context, slotInstanceID, owner string) ([]mission.SlotTransferFact, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT m.mission_id, e.payload
+  FROM missions m JOIN mission_events e ON e.mission_id = m.mission_id
+ WHERE m.slot_instance_id = ?
+   AND e.event_type = 'handover_accepted'
+   AND e.payload LIKE '%"cause":"slot_handover"%'
+   AND e.payload LIKE ? ORDER BY m.rowid, e.seq`, slotInstanceID, `%"to_owner":"`+owner+`"%`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: slot handover transfers: %w", err)
+	}
+	defer rows.Close()
+	out := []mission.SlotTransferFact{}
+	for rows.Next() {
+		var id, payload string
+		if err := rows.Scan(&id, &payload); err != nil {
+			return nil, fmt.Errorf("sqlite: scan slot handover transfer: %w", err)
+		}
+		var p struct {
+			FromOwner string `json:"from_owner"`
+		}
+		if json.Unmarshal([]byte(payload), &p) != nil {
+			continue
+		}
+		out = append(out, mission.SlotTransferFact{MissionID: id, FromOwner: p.FromOwner})
+	}
+	return out, rows.Err()
+}
+
+// ReassignMission 换将单任务转移（0.7.9 / ADR-0046）：事务内核对——归属锚
+// （owner == fromOwner）+ 状态族（HandoverOfferable 域单源）+ 无在途 + 承接人
+// active（直查 agents——ADR-0035 审校 #3a 同例）→ owner 翻转（版本不递增）+
+// ready/running/waiting → paused + handover_accepted 事件（事实注入核对后实际值
+// ——status_at_accept 记转移前态）+ 状态变化时 status_changed reason=slot_handover，
+// 单事务；ok=false = 任一核对不符（服务方重读分类）。
+func (s *Store) ReassignMission(ctx context.Context, missionID, fromOwner, toOwner string, event mission.Event) (mission.Mission, bool, error) {
+	ok := false
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		cur, found, err := missionByIDTx(ctx, q, missionID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return nil // 未知行按核对不符（服务方重读区分）
+		}
+		if cur.OwnerAgentID != fromOwner || !mission.HandoverOfferable(cur.Status) || cur.PendingOwnerAgentID != "" {
+			return nil
+		}
+		// 承接人 active 事务内核对（换将窗口内被退役/暂停不接承诺）。
+		var tstatus string
+		if err := q.QueryRowContext(ctx,
+			`SELECT status FROM agents WHERE agent_id = ?`, toOwner).Scan(&tstatus); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			return fmt.Errorf("sqlite: reassign target probe: %w", err)
+		}
+		if tstatus != mission.AgentStatusActive {
+			return nil
+		}
+		prev := cur.Status
+		next := prev
+		switch prev {
+		case mission.StatusReady, mission.StatusRunning, mission.StatusWaiting:
+			next = mission.StatusPaused
+		}
+		if _, err := q.ExecContext(ctx,
+			`UPDATE missions SET owner_agent_id = ?, status = ?, updated_at = ? WHERE mission_id = ?`,
+			toOwner, next, event.OccurredAt, missionID); err != nil {
+			return fmt.Errorf("sqlite: reassign: %w", err)
+		}
+		event.Payload = mission.InjectHandoverFacts(event.Payload, cur.OwnerAgentID)
+		event.Payload = mission.InjectHandoverStatus(event.Payload, prev)
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO mission_events (mission_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+			missionID, event.EventType, string(event.Payload), event.OccurredAt); err != nil {
+			return fmt.Errorf("sqlite: reassign event: %w", err)
+		}
+		if next != prev {
+			if err := appendMissionEvent(ctx, q, missionID, mission.EventStatusChanged, map[string]string{
+				"from": prev, "to": next, "reason": mission.SlotHandoverReason,
+			}, event.OccurredAt); err != nil {
+				return err
+			}
+		}
+		ok = true
+		return nil
+	})
+	if err != nil || !ok {
+		return mission.Mission{}, ok, err
+	}
+	out, _, err := s.MissionByID(ctx, missionID)
+	return out, true, err
+}
+
 // RequestReview 条件送验（0.6.9 / ADR-0032；v0.2 #2/#3）：单事务——版本 + ready
 // 守卫 → **事务内复核无在途/未处置 Run**（ErrUnsettledRuns）→ reviewing +
 // review_package_id + review_round 单调递增 + 事件。
@@ -4877,6 +4998,65 @@ func (s *Store) TransitionBinding(ctx context.Context, bindingID string, allowed
 	return from, ok, nil
 }
 
+// ActivateBindingTx 激活写事务（0.7.9 三审 P1：ready 锚 + **同实例无 draining**
+// （换将批次守卫——检查与写入同一事务，并发绕行窗口结构性消除）+ 单 active
+// 部分唯一索引兜底 + evType 非空时同一事务附事件）。
+func (s *Store) ActivateBindingTx(ctx context.Context, bindingID, expectFrom, evType string, evPayload json.RawMessage, occurredAt string) (string, bool, error) {
+	var from string
+	var ok bool
+	err := s.identityWriteTx(ctx, func(q identityExec) error {
+		err := q.QueryRowContext(ctx,
+			`SELECT status FROM slot_bindings WHERE binding_id = ?`, bindingID).Scan(&from)
+		if errors.Is(err, sql.ErrNoRows) {
+			return slot.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("sqlite: binding probe: %w", err)
+		}
+		if from != expectFrom {
+			return nil
+		}
+		// 换将批次守卫（三审 P1）：同实例 draining 与写入同事务核——服务层
+		// 预查与写入之间的并发绕行窗口结构性消除。
+		var drainID string
+		if err := q.QueryRowContext(ctx, `
+SELECT binding_id FROM slot_bindings
+ WHERE slot_instance_id = (SELECT slot_instance_id FROM slot_bindings WHERE binding_id = ?)
+   AND status = 'draining' LIMIT 1`, bindingID).Scan(&drainID); err == nil {
+			return fmt.Errorf("%w: 实例存在排空中任职（%s，未完成换将交接）——重跑换将交接收敛或先释放该绑定", slot.ErrInvalidTransition, drainID)
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("sqlite: draining guard probe: %w", err)
+		}
+		if _, err := q.ExecContext(ctx,
+			`UPDATE slot_bindings SET status = 'active', updated_at = ? WHERE binding_id = ?`,
+			occurredAt, bindingID); err != nil {
+			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+				return slot.ErrActiveBindingExists
+			}
+			return fmt.Errorf("sqlite: binding activate: %w", err)
+		}
+		if err := appendBindingEvent(ctx, q, bindingID, slot.EventStatusChanged, map[string]string{
+			"from": from, "to": slot.BindingActive,
+		}, occurredAt); err != nil {
+			return err
+		}
+		if evType != "" {
+			// 承接回执事件与激活同一事务（一审 #6 的原子面）。
+			if _, err := q.ExecContext(ctx, `
+INSERT INTO binding_events (binding_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+				bindingID, evType, string(evPayload), occurredAt); err != nil {
+				return fmt.Errorf("sqlite: activate with event append: %w", err)
+			}
+		}
+		ok = true
+		return nil
+	})
+	if err != nil {
+		return "", false, err
+	}
+	return from, ok, nil
+}
+
 // ReleaseBinding 原子释放：draining/released 两段事件 + 终态投影（含交接
 // 备注）同一事务一次提交；ok=false = 非 active。
 func (s *Store) ReleaseBinding(ctx context.Context, bindingID string, handoffNote, occurredAt string) (string, bool, error) {
@@ -4935,6 +5115,27 @@ SELECT seq, binding_id, event_type, payload, occurred_at FROM binding_events WHE
 		out = append(out, ev)
 	}
 	return out, rows.Err()
+}
+
+// AppendBindingEvent 追加任职事件（0.7.9 / ADR-0046——换将承接回执
+// slot_handover 事件的落流面；payload 原样）；绑定未知 slot.ErrBindingNotFound。
+func (s *Store) AppendBindingEvent(ctx context.Context, bindingID, eventType string, payload json.RawMessage, occurredAt string) error {
+	return s.identityWriteTx(ctx, func(q identityExec) error {
+		var one int
+		if err := q.QueryRowContext(ctx,
+			`SELECT 1 FROM slot_bindings WHERE binding_id = ?`, bindingID).Scan(&one); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return slot.ErrBindingNotFound
+			}
+			return fmt.Errorf("sqlite: append binding event probe: %w", err)
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO binding_events (binding_id, event_type, payload, occurred_at) VALUES (?, ?, ?, ?)`,
+			bindingID, eventType, string(payload), occurredAt); err != nil {
+			return fmt.Errorf("sqlite: append binding event: %w", err)
+		}
+		return nil
+	})
 }
 
 // ---- 执行上下文清单域（RFC-0018 §7.3/§6 / ADR-0025，0.6.2；v15 表）----
