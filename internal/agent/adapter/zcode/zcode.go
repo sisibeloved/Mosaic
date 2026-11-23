@@ -56,6 +56,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -183,9 +184,12 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 	}
 	// 提示词物理上限（fail fast 胜过 OS exec 失败）：CLI 面 = MaxPromptBytes
 	// （Linux MAX_ARG_STRLEN 128KiB/参数边界，默认 100KiB 留边际）；桌面面直
-	// argv 受 Windows CreateProcess 32KiB 命令行边界——两者取小。
+	// argv 仅在 Windows 受 CreateProcess 32KiB 命令行边界（2026-11-21 真机实证：
+	// darwin 桌面面被该 Windows 边界无差别拦下——36722 字节研究型刺激 fail fast，
+	// 而 darwin ARG_MAX 1MiB 远未触界；goruntimeOS 守卫后 darwin/linux 桌面面
+	// 与 CLI 面同边界）。
 	limit, boundary := s.adapter.cfg.MaxPromptBytes, "Linux MAX_ARG_STRLEN 128KiB"
-	if s.adapter.cfg.Bundle != "" && limit > desktopPromptCap {
+	if s.adapter.cfg.Bundle != "" && goruntimeOS == "windows" && limit > desktopPromptCap {
 		limit, boundary = desktopPromptCap, "Windows CreateProcess 32KiB 命令行"
 	}
 	if n := len(prompt); n > limit {
@@ -492,6 +496,10 @@ func zcodeEnvWithHome(zcodePath, home string) []string {
 // 引号转义共享）——UTF-8 字节数 ≥ 同文本 UTF-16 单元数，按字节计量保守，留 ~2.7KiB
 // 边际兜转义膨胀，fail fast 胜过 CreateProcess 静默截断/失败。
 const desktopPromptCap = 30000
+
+// goruntimeOS 单测可替换面（harness.update 同源）：桌面面降限仅 Windows 生效，
+// darwin/linux 桌面面沿用 CLI 面边界。
+var goruntimeOS = runtime.GOOS
 
 // desktopProviderStockRel / desktopProviderScriptRel provider 文件定位的两候选
 // （bundle 源码 resolveBundledZCodeBuiltinProviderConfig 同构）：stock 安装自带
@@ -899,6 +907,7 @@ This is an internal arbitration request, not a message to the room: never answer
 
 const generateInstruction = `You are a participant in an ongoing group chat and have decided to reply.
 Write your chat message directly below — concise, conversational, addressed to the room (no speeches, no meta commentary).
+You are on a hard wall-clock budget for this turn (about 2 minutes, including any tool use): tools are fine for quick lookups, but keep to a few calls and finish within the budget — if deeper research would run over, answer from what you already have.
 Reply with ONLY a JSON object, no prose, no code fences:
 {"body":"your public message","declared_relations":[]}
 The JSON must contain your public chat message in "body" — never an arbitration decision (action/silent/scores) or any other internal JSON.

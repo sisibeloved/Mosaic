@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- kimi 生成超时误报修复 + 五家生成指令硬预算条款（负责人反馈实证 2026-11-21，资产配置研究型话题——用户点名查数据，各席均进入多步搜索）：研究型 `generate` 进入多步工具循环（失败轮 3 步 17 次 WebSearch/FetchURL 共 65s），再叠加一步 LLM 请求 114s 无响应，180s 适配器时限被击穿；而 kimi 适配器把超时与取消同报 `ErrStale`，日志只见 "stale grant"——围栏失配的假象掩盖真实死因。**超时/取消分流**：父 ctx 存活而任务 ctx 超时 → 如实报 "任务超时"（含时限与处置提示），`ErrStale` 只留给取消后的迟到拒绝（RFC-0002 §3.1.6；首段与矫正重试同口径）。同版本（CLI 2.7.2）同日另一轮 3 步 11 次搜索 97s 成功——非 CLI 版本确定性回归。并给五家 `generateInstruction` 同步加**硬预算条款**（措辞同源）：明示本轮约 2 分钟含工具调用的墙钟预算、控制调用次数、超预算以既有知识作答——不禁工具（房间协议本就期望轮内干活），只约束无界研究。
+- zcode 桌面面提示词上限修复（同日）：`desktopPromptCap`（30000B，按 Windows CreateProcess 32KiB 命令行边界校准）此前不分宿主 OS 一律生效——讨论变长后 darwin 上 36722B 的刺激直接 fail fast（darwin ARG_MAX 1MiB 远未触界），整席哑火。降限条件加宿主 OS 守卫：仅 Windows 生效，darwin/linux 桌面面与 CLI 面同边界（默认 100KiB）。
+- mcode 退出码诊断保序（同日）：`ParseStream` 里流尾 `exec.completed` 的泛化 `status=failed` 不再覆盖同流更早的 `turn.failed`/`exec.failed` 富错误。当日退出码 4 在 Mosaic 侧只见泛化状态（真因经 mcode 自身可观测日志定位为模型流在 HTTP 200 后停滞，上游瞬态）；原始流未留痕、无法复核当时是否曾有富错误——属防御性保序，使同类失败的真因不再被吞。
+
 ## [0.7.9] - 2026-11-14
 
 ### Added

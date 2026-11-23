@@ -438,7 +438,11 @@ func ParseStream(raw []byte) Parsed {
 				out.Err = ev.Message
 			}
 		case "exec.completed":
-			if ev.Result != nil && ev.Result.Status != "" && ev.Result.Status != "succeeded" {
+			// 泛化 status 不覆盖更早的 turn.failed/exec.failed 富错误（防御性
+			// 保序：2026-11-21 真机退出码 4 只见 "status=failed"——原始流未留痕
+			// 无法复核是否曾有富错误，但 2026-09-17 实证真因可在流尾 error 事件；
+			// 同流两类并存时末尾泛化不得吞掉富信息）。
+			if ev.Result != nil && ev.Result.Status != "" && ev.Result.Status != "succeeded" && out.Err == "" {
 				out.Err = "status=" + ev.Result.Status
 			}
 		}
@@ -466,6 +470,7 @@ This is an internal arbitration request, not a message to the room: never answer
 
 const generateInstruction = `You are a participant in an ongoing group chat and have decided to reply.
 Write your chat message directly below — concise, conversational, addressed to the room (no speeches, no meta commentary).
+You are on a hard wall-clock budget for this turn (about 2 minutes, including any tool use): tools are fine for quick lookups, but keep to a few calls and finish within the budget — if deeper research would run over, answer from what you already have.
 Reply with ONLY a JSON object, no prose, no code fences:
 {"body":"your public message","declared_relations":[]}
 The JSON must contain your public chat message in "body" — never an arbitration decision (action/silent/scores) or any other internal JSON.

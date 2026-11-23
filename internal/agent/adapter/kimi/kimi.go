@@ -22,6 +22,16 @@
 // 另：2.x 每次启动查更新（rollout.log 实证 Mosaic 的任务进程参与了用户 CLI 的
 // 升级 rollout 判定）——env 置 KIMI_CODE_NO_AUTO_UPDATE/KIMI_CLI_NO_AUTO_UPDATE，
 // 后台实例不触碰用户 CLI 的升级通道（桌面壳后台纪律：agent 进程零 UI 副作用）。
+// 2.7.2 观测（实证 2026-11-21；当日 CLI 2.4.1→2.7.2、默认模型 k3.1-pro——
+// thinking=high、26 工具、auto 权限）：研究型 generate 进入多步工具循环——资产
+// 配置话题失败轮 3 步 17 次 WebSearch/FetchURL（65s）后第 4 步 LLM 请求 114s 无
+// 响应，180s 适配器时限被击穿；同版本同日另一轮研究型 generate 3 步 11 次搜索
+// 97s 成功（对照 10-07/10-08 的 2.1.1 实跑 generate 12s/24s）——非版本确定性
+// 回归，是重任务叠加上游停滞的预算问题。且超时曾被误报 ErrStale（"stale
+// grant"），掩盖真实死因。修复面：
+// 超时/取消分流（execute/retryStrictTask——超时如实报"任务超时"，ErrStale 只留
+// 给取消语义 RFC-0002 §3.1.6）+ 五家 generateInstruction 同步加硬预算条款
+// （约 2 分钟含工具调用，超预算即以既有知识作答）。
 package kimi
 
 import (
@@ -123,7 +133,7 @@ func (s *session) Run(ctx context.Context, task agent.Task) (agent.Handle, error
 	h := &handle{done: make(chan struct{})}
 	taskCtx, cancel := context.WithTimeout(ctx, s.adapter.cfg.Timeout)
 	h.cancel = cancel
-	go s.execute(taskCtx, task, h)
+	go s.execute(ctx, taskCtx, task, h)
 	return h, nil
 }
 
@@ -132,8 +142,9 @@ func (s *session) Close()        {}
 
 // execute 单任务执行：构建提示词 → execOnce（sh "$(cat)" 提示词代入 + -S 连续性）
 // → 映射；严格 JSON 契约任务在输出形状失败时做一次矫正重试（minimax v1.69/zcode
-// 同构——kimi 侧实证见包注释 2.x 适配段）。
-func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
+// 同构——kimi 侧实证见包注释 2.x 适配段）。ctx 为父会话 ctx（引擎关停取消面），
+// taskCtx 为带 Timeout 的任务 ctx——两者分流超时/取消语义（见下）。
+func (s *session) execute(ctx, taskCtx context.Context, task agent.Task, h *handle) {
 	defer close(h.done)
 
 	prompt, err := buildPrompt(task)
@@ -148,8 +159,17 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 
 	parsed, err := s.execOnce(taskCtx, task, prompt)
 	if err != nil {
+		// 超时与取消分流（2026-11-21 真机实证：kimi 2.7.2 研究型生成的多步工具
+		// 循环叠加上游 LLM 请求停滞，180s 时限被击穿后误报 stale grant——ErrStale
+		// 专属 Cancel 后迟到拒绝语义（RFC-0002 §3.1.6），超时必须如实报超时）。
+		// h.Cancel 取消 taskCtx 时同样落入超时分支，但 Result 以 stale 优先返回
+		// ErrStale——取消语义不受分流影响。
+		if taskCtx.Err() != nil && ctx.Err() == nil {
+			h.err = fmt.Errorf("kimi: 任务超时（%s）：生成未在时限内完成——多步工具研究会击穿预算，缩减当轮工作量或换更快模型档位", s.adapter.cfg.Timeout)
+			return
+		}
 		if taskCtx.Err() != nil {
-			h.stale = true // 取消/超时：不发布正文，语义同迟到拒绝
+			h.stale = true // 引擎取消/关停：迟到拒绝语义不变
 			return
 		}
 		h.err = err
@@ -157,7 +177,7 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 	}
 	h.result, h.err = mapResult(task.Kind, parsed)
 	if h.err != nil && strictJSONTask(task.Kind) && taskCtx.Err() == nil {
-		h.result, h.err = s.retryStrictTask(taskCtx, task, prompt, h.err)
+		h.result, h.err = s.retryStrictTask(ctx, taskCtx, task, prompt, h.err)
 	}
 	if h.err == nil && task.Kind == agent.KindGenerate && h.result.Block == agent.BlockPublicDraft {
 		h.sanitizePublish() // history_request 非发布物，不过发布门
@@ -207,11 +227,15 @@ func (s *session) execOnce(taskCtx context.Context, task agent.Task, prompt stri
 // JSON 串内嵌未转义直引号）时，矫正追记附在原提示词之后（同会话：模型可见自己
 // 的跑偏输出），恢复该座位；仍失败则保留末次错误并附输出首行，排障不再依赖
 // CLI 侧转录。kimi 无 usage 面（UsageReporting=false），无两跳合计入账问题。
-func (s *session) retryStrictTask(taskCtx context.Context, task agent.Task, prompt string, firstErr error) (agent.Result, error) {
+func (s *session) retryStrictTask(ctx, taskCtx context.Context, task agent.Task, prompt string, firstErr error) (agent.Result, error) {
 	second, err := s.execOnce(taskCtx, task, prompt+correctiveNote(task.Kind))
 	if err != nil {
+		// 超时/取消分流同 execute（首段注释）：超时如实报，取消保留原语义。
+		if taskCtx.Err() != nil && ctx.Err() == nil {
+			return agent.Result{}, fmt.Errorf("kimi: 任务超时（%s）：矫正重试未在时限内完成", s.adapter.cfg.Timeout)
+		}
 		if taskCtx.Err() != nil {
-			return agent.Result{}, err // 重试中取消/超时：无结果可发布，错误即语义
+			return agent.Result{}, err // 重试中取消：无结果可发布，错误即语义
 		}
 		return agent.Result{}, fmt.Errorf("kimi: %v；矫正重试执行失败：%v", firstErr, err)
 	}
@@ -438,6 +462,7 @@ This is an internal arbitration request, not a message to the room: never answer
 
 const generateInstruction = `You are a participant in an ongoing group chat and have decided to reply.
 Write your chat message directly below — concise, conversational, addressed to the room (no speeches, no meta commentary).
+You are on a hard wall-clock budget for this turn (about 2 minutes, including any tool use): tools are fine for quick lookups, but keep to a few calls and finish within the budget — if deeper research would run over, answer from what you already have.
 Reply with ONLY a JSON object, no prose, no code fences:
 {"body":"your public message","declared_relations":[]}
 The JSON must contain your public chat message in "body" — never an arbitration decision (action/silent/scores) or any other internal JSON.

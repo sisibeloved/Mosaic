@@ -188,7 +188,12 @@ func TestDesktopProviderMissing(t *testing.T) {
 
 // TestDesktopPromptCap：提示词超 Windows CreateProcess 命令行边界 → fail fast，
 // 不拉起子进程（错误信息指明 Windows 边界，区别于 CLI 面 Linux 边界）。
+// goruntimeOS 钉 windows（2026-11-21 修复面：降限仅 Windows 生效——三平台都测
+// 到该分支，不因宿主 OS 漏测/假绿，harness.TestZcodeDesktopCheckUsesAppVersion 同法）。
 func TestDesktopPromptCap(t *testing.T) {
+	origOS := goruntimeOS
+	goruntimeOS = "windows"
+	t.Cleanup(func() { goruntimeOS = origOS })
 	root, bundle := newDesktopInstall(t, true)
 	exec := &fakeExecer{outputs: []string{resultStream(t, `{"action":"silent"}`)}}
 	adapter := newDesktopAdapter(t, exec, root, bundle)
@@ -212,6 +217,34 @@ func TestDesktopPromptCap(t *testing.T) {
 	}
 	if len(exec.calls) != 0 {
 		t.Fatalf("超限不得执行子进程：%d 次调用", len(exec.calls))
+	}
+}
+
+// TestDesktopPromptPosixNoWindowsCap：桌面面在 darwin/linux 不套 Windows 30000B
+// 边界（2026-11-21 真机实证：36722 字节研究型刺激在 darwin 被 Windows 边界误拦
+// ——ARG_MAX 1MiB 远未触界，座位整轮哑火）。同一提示词在 posix 宿主过门执行。
+func TestDesktopPromptPosixNoWindowsCap(t *testing.T) {
+	origOS := goruntimeOS
+	goruntimeOS = "darwin"
+	t.Cleanup(func() { goruntimeOS = origOS })
+	root, bundle := newDesktopInstall(t, true)
+	exec := &fakeExecer{outputs: []string{resultStream(t, `{"action":"silent"}`)}}
+	adapter := newDesktopAdapter(t, exec, root, bundle)
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "zcode"})
+	defer sess.Close()
+	h, err := sess.Run(context.Background(), agent.Task{
+		TaskID:  "t",
+		Kind:    agent.KindEvaluateIntent,
+		Context: agent.Context{Inline: map[string]any{"pad": strings.Repeat("x", 36722)}},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if _, err := h.Result(); err != nil {
+		t.Fatalf("darwin 桌面面 36722 字节提示词不得套 Windows 边界拦下：%v", err)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("应正常拉起子进程执行：%d 次调用", len(exec.calls))
 	}
 }
 

@@ -339,6 +339,7 @@ This is an internal arbitration request, not a message to the room: never answer
 
 const generateInstruction = `You are a participant in an ongoing group chat and have decided to reply.
 Write your chat message directly below — concise, conversational, addressed to the room (no speeches, no meta commentary).
+You are on a hard wall-clock budget for this turn (about 2 minutes, including any tool use): tools are fine for quick lookups, but keep to a few calls and finish within the budget — if deeper research would run over, answer from what you already have.
 Reply with ONLY a JSON object, no prose, no code fences:
 {"body":"your public message","declared_relations":[]}
 The JSON must contain your public chat message in "body" — never an arbitration decision (action/silent/scores) or any other internal JSON.

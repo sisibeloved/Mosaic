@@ -110,6 +110,18 @@ func TestParseStreamErrorStatus(t *testing.T) {
 	}
 }
 
+// TestParseStreamKeepsRichErrorOverGenericStatus：同流先 turn.failed（富错误：
+// 2026-09-17 实证真因形态）后 exec.completed（泛化 status=failed）——末尾泛化
+// 不得覆盖富错误（2026-11-21 真机退出码 4 只见 "status=failed"，防御性保序）。
+func TestParseStreamKeepsRichErrorOverGenericStatus(t *testing.T) {
+	p := ParseStream([]byte(
+		`{"type":"turn.failed","error":{"message":"stream disconnected before completion"}}` + "\n" +
+			`{"type":"exec.completed","result":{"status":"failed"}}` + "\n"))
+	if !strings.Contains(p.Err, "stream disconnected") {
+		t.Fatalf("富错误不得被末尾泛化 status 覆盖：%q", p.Err)
+	}
+}
+
 // TestIntentMapping：桩输出（真 fixture）映射 turn_intent 块；argv 契约与 stdin 提示词。
 func TestIntentMapping(t *testing.T) {
 	exec := &fakeExecer{outputs: []string{readFixture(t, "exec-intent.jsonl")}}

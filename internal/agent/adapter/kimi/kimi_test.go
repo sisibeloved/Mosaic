@@ -275,6 +275,41 @@ func TestCancelBeforeResult(t *testing.T) {
 	}
 }
 
+// TestTimeoutReportsTimeoutNotStale：超时（非取消）必须如实报"任务超时"——ErrStale
+// 专属 Cancel 后迟到拒绝语义（RFC-0002 §3.1.6）。2026-11-21 真机实证：kimi 2.7.2
+// 研究型 generate 多步工具循环叠加上游 LLM 请求停滞，180s 时限被击穿后超时被
+// 误报 "agent: stale grant"，围栏失配的假象掩盖真实死因（排障被误导）。
+func TestTimeoutReportsTimeoutNotStale(t *testing.T) {
+	exec := &fakeExecer{block: true}
+	adapter := New(Config{KimiPath: "/x/kimi", Execer: exec, Timeout: 40 * time.Millisecond})
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p-to", Adapter: "kimi"})
+	defer sess.Close()
+	h, _ := sess.Run(context.Background(), agent.Task{TaskID: "t-timeout", Kind: agent.KindGenerate})
+	_, err := h.Result()
+	if err == nil {
+		t.Fatal("超时应报错")
+	}
+	if errors.Is(err, agent.ErrStale) {
+		t.Fatalf("超时不得冒充迟到拒绝（ErrStale）：%v", err)
+	}
+	if !strings.Contains(err.Error(), "任务超时") {
+		t.Fatalf("错误应如实携带超时语义：%v", err)
+	}
+}
+
+// TestGeneratePromptCarriesBudgetClause：generate 指令携带硬预算条款（五家同源
+// 措辞，2026-11-21 加面）——无界工具研究会击穿 180s 适配器时限，条款钉"约 2 分钟
+// 含工具、超预算以既有知识作答"。路由标记式逐字子串钉住，防措辞漂移。
+func TestGeneratePromptCarriesBudgetClause(t *testing.T) {
+	prompt, err := buildPrompt(agent.Task{TaskID: "t-budget", Kind: agent.KindGenerate})
+	if err != nil {
+		t.Fatalf("buildPrompt: %v", err)
+	}
+	if !strings.Contains(prompt, "hard wall-clock budget") {
+		t.Fatal("generate 指令应含硬预算条款（防多步工具研究击穿时限）")
+	}
+}
+
 // TestWSLArgvShape：WSL 运行面的 argv 包装（纯函数钉住：--exec 直 exec + env -i 清空
 // + cd 工作目录 + 内层 sh "$(cat)" 提示词代入）。--exec 是 2026-09-01 实证修复：
 // `--` 剩余参数被 wsl.exe 拼接后交发行版默认 shell 解释（引号剥除/元字符执行），
