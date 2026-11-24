@@ -95,8 +95,12 @@ func TestRunAccountLoginSuccess(t *testing.T) {
 	if err != nil || len(secret) < 32 {
 		t.Fatalf("受管密钥应自动生成且 ≥32 字节：%v len=%d", err, len(secret))
 	}
-	if st, _ := os.Stat(filepath.Join(prof, standaloneSecretName)); st.Mode().Perm() != 0o600 {
-		t.Fatalf("受管密钥应属主只读：%v", st.Mode().Perm())
+	// 属主只读：POSIX 权限位断言——Windows 无此语义（os.WriteFile 的 perm 只映射
+	// 只读属性，Stat 回报的权限位不反映 0600），按宿主 OS 守卫使三平台都可测。
+	if runtime.GOOS != "windows" {
+		if st, serr := os.Stat(filepath.Join(prof, standaloneSecretName)); serr != nil || st.Mode().Perm() != 0o600 {
+			t.Fatalf("受管密钥应属主只读：%v %v", serr, st)
+		}
 	}
 	res, err := readAccountLoginResult(prof)
 	if err != nil || res.Account != "alice" || res.Family != AccountLoginFamilyBigmodel {
