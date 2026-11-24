@@ -76,8 +76,11 @@ type Deps struct {
 	Hub    *sse.Hub
 	Actor  room.Actor // 个人版：本地 owner（ADR-0009）
 	// Harness 宿主层可执行程序注册表（nil 时相关端点返回 503）。
-	Harness     *harness.Registry
-	ProbeRunner harness.Runner // 手动登记时的探测执行面（nil 时禁止手动登记）
+	Harness *harness.Registry
+	// AccountLogin zcode 账号登录任务面（独立登录档的设置页入口；app 装配接入。
+	// nil = 未接入——状态端点回 supported=false，发起端点 503）。
+	AccountLogin AccountLoginBackend
+	ProbeRunner  harness.Runner // 手动登记时的探测执行面（nil 时禁止手动登记）
 	// Identity 独立 Agent 身份域（RFC-0018 / ADR-0017，0.5.0；nil 时身份端点 503）。
 	Identity *personalagent.Service
 	// Slots 职责模板域（RFC-0018 §5 / ADR-0019，0.5.2；nil 时职责端点 503）。

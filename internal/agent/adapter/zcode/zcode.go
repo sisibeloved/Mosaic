@@ -44,6 +44,34 @@
 // （Config.SessionDB）即切断耦合——桌面版历史不再出现 Mosaic 会话；凭据面
 // （credentials.json/provider_config.json 锚定 ZCODE_DATA_BASE_DIR，默认
 // homedir → ~/.zcode/v2）不受影响，登录态照常共享。
+// 4.0.0 实证（2026-11-23，桌面版 3.x→4.0.0 升级后）：桌面渠道驱动链路照常
+// （ZCode Helper 承载、缓存副本按 bundle 哈希换目录、内核启动时自刷新内置目录
+// ~/.zcode/v2/runtime/provider/…）；模型覆盖对个人清单未列的模型见
+// patchProviderConfig 末位回退（服务端目录修订 48 新增 GLM-5.4，个人清单未列）。
+// 服务端 529/[1305]（模型访问量过大）时内核按指数退避重试至多 11 次，总时长可超
+// 适配器时限——上游容量问题，非适配器缺陷。
+// 独立登录档（2026-11-24 实证）：桌面版自身经 OAuth 账号 provider 调模型，而 Mosaic
+// 独立驱动的内核原先只能走个人 provider（API Key）——账号 provider 在独立模式要求
+// 凭据库里有 account-provider:<id>:identity 等绑定条目（仅内核的独立登录流程写入），
+// 且桌面版凭据以系统钥匙串加密，独立内核加载不了 keyring 原生模块（只在 Electron
+// asar 内）解不开。按官方无头方案另立一份登录态（Config.StandaloneDir）：
+// ZCODE_CREDENTIALS_FILE + ZCODE_CREDENTIAL_SECRET_FILE（受管密钥）。真机对照同窗口：
+// API Key 通道 GLM-5.4 17 次全被 529 拒绝，账号通道零重试。登录入口在设置页（zcode
+// 实例行"账号登录"块 → AccountLoginService → RunAccountLogin，standalone_login.go）：
+// 以 Mosaic 驱动内核的同一方式执行内核的 login 子命令，授权链接经 SSE 交给界面。
+// 等价的命令行形态（排障用；受管密钥文件须先存在）：
+//
+//	ELECTRON_RUN_AS_NODE=1 \
+//	ZCODE_CREDENTIALS_FILE=<档>/credentials.json \
+//	ZCODE_CREDENTIAL_SECRET_FILE=<档>/credential-secret \
+//	"<app>/Contents/Frameworks/ZCode Helper.app/Contents/MacOS/ZCode Helper" \
+//	"<app>/Contents/Resources/glm/zcode.cjs" login bigmodel --no-browser
+//
+// 命令打印授权链接，浏览器确认后凭据写入档内（设置页入口自动备妥目录与受管密钥
+// ——32 随机字节的 base64、属主只读；内核要求 32–4096 字节），并在
+// ~/.zcode/v2/provider_config.json 追加 defaultModelSelection
+// 指向账号 provider（内核登录流程的既有行为，个人规则不变）。令牌有效期与续期
+// 未验证，过期后重新登录即可。桌面版凭据（~/.zcode/v2/credentials.json）不被读写。
 package zcode
 
 import (
@@ -52,11 +80,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -101,6 +131,13 @@ type Config struct {
 	// 非空时经 ZCODE_SESSION_DB_PATH 重定向会话存储（CLI/桌面/WSL 三面同注）——
 	// 桌面 PiP 耦合隔离用，见包注释末节。
 	SessionDB string
+	// StandaloneDir ZCode 独立登录档目录（空 = 不启用；仅 native 运行面——档内
+	// 文件经宿主 os 包直读）。非空且档内有登录态（credentials.json）时，任务进程
+	// 以 ZCODE_CREDENTIALS_FILE/ZCODE_CREDENTIAL_SECRET_FILE 指向该档：内核独立
+	// 运行时访问不了系统钥匙串（keyring 原生模块只在 Electron asar 内），按官方
+	// 无头方案以受管密钥承载一份独立登录态——OAuth 账号 provider 由此可选，桌面版
+	// ~/.zcode/v2 的凭据不被读写。登录方式见包注释。
+	StandaloneDir string
 }
 
 // Execer 进程执行抽象（UT 捕获/阻塞；生产为真实 zcode 子进程）。
@@ -164,7 +201,7 @@ func (s *session) Run(ctx context.Context, task agent.Task) (agent.Handle, error
 	h := &handle{done: make(chan struct{})}
 	taskCtx, cancel := context.WithTimeout(ctx, s.adapter.cfg.Timeout)
 	h.cancel = cancel
-	go s.execute(taskCtx, task, h)
+	go s.execute(ctx, taskCtx, task, h)
 	return h, nil
 }
 
@@ -173,8 +210,10 @@ func (s *session) Close()        {}
 
 // execute 单任务执行：构建提示词 → sh -c 'exec "$@" -p "$(cat)"' 包装（提示词走
 // stdin，zcode -p 不读 stdin 由 sh 代入 argv）→ zcode stream-json（--resume 连续性）
-// → 解析 → 映射；严格 JSON 契约任务在输出形状失败时做一次矫正重试。
-func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
+// → 解析 → 映射；严格 JSON 契约任务在输出形状失败时做一次矫正重试。ctx 为父
+// 会话 ctx（引擎关停取消面），taskCtx 为带 Timeout 的任务 ctx——两者分流超时/
+// 取消语义（见下）。
+func (s *session) execute(ctx, taskCtx context.Context, task agent.Task, h *handle) {
 	defer close(h.done)
 
 	prompt, err := buildPrompt(task)
@@ -199,8 +238,17 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 
 	parsed, err := s.execOnce(taskCtx, task, prompt)
 	if err != nil {
+		// 超时与取消分流（2026-11-23 真机实证：上游 529/[1305] 限流时内核按指数
+		// 退避重试至多 11 次、总时长超适配器时限，此前报 ErrStale——"stale grant"
+		// 的围栏失配假象掩盖真实死因；ErrStale 专属 Cancel 后迟到拒绝语义
+		// RFC-0002 §3.1.6）。h.Cancel 取消 taskCtx 时同样落入超时分支，但 Result
+		// 以 stale 优先返回 ErrStale——取消语义不受分流影响。
+		if taskCtx.Err() != nil && ctx.Err() == nil {
+			h.err = timeoutError(s.adapter.cfg.Timeout, err)
+			return
+		}
 		if taskCtx.Err() != nil {
-			h.stale = true // 取消/超时：不发布正文，语义同迟到拒绝
+			h.stale = true // 引擎取消/关停：迟到拒绝语义不变
 			return
 		}
 		h.err = err
@@ -270,7 +318,7 @@ func (s *session) execOnce(taskCtx context.Context, task agent.Task, prompt stri
 
 	stdout, stderr, code, err := s.execer().Exec(taskCtx, argv, env, stdin)
 	if err != nil {
-		return Parsed{}, fmt.Errorf("zcode: exec: %w", err)
+		return Parsed{}, &execError{err: err, stdout: stdout}
 	}
 	parsed := ParseStream([]byte(stdout))
 	if parsed.SessionID != "" && parsed.SessionID != sessID {
@@ -412,7 +460,8 @@ func (s *session) homeDir() string {
 // envFor 按运行面构造子进程环境（native 用宿主 HOME；wsl 用发行版内 HOME）。
 func (s *session) envFor() []string {
 	env := zcodeEnvWithHome(s.adapter.cfg.ZcodePath, s.homeDir())
-	return append(env, sessionDBEnv(s.adapter.cfg.SessionDB)...)
+	env = append(env, sessionDBEnv(s.adapter.cfg.SessionDB)...)
+	return append(env, s.standaloneEnv()...)
 }
 
 // sessionDBEnv 会话库私有化注入（三面共用）：空 = 不隔离（默认共享库，旧行为）；
@@ -468,7 +517,86 @@ func (s *session) desktopEnvFor() []string {
 	dir := filepath.Dir(s.adapter.cfg.ZcodePath)
 	env = append(env, "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	env = append(env, sessionDBEnv(s.adapter.cfg.SessionDB)...)
+	env = append(env, s.standaloneEnv()...)
 	return append(env, passthroughNetEnv()...)
+}
+
+// ---- 独立登录档（OAuth 账号 provider 的承载面；见 Config.StandaloneDir）----
+
+const (
+	standaloneCredentialsName = "credentials.json"
+	standaloneSecretName      = "credential-secret"
+	// 独立登录档凭据库里"账号 provider 已登录"的键名形态（只读键名——值保持加密，
+	// 适配器不解读也不持有任何令牌）。
+	standaloneAccountPrefix  = "account-provider:"
+	standaloneIdentitySuffix = ":identity"
+)
+
+// standaloneProfile 独立登录档目录与登录态：未配置或档内无 credentials.json
+// （尚未登录/已登出）= 未启用，行为与无此功能时逐字一致。
+func (a *Adapter) standaloneProfile() (dir string, ok bool) {
+	if a.cfg.StandaloneDir == "" {
+		return "", false
+	}
+	if _, err := os.Stat(filepath.Join(a.cfg.StandaloneDir, standaloneCredentialsName)); err != nil {
+		return "", false
+	}
+	return a.cfg.StandaloneDir, true
+}
+
+// standaloneEnv 独立登录档进程环境（CLI/桌面两面同注）：凭据库与受管密钥文件。
+func (s *session) standaloneEnv() []string {
+	dir, ok := s.adapter.standaloneProfile()
+	if !ok {
+		return nil
+	}
+	return standaloneEnvFor(dir)
+}
+
+// standaloneEnvFor 指向给定独立登录档的进程环境（登录任务在登录完成前也用它——
+// 此时档内尚无凭据库，standaloneEnv 不生效）。
+func standaloneEnvFor(dir string) []string {
+	return []string{
+		"ZCODE_CREDENTIALS_FILE=" + filepath.Join(dir, standaloneCredentialsName),
+		"ZCODE_CREDENTIAL_SECRET_FILE=" + filepath.Join(dir, standaloneSecretName),
+	}
+}
+
+// standaloneAccounts 独立登录档里已登录的账号 provider。未启用返回空；档内凭据库
+// 读不到/解析失败 → 显式报错（已配置的登录态不该静默失效）。
+func (s *session) standaloneAccounts() ([]string, error) {
+	dir, ok := s.adapter.standaloneProfile()
+	if !ok {
+		return nil, nil
+	}
+	accounts, err := standaloneAccountProviders(dir)
+	if err != nil {
+		return nil, fmt.Errorf("zcode: %w", err)
+	}
+	return accounts, nil
+}
+
+// standaloneAccountProviders 独立登录档里已登录的账号 provider（按凭据库键名
+// account-provider:<providerId>:identity 识别——只读键名，值保持加密）。凭据库读不到/
+// 解析失败时错误信息带路径（调用方按面包装）。
+func standaloneAccountProviders(dir string) ([]string, error) {
+	path := filepath.Join(dir, standaloneCredentialsName)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取独立登录档凭据库 %s 失败：%w", path, err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("独立登录档凭据库 %s 解析失败：%v", path, err)
+	}
+	var out []string
+	for key := range doc {
+		if strings.HasPrefix(key, standaloneAccountPrefix) && strings.HasSuffix(key, standaloneIdentitySuffix) {
+			out = append(out, strings.TrimSuffix(strings.TrimPrefix(key, standaloneAccountPrefix), standaloneIdentitySuffix))
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // zcodeEnvWithHome 环境构造（CLI 面，native 与 WSL 共用，仅 HOME 来源不同）：
@@ -631,7 +759,11 @@ func (s *session) ensureOverlay(taskCtx context.Context, model string) (string, 
 		}
 		raw = b
 	}
-	patched, err := patchProviderConfig(raw, model)
+	accounts, err := s.standaloneAccounts()
+	if err != nil {
+		return "", err
+	}
+	patched, err := patchProviderConfig(raw, model, accounts)
 	if err != nil {
 		return "", fmt.Errorf("zcode: 模型覆盖处理 provider 基座配置 %s 失败：%w", base, err)
 	}
@@ -655,9 +787,13 @@ func (s *session) ensureOverlay(taskCtx context.Context, model string) (string, 
 // patchProviderConfig 重排目标模型所在 provider 的模型清单并钉选默认模型
 // （纯函数，UT 覆盖）。找规则：config.providerConfigRules.providerRules 里
 // enabled != false 且 config.personalModelIds 含目标模型者；找不到则回退
-// config.modelConfigRules.providerModelRules 里 modelId 匹配的 providerId；
-// 再找不到报错（模型不在任何 provider 的模型清单）。未知键原样保留（map 往返）。
-func patchProviderConfig(raw []byte, model string) ([]byte, error) {
+// config.modelConfigRules.providerModelRules 里 modelId 匹配的 providerId（声明
+// 了归属但无对应规则 → 报错，不落到别的 provider）；再找不到走末位回退——先看
+// 独立登录档（standaloneAccounts：已登录的账号 provider 唯一时把默认模型选择指向
+// 它，多个则显式报错），否则配置对该模型一无所知且启用规则唯一时落其上（模型随
+// ZCode 服务端目录更新，个人清单未列 ≠ 不可用；可用与否由内核/服务端裁决，见
+// 函数内注释），启用规则不唯一则显式报错。未知键原样保留（map 往返）。
+func patchProviderConfig(raw []byte, model string, standaloneAccounts []string) ([]byte, error) {
 	var doc map[string]any
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("JSON 解析失败：%v", err)
@@ -694,26 +830,65 @@ func patchProviderConfig(raw []byte, model string) ([]byte, error) {
 	}
 	if target == nil {
 		// 回退：modelConfigRules.providerModelRules 里 modelId 匹配 → providerId
-		var providerID string
+		declared := ""
 		modelRules, _ := config["modelConfigRules"].(map[string]any)
 		pmRules, _ := modelRules["providerModelRules"].([]any)
 		for _, r := range pmRules {
 			entry, _ := r.(map[string]any)
 			if mid, _ := entry["modelId"].(string); mid == model {
-				providerID, _ = entry["providerId"].(string)
+				declared, _ = entry["providerId"].(string)
 				break
 			}
 		}
 		for _, r := range providerRules {
 			rule, _ := r.(map[string]any)
-			if pid, _ := rule["providerId"].(string); pid != "" && pid == providerID {
+			if pid, _ := rule["providerId"].(string); declared != "" && pid == declared {
 				target = rule
 				break
 			}
 		}
+		if target == nil && declared != "" {
+			return nil, fmt.Errorf("模型 %s 在 zcode 配置中归属 provider %s，但无对应 provider 规则", model, declared)
+		}
+	}
+	if target == nil && len(standaloneAccounts) > 0 {
+		// 末位回退之一：独立登录档的账号 provider（OAuth）。2026-11-24 真机实证 ZCode
+		// 4.0.0：个人规则保持不动、仅把 defaultModelSelection 指向已登录的账号 provider
+		// 即生效（模型 ID 按用户输入原样写入，内核自行归一）；可用与否由内核/服务端
+		// 裁决。已登录的账号 provider 不唯一则归属不可判定——显式报错不猜。
+		if len(standaloneAccounts) != 1 {
+			return nil, fmt.Errorf("模型 %s 不在 zcode 任何 provider 的模型清单，且独立登录档已登录的账号 provider 有 %d 个（%s），无法判定归属",
+				model, len(standaloneAccounts), strings.Join(standaloneAccounts, "、"))
+		}
+		config["defaultModelSelection"] = map[string]any{"providerId": standaloneAccounts[0], "modelId": model}
+		return json.Marshal(doc)
 	}
 	if target == nil {
-		return nil, fmt.Errorf("模型 %s 不在 zcode 任何 provider 的模型清单", model)
+		// 末位回退（2026-11-23 真机实证 ZCode 4.0.0）：配置对该模型一无所知 ≠ 不可用
+		// ——模型随服务端内置目录更新（目录修订 48 新增 GLM-5.4），个人清单只在用户
+		// 于 ZCode 选模时落盘。启用规则唯一时落其上（moveToFront 前置插入使其可选），
+		// 可用与否由内核/服务端裁决：可用则生效，不存在则显式报错（实证 [1211]
+		// 模型不存在），无静默回落。启用规则不唯一则归属不可判定——显式报错不猜。
+		var enabledIDs []string
+		var enabled map[string]any
+		for _, r := range providerRules {
+			rule, _ := r.(map[string]any)
+			if rule == nil || !ruleEnabled(rule) {
+				continue
+			}
+			pid, _ := rule["providerId"].(string)
+			enabledIDs = append(enabledIDs, pid)
+			enabled = rule
+		}
+		if len(enabledIDs) != 1 {
+			msg := fmt.Sprintf("模型 %s 不在 zcode 任何 provider 的模型清单", model)
+			if len(enabledIDs) > 1 {
+				msg += fmt.Sprintf("，且启用中的 provider 有 %d 个（%s），无法判定归属：在 ZCode 中把该模型加入对应 provider 的个人清单",
+					len(enabledIDs), strings.Join(enabledIDs, "、"))
+			}
+			return nil, errors.New(msg)
+		}
+		target = enabled
 	}
 
 	providerID, _ := target["providerId"].(string)
@@ -885,6 +1060,74 @@ func ParseStream(raw []byte) Parsed {
 		out.Messages = []string{fallback}
 	}
 	return out
+}
+
+// execError 执行级错误（进程未能正常收尾），携带已捕获的部分 stdout——超时被杀
+// 时流里可能只有模型重试事件，是排障的唯一现场（见 retryDetail）。错误串与原
+// fmt.Errorf("zcode: exec: %w") 逐字一致，errors.Is/As 语义经 Unwrap 保留。
+type execError struct {
+	err    error
+	stdout string
+}
+
+func (e *execError) Error() string { return "zcode: exec: " + e.err.Error() }
+func (e *execError) Unwrap() error { return e.err }
+
+// timeoutError 超时的如实报错：时限 + 流内重试现场（有则附）。实证 2026-11-23：
+// GLM-5.4 接口 529/[1305] 限流持续三分钟，内核 9 次重试后的退避总时长越过 180s
+// 时限——此前日志只见 "stale grant"，真因要去翻内核结构化日志。
+func timeoutError(limit time.Duration, cause error) error {
+	msg := fmt.Sprintf("zcode: 任务超时（%s）：内核未在时限内完成", limit)
+	var pe *execError
+	if errors.As(cause, &pe) {
+		if detail := retryDetail(pe.stdout); detail != "" {
+			msg += "——" + detail
+		}
+	}
+	return errors.New(msg)
+}
+
+// retryEnvelope stream-json 的 model_retry_scheduled 事件（payload 字段，实证
+// ZCode 4.0.0）。
+type retryEnvelope struct {
+	Payload struct {
+		Type        string `json:"type"`
+		Attempt     int    `json:"attempt"`
+		MaxAttempts int    `json:"maxAttempts"`
+		Message     string `json:"message"`
+		ModelID     string `json:"modelId"`
+		Reason      string `json:"reason"`
+	} `json:"payload"`
+}
+
+// retryDetail 流内模型重试现场摘要：取尝试序号最大的一条——"模型 X 请求已失败
+// N 次（上限 M），最近一次：<原因>"；无重试事件返回空串。
+func retryDetail(stdout string) string {
+	var last *retryEnvelope
+	for _, line := range strings.Split(stdout, "\n") {
+		if !strings.Contains(line, "model_retry_scheduled") {
+			continue // 廉价预筛：流以千行计，仅重试事件行含该子串
+		}
+		var ev retryEnvelope
+		if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &ev); err != nil || ev.Payload.Type != "model_retry_scheduled" {
+			continue
+		}
+		if last == nil || ev.Payload.Attempt >= last.Payload.Attempt {
+			last = &ev
+		}
+	}
+	if last == nil {
+		return ""
+	}
+	p := last.Payload
+	detail := fmt.Sprintf("模型 %s 请求已失败 %d 次", p.ModelID, p.Attempt)
+	if p.MaxAttempts > 0 {
+		detail += fmt.Sprintf("（上限 %d 次）", p.MaxAttempts)
+	}
+	if msg := firstLineOf(p.Message, 160); msg != "" {
+		detail += "，最近一次：" + msg
+	}
+	return detail
 }
 
 func firstLineOf(s string, max int) string {

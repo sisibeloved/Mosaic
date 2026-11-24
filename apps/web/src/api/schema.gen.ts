@@ -2573,6 +2573,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/harness/executables/{id}/account-login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * zcode 账号登录状态（独立登录档——OAuth 账号 provider）
+         * @description Mosaic 独立驱动的 zcode 内核另立一份登录态（`~/.mosaic/zcode-standalone`，
+         *     受管密钥加密，不入备份面；与 ZCode 桌面版 `~/.zcode/v2` 的凭据互不相干）。
+         *     已登录 = 档内凭据库含账号绑定条目；账号/模型取最近一次经 Mosaic 完成的登录
+         *     结果。仅 zcode 实例且装配了独立登录档时 supported=true——其余实例同样 200
+         *     （supported=false），登录块不呈现。
+         */
+        get: operations["getHarnessExecutableAccountLogin"];
+        put?: never;
+        /**
+         * 启动 zcode 账号登录任务（异步——过程经 SSE 可视化）
+         * @description 以任务进程同一驱动面执行内核 login 子命令（`login <family> --no-browser`）：
+         *     授权链接经 SSE `url` 事件交给界面（界面请桌面壳调系统浏览器），浏览器确认后
+         *     凭据写入独立登录档。异步受理即返 202（started=本次启动 / running=同实例任务
+         *     在途幂等）；过程经 GET .../account-login/stream SSE 转发；内核授权窗口 5
+         *     分钟，超时为 failed 终态事件。非 zcode 实例或未装配独立登录档 → 409。
+         */
+        post: operations["runHarnessExecutableAccountLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/harness/executables/{id}/account-login/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 账号登录任务过程 SSE
+         * @description 连接即重放已积累事件（授权链接在途即报），随后实时转发；终态（done 携
+         *     account/model / failed 携 error）后关流；无任务发 idle 即关。只读观察面无写门
+         *     （发起登录仍走 owner 门控的 POST）；15s 注释心跳防中间层缓冲。
+         */
+        get: operations["getHarnessExecutableAccountLoginStream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/memory/items": {
         parameters: {
             query?: never;
@@ -5660,6 +5714,22 @@ export interface components {
             new_version: string;
             /** @description 更新命令输出尾（排障可见） */
             output_tail?: string;
+        };
+        /** @description zcode 账号登录请求：登录家族（内核 `login [zai|bigmodel]`；缺省 bigmodel）。 */
+        HarnessAccountLoginRequest: {
+            /** @enum {string} */
+            family?: "bigmodel" | "zai";
+        };
+        /** @description zcode 独立登录档状态——supported=该实例可发起账号登录；logged_in=档内凭据库含账号绑定条目。 */
+        HarnessAccountLoginStatus: {
+            supported: boolean;
+            logged_in: boolean;
+            /** @description 最近一次登录的账号 */
+            account?: string;
+            /** @description 最近一次登录钉选的默认模型（provider/model） */
+            model?: string;
+            /** @description 已登录的账号 provider */
+            providers: string[];
         };
         /** @description 任务清单项（M3-3 tasklist）：显式申报协议派生（mosaic-todo 围栏块，可带 @负责人 指派）+ 人工门控裁定（task.resolved）。 */
         TaskItem: {
@@ -11558,6 +11628,99 @@ export interface operations {
                     "text/event-stream": string;
                 };
             };
+            503: components["responses"]["HarnessUnavailable"];
+        };
+    };
+    getHarnessExecutableAccountLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 注册表唯一 ID（含路径，URL 编码传递） */
+                id: components["parameters"]["ExecutableID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 登录状态 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HarnessAccountLoginStatus"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["HarnessUnavailable"];
+        };
+    };
+    runHarnessExecutableAccountLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 注册表唯一 ID（含路径，URL 编码传递） */
+                id: components["parameters"]["ExecutableID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["HarnessAccountLoginRequest"];
+            };
+        };
+        responses: {
+            /** @description 已受理（异步任务；过程经 account-login/stream SSE 可视化） */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        status: "started" | "running";
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            /** @description account_login_unsupported（该实例不支持账号登录） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["HarnessUnavailable"];
+        };
+    };
+    getHarnessExecutableAccountLoginStream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 注册表唯一 ID（含路径，URL 编码传递） */
+                id: components["parameters"]["ExecutableID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 事件流（text/event-stream；data 为 {kind:url|line|done|failed|idle, line?, url?, account?, model?, error?} JSON） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            404: components["responses"]["NotFound"];
             503: components["responses"]["HarnessUnavailable"];
         };
     };

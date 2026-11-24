@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -113,7 +114,8 @@ func (s *session) Cancel(string) {}
 func (s *session) Close()        {}
 
 // execute 单任务执行：构建提示词 → mcode exec（stdin 提示词 + --session 连续性）→
-// 解析 → 映射；严格 JSON 契约任务在输出形状失败时做一次矫正重试。
+// 解析 → 映射；严格 JSON 契约任务在输出形状失败时做一次矫正重试（generate 位的
+// 决策 JSON 形态同入，见 errGenerateNoBody）。
 func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 	defer close(h.done)
 
@@ -133,7 +135,7 @@ func (s *session) execute(taskCtx context.Context, task agent.Task, h *handle) {
 		return
 	}
 	h.result, h.err = mapResult(task.Kind, parsed)
-	if h.err != nil && strictJSONTask(task.Kind) && taskCtx.Err() == nil {
+	if h.err != nil && taskCtx.Err() == nil && (strictJSONTask(task.Kind) || errors.Is(h.err, errGenerateNoBody)) {
 		h.result, h.err = s.retryStrictTask(taskCtx, task, prompt, h.err, parsed)
 	}
 	if h.err == nil && task.Kind == agent.KindGenerate && h.result.Block == agent.BlockPublicDraft {
@@ -193,7 +195,16 @@ func (s *session) execOnce(taskCtx context.Context, task agent.Task, prompt stri
 	return parsed, nil
 }
 
-// retryStrictTask 矫正重试（一次，仅严格 JSON 契约任务）：v1.69 真机实证
+// errGenerateNoBody generate 位回决策 JSON（可解析但无可用 body）：发布门照旧拒绝
+// （内部件不冒充发言），但该形态单独触发一次矫正重试——2026-11-23 真机实证：评估
+// 与生成共用 CLI 会话，MiniMax 先在评估位误写了完整发言草稿（被矫正重试救回），
+// 随后在生成位又答成决策 JSON（CLI 转录思考链："my previous turn's message was
+// never delivered"），既有兜底（宽松引号修复/散文回退）都接不住，整轮发言丢失。
+// 其它映射失败（解析失败等）维持不重试。
+var errGenerateNoBody = errors.New("generate 输出为 JSON 但缺可用 body")
+
+// retryStrictTask 矫正重试（一次）：严格 JSON 契约任务全量，外加 generate 位的
+// 决策 JSON 形态（errGenerateNoBody）。v1.69 真机实证
 // （2026-09-08 狗粮）——会话历史含强待办语境时，MiniMax 会把仲裁元任务当作房间
 // 任务执行：评估提示词下直接交付报告正文（CLI 转录思考链明确"不要 JSON 包装"），
 // 无 JSON 可提取，座位整轮弃权。矫正追记附在原提示词之后（同会话：模型可见自己
@@ -237,7 +248,8 @@ func strictJSONTask(k agent.TaskKind) bool {
 }
 
 // correctiveNote 矫正追记（重试提示词 = 原提示词 + 本段）。评估/收敛为英文指令面，
-// reply_or_pass 为中文指令面——追记跟随各自指令语言。
+// reply_or_pass 为中文指令面，generate 位决策 JSON 形态为英文指令面——追记跟随
+// 各自指令语言。
 const correctiveNoteEval = `
 
 CORRECTION: Your previous reply was not the required JSON object — you may have started answering or performing the discussion's task. This is an internal arbitration request, not a message to the room and not a task to do. Reply now with ONLY the required JSON object, nothing else.`
@@ -247,11 +259,20 @@ const correctiveNoteROP = `
 矫正：你上一条回复不是所要求的 JSON 对象——你可能已经开始回答或执行讨论中的任务。这是内部决策请求，不是要发给房间的消息，也不是要执行的任务。现在只输出所要求的 JSON 对象，无其他文本。`
 
 func correctiveNote(k agent.TaskKind) string {
-	if k == agent.KindReplyOrPass {
+	switch k {
+	case agent.KindReplyOrPass:
 		return correctiveNoteROP
+	case agent.KindGenerate:
+		return correctiveNoteGenerate
 	}
 	return correctiveNoteEval
 }
+
+// correctiveNoteGenerate 生成位矫正追记（英文——跟随生成指令语言）：模型把内部
+// 决策 JSON 当成了发言；追记点明"已有话语权、现在写发言本身"，并重申发言 JSON 形状。
+const correctiveNoteGenerate = `
+
+CORRECTION: Your previous reply was an internal decision JSON (action/scores/public_rationale), not your message. This is not a decision request — you already have the floor and must now write the message itself. Reply now with ONLY the message JSON: {"body":"your public message","declared_relations":[]}, adding doc_ops/sheet_ops in the same JSON only if you are editing a document or spreadsheet. Do not output a decision.`
 
 // sanitizePublish 发布边界：先分离 mcode 交付附件，再委托端口级共享发布门。
 func (h *handle) sanitizePublish() {
@@ -599,7 +620,7 @@ func mapResult(kind agent.TaskKind, parsed Parsed) (agent.Result, error) {
 						Usage: parsed.Usage,
 					}, nil
 				}
-				return agent.Result{}, fmt.Errorf("minimax: generate 输出为 JSON 但缺可用 body（不发布）：%s", firstLineOf(text, 120))
+				return agent.Result{}, fmt.Errorf("minimax: %w（不发布）：%s", errGenerateNoBody, firstLineOf(text, 120))
 			}
 			relations, _ := data["declared_relations"].([]any)
 			if data["declared_relations"] == nil {

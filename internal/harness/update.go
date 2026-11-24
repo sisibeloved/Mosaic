@@ -527,6 +527,12 @@ func (r *Registry) RefreshVersion(id, version string) error {
 }
 
 // executableOf 按 ID 取注册项副本（锁内拷出，后续长操作不持锁）。
+// Lookup 按 id 取实例（登录任务面等只需要实例记录的调用方；不存在返回 false）。
+func (r *Registry) Lookup(id string) (Executable, bool) {
+	exe, err := r.executableOf(id)
+	return exe, err == nil
+}
+
 func (r *Registry) executableOf(id string) (Executable, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

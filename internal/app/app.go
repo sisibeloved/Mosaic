@@ -632,6 +632,17 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		// 四轮复审 #15：跨源写门以"配置的回环 authority"判定——真实绑定地址注入。
 		deps.Authority = ln.Addr().String()
 	}
+	// zcode 账号登录任务面（设置页入口）：登录档/托管缓存/会话库与任务进程同一份
+	// 宿主侧路径（zcodeWiring），按实例 id 现算适配器配置——不依赖座位注册时机。
+	zcodeCache, zcodeSessionDBPath, zcodeStandalone := zcodeWiring(agentWorkRoot(opts))
+	deps.AccountLogin = zcodeAccountLoginBackend{svc: zcode.NewAccountLoginService(func(id string) (*zcode.Adapter, bool) {
+		exe, ok := harnessRegistry.Lookup(id)
+		if !ok || exe.Adapter != "zcode" || harness.Runtime(exe.Runtime) != harness.RuntimeNative {
+			return nil, false // 非 zcode / 非 native 运行面（WSL 面登录档未接线）
+		}
+		// 登录任务不限工作目录：内核 login 子命令不依赖座位工作目录。
+		return zcode.New(zcodeConfigFor(exe, "", "", zcodeCache, zcodeSessionDBPath, zcodeStandalone)), true
+	})}
 	mux := httpapi.New(deps)
 
 	// doc outbox 分发（RFC-0014 §2.6）：独立于房间分发器（不同表），消费者只有
@@ -651,25 +662,14 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		hostRunner := harness.NewHostRunner()
 		// agent 工作目录隔离（二轮审校 #18 / 四轮复审 #2）：工作根在数据目录之外；
 		// 复审 #1：准备失败 fail closed（不回退服务器 cwd）。
-		workRoot := opts.AgentWork
-		if workRoot == "" {
-			if cache, err := os.UserCacheDir(); err == nil {
-				workRoot = filepath.Join(cache, "mosaic", "agent-work")
-			} else {
-				workRoot = filepath.Join(os.TempDir(), "mosaic-agent-work")
-			}
-		}
+		workRoot := agentWorkRoot(opts)
 		if err := os.MkdirAll(workRoot, 0o700); err != nil {
 			logger.Error("agent work root 准备失败：agent 座位不注册（fail closed）", "dir", workRoot, "err", err)
 			workRoot = ""
 		}
-		// zcode 桌面渠道托管缓存根（bundle+provider 副本，见 zcode 适配器
-		// ensureDesktopCache）：与工作根同级——同在 mosaic 缓存位之下，随其清理。
-		zcodeCacheRoot := filepath.Join(filepath.Dir(workRoot), "zcode-desktop")
-		// zcode 会话库私有化（桌面 PiP 隔离，macOS 实证 2026-10-06）：默认共享库
-		// 被桌面版镜像进程盯上激活 CUA PiP 悬浮球——Mosaic 会话改落 Mosaic 托管
-		// 私有库（ZCODE_SESSION_DB_PATH），与缓存根同级；CLI 自建父目录无需 MkdirAll。
-		zcodeSessionDB := filepath.Join(filepath.Dir(workRoot), "zcode-session", "db.sqlite")
+		// zcode 宿主侧路径（托管缓存根 / 私有会话库 / 独立登录档，见 zcodeWiring）：
+		// 与座位注册前的登录任务面同一份。
+		zcodeCacheRoot, zcodeSessionDB, zcodeStandaloneDir := zcodeWiring(workRoot)
 		wslHomeCache := map[string]string{}
 		// resolveWorkDir 解析座位工作目录（fail closed）。WSL 面返回发行版内
 		// Linux 路径与 HOME（四轮复审 #4：HOME 非空且绝对路径才可用，无效跳过不缓存）。
@@ -802,17 +802,9 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 					// argv 同 kimi 面；模型覆盖走 provider 配置 overlay，无 --model flag）。
 					// 桌面渠道（exe.Bundle 非空）：ELECTRON_RUN_AS_NODE 驱动缓存 bundle
 					// 副本（无感适配 2026-09-23，见 zcode 适配器包注释）。
-					cfg := zcode.Config{ZcodePath: exe.Path, Timeout: 180 * time.Second, WorkDir: dir,
-						EvalModel: exe.EvalModel, Model: exe.Model,
-						Bundle: exe.Bundle, CacheRoot: zcodeCacheRoot, SessionDB: zcodeSessionDB}
-					if wslHome != "" {
-						cfg.WSLDistro = exe.Distro
-						cfg.WSLHome = wslHome
-						// WSL 面私有会话库在发行版内（原生面路径是宿主形态，不适用）。
-						cfg.SessionDB = path.Join(strings.TrimSuffix(wslHome, "/"), ".mosaic", "zcode-session", "db.sqlite")
-					}
+					cfg := zcodeConfigFor(exe, dir, wslHome, zcodeCacheRoot, zcodeSessionDB, zcodeStandaloneDir)
 					if err := registerAdapter(profileID,
-						strings.Join([]string{exe.Path, exe.Bundle, dir, exe.Distro, wslHome, exe.Model, exe.EvalModel, cfg.SessionDB}, "\x1f"),
+						strings.Join([]string{exe.Path, exe.Bundle, dir, exe.Distro, wslHome, exe.Model, exe.EvalModel, cfg.SessionDB, cfg.StandaloneDir}, "\x1f"),
 						func() error { return supervisor.RegisterFor(profileID, zcode.New(cfg)) }); err != nil {
 						logger.Warn("zcode adapter register failed", "profile", profileID, "err", err)
 						continue
@@ -1795,4 +1787,87 @@ func memoryStatusCounts(ctx context.Context, memSvc *memory.Service, ns memory.N
 		out[string(st)] = res.TotalHits
 	}
 	return out, nil
+}
+
+// agentWorkRoot 解析 agent 工作根（数据目录之外；Options.AgentWork 显式优先，否则
+// 用户缓存位 mosaic/agent-work，再退临时目录）。
+func agentWorkRoot(opts Options) string {
+	if opts.AgentWork != "" {
+		return opts.AgentWork
+	}
+	if cache, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(cache, "mosaic", "agent-work")
+	}
+	return filepath.Join(os.TempDir(), "mosaic-agent-work")
+}
+
+// zcodeWiring zcode 适配器的宿主侧路径（任务进程与账号登录任务同一份）：
+//   - 托管缓存根（bundle+provider 副本，见 zcode 适配器 ensureDesktopCache）与私有
+//     会话库（桌面 PiP 隔离，ZCODE_SESSION_DB_PATH）——与 agent 工作根同级，同在
+//     mosaic 缓存位之下，随其清理；
+//   - 独立登录档（OAuth 账号 provider 的承载面）——$HOME/.mosaic/zcode-standalone：
+//     Mosaic 主目录命名空间，非数据目录，不入备份面。
+func zcodeWiring(workRoot string) (cacheRoot, sessionDB, standaloneDir string) {
+	base := filepath.Dir(workRoot)
+	cacheRoot = filepath.Join(base, "zcode-desktop")
+	sessionDB = filepath.Join(base, "zcode-session", "db.sqlite")
+	if home, err := os.UserHomeDir(); err == nil {
+		standaloneDir = filepath.Join(home, ".mosaic", "zcode-standalone")
+	}
+	return cacheRoot, sessionDB, standaloneDir
+}
+
+// zcodeConfigFor zcode 适配器配置（任务进程与账号登录任务同一份装配）：workDir 为空
+// = 不限工作目录（登录任务——内核 login 子命令不依赖座位工作目录）。WSL 面：私有
+// 会话库在发行版内（原生面路径是宿主形态，不适用），登录档不接线；native 面配独立
+// 登录档（档内无登录态即不生效）。
+func zcodeConfigFor(exe harness.Executable, workDir, wslHome, cacheRoot, sessionDB, standaloneDir string) zcode.Config {
+	cfg := zcode.Config{ZcodePath: exe.Path, Timeout: 180 * time.Second, WorkDir: workDir,
+		EvalModel: exe.EvalModel, Model: exe.Model,
+		Bundle: exe.Bundle, CacheRoot: cacheRoot, SessionDB: sessionDB}
+	if wslHome != "" {
+		cfg.WSLDistro = exe.Distro
+		cfg.WSLHome = wslHome
+		cfg.SessionDB = path.Join(strings.TrimSuffix(wslHome, "/"), ".mosaic", "zcode-session", "db.sqlite")
+		return cfg
+	}
+	cfg.StandaloneDir = standaloneDir
+	return cfg
+}
+
+// zcodeAccountLoginBackend zcode 登录任务面到 httpapi 边界的适配（类型转换——
+// httpapi 不依赖适配器包）。
+type zcodeAccountLoginBackend struct{ svc *zcode.AccountLoginService }
+
+func (b zcodeAccountLoginBackend) AccountLoginStatus(id string) (httpapi.AccountLoginStatus, bool) {
+	st, ok := b.svc.Status(id)
+	if !ok {
+		return httpapi.AccountLoginStatus{}, false
+	}
+	return httpapi.AccountLoginStatus{Supported: st.Supported, LoggedIn: st.LoggedIn,
+		Account: st.Account, Model: st.Model, Providers: st.Providers}, true
+}
+
+func (b zcodeAccountLoginBackend) StartAccountLogin(ctx context.Context, id, family string) (bool, error) {
+	started, err := b.svc.Start(ctx, id, family)
+	if errors.Is(err, zcode.ErrAccountLoginUnsupported) {
+		return false, fmt.Errorf("%w：%v", httpapi.ErrAccountLoginUnsupported, err)
+	}
+	return started, err
+}
+
+func (b zcodeAccountLoginBackend) SubscribeAccountLogin(id string) (<-chan httpapi.AccountLoginEvent, func(), bool) {
+	events, cancel, ok := b.svc.Subscribe(id)
+	if !ok {
+		return nil, nil, false
+	}
+	out := make(chan httpapi.AccountLoginEvent, cap(events))
+	go func() {
+		defer close(out)
+		for ev := range events {
+			out <- httpapi.AccountLoginEvent{Kind: ev.Kind, Line: ev.Line, URL: ev.URL,
+				Account: ev.Account, Model: ev.Model, Error: ev.Error}
+		}
+	}()
+	return out, cancel, true
 }

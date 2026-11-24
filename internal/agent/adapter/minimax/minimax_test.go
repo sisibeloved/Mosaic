@@ -339,11 +339,45 @@ func agentMessageStream(t *testing.T, content string) string {
 		`{"type":"exec.completed","result":{"status":"succeeded"}}` + "\n"
 }
 
-// TestGenerateRejectsDecisionJSON：generate 位回决策 JSON（无 body）→ 拒绝发布，
-// 不得把内部件冒充发言正文（旧散文回退会原样发布）；generate 非严格契约，无重试。
-func TestGenerateRejectsDecisionJSON(t *testing.T) {
+// TestGenerateDecisionJSONCorrectiveRetry：generate 位回决策 JSON（无 body）→ 一次
+// 矫正重试（同会话：模型可见自己跑偏的决策输出；追记点明"已有话语权、写发言
+// 本身"），二跳回合法发言即发布。2026-11-23 真机实证：评估与生成共用会话，MiniMax
+// 在评估位误写发言草稿（被矫正重试救回）后于生成位又答成决策 JSON——此前无重试，
+// 整轮发言丢失。
+func TestGenerateDecisionJSONCorrectiveRetry(t *testing.T) {
+	exec := &fakeExecer{outputs: []string{
+		agentMessageStream(t, `{"action":"speak","type":"answer","public_rationale":"我要回应"}`),
+		agentMessageStream(t, `{"body":"矫正后的发言正文","declared_relations":[]}`),
+	}}
+	adapter := newTestAdapter(exec)
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "minimax"})
+	defer sess.Close()
+	h, err := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	res, rerr := h.Result()
+	if rerr != nil {
+		t.Fatalf("决策 JSON 误入 generate 位应经矫正重试恢复：%v", rerr)
+	}
+	if res.Block != agent.BlockPublicDraft || res.Data["body"] != "矫正后的发言正文" {
+		t.Fatalf("应发布二跳发言：block=%q data=%v", res.Block, res.Data)
+	}
+	if len(exec.calls) != 2 {
+		t.Fatalf("应为 首发 + 矫正重试 两次调用：%d", len(exec.calls))
+	}
+	second := exec.calls[1].stdin
+	if !strings.Contains(second, correctiveNoteGenerate) || !strings.Contains(second, "Write your chat message") {
+		t.Fatalf("重试提示词应为原提示词 + 生成位矫正追记：%q", second)
+	}
+}
+
+// TestGenerateDecisionJSONRetryExhausted：二跳仍回决策 JSON → 保留失败（错误携
+// 二跳原因），绝不把决策 JSON 冒充发言发布（旧散文回退会原样发布）；只重试一次。
+func TestGenerateDecisionJSONRetryExhausted(t *testing.T) {
 	exec := &fakeExecer{outputs: []string{
 		agentMessageStream(t, `{"action":"silent","public_rationale":"已交付"}`),
+		agentMessageStream(t, `{"action":"silent","public_rationale":"仍是决策"}`),
 	}}
 	adapter := newTestAdapter(exec)
 	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "minimax"})
@@ -356,11 +390,37 @@ func TestGenerateRejectsDecisionJSON(t *testing.T) {
 	if rerr == nil {
 		t.Fatal("决策 JSON 误入 generate 位必须失败，不得发布")
 	}
-	if !strings.Contains(rerr.Error(), "缺可用 body") {
-		t.Fatalf("错误应指明缺可用 body：%v", rerr)
+	if !strings.Contains(rerr.Error(), "缺可用 body") || !strings.Contains(rerr.Error(), "重试后仍不可解析") {
+		t.Fatalf("错误应指明二跳仍缺可用 body：%v", rerr)
+	}
+	if len(exec.calls) != 2 {
+		t.Fatalf("只矫正重试一次：%d 次调用", len(exec.calls))
+	}
+}
+
+// TestGenerateUnparsableJSONNoRetry：JSON 形状但解析失败 → 拒绝发布且不重试——矫正
+// 重试只针对决策 JSON 形态（errGenerateNoBody），其它映射失败维持原契约（成本/
+// 时延纪律）。
+func TestGenerateUnparsableJSONNoRetry(t *testing.T) {
+	exec := &fakeExecer{outputs: []string{
+		agentMessageStream(t, `{"body":"缺逗号" "declared_relations":[]}`),
+	}}
+	adapter := newTestAdapter(exec)
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "minimax"})
+	defer sess.Close()
+	h, err := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	_, rerr := h.Result()
+	if rerr == nil {
+		t.Fatal("JSON 形状但解析失败不得发布")
+	}
+	if !strings.Contains(rerr.Error(), "呈 JSON 形状但解析失败") {
+		t.Fatalf("错误应指明解析失败：%v", rerr)
 	}
 	if len(exec.calls) != 1 {
-		t.Fatalf("generate 非严格契约不得重试：%d 次调用", len(exec.calls))
+		t.Fatalf("解析失败形态不得重试：%d 次调用", len(exec.calls))
 	}
 }
 

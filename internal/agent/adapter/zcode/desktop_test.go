@@ -6,6 +6,7 @@ package zcode
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -285,6 +286,198 @@ func TestDesktopOverlayNative(t *testing.T) {
 	}
 	if !hasEnv(exec.calls[0].env, "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE=") {
 		t.Fatalf("桌面面模型覆盖同样经 env 重定向生效：%v", exec.calls[0].env)
+	}
+}
+
+// newStandaloneHome 隔离 HOME 并落入合成基座 provider_config.json（原生面 overlay
+// 文件 IO 走 os 包，不得读开发者的真实配置）。
+func newStandaloneHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.MkdirAll(filepath.Join(home, ".zcode", "v2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".zcode", "v2", "provider_config.json"),
+		[]byte(overlayBaseJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+// newStandaloneProfile 造一个独立登录档（temp）：credentials.json 只含键名（值随意
+// ——适配器只读键名，不解读凭据）。
+func newStandaloneProfile(t *testing.T, accounts ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	doc := map[string]string{}
+	for _, a := range accounts {
+		doc[standaloneAccountPrefix+a+standaloneIdentitySuffix] = "enc:v2:env:opaque"
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, standaloneCredentialsName), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestStandaloneEnv：独立登录档有登录态 → 桌面面任务进程携 ZCODE_CREDENTIALS_FILE 与
+// ZCODE_CREDENTIAL_SECRET_FILE（内核按官方无头方案以受管密钥承载 OAuth 账号
+// provider）；档内无凭据库（未登录/已登出）或未配置 → 不含，行为与无此功能时一致。
+func TestStandaloneEnv(t *testing.T) {
+	root, bundle := newDesktopInstall(t, true)
+	prof := newStandaloneProfile(t, "account:x")
+	for _, tc := range []struct {
+		name string
+		dir  string
+		want bool
+	}{
+		{"已登录", prof, true},
+		{"未登录（档内无凭据库）", t.TempDir(), false},
+		{"未配置", "", false},
+	} {
+		exec := &fakeExecer{outputs: []string{resultStream(t, `{"action":"silent"}`)}}
+		adapter := newDesktopAdapter(t, exec, root, bundle)
+		adapter.cfg.StandaloneDir = tc.dir
+		sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "zcode"})
+		h, err := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindEvaluateIntent})
+		if err != nil {
+			t.Fatalf("%s run: %v", tc.name, err)
+		}
+		if _, err := h.Result(); err != nil {
+			t.Fatalf("%s result: %v", tc.name, err)
+		}
+		for _, key := range []string{"ZCODE_CREDENTIALS_FILE=", "ZCODE_CREDENTIAL_SECRET_FILE="} {
+			if got := hasEnv(exec.calls[0].env, key); got != tc.want {
+				t.Fatalf("%s：env 含 %s = %v，期望 %v：%v", tc.name, key, got, tc.want, exec.calls[0].env)
+			}
+		}
+		sess.Close()
+	}
+}
+
+// TestOverlayUnlistedModelUsesStandaloneAccount：个人清单未列的模型 + 独立登录档已
+// 登录 → 默认模型选择指向账号 provider，个人规则原样不动（2026-11-24 真机实证 ZCode
+// 4.0.0：仅写 defaultModelSelection 即生效，模型 ID 按用户输入原样写入）。此前这类
+// 模型只能落到唯一的个人规则（API Key）——同窗口实证 API Key 通道 17 次全被 529
+// 拒绝、账号通道零重试。
+func TestOverlayUnlistedModelUsesStandaloneAccount(t *testing.T) {
+	home := newStandaloneHome(t)
+	root, bundle := newDesktopInstall(t, true)
+	exec := &fakeExecer{outputs: []string{resultStream(t, `{"body":"正文","declared_relations":[]}`)}}
+	adapter := newDesktopAdapter(t, exec, root, bundle)
+	adapter.cfg.Model = "glm-5.4"
+	adapter.cfg.StandaloneDir = newStandaloneProfile(t, "account:bigmodel-individual-coding-plan")
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "zcode"})
+	defer sess.Close()
+	h, err := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if _, err := h.Result(); err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".zcode", "v2", "provider_config.mosaic.glm-5.4.json"))
+	if err != nil {
+		t.Fatalf("overlay 应落盘：%v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("overlay 应为合法 JSON: %v", err)
+	}
+	config := doc["config"].(map[string]any)
+	sel := config["defaultModelSelection"].(map[string]any)
+	if sel["providerId"] != "account:bigmodel-individual-coding-plan" || sel["modelId"] != "glm-5.4" {
+		t.Fatalf("默认模型选择应指向账号 provider 上的目标模型：%+v", sel)
+	}
+	rule := config["providerConfigRules"].(map[string]any)["providerRules"].([]any)[0].(map[string]any)
+	if ids := rule["config"].(map[string]any)["personalModelIds"].([]any); len(ids) != 2 {
+		t.Fatalf("账号 provider 路径不得改动个人规则：%v", ids)
+	}
+	if !hasEnv(exec.calls[0].env, "ZCODE_CREDENTIALS_FILE=") || !hasEnv(exec.calls[0].env, "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE=") {
+		t.Fatalf("执行面 env 应同时携独立登录档与 overlay 重定向：%v", exec.calls[0].env)
+	}
+}
+
+// TestOverlayListedModelKeepsItsRule：个人清单已列的模型仍走其所在规则——独立登录档
+// 只在"配置对该模型一无所知"时兜底，不改写既有选择。
+func TestOverlayListedModelKeepsItsRule(t *testing.T) {
+	home := newStandaloneHome(t)
+	root, bundle := newDesktopInstall(t, true)
+	exec := &fakeExecer{outputs: []string{resultStream(t, `{"body":"正文","declared_relations":[]}`)}}
+	adapter := newDesktopAdapter(t, exec, root, bundle)
+	adapter.cfg.Model = "glm-4.6"
+	adapter.cfg.StandaloneDir = newStandaloneProfile(t, "account:bigmodel-individual-coding-plan")
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "zcode"})
+	defer sess.Close()
+	h, _ := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+	if _, err := h.Result(); err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".zcode", "v2", "provider_config.mosaic.glm-4.6.json"))
+	if err != nil {
+		t.Fatalf("overlay 应落盘：%v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("overlay 应为合法 JSON: %v", err)
+	}
+	sel := doc["config"].(map[string]any)["defaultModelSelection"].(map[string]any)
+	if sel["providerId"] != "p1" || sel["modelId"] != "glm-4.6" {
+		t.Fatalf("已列模型应仍走其所在规则 p1：%+v", sel)
+	}
+}
+
+// TestOverlayStandaloneAccountsAmbiguous：独立登录档登录了多个账号 provider 且模型
+// 个人清单未列 → 归属不可判定，显式报错，不写 overlay、不执行子进程。
+func TestOverlayStandaloneAccountsAmbiguous(t *testing.T) {
+	home := newStandaloneHome(t)
+	root, bundle := newDesktopInstall(t, true)
+	exec := &fakeExecer{}
+	adapter := newDesktopAdapter(t, exec, root, bundle)
+	adapter.cfg.Model = "glm-5.4"
+	adapter.cfg.StandaloneDir = newStandaloneProfile(t, "account:a", "account:b")
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "zcode"})
+	defer sess.Close()
+	h, _ := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+	_, err := h.Result()
+	if err == nil || !strings.Contains(err.Error(), "已登录的账号 provider 有 2 个") {
+		t.Fatalf("多账号 provider 应显式报错：%v", err)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("归属不明不得执行子进程：%d 次调用", len(exec.calls))
+	}
+	if _, serr := os.Stat(filepath.Join(home, ".zcode", "v2", "provider_config.mosaic.glm-5.4.json")); !os.IsNotExist(serr) {
+		t.Fatalf("归属不明不得写 overlay（stat err=%v）", serr)
+	}
+}
+
+// TestStandaloneCredentialsCorrupt：档内凭据库解析失败 → 显式报错（已配置的登录态
+// 不静默失效），不执行子进程。
+func TestStandaloneCredentialsCorrupt(t *testing.T) {
+	newStandaloneHome(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, standaloneCredentialsName), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, bundle := newDesktopInstall(t, true)
+	exec := &fakeExecer{}
+	adapter := newDesktopAdapter(t, exec, root, bundle)
+	adapter.cfg.Model = "glm-5.4"
+	adapter.cfg.StandaloneDir = dir
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "zcode"})
+	defer sess.Close()
+	h, _ := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+	_, err := h.Result()
+	if err == nil || !strings.Contains(err.Error(), "独立登录档凭据库") || !strings.Contains(err.Error(), "解析失败") {
+		t.Fatalf("凭据库损坏应显式报错：%v", err)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("凭据库损坏不得执行子进程：%d 次调用", len(exec.calls))
 	}
 }
 

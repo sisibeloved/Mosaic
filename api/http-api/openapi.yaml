@@ -4288,6 +4288,80 @@ paths:
             text/event-stream:
               schema: { type: string }
         "503": { $ref: "#/components/responses/HarnessUnavailable" }
+  /v1/harness/executables/{id}/account-login:
+    get:
+      operationId: getHarnessExecutableAccountLogin
+      summary: zcode 账号登录状态（独立登录档——OAuth 账号 provider）
+      description: |
+        Mosaic 独立驱动的 zcode 内核另立一份登录态（`~/.mosaic/zcode-standalone`，
+        受管密钥加密，不入备份面；与 ZCode 桌面版 `~/.zcode/v2` 的凭据互不相干）。
+        已登录 = 档内凭据库含账号绑定条目；账号/模型取最近一次经 Mosaic 完成的登录
+        结果。仅 zcode 实例且装配了独立登录档时 supported=true——其余实例同样 200
+        （supported=false），登录块不呈现。
+      parameters:
+        - $ref: "#/components/parameters/ExecutableID"
+      responses:
+        "200":
+          description: 登录状态
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HarnessAccountLoginStatus" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/HarnessUnavailable" }
+    post:
+      operationId: runHarnessExecutableAccountLogin
+      summary: 启动 zcode 账号登录任务（异步——过程经 SSE 可视化）
+      description: |
+        以任务进程同一驱动面执行内核 login 子命令（`login <family> --no-browser`）：
+        授权链接经 SSE `url` 事件交给界面（界面请桌面壳调系统浏览器），浏览器确认后
+        凭据写入独立登录档。异步受理即返 202（started=本次启动 / running=同实例任务
+        在途幂等）；过程经 GET .../account-login/stream SSE 转发；内核授权窗口 5
+        分钟，超时为 failed 终态事件。非 zcode 实例或未装配独立登录档 → 409。
+      security: [{ OwnerToken: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ExecutableID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HarnessAccountLoginRequest" }
+      responses:
+        "202":
+          description: 已受理（异步任务；过程经 account-login/stream SSE 可视化）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [started, running] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: account_login_unsupported（该实例不支持账号登录）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/HarnessUnavailable" }
+  /v1/harness/executables/{id}/account-login/stream:
+    get:
+      operationId: getHarnessExecutableAccountLoginStream
+      summary: 账号登录任务过程 SSE
+      description: |
+        连接即重放已积累事件（授权链接在途即报），随后实时转发；终态（done 携
+        account/model / failed 携 error）后关流；无任务发 idle 即关。只读观察面无写门
+        （发起登录仍走 owner 门控的 POST）；15s 注释心跳防中间层缓冲。
+      parameters:
+        - $ref: "#/components/parameters/ExecutableID"
+      responses:
+        "200":
+          description: 事件流（text/event-stream；data 为 {kind:url|line|done|failed|idle, line?, url?, account?, model?, error?} JSON）
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/HarnessUnavailable" }
   /v1/memory/items:
     post:
       operationId: createMemoryItem
@@ -8021,6 +8095,22 @@ components:
         status: { type: string, const: ok }
         new_version: { type: string, description: 更新后实测版本（--version 重探） }
         output_tail: { type: string, description: 更新命令输出尾（排障可见） }
+    HarnessAccountLoginRequest:
+      type: object
+      additionalProperties: false
+      description: zcode 账号登录请求：登录家族（内核 `login [zai|bigmodel]`；缺省 bigmodel）。
+      properties:
+        family: { type: string, enum: [bigmodel, zai] }
+    HarnessAccountLoginStatus:
+      type: object
+      required: [supported, logged_in, providers]
+      description: zcode 独立登录档状态——supported=该实例可发起账号登录；logged_in=档内凭据库含账号绑定条目。
+      properties:
+        supported: { type: boolean }
+        logged_in: { type: boolean }
+        account: { type: string, description: 最近一次登录的账号 }
+        model: { type: string, description: 最近一次登录钉选的默认模型（provider/model） }
+        providers: { type: array, items: { type: string }, description: 已登录的账号 provider }
     TaskItem:
       type: object
       required: [task_id, owner, requester, text, source_event_id, declared_at, declared_seq, waves_since, overdue, status]

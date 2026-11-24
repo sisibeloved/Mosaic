@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -28,13 +29,14 @@ type capturedCall struct {
 }
 
 type fakeExecer struct {
-	mu      sync.Mutex
-	calls   []capturedCall
-	outputs []string // 按调用序返回预置 JSONL stdout
-	stderr  string   // 退出码非零时的诊断通道
-	code    int
-	err     error
-	block   bool // 阻塞至 ctx 取消（取消语义用）
+	mu       sync.Mutex
+	calls    []capturedCall
+	outputs  []string // 按调用序返回预置 JSONL stdout
+	stderr   string   // 退出码非零时的诊断通道
+	code     int
+	err      error
+	block    bool   // 阻塞至 ctx 取消（取消语义用）
+	blockOut string // 阻塞至 ctx 取消后作为部分 stdout 返回（超时现场用）
 }
 
 func (f *fakeExecer) Exec(ctx context.Context, argv []string, env []string, stdin string) (string, string, int, error) {
@@ -44,7 +46,7 @@ func (f *fakeExecer) Exec(ctx context.Context, argv []string, env []string, stdi
 	f.mu.Unlock()
 	if f.block {
 		<-ctx.Done()
-		return "", "", -1, ctx.Err()
+		return f.blockOut, "", -1, ctx.Err()
 	}
 	if f.err != nil {
 		return "", f.stderr, f.code, f.err
@@ -263,9 +265,10 @@ func TestSessionDBEnvCLI(t *testing.T) {
 	}
 }
 
-// TestCancelStale：在途取消 → ErrStale（不发布正文）。
+// TestCancelStale：在途取消 → ErrStale（不发布正文）。流里带重试事件也不例外——
+// 超时/取消分流后 Result 仍以 stale 优先。
 func TestCancelStale(t *testing.T) {
-	exec := &fakeExecer{block: true}
+	exec := &fakeExecer{block: true, blockOut: retryStream("glm-5.4", 3)}
 	adapter := newTestAdapter(exec)
 	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p-ut", Adapter: "zcode"})
 	defer sess.Close()
@@ -273,6 +276,74 @@ func TestCancelStale(t *testing.T) {
 	h.Cancel()
 	if _, err := h.Result(); !errors.Is(err, agent.ErrStale) {
 		t.Fatalf("取消后应 ErrStale：%v", err)
+	}
+}
+
+// retryStream 构造超时被杀时的不完整流（2026-11-23 真机 stream-json 形态：ZCode 4.0.0
+// 上游 529/[1305] 限流——每次尝试即失败并排期重试，流无终止行）。
+func retryStream(model string, attempts int) string {
+	var b strings.Builder
+	for i := 1; i <= attempts; i++ {
+		n := fmt.Sprintf("%d", i)
+		b.WriteString(`{"type":"session.updated","payload":{"type":"model_request_failed","attempt":` + n + `,"maxAttempts":11,"statusCode":529,"reason":"rate_limited","modelId":"` + model + `"}}` + "\n")
+		b.WriteString(`{"type":"session.updated","payload":{"type":"model_retry_scheduled","attempt":` + n + `,"maxAttempts":11,"delayMs":1481,"reason":"rate_limited","modelId":"` + model + `","message":"[1305][该模型当前访问量过大，请您稍后再试][202611232138222b8fa8b48c9e4371]"}}` + "\n")
+	}
+	return b.String()
+}
+
+// TestTimeoutReportsRetryReasonNotStale：超时（非取消）必须如实报"任务超时"并携带
+// 流内重试现场——ErrStale 专属 Cancel 后迟到拒绝语义（RFC-0002 §3.1.6）。2026-11-23
+// 真机实证：GLM-5.4 接口 529/[1305] 限流持续三分钟，内核 9 次重试后的退避总时长
+// 越过 180s 时限，日志只见 "agent: stale grant"（围栏失配假象掩盖真实死因）。
+func TestTimeoutReportsRetryReasonNotStale(t *testing.T) {
+	exec := &fakeExecer{block: true, blockOut: retryStream("glm-5.4", 9)}
+	adapter := New(Config{ZcodePath: "/x/zcode", Execer: exec, Timeout: 40 * time.Millisecond})
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p-to", Adapter: "zcode"})
+	defer sess.Close()
+	h, _ := sess.Run(context.Background(), agent.Task{TaskID: "t-timeout", Kind: agent.KindGenerate})
+	_, err := h.Result()
+	if err == nil {
+		t.Fatal("超时应报错")
+	}
+	if errors.Is(err, agent.ErrStale) {
+		t.Fatalf("超时不得冒充迟到拒绝（ErrStale）：%v", err)
+	}
+	for _, want := range []string{"任务超时", "模型 glm-5.4 请求已失败 9 次", "上限 11 次", "[1305]", "访问量过大"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("超时错误应如实携带 %q：%v", want, err)
+		}
+	}
+}
+
+// TestTimeoutWithoutRetryEvents：超时但流内无重试事件 → 如实报超时、不附重试现场
+// （不虚构），同样不是 ErrStale。
+func TestTimeoutWithoutRetryEvents(t *testing.T) {
+	exec := &fakeExecer{block: true}
+	adapter := New(Config{ZcodePath: "/x/zcode", Execer: exec, Timeout: 40 * time.Millisecond})
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p-to", Adapter: "zcode"})
+	defer sess.Close()
+	h, _ := sess.Run(context.Background(), agent.Task{TaskID: "t-timeout", Kind: agent.KindGenerate})
+	_, err := h.Result()
+	if err == nil || !strings.Contains(err.Error(), "任务超时") || errors.Is(err, agent.ErrStale) {
+		t.Fatalf("超时应如实报错且不是 ErrStale：%v", err)
+	}
+	if strings.Contains(err.Error(), "请求已失败") {
+		t.Fatalf("无重试事件不得虚构重试现场：%v", err)
+	}
+}
+
+// TestRetryDetailPicksLastAttempt：重试现场取尝试序号最大的一条（流序乱序也按序号），
+// 无重试事件返回空串。
+func TestRetryDetailPicksLastAttempt(t *testing.T) {
+	stream := retryStream("glm-5.4", 2) +
+		`{"type":"session.updated","payload":{"type":"model_retry_scheduled","attempt":5,"maxAttempts":11,"modelId":"glm-5.4","message":"[1305][该模型当前访问量过大，请您稍后再试][x]"}}` + "\n" +
+		`{"type":"session.updated","payload":{"type":"model_retry_scheduled","attempt":4,"maxAttempts":11,"modelId":"glm-5.4","message":"[1304][stale][x]"}}` + "\n"
+	got := retryDetail(stream)
+	if !strings.Contains(got, "请求已失败 5 次") || !strings.Contains(got, "1305") || strings.Contains(got, "1304") {
+		t.Fatalf("应取尝试序号最大的重试事件：%q", got)
+	}
+	if retryDetail(`{"type":"session.updated","payload":{"type":"model.streaming"}}`+"\n") != "" || retryDetail("") != "" {
+		t.Fatal("无重试事件应返回空串")
 	}
 }
 
@@ -588,6 +659,12 @@ const overlayBaseJSON = `{
 // （generate 回 body 形、其余回 silent 意图——防矫正重试改变调用序断言）。
 func newOverlayExecer(t *testing.T, readCode int) *routeExecer {
 	t.Helper()
+	return newOverlayExecerBase(t, overlayBaseJSON, readCode)
+}
+
+// newOverlayExecerBase 同 newOverlayExecer，基座内容可换（启用规则数量场景）。
+func newOverlayExecerBase(t *testing.T, base string, readCode int) *routeExecer {
+	t.Helper()
 	return &routeExecer{route: func(argv []string, stdin string) (string, string, int) {
 		joined := strings.Join(argv, "\x00")
 		switch {
@@ -595,7 +672,7 @@ func newOverlayExecer(t *testing.T, readCode int) *routeExecer {
 			if readCode != 0 {
 				return "", "cat: No such file or directory", readCode
 			}
-			return overlayBaseJSON, "", 0
+			return base, "", 0
 		case strings.Contains(joined, "cat > "):
 			return "", "", 0
 		default:
@@ -696,21 +773,84 @@ func TestOverlayDisabledProviderFallback(t *testing.T) {
 	}
 }
 
-// TestOverlayModelNotFound：模型不在任何 provider 的模型清单 → 任务报错（不静默
-// 回落 CLI 默认——显式覆盖必须生效或显式失败）；modelConfigRules 匹配到 providerId
-// 但该 provider 规则不存在同样报错。
-func TestOverlayModelNotFound(t *testing.T) {
-	for _, model := range []string{"nonexistent-model", "deepseek-v4-pro"} {
-		exec := newOverlayExecer(t, 0)
-		adapter := newOverlayAdapter(exec, model)
+// TestOverlayUnlistedModelOnSoleProvider：个人清单未列的模型落在唯一启用的 provider
+// 上（2026-11-23 真机实证 ZCode 4.0.0：服务端目录修订 48 新增 GLM-5.4，个人清单
+// 未列——此前在内核启动前即被拦下，座位整轮哑火）。overlay 前置插入该模型 +
+// defaultModelSelection 指向它；可用与否由内核/服务端裁决（模型不存在时内核显式
+// 报 [1211]，无静默回落），适配器不再预判。
+func TestOverlayUnlistedModelOnSoleProvider(t *testing.T) {
+	exec := newOverlayExecer(t, 0)
+	adapter := newOverlayAdapter(exec, "glm-5.4")
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "zcode"})
+	defer sess.Close()
+	h, _ := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+	if _, err := h.Result(); err != nil {
+		t.Fatalf("个人清单未列但启用规则唯一应放行：%v", err)
+	}
+	if len(exec.calls) != 3 {
+		t.Fatalf("overlay 全链应为 读/写/执行 三次调用：%d", len(exec.calls))
+	}
+	written := exec.written["/home/u/.zcode/v2/provider_config.mosaic.glm-5.4.json"]
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(written), &doc); err != nil {
+		t.Fatalf("overlay 应为合法 JSON: %v", err)
+	}
+	config := doc["config"].(map[string]any)
+	sel := config["defaultModelSelection"].(map[string]any)
+	if sel["providerId"] != "p1" || sel["modelId"] != "glm-5.4" {
+		t.Fatalf("defaultModelSelection 应指向唯一启用 provider 上的目标模型：%+v", sel)
+	}
+	rule := config["providerConfigRules"].(map[string]any)["providerRules"].([]any)[0].(map[string]any)
+	rcfg := rule["config"].(map[string]any)
+	// 原样写入（大小写不做归一——真机实证小写 ID 可用，适配器不改用户输入）
+	for _, key := range []string{"personalModelIds", "modelOrder"} {
+		ids := rcfg[key].([]any)
+		if ids[0] != "glm-5.4" || len(ids) != 3 {
+			t.Fatalf("%s 应前置插入目标模型：%v", key, ids)
+		}
+	}
+}
+
+// TestOverlayDeclaredProviderWithoutRule：modelConfigRules 声明了模型归属但该
+// provider 无规则 → 报错指明归属（不落到别的 provider——发给错误端点只会得到
+// 费解的"模型不存在"），不写 overlay、不执行。
+func TestOverlayDeclaredProviderWithoutRule(t *testing.T) {
+	exec := newOverlayExecer(t, 0)
+	adapter := newOverlayAdapter(exec, "deepseek-v4-pro")
+	sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "zcode"})
+	defer sess.Close()
+	h, _ := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
+	_, err := h.Result()
+	if err == nil || !strings.Contains(err.Error(), "归属 provider p3") {
+		t.Fatalf("声明归属 p3 而无规则应报错并指明归属：%v", err)
+	}
+	if len(exec.calls) != 1 { // 只有基座读取，不写不执行
+		t.Fatalf("不得写 overlay/执行：%d 次调用", len(exec.calls))
+	}
+}
+
+// TestOverlayUnlistedModelProvidersNotSole：个人清单未列且启用规则不唯一 → 归属
+// 不可判定，显式报错（列出启用中的 provider 与收敛路径），不写 overlay、不执行；
+// 启用规则为零同样报错（原口径）。
+func TestOverlayUnlistedModelProvidersNotSole(t *testing.T) {
+	twoEnabled := strings.Replace(overlayBaseJSON, `"enabled": false, `, "", 1)
+	noneEnabled := strings.Replace(overlayBaseJSON, `"providerName": "Z.ai", "config"`, `"providerName": "Z.ai", "enabled": false, "config"`, 1)
+	for _, tc := range []struct {
+		name, base, want string
+	}{
+		{"两个启用规则", twoEnabled, "启用中的 provider 有 2 个（p1、p2），无法判定归属"},
+		{"零个启用规则", noneEnabled, "不在 zcode 任何 provider 的模型清单"},
+	} {
+		exec := newOverlayExecerBase(t, tc.base, 0)
+		adapter := newOverlayAdapter(exec, "nonexistent-model")
 		sess, _ := adapter.Boot(context.Background(), agent.Profile{ProfileID: "p", Adapter: "zcode"})
 		h, _ := sess.Run(context.Background(), agent.Task{TaskID: "t", Kind: agent.KindGenerate})
 		_, err := h.Result()
-		if err == nil || !strings.Contains(err.Error(), "不在 zcode 任何 provider 的模型清单") {
-			t.Fatalf("模型 %s 不在清单应报错：%v", model, err)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s：应报错「%s」：%v", tc.name, tc.want, err)
 		}
 		if len(exec.calls) != 1 { // 只有基座读取，不写不执行
-			t.Fatalf("模型找不到不得写 overlay/执行：%d 次调用", len(exec.calls))
+			t.Fatalf("%s：不得写 overlay/执行：%d 次调用", tc.name, len(exec.calls))
 		}
 		sess.Close()
 	}

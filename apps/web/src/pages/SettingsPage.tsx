@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, type AgentEvent, type AgentLifecycleAction, type AgentBundleExportView, type AgentBundleSummary, type BundleImportView, type BundleImportSummary, type BundleActivationView, type BackupSummary, type Executable, type IdentityAgent, type MissionSummary, type MonitorView, type SettingsDoc, type SlotSpecContent, type SlotSpecSummary, type SlotSpecView, type SlotInstanceView, type BindingView, type ReadinessReportView, type SlotHandoverReceipt } from "../api/client";
 import { AppLogo } from "../components/AppLogo";
 import { RuntimeOptsEditor } from "../components/RuntimeOptsEditor";
+import { AccountLoginEditor } from "../components/AccountLoginEditor";
 import { UpdateEditor } from "../components/UpdateEditor";
 import { useDevMode } from "../state/dev";
 import { refreshAgentSeats } from "../state/rooms";
@@ -746,6 +747,9 @@ export function SettingsPage() {
                         {/* 0.4.1 版本检测与更新：npm 分发面实查最新版；claude 官方自更新；
                             kimi/zcode manual 指引（更新后版本回填注册表） */}
                         <UpdateEditor exe={exe} onUpdated={() => void refreshExecutables()} />
+                        {/* zcode 账号登录（独立登录档——OAuth 账号 provider）：授权链接与
+                            结果经 SSE 推送；非 zcode 实例不呈现 */}
+                        <AccountLoginEditor exe={exe} onLoggedIn={() => void refreshExecutables()} />
                       </li>
                     );
                   })}

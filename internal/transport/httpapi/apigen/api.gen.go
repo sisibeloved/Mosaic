@@ -1038,6 +1038,24 @@ func (e HandoverEventViewKind) Valid() bool {
 	}
 }
 
+// Defines values for HarnessAccountLoginRequestFamily.
+const (
+	Bigmodel HarnessAccountLoginRequestFamily = "bigmodel"
+	Zai      HarnessAccountLoginRequestFamily = "zai"
+)
+
+// Valid indicates whether the value is a known member of the HarnessAccountLoginRequestFamily enum.
+func (e HarnessAccountLoginRequestFamily) Valid() bool {
+	switch e {
+	case Bigmodel:
+		return true
+	case Zai:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for HarnessUpdateCheckChannel.
 const (
 	Mosaic     HarnessUpdateCheckChannel = "mosaic"
@@ -2598,6 +2616,24 @@ const (
 func (e AddHarnessExecutable201JSONResponseBodyStatus) Valid() bool {
 	switch e {
 	case Registered:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RunHarnessExecutableAccountLogin202JSONResponseBodyStatus.
+const (
+	RunHarnessExecutableAccountLogin202JSONResponseBodyStatusRunning RunHarnessExecutableAccountLogin202JSONResponseBodyStatus = "running"
+	RunHarnessExecutableAccountLogin202JSONResponseBodyStatusStarted RunHarnessExecutableAccountLogin202JSONResponseBodyStatus = "started"
+)
+
+// Valid indicates whether the value is a known member of the RunHarnessExecutableAccountLogin202JSONResponseBodyStatus enum.
+func (e RunHarnessExecutableAccountLogin202JSONResponseBodyStatus) Valid() bool {
+	switch e {
+	case RunHarnessExecutableAccountLogin202JSONResponseBodyStatusRunning:
+		return true
+	case RunHarnessExecutableAccountLogin202JSONResponseBodyStatusStarted:
 		return true
 	default:
 		return false
@@ -4208,6 +4244,28 @@ type HandoverSubmit struct {
 
 	// Notes 交接说明——在途事项/未决动作/证据指引（§8.1 轻量承载体；完整交接包随 0.7+）
 	Notes *string `json:"notes,omitempty"`
+}
+
+// HarnessAccountLoginRequest zcode 账号登录请求：登录家族（内核 `login [zai|bigmodel]`；缺省 bigmodel）。
+type HarnessAccountLoginRequest struct {
+	Family *HarnessAccountLoginRequestFamily `json:"family,omitempty"`
+}
+
+// HarnessAccountLoginRequestFamily defines model for HarnessAccountLoginRequest.Family.
+type HarnessAccountLoginRequestFamily string
+
+// HarnessAccountLoginStatus zcode 独立登录档状态——supported=该实例可发起账号登录；logged_in=档内凭据库含账号绑定条目。
+type HarnessAccountLoginStatus struct {
+	// Account 最近一次登录的账号
+	Account  *string `json:"account,omitempty"`
+	LoggedIn bool    `json:"logged_in"`
+
+	// Model 最近一次登录钉选的默认模型（provider/model）
+	Model *string `json:"model,omitempty"`
+
+	// Providers 已登录的账号 provider
+	Providers []string `json:"providers"`
+	Supported bool     `json:"supported"`
 }
 
 // HarnessUpdateCheck Agent CLI 版本检测（0.4.1）：注册表探测版本对照上游最新版（按 ADR-0016 三通道分派检测面——registry/self-update 经仓库客户端（npm view）；mosaic 对齐自建 releases 信号（产品更新源 feed 优先、源码 tag 回退）；均缓存 30 分钟）。
@@ -6336,6 +6394,9 @@ type VerifyExtDocParamsProvider string
 // AddHarnessExecutable201JSONResponseBodyStatus defines parameters for AddHarnessExecutable.
 type AddHarnessExecutable201JSONResponseBodyStatus string
 
+// RunHarnessExecutableAccountLogin202JSONResponseBodyStatus defines parameters for RunHarnessExecutableAccountLogin.
+type RunHarnessExecutableAccountLogin202JSONResponseBodyStatus string
+
 // DisableHarnessExecutable200JSONResponseBodyEnabled defines parameters for DisableHarnessExecutable.
 type DisableHarnessExecutable200JSONResponseBodyEnabled bool
 
@@ -6483,6 +6544,9 @@ type AddHarnessExecutableJSONRequestBody = ManualExecutableRequest
 
 // UpdateHarnessExecutableJSONRequestBody defines body for UpdateHarnessExecutable for application/json ContentType.
 type UpdateHarnessExecutableJSONRequestBody = RuntimeUpdateRequest
+
+// RunHarnessExecutableAccountLoginJSONRequestBody defines body for RunHarnessExecutableAccountLogin for application/json ContentType.
+type RunHarnessExecutableAccountLoginJSONRequestBody = HarnessAccountLoginRequest
 
 // CreateIdentityAgentJSONRequestBody defines body for CreateIdentityAgent for application/json ContentType.
 type CreateIdentityAgentJSONRequestBody = ManualAgentRequest
@@ -6762,6 +6826,15 @@ type ServerInterface interface {
 	// UpdateHarnessExecutable 更新运行参数（模型覆盖与思考强度；v1.48）
 	// (PUT /v1/harness/executables/{id})
 	UpdateHarnessExecutable(w http.ResponseWriter, r *http.Request, id ExecutableID)
+	// GetHarnessExecutableAccountLogin zcode 账号登录状态（独立登录档——OAuth 账号 provider）
+	// (GET /v1/harness/executables/{id}/account-login)
+	GetHarnessExecutableAccountLogin(w http.ResponseWriter, r *http.Request, id ExecutableID)
+	// RunHarnessExecutableAccountLogin 启动 zcode 账号登录任务（异步——过程经 SSE 可视化）
+	// (POST /v1/harness/executables/{id}/account-login)
+	RunHarnessExecutableAccountLogin(w http.ResponseWriter, r *http.Request, id ExecutableID)
+	// GetHarnessExecutableAccountLoginStream 账号登录任务过程 SSE
+	// (GET /v1/harness/executables/{id}/account-login/stream)
+	GetHarnessExecutableAccountLoginStream(w http.ResponseWriter, r *http.Request, id ExecutableID)
 	// DisableHarnessExecutable 禁用可执行项（座位随 resync 撤出）
 	// (POST /v1/harness/executables/{id}/disable)
 	DisableHarnessExecutable(w http.ResponseWriter, r *http.Request, id ExecutableID)
@@ -8355,6 +8428,84 @@ func (siw *ServerInterfaceWrapper) UpdateHarnessExecutable(w http.ResponseWriter
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UpdateHarnessExecutable(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetHarnessExecutableAccountLogin operation middleware
+func (siw *ServerInterfaceWrapper) GetHarnessExecutableAccountLogin(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id ExecutableID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetHarnessExecutableAccountLogin(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RunHarnessExecutableAccountLogin operation middleware
+func (siw *ServerInterfaceWrapper) RunHarnessExecutableAccountLogin(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id ExecutableID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RunHarnessExecutableAccountLogin(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetHarnessExecutableAccountLoginStream operation middleware
+func (siw *ServerInterfaceWrapper) GetHarnessExecutableAccountLoginStream(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id ExecutableID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetHarnessExecutableAccountLoginStream(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -11315,6 +11466,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables/{id}/update-check", wrapper.GetHarnessExecutableUpdateCheck)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/update", wrapper.RunHarnessExecutableUpdate)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables/{id}/update/stream", wrapper.GetHarnessExecutableUpdateStream)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables/{id}/account-login", wrapper.GetHarnessExecutableAccountLogin)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/harness/executables/{id}/account-login", wrapper.RunHarnessExecutableAccountLogin)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/harness/executables/{id}/account-login/stream", wrapper.GetHarnessExecutableAccountLoginStream)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/memory/items", wrapper.ListMemoryItems)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/memory/items", wrapper.CreateMemoryItem)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/memory/items/{memory_id}", wrapper.GetMemoryItem)

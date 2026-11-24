@@ -77,6 +77,17 @@ export type SearchHit = Schemas["SearchHit"];
 export type RuntimeOptions = Schemas["RuntimeOptions"];
 export type HarnessUpdateCheck = Schemas["HarnessUpdateCheck"];
 export type HarnessUpdateRun = Schemas["HarnessUpdateRun"];
+/** zcode 账号登录（独立登录档——OAuth 账号 provider）。 */
+export type HarnessAccountLoginStatus = Schemas["HarnessAccountLoginStatus"];
+export type HarnessAccountLoginFamily = NonNullable<Schemas["HarnessAccountLoginRequest"]["family"]>;
+export type HarnessAccountLoginEvent = {
+  kind: "url" | "line" | "done" | "failed" | "idle";
+  line?: string;
+  url?: string;
+  account?: string;
+  model?: string;
+  error?: string;
+};
 export type MemoryCapsule = NonNullable<NonNullable<components["schemas"]["MemoryView"]>["capsules"]>[number];
 export type CuratedEntry = NonNullable<NonNullable<components["schemas"]["MemoryView"]>["curated"]>[number];
 export type CuratedBudget = NonNullable<NonNullable<components["schemas"]["MemoryView"]>["curated_budget"]>;
@@ -956,6 +967,14 @@ export const api = {
     return request(`/v1/harness/executables/${encodeURIComponent(id)}/update`, {
       method: "POST",
     });
+  },
+  /** zcode 账号登录状态（独立登录档；非 zcode 实例 supported=false——界面不呈现登录块）。 */
+  executableAccountLogin(id: string): Promise<HarnessAccountLoginStatus> {
+    return request(`/v1/harness/executables/${encodeURIComponent(id)}/account-login`);
+  },
+  /** 启动 zcode 账号登录任务（202 异步受理；授权链接与结果经 .../account-login/stream SSE 可视化）。 */
+  executableAccountLoginStart(id: string, family: HarnessAccountLoginFamily): Promise<{ status: string }> {
+    return post<{ status: string }>(`/v1/harness/executables/${encodeURIComponent(id)}/account-login`, { family });
   },
   debugState(roomID: string): Promise<unknown> {
     return request(`/v1/debug/rooms/${encodeURIComponent(roomID)}/state`);
